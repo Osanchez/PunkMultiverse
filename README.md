@@ -1,97 +1,103 @@
-﻿# Punk Multiverse
+# PunkMultiverse
 
-Online co-op mod for **PUNK**, inspired by [Noita Entangled Worlds](https://github.com/IntQuant/noita_entangled_worlds).
-Host a Steam lobby, friends join by pasted lobby code or Steam invite, pick ship colors, and play a shared run — up to **4 players**.
+**Online co-op for PUNK — up to 4 players.**
+Host a Steam lobby, send a friend a code, and play a shared run together: same world,
+same enemies, same progression — your own ship, loot, and build.
 
-Everything runs in-game via BepInEx; there is no companion app. Networking uses the Steamworks
-that already ships with PUNK (Steam lobbies + Steam Datagram Relay), so there's no port
-forwarding and no extra dependencies.
+Inspired by [Noita Entangled Worlds](https://github.com/IntQuant/noita_entangled_worlds),
+built as a single BepInEx plugin. No companion app, no port forwarding — networking rides
+Steam's relay, so a pasted lobby code just works.
 
-## Design (v1)
+## Features
 
-| Concern | Approach |
-|---|---|
-| Join | Clipboard lobby code, Steam friend invite/overlay, rejoin live session |
-| Topology | Host-relay star over ISteamNetworkingMessages |
-| Enemies | Proximity authority — the closest player simulates each enemy (host is registrar/fallback) |
-| Damage | Applied once, by the entity's current authority; others send damage requests |
-| Projectiles | Fire events replicated; remote projectiles are visual-only |
-| Loot & economy | **Per player** — your drops, gold, vault, and shop are your own |
-| World | Destructible terrain synced; map progression (stations, scanner reveals) shared |
-| Saves | Save & exit disabled during net runs; live-session rejoin covers crash recovery |
+- **Lobby in the main menu** — PLAY ONLINE → host, copy a code (`PMV-XXXXX-XXXXX-XXXX`),
+  friends join from clipboard or a Steam invite. Pick ship colors, the host can set the
+  world seed, ready up, go.
+- **One shared world** — identical seed-generated terrain (verified by checksum before the
+  run starts), synced destruction, shared station upgrades, scanner/instrument map reveals,
+  and merged map exploration.
+- **Real co-op combat** — every enemy is simulated exactly once (the closest player runs it,
+  authority hands off as you move), damage applies exactly once through the game's full
+  shields/armor pipeline, and you see teammates' gunfire, minions, boosts, and hooks.
+- **Per-player economy** — drops, gold, vault, and shop are yours alone. No loot stealing;
+  progression is shared, purchases are not.
+- **Find your friends** — name labels in each player's color, screen-edge arrows with
+  distance when they're off-screen, and a hold-**Tab** scoreboard (HP, kills, deaths, distance).
+- **Drop-proof** — if someone crashes, their slot is reserved; REJOIN LAST SESSION puts them
+  back into the same run with their build, vault, and gold restored.
+- **Version safety** — everyone must run the same mod version. Mismatched joins are rejected
+  with both versions named, and the lobby shows an UPDATE banner when a newer release exists.
 
-## Building
+## Installation (players)
 
-Requires the .NET SDK. The repo folder is expected to sit inside the game install
-(`...\PUNK Playtest\PunkMultiverse\`); if it doesn't, pass `-GameDir`.
+1. Install [BepInEx 6 (Unity Mono)](https://github.com/BepInEx/BepInEx) into your
+   `PUNK Playtest` folder.
+2. Download the latest zip from [Releases](https://github.com/Osanchez/PunkMultiverse/releases)
+   and extract it over the game folder (it lands in `BepInEx/plugins/PunkMultiverse/`).
+3. Launch the game through Steam. You'll see **PLAY ONLINE** in the main menu.
+
+Everyone in a lobby needs the **same mod version** — the lobby screen shows yours under the
+title, and it tells you when you're out of date.
+
+## Playing
+
+- **Host:** PLAY ONLINE → HOST LOBBY → COPY CODE → send it to your friends (or INVITE FRIENDS
+  for the Steam overlay). Optionally paste a WORLD SEED. When everyone's ready: START GAME.
+- **Join:** copy the code your host sent → PLAY ONLINE → JOIN FROM CLIPBOARD.
+- **Reconnect:** crashed or dropped? PLAY ONLINE → REJOIN LAST SESSION.
+- **In game:** hold **Tab** for the party scoreboard. F11 opens a small network debug overlay.
+
+See **[TESTING.md](TESTING.md)** for the full test checklist and a solo two-instance setup
+that needs no second Steam account.
+
+## Building from source
+
+Requires the .NET SDK. The repo expects to sit inside the game install
+(`...\PUNK Playtest\PunkMultiverse\`); otherwise pass `-GameDir`.
 
 ```powershell
-powershell -File build.ps1            # Release + deploy to BepInEx\plugins
+powershell -File build.ps1            # Release build + deploy to BepInEx\plugins
 powershell -File build.ps1 -Debug     # Debug + pdb
 powershell -File build.ps1 -Zip       # + dist\PunkMultiverse-vX.Y.Z.zip
 ```
 
-## Dev testing without Steam
-
-Set `Transport = Loopback` in `BepInEx\plugins\PunkMultiverse\config.cfg`, copy the game
-folder, launch both `Punk.exe` directly, then use the **F8** overlay to Host in one instance and
-Join in the other.
-
-## Status
-
-- [x] M0 — scaffold, loopback + Steam transports, handshake, ping (F11 overlay)
-- [x] M1 — Steam lobby, lobby UI ("PLAY ONLINE" in main menu), clipboard code, invites, version handshake
-- [x] M2 — synced run start (seed + level checksum barrier), puppet ships, position interpolation, ship colors
-- [x] M3 — fire-event replay (visual-only projectiles), authority-routed ship damage, death/resurrect events, terrain destruction sync, save/leaderboard guards
-- [x] Native host seed selection (lobby seed row: PASTE from clipboard / RND, host-only; shown to all)
-- [x] Native player tracking (colored ring + name label on teammates; screen-edge arrows with distance when offscreen; Tracker config section)
-- [x] M4 — proximity enemy authority: fingerprint→netId manifest (~98% match; stragglers are drifted
-      decorative props), host registrar with hysteresis, ENTITY_STATE streaming both directions,
-      puppet AI muting (RemoteEntityPuppet), ENTITY_KILLED, entity damage routing
-- [x] M5 — minion sync (fixed owner-authority, prefab replay), shared station upgrades + scanner
-      reveals (with pending queues for unstreamed entities); game over/won needs no messages —
-      synced HP/kill state drives local end checks
-- [x] M6 — live-session rejoin (slot reservation, seed replay, catch-up stream: cell ledger +
-      kills + owners + upgrades), module-grid sync (Odin memento, 5s change detection), net-run
-      pause policy, release packaging (build.ps1 -Zip)
-
-Known v1 gaps (by design or deferred):
-- Merged-cell terrain visuals can differ cosmetically between clients (unseeded game RNG).
-- Projectile spread replays with local randomness; replayed projectiles skip explosion VFX
-  (area damage/terrain arrive authoritatively instead — correctness over cosmetics).
-- Hook tethers to unstreamed targets and hooked-prop spring physics are approximate on peers.
-- See TESTING.md for the full manual test checklist.
-- Plant destruction converges indirectly (it cascades from synced terrain changes) — needs a
-  gameplay eyeball to confirm.
-- Fast travel briefly teleports puppets locally (snapshots correct it within ~100 ms).
-- Steam two-account join implemented but needs a two-account validation pass.
-- Minion / station / scanner / instrument / scoreboard paths are patch-validated but need a
-  real gameplay pass.
-
-## Mod interop
-
-Net runs bypass `RunSetupScreen.StartGame` interceptors (e.g. PunkSeedPicker) — the host's
-seed is authoritative. Mods that gate `GameScene.GoToGameScene` behind their own UI (e.g.
-PunkMetaLoadout's profile picker) will block net-run starts; disable them for online play
-until they check `NetSession.Active`.
-
-## Party UI
-
-- Teammate name labels in their chosen color above their ships (no ring), always readable.
-- Screen-edge arrows in the teammate's color with name + distance while they're offscreen;
-  they disappear the moment the teammate is visible.
-- Hold **Tab** for the party scoreboard: HP bar, kills, deaths, distance per player.
-- Explored map regions merge between players (`ShareMapExploration` toggle).
+Reference DLLs come from your game install and are never committed.
 
 ## CI / Releases
 
-Pushes to `main` build the mod and publish a zip Release via GitHub Actions.
-The proprietary reference DLLs are never committed: CI downloads `punkmultiverse-refs.zip`
-from the `refs` release of the private `Osanchez/PunkMods-refs` repo using the
-`REFS_TOKEN` secret (fine-grained PAT with read access to that repo).
+Every push to `main` builds and publishes a release zip via GitHub Actions. The proprietary
+reference DLLs come from a private refs bundle:
 
-One-time setup / after a game update or new csproj reference:
+- One-time: add a `REFS_TOKEN` repo secret (fine-grained PAT with read access to
+  `Osanchez/PunkMods-refs`) and run `tools\update-refs.ps1` locally once to upload the bundle.
+- After a game update or a new csproj reference: rerun `tools\update-refs.ps1`.
+- Bump `<Version>` in `PunkMultiverse.csproj` when cutting a release — it drives both the
+  version handshake and the update banner.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\update-refs.ps1   # rebuild + upload the refs bundle
-```
+## How it works (short version)
+
+Host-relay star over Steam Networking Messages (loopback UDP transport for solo testing).
+The run seed replicates and every client generates the same world, verified by terrain
+checksum. Entities get network identity from a deterministic fingerprint manifest; the
+closest player simulates each enemy (NEW-style proximity authority with a host registrar)
+while everyone else runs muted, interpolated puppets. Damage routes to the victim's
+authority and applies once through the vanilla pipeline; weapon fire replays as visual-only
+projectiles. Terrain diffs, kills, runtime spawns, progression events, and fog exploration
+replicate as reliable events — and a rejoining player gets the whole ledger replayed.
+
+## Known behavior / limitations
+
+- Loot, gold, vault, and shop stock are per-player **by design**.
+- Merged-cell terrain patches and projectile spread can look slightly different per client
+  (game RNG; damage and terrain state are authoritative).
+- Menus don't pause the world in multiplayer; slow-mo effects are disabled; Save & Exit is
+  disabled during net runs (rejoin covers crashes). Rejoiners respawn at the start station.
+- Daily-challenge runs and other installed mods aren't supported in net runs yet.
+- Hook tethers to unstreamed targets and hooked-prop spring physics are approximate on peers.
+
+## Credits
+
+- [IntQuant/noita_entangled_worlds](https://github.com/IntQuant/noita_entangled_worlds) —
+  the blueprint for the lobby UX and the proximity-authority model.
+- The PUNK modding docs and prior mods in the community Mods repo, especially the local
+  four-player proof of concept whose ship-spawning recipe this builds on.
