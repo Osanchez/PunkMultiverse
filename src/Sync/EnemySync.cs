@@ -22,6 +22,7 @@ namespace PunkMultiverse.Sync
         /// <summary>Runtime ids exempt from proximity handoff (player minions).</summary>
         public static readonly HashSet<int> FixedOwners = new HashSet<int>();
         private static readonly HashSet<int> KilledNetIds = new HashSet<int>();
+        private static readonly Dictionary<int, Vector2> LastSentPos = new Dictionary<int, Vector2>();
         private static readonly NetWriter Writer = new NetWriter(2048);
         private static float _nextSendAt;
         private static bool _applyingRemote;
@@ -31,6 +32,8 @@ namespace PunkMultiverse.Sync
             Owners.Clear();
             FixedOwners.Clear();
             KilledNetIds.Clear();
+            LastSentPos.Clear();
+            UnitStatus.Reset();
             _nextSendAt = 0;
             _applyingRemote = false;
             _loggedFirstAssign = false;
@@ -181,15 +184,24 @@ namespace PunkMultiverse.Sync
             if (se.GetComponent<RemoteEntityPuppet>() != null) return; // stale ownership — not actually ours
             var rb = se.GetComponent<Rigidbody2D>();
             var dr = se.GetComponent<DamagableResource>();
+            Vector2 pos = rb != null ? rb.position : (Vector2)se.transform.position;
+            // Non-Unit props (pushable rocks etc.) only stream while actually moving.
+            if (se.GetComponent<Unit>() == null)
+            {
+                if (rb == null) return;
+                if (LastSentPos.TryGetValue(netId, out var last) && Vector2.Distance(last, pos) < 0.05f) return;
+            }
+            LastSentPos[netId] = pos;
             float hp = 1f;
             try { if (dr != null && dr.MaxHealth > 0) hp = dr.CurrentHealth / dr.MaxHealth; } catch { }
             entries.Add(new EntityStateEntry
             {
                 NetId = netId,
-                Pos = rb != null ? rb.position : (Vector2)se.transform.position,
+                Pos = pos,
                 Vel = rb != null ? rb.linearVelocity : Vector2.zero,
                 Rot = rb != null ? rb.rotation : se.transform.eulerAngles.z,
                 HpFraction = hp,
+                BurnLevel = UnitStatus.ReadBurnLevel(se),
             });
         }
 
@@ -224,7 +236,14 @@ namespace PunkMultiverse.Sync
                         puppet = se.gameObject.AddComponent<RemoteEntityPuppet>();
                         puppet.NetId = e.NetId;
                     }
+                    if (puppet == null)
+                    {
+                        // Pushed physics prop: snap its body to the authority's position.
+                        var propRb = se.GetComponent<Rigidbody2D>();
+                        if (propRb != null) propRb.position = e.Pos;
+                    }
                     puppet?.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot);
+                    UnitStatus.WriteBurnLevel(se, e.BurnLevel);
                     try
                     {
                         var dr = se.GetComponent<DamagableResource>();

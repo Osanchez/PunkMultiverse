@@ -267,6 +267,7 @@ namespace PunkMultiverse.Core
             NetIds.Reset();
             NetStats.Reset();
             EconomyStash.Reset();
+            Sync.HookSync.Reset();
             _autoPicked = false;
             _autoPickAt = Time.unscaledTime + 2f;
             SetState(SessionState.Loading);
@@ -499,6 +500,7 @@ namespace PunkMultiverse.Core
             NetIds.Reset();
             NetStats.Reset();
             EconomyStash.Reset();
+            Sync.HookSync.Reset();
             if (State != SessionState.Offline)
             {
                 Plugin.Log.LogInfo($"[Session] stopped ({reason})");
@@ -786,6 +788,13 @@ namespace PunkMultiverse.Core
                     Sync.ProgressionSync.ApplyInstrumentUsed(inst);
                     break;
                 }
+                case MsgType.HookState:
+                {
+                    var hookMsg = HookStateMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: true);
+                    Sync.HookSync.Apply(hookMsg);
+                    break;
+                }
                 case MsgType.ScannerUsed:
                 {
                     var scanner = ScannerUsedMsg.Read(_reader);
@@ -999,7 +1008,8 @@ namespace PunkMultiverse.Core
         private void HandleReject()
         {
             var reject = RejectMsg.Read(_reader);
-            Fail($"Rejected by host: {reject.Reason}");
+            var hint = reject.Reason.Contains("Version mismatch") ? $" Get the latest: {UpdateCheck.ReleasesUrl}" : "";
+            Fail($"Rejected by host: {reject.Reason}{hint}");
         }
 
         private void HandleLobbyState()

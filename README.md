@@ -59,11 +59,8 @@ Known v1 gaps (by design or deferred):
 - Merged-cell terrain visuals can differ cosmetically between clients (unseeded game RNG).
 - Projectile spread replays with local randomness; replayed projectiles skip explosion VFX
   (area damage/terrain arrive authoritatively instead — correctness over cosmetics).
-- Grappling-hook visuals are not replicated yet (tether to non-net-identified grabbables).
-- Pushed physics props (Grabbable rocks etc.) drift per-client; their positions are not streamed.
-- Exploding props (barrels) detonate on every client from the synced death — a shared enemy in
-  the blast can take the area damage more than once (rare; needs source-tagged explosions).
-- Shield-bubble charge and burn-flame visuals on remote-simulated units are not synced.
+- Hook tethers to unstreamed targets and hooked-prop spring physics are approximate on peers.
+- See TESTING.md for the full manual test checklist.
 - Plant destruction converges indirectly (it cascades from synced terrain changes) — needs a
   gameplay eyeball to confirm.
 - Fast travel briefly teleports puppets locally (snapshots correct it within ~100 ms).

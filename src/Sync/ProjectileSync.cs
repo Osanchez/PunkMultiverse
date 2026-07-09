@@ -293,6 +293,43 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        /// <summary>Zero every damaging aspect of a boxed Explosion, keep radius/types for visuals.</summary>
+        internal static void ZeroExplosionFields(object boxed)
+        {
+            foreach (var field in boxed.GetType().GetFields(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+            {
+                if (field.FieldType == typeof(float)
+                    && field.Name.IndexOf("radius", System.StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    field.SetValue(boxed, 0f);
+                }
+                else if (typeof(System.Collections.IList).IsAssignableFrom(field.FieldType))
+                {
+                    if (field.GetValue(boxed) is System.Collections.IList list)
+                        for (int i = 0; i < list.Count; i++)
+                            if (list[i] is Damage damage)
+                            {
+                                var type = Traverse.Create(damage).Field("damageType").GetValue() as Resource;
+                                list[i] = new Damage(0f, type);
+                            }
+                }
+            }
+        }
+
+        // A death replayed from the network (synced barrel/enemy kill) must not re-apply its
+        // death explosion's damage — the kill originator's real explosion already did, exactly once.
+        [HarmonyPatch(typeof(ExplosionManager), "SpawnExplosion")]
+        internal static class SanitizeReplayedDeathExplosions
+        {
+            private static void Prefix(ref Explosion __1)
+            {
+                if (!NetSession.Active || !EnemySync.SuppressLocalDeathEffects) return;
+                object boxed = __1;
+                try { ZeroExplosionFields(boxed); __1 = (Explosion)boxed; } catch { }
+            }
+        }
+
         private static void TrySpawnHarmlessExplosion(object projectile)
         {
             try
@@ -301,26 +338,7 @@ namespace PunkMultiverse.Sync
                 object boxed = Traverse.Create(projectile).Field("explosion").GetValue();
                 if (component == null || boxed == null) return;
 
-                // Zero every damaging aspect of the struct copy, keep radius/types for the visuals.
-                foreach (var field in boxed.GetType().GetFields(
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
-                {
-                    if (field.FieldType == typeof(float)
-                        && field.Name.IndexOf("radius", System.StringComparison.OrdinalIgnoreCase) < 0)
-                    {
-                        field.SetValue(boxed, 0f);
-                    }
-                    else if (typeof(System.Collections.IList).IsAssignableFrom(field.FieldType))
-                    {
-                        if (field.GetValue(boxed) is System.Collections.IList list)
-                            for (int i = 0; i < list.Count; i++)
-                                if (list[i] is Damage damage)
-                                {
-                                    var type = Traverse.Create(damage).Field("damageType").GetValue() as Resource;
-                                    list[i] = new Damage(0f, type);
-                                }
-                    }
-                }
+                ZeroExplosionFields(boxed);
 
                 var manager = ServiceLocator.Get<ExplosionManager>();
                 AccessTools.Method(typeof(ExplosionManager), "SpawnExplosion")

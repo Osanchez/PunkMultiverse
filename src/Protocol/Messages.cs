@@ -200,6 +200,8 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Aim;
         public ShipFlags Flags;
         public float HpFraction;
+        public float ShieldFraction;
+        public float BurnLevel;
 
         public void Write(NetWriter w)
         {
@@ -211,6 +213,8 @@ namespace PunkMultiverse.Protocol
             w.WriteVector2Half(Aim);
             w.WriteByte((byte)Flags);
             w.WriteHalf(HpFraction);
+            w.WriteHalf(ShieldFraction);
+            w.WriteHalf(BurnLevel);
         }
 
         public static ShipStateMsg Read(NetReader r) => new ShipStateMsg
@@ -222,6 +226,8 @@ namespace PunkMultiverse.Protocol
             Aim = r.ReadVector2Half(),
             Flags = (ShipFlags)r.ReadByte(),
             HpFraction = r.ReadHalf(),
+            ShieldFraction = r.ReadHalf(),
+            BurnLevel = r.ReadHalf(),
         };
     }
 
@@ -334,6 +340,7 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Vel;
         public float Rot;
         public float HpFraction;
+        public float BurnLevel;
     }
 
     public struct EntityStateMsg
@@ -351,6 +358,7 @@ namespace PunkMultiverse.Protocol
                 w.WriteVector2Half(e.Vel);
                 w.WriteHalf(e.Rot);
                 w.WriteHalf(e.HpFraction);
+                w.WriteHalf(e.BurnLevel);
             }
         }
 
@@ -367,6 +375,7 @@ namespace PunkMultiverse.Protocol
                     Vel = r.ReadVector2Half(),
                     Rot = r.ReadHalf(),
                     HpFraction = r.ReadHalf(),
+                    BurnLevel = r.ReadHalf(),
                 });
             }
             return m;
@@ -499,6 +508,28 @@ namespace PunkMultiverse.Protocol
             OwnerSlot = r.ReadByte(),
             EntityId = r.ReadString(),
             Pos = r.ReadPosition(),
+        };
+    }
+
+    public struct HookStateMsg
+    {
+        public byte Slot;
+        public bool Attached;
+        public int TargetNetId;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.HookState);
+            w.WriteByte(Slot);
+            w.WriteBool(Attached);
+            w.WriteVarUInt((uint)TargetNetId);
+        }
+
+        public static HookStateMsg Read(NetReader r) => new HookStateMsg
+        {
+            Slot = r.ReadByte(),
+            Attached = r.ReadBool(),
+            TargetNetId = (int)r.ReadVarUInt(),
         };
     }
 

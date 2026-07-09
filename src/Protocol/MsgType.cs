@@ -44,5 +44,6 @@
         GameWon = 52,
         FogDiff = 53,       // shared map exploration (fogLevels runs)
         InstrumentUsed = 54,
+        HookState = 55,     // grappling hook attach/detach (visual)
     }
 }

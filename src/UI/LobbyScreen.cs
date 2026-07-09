@@ -28,6 +28,7 @@ namespace PunkMultiverse.UI
         private GameObject _connectPanel;
         private GameObject _lobbyPanel;
         private TMP_Text _statusText;
+        private TMP_Text _versionText;
         private TMP_Text _codeText;
         private TMP_Text _seedText;
         private GameObject _seedPasteButton;
@@ -90,6 +91,7 @@ namespace PunkMultiverse.UI
         {
             if (_canvasGo == null) Build();
             _canvasGo.SetActive(true);
+            Core.UpdateCheck.Kick(this);
             Refresh();
         }
 
@@ -133,6 +135,7 @@ namespace PunkMultiverse.UI
             prt.sizeDelta = new Vector2(760, 640);
 
             MakeText(panel.transform, "Title", "PUNK MULTIVERSE", 42, Accent, y: -10, height: 60);
+            _versionText = MakeText(panel.transform, "Version", $"mod v{Plugin.Version}", 16, new Color(1, 1, 1, 0.45f), y: -56, height: 22);
             _statusText = MakeText(panel.transform, "Status", "", 20, new Color(1f, 0.55f, 0.45f), y: -600, height: 36);
 
             BuildConnectPanel(panel.transform);
@@ -277,6 +280,10 @@ namespace PunkMultiverse.UI
             _lobbyPanel.SetActive(inLobby);
             if (!inLobby && _rejoinButton != null) _rejoinButton.SetActive(!string.IsNullOrEmpty(NetSession.LastSessionCode));
             _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
+            if (_versionText != null)
+                _versionText.text = Core.UpdateCheck.UpdateAvailable != null
+                    ? $"<color=#f0a03c>mod v{Plugin.Version} — UPDATE v{Core.UpdateCheck.UpdateAvailable} AVAILABLE: github.com/Osanchez/PunkMultiverse/releases</color>"
+                    : $"mod v{Plugin.Version}";
 
             if (!inLobby) return;
 

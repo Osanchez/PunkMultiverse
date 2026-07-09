@@ -269,6 +269,8 @@ namespace PunkMultiverse.Sync
                 Aim = input != null ? (Vector2)input.AimDirection : Vector2.right,
                 Flags = flags,
                 HpFraction = hp,
+                ShieldFraction = UnitStatus.ReadShieldFraction(LocalShip),
+                BurnLevel = UnitStatus.ReadBurnLevel(LocalShip),
             };
             Writer.Reset();
             msg.Write(Writer);
@@ -306,6 +308,8 @@ namespace PunkMultiverse.Sync
 
             puppet.PushSnapshot(Time.unscaledTime, msg.Pos, msg.Vel, msg.RotDeg, msg.Aim);
             puppet.SetBoosting((msg.Flags & ShipFlags.Boost) != 0);
+            UnitStatus.WriteShieldFraction(ship, msg.ShieldFraction);
+            UnitStatus.WriteBurnLevel(ship, msg.BurnLevel);
 
             try
             {
