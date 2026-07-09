@@ -243,9 +243,10 @@ namespace PunkMultiverse.Sync
             catch { return false; }
         }
 
-        // Visual projectiles must not spawn real explosions (area damage + cell destruction would
-        // double up with the simulating machine's authoritative versions). Terrain truth arrives
-        // via CELL_DIFF; the explosion VFX on the replay side is sacrificed for correctness.
+        // Visual projectiles must not spawn REAL explosions (area damage + cell destruction would
+        // double up with the simulating machine's authoritative versions — terrain truth arrives
+        // via CELL_DIFF). Instead we spawn a sanitized copy with all damage/push/burn zeroed so
+        // peers still see the boom. If sanitizing fails for a weapon, fall back to no explosion.
         [HarmonyPatch]
         internal static class SuppressVisualExplosions
         {
@@ -262,7 +263,48 @@ namespace PunkMultiverse.Sync
             private static bool Prefix(object __instance)
             {
                 if (!NetSession.Active) return true;
-                return !IsVisual(__instance);
+                if (!IsVisual(__instance)) return true;
+                TrySpawnHarmlessExplosion(__instance);
+                return false;
+            }
+        }
+
+        private static void TrySpawnHarmlessExplosion(object projectile)
+        {
+            try
+            {
+                var component = projectile as Component;
+                object boxed = Traverse.Create(projectile).Field("explosion").GetValue();
+                if (component == null || boxed == null) return;
+
+                // Zero every damaging aspect of the struct copy, keep radius/types for the visuals.
+                foreach (var field in boxed.GetType().GetFields(
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+                {
+                    if (field.FieldType == typeof(float)
+                        && field.Name.IndexOf("radius", System.StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        field.SetValue(boxed, 0f);
+                    }
+                    else if (typeof(System.Collections.IList).IsAssignableFrom(field.FieldType))
+                    {
+                        if (field.GetValue(boxed) is System.Collections.IList list)
+                            for (int i = 0; i < list.Count; i++)
+                                if (list[i] is Damage damage)
+                                {
+                                    var type = Traverse.Create(damage).Field("damageType").GetValue() as Resource;
+                                    list[i] = new Damage(0f, type);
+                                }
+                    }
+                }
+
+                var manager = ServiceLocator.Get<ExplosionManager>();
+                AccessTools.Method(typeof(ExplosionManager), "SpawnExplosion")
+                    .Invoke(manager, new object[] { (Vector2)component.transform.position, boxed });
+            }
+            catch
+            {
+                // Visual-only nicety; correctness path (skip) already happened.
             }
         }
     }

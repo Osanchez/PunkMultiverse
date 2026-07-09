@@ -59,8 +59,9 @@ Known v1 gaps (by design or deferred):
 - Merged-cell terrain visuals can differ cosmetically between clients (unseeded game RNG).
 - Projectile spread replays with local randomness; replayed projectiles skip explosion VFX
   (area damage/terrain arrive authoritatively instead — correctness over cosmetics).
-- Puppet cosmetics: no aim/turret tracking, boost particles, hook, or leg animation yet.
-- Plant destruction visuals are per-client.
+- Grappling-hook visuals are not replicated yet (tether to non-net-identified grabbables).
+- Plant destruction converges indirectly (it cascades from synced terrain changes) — needs a
+  gameplay eyeball to confirm.
 - Fast travel briefly teleports puppets locally (snapshots correct it within ~100 ms).
 - Steam two-account join implemented but needs a two-account validation pass.
 - Minion / station / scanner / instrument / scoreboard paths are patch-validated but need a

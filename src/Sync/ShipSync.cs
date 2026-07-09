@@ -281,6 +281,7 @@ namespace PunkMultiverse.Sync
             if (puppet == null) return; // our own echo — ignore
 
             puppet.PushSnapshot(Time.unscaledTime, msg.Pos, msg.Vel, msg.RotDeg, msg.Aim);
+            puppet.SetBoosting((msg.Flags & ShipFlags.Boost) != 0);
 
             try
             {

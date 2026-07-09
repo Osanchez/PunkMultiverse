@@ -29,6 +29,9 @@ namespace PunkMultiverse.Sync
 
         private readonly List<Snap> _buffer = new List<Snap>(32);
         private Rigidbody2D _rb;
+        private BarrelTransform[] _barrels;
+        private ParticleSystem[] _boostParticles;
+        private bool _boosting;
 
         private void Awake()
         {
@@ -38,7 +41,36 @@ namespace PunkMultiverse.Sync
         private void Start()
         {
             Neuter();
+            _barrels = GetComponentsInChildren<BarrelTransform>(true);
+            var boost = new List<ParticleSystem>();
+            foreach (var ps in GetComponentsInChildren<ParticleSystem>(true))
+                if (ps.name.IndexOf("boost", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    boost.Add(ps);
+            _boostParticles = boost.ToArray();
             StartCoroutine(RemoveCameraTargets());
+        }
+
+        /// <summary>Owner's boost flag from the ship snapshot — drives the boost particles.</summary>
+        public void SetBoosting(bool boosting)
+        {
+            if (boosting == _boosting || _boostParticles == null) return;
+            _boosting = boosting;
+            foreach (var ps in _boostParticles)
+            {
+                if (ps == null) continue;
+                if (boosting) ps.Play(true);
+                else ps.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+            }
+        }
+
+        // Turrets track the owner's aim (their real barrels do this from input; ours is muted).
+        private void LateUpdate()
+        {
+            if (_barrels == null || AimDirection.sqrMagnitude < 0.01f) return;
+            float angle = Mathf.Atan2(AimDirection.y, AimDirection.x) * Mathf.Rad2Deg;
+            foreach (var barrel in _barrels)
+                if (barrel != null)
+                    barrel.transform.rotation = Quaternion.Euler(0, 0, angle);
         }
 
         /// <summary>Disable local input/physics-driving components; replication owns this body.</summary>
