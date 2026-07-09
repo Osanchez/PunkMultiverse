@@ -13,7 +13,7 @@ namespace PunkMultiverse.Sync
         // AI drivers to mute, by type name (game types looked up per-instance so new enemy
         // variants keep working). Shooter is muted so puppets don't fire duplicate projectiles.
         private static readonly string[] MutedTypes =
-            { "AIAgent", "Vision", "UnitMovement", "Seeker", "Shooter", "StateMachine", "PushMovement", "SwimmingMovement" };
+            { "AIAgent", "Vision", "UnitMovement", "Seeker", "Shooter", "StateMachine", "PushMovement", "SwimmingMovement", "ChargerRam" };
 
         private const float InterpDelay = 0.12f;
         private const float HardSnapDistance = 4f;

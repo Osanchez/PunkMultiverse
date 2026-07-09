@@ -451,6 +451,7 @@ namespace PunkMultiverse.Core
             };
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
+            if (CurrentLobbyCode != null) LastSessionCode = CurrentLobbyCode;
             Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
         }
 
@@ -528,6 +529,13 @@ namespace PunkMultiverse.Core
             LastError = error;
             Plugin.Log.LogError($"[Session] {error}");
             StopSession(error);
+        }
+
+        /// <summary>Persist the join target so "REJOIN LAST" survives a crash.</summary>
+        public static string LastSessionCode
+        {
+            get { try { var p = System.IO.Path.Combine(ModFolder.Dir, "lastsession.txt"); return System.IO.File.Exists(p) ? System.IO.File.ReadAllText(p).Trim() : null; } catch { return null; } }
+            set { try { System.IO.File.WriteAllText(System.IO.Path.Combine(ModFolder.Dir, "lastsession.txt"), value ?? ""); } catch { } }
         }
 
         private void SetState(SessionState s)
@@ -748,6 +756,13 @@ namespace PunkMultiverse.Core
                     var killed = EntityKilledMsg.Read(_reader);
                     RelayToOthers(peer, channel, reliable: true);
                     Sync.EnemySync.ApplyEntityKilled(killed);
+                    break;
+                }
+                case MsgType.EntitySpawned:
+                {
+                    var spawned = EntitySpawnedMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: true);
+                    Sync.MinionSync.ApplyEntitySpawned(spawned);
                     break;
                 }
                 case MsgType.MinionSpawned:
@@ -975,6 +990,7 @@ namespace PunkMultiverse.Core
             ApplyRoster(welcome.Roster);
             LocalSlot = welcome.Slot;
             if (_players[LocalSlot] != null) _players[LocalSlot].IsLocal = true;
+            if (CurrentLobbyCode != null) LastSessionCode = CurrentLobbyCode;
             SetState(SessionState.Lobby);
             Plugin.Log.LogInfo($"[Session] welcomed as slot {welcome.Slot} (host mod v{welcome.HostModVersion})");
             RosterChanged?.Invoke();

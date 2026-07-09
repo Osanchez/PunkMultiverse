@@ -22,6 +22,7 @@ namespace PunkMultiverse.Sync
         public static Ship LocalShip;
 
         private static float _nextSendAt;
+        private static float _nextCameraSweepAt;
         private static readonly NetWriter Writer = new NetWriter(256);
 
         public static void Reset()
@@ -242,6 +243,7 @@ namespace PunkMultiverse.Sync
         /// <summary>Called from NetSession.Update while InGame.</summary>
         public static void Tick(NetSession session)
         {
+            SweepDistantCameraTargets();
             if (LocalShip == null || Time.unscaledTime < _nextSendAt) return;
             _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
 
@@ -271,6 +273,28 @@ namespace PunkMultiverse.Sync
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+        }
+
+        // POI camera targets activate off the AVERAGE alive-ship position — with the party split
+        // across the map that midpoint can pull the local camera toward a POI nobody is at.
+        // Anything farther than ~45u from the local ship has no business steering our camera.
+        private static void SweepDistantCameraTargets()
+        {
+            if (LocalShip == null || Time.unscaledTime < _nextCameraSweepAt) return;
+            _nextCameraSweepAt = Time.unscaledTime + 1f;
+            try
+            {
+                var cam = Com.LuisPedroFonseca.ProCamera2D.ProCamera2D.Instance;
+                if (cam == null) return;
+                Vector2 local = LocalShip.transform.position;
+                for (int i = cam.CameraTargets.Count - 1; i >= 0; i--)
+                {
+                    var t = cam.CameraTargets[i].TargetTransform;
+                    if (t != null && Vector2.Distance(local, t.position) > 45f)
+                        cam.RemoveCameraTarget(t);
+                }
+            }
+            catch { }
         }
 
         /// <summary>Apply a snapshot from the wire (already relayed by the host if needed).</summary>

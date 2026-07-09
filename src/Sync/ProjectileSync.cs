@@ -209,11 +209,33 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(HealthBase), "ProjectileCollided")]
         internal static class SuppressVisualProjectileDamage
         {
-            private static bool Prefix(object __0)
+            private static bool Prefix(HealthBase __instance, object __0)
             {
                 if (!NetSession.Active) return true;
-                return !IsVisual(__0);
+                if (IsVisual(__0)) return false;
+                // Environmental (ownerless) projectiles fire independently on every client — only
+                // the victim's own authority applies their damage, or shared enemies eat it twice.
+                if (VictimIsRemote(__instance) && IsOwnerless(__0)) return false;
+                return true;
             }
+        }
+
+        private static bool VictimIsRemote(Component victim)
+        {
+            return victim != null && (victim.GetComponent<RemotePuppet>() != null
+                                      || victim.GetComponent<RemoteEntityPuppet>() != null);
+        }
+
+        private static bool IsOwnerless(object projectile)
+        {
+            try
+            {
+                var owner = Traverse.Create(projectile).Property("Owner").GetValue() as Unit;
+                if (owner == null)
+                    owner = Traverse.Create(projectile).Field("owner").GetValue() as Unit;
+                return owner == null;
+            }
+            catch { return false; }
         }
 
         // Replayed hitscan shots do a REAL raycast — their hits must not deal damage here
@@ -222,11 +244,13 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(HealthBase), "OnHitByHitscanWeapon")]
         internal static class SuppressVisualHitscanDamage
         {
-            private static bool Prefix(object __0)
+            private static bool Prefix(HealthBase __instance, object __0)
             {
                 if (!NetSession.Active) return true;
                 if (_replayDepth > 0) return false;
-                return !OwnerIsRemote(__0);
+                if (OwnerIsRemote(__0)) return false;
+                if (VictimIsRemote(__instance) && IsOwnerless(__0)) return false;
+                return true;
             }
         }
 

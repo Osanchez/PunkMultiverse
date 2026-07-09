@@ -15,7 +15,7 @@ namespace PunkMultiverse.Patches
         private static readonly HashSet<string> BlockedOwners = new HashSet<string>
         {
             "PauseScreen", "ShipMenuToggler", "ConsumableWheel", "InstrumentMenu", "ShipMenuTab",
-            "ModuleGridScreen", "ConsumablesScreen", "UIScreen",
+            "ModuleGridScreen", "ConsumablesScreen", "UIScreen", "InputSelectorPopup",
         };
 
         [HarmonyPatch]
@@ -30,10 +30,12 @@ namespace PunkMultiverse.Patches
                         yield return m;
             }
 
-            private static bool Prefix(object[] __args)
+            private static bool Prefix(object[] __args, System.Reflection.MethodBase __originalMethod)
             {
                 var session = NetSession.Instance;
                 if (session == null || session.State != SessionState.InGame) return true;
+                // Slow-mo modifiers desync the shared sim regardless of who asks — block them all.
+                if (__originalMethod.Name == "AddModifier") return false;
                 var owner = __args[0];
                 if (owner == null) return true;
                 var tn = owner.GetType().Name;

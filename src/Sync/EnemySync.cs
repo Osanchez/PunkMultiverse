@@ -19,6 +19,8 @@ namespace PunkMultiverse.Sync
     {
         /// <summary>netId -> owner slot. Missing key = host (slot 0).</summary>
         public static readonly Dictionary<int, byte> Owners = new Dictionary<int, byte>();
+        /// <summary>Runtime ids exempt from proximity handoff (player minions).</summary>
+        public static readonly HashSet<int> FixedOwners = new HashSet<int>();
         private static readonly HashSet<int> KilledNetIds = new HashSet<int>();
         private static readonly NetWriter Writer = new NetWriter(2048);
         private static float _nextSendAt;
@@ -27,6 +29,7 @@ namespace PunkMultiverse.Sync
         public static void Reset()
         {
             Owners.Clear();
+            FixedOwners.Clear();
             KilledNetIds.Clear();
             _nextSendAt = 0;
             _applyingRemote = false;
@@ -270,6 +273,12 @@ namespace PunkMultiverse.Sync
                 {
                     var dr = se.GetComponent<DamagableResource>();
                     if (dr != null) { dr.Die(); return; }
+                    var health = se.GetComponent<Health>();
+                    if (health != null)
+                    {
+                        AccessTools.Method(typeof(Health), "Die")?.Invoke(health, null);
+                        return;
+                    }
                 }
                 // Not spawned here: kill the data so a later stream-in doesn't resurrect it.
                 var em = ServiceLocator.Get<EntityManager>();
@@ -287,6 +296,21 @@ namespace PunkMultiverse.Sync
             finally
             {
                 _applyingRemote = false;
+            }
+        }
+
+        [HarmonyPatch(typeof(Health), "Die")]
+        internal static class BroadcastPropDeath
+        {
+            private static void Postfix(Health __instance)
+            {
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
+                if (!TryGetNetId(__instance, out int netId)) return;
+                if (!KilledNetIds.Add(netId)) return;
+                Writer.Reset();
+                new EntityKilledMsg { NetId = netId, KillerSlot = (byte)session.LocalSlot }.Write(Writer);
+                session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
             }
         }
 

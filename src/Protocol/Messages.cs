@@ -477,6 +477,31 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    public struct EntitySpawnedMsg
+    {
+        public int NetId;
+        public byte OwnerSlot;
+        public string EntityId;
+        public UnityEngine.Vector2 Pos;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntitySpawned);
+            w.WriteVarUInt((uint)NetId);
+            w.WriteByte(OwnerSlot);
+            w.WriteString(EntityId);
+            w.WritePosition(Pos);
+        }
+
+        public static EntitySpawnedMsg Read(NetReader r) => new EntitySpawnedMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+            OwnerSlot = r.ReadByte(),
+            EntityId = r.ReadString(),
+            Pos = r.ReadPosition(),
+        };
+    }
+
     public struct MinionSpawnedMsg
     {
         public int NetId;       // runtime id: (ownerSlot+1)<<12 | counter

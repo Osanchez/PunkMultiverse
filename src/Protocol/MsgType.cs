@@ -26,6 +26,7 @@
         EntityState = 23,   // 12 Hz batched entity snapshots (authority -> all)
         FireEvent = 24,     // ship weapon fired (visual replay on peers)
         EntityFire = 25,    // enemy/minion/boss weapon fired (visual replay on peers)
+        EntitySpawned = 26, // (ch2) generic runtime entity spawn (boss adds, spawner enemies)
 
         // ---- Channel 2: reliable events ----
         DamageRequest = 40, // non-authority -> authority (routed via host)

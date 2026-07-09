@@ -51,7 +51,7 @@ namespace PunkMultiverse.Core
             {
                 if (entity == null || entity.entityId == "Ship") continue;
                 if (!NetIds.TryGetNetId(entity.instanceId, out int netId)) continue;
-                if (netId >= MinionSync.RuntimeIdBase) continue; // minions: fixed owner-authority
+                if (EnemySync.FixedOwners.Contains(netId)) continue; // minions: fixed owner-authority
 
                 Vector2 pos = entity.position;
                 byte current = EnemySync.OwnerOf(netId);

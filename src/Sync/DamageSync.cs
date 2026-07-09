@@ -99,6 +99,29 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // World-sourced contact damage (cells, hazards, electricity, rams) fires from local physics
+        // on BOTH simulations of an entity. Only the victim's authority may apply it; the local
+        // duplicate against a remote-simulated victim is dropped before it reaches TakeDamage.
+        [HarmonyPatch]
+        internal static class DropWorldDamageOnRemoteVictims
+        {
+            private static IEnumerable<System.Reflection.MethodBase> TargetMethods()
+            {
+                foreach (var name in new[] { "OnCellCollision", "OnHazardTouched", "OnHitByElectricity" })
+                {
+                    var m = AccessTools.Method(typeof(HealthBase), name);
+                    if (m != null) yield return m;
+                }
+            }
+
+            private static bool Prefix(HealthBase __instance)
+            {
+                if (!NetSession.Active) return true;
+                return __instance.GetComponent<RemotePuppet>() == null
+                       && __instance.GetComponent<RemoteEntityPuppet>() == null;
+            }
+        }
+
         // Final chokepoint (burn ticks, direct calls): puppets' HP is written only by snapshots.
         [HarmonyPatch(typeof(DamagableResource), "Damage", typeof(float))]
         internal static class BlockPuppetDamage

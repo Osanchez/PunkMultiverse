@@ -32,6 +32,7 @@ namespace PunkMultiverse.UI
         private TMP_Text _seedText;
         private GameObject _seedPasteButton;
         private GameObject _seedRandomButton;
+        private GameObject _rejoinButton;
         private TMP_Text _readyButtonLabel;
         private GameObject _startButton;
         private GameObject _inviteButton;
@@ -70,10 +71,18 @@ namespace PunkMultiverse.UI
             if (_canvasGo != null) Destroy(_canvasGo);
         }
 
+        private SessionState _lastState;
+
         private void OnSessionState(SessionState state)
         {
             if (state == SessionState.Lobby && !Visible) Show();
             if (state == SessionState.Loading || state == SessionState.InGame) Hide();
+            // Session died mid-run (host quit / connection lost): surface it instead of silently
+            // letting the player continue in a now-solo world.
+            if (state == SessionState.Offline && _lastState == SessionState.InGame
+                && !string.IsNullOrEmpty(NetSession.Instance?.LastError))
+                Show();
+            _lastState = state;
             Refresh();
         }
 
@@ -141,7 +150,9 @@ namespace PunkMultiverse.UI
                 () => NetSession.Instance.HostOnline());
             MakeButton(_connectPanel.transform, "JOIN FROM CLIPBOARD", new Vector2(0, -20), new Vector2(420, 64),
                 () => NetSession.Instance.JoinByCode(null));
-            MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -120), new Vector2(220, 52), Hide);
+            _rejoinButton = ButtonRoot(MakeButton(_connectPanel.transform, "REJOIN LAST SESSION", new Vector2(0, -100), new Vector2(420, 52),
+                () => NetSession.Instance.JoinByCode(NetSession.LastSessionCode)));
+            MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -170), new Vector2(220, 52), Hide);
         }
 
         private void BuildLobbyPanel(Transform parent)
@@ -264,6 +275,7 @@ namespace PunkMultiverse.UI
             bool inLobby = session.State == SessionState.Lobby || session.State == SessionState.Connecting;
             _connectPanel.SetActive(!inLobby);
             _lobbyPanel.SetActive(inLobby);
+            if (!inLobby && _rejoinButton != null) _rejoinButton.SetActive(!string.IsNullOrEmpty(NetSession.LastSessionCode));
             _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
 
             if (!inLobby) return;

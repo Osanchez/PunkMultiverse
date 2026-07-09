@@ -79,6 +79,9 @@ namespace PunkMultiverse.Sync
             foreach (var input in GetComponentsInChildren<PlayerInput>(true)) input.enabled = false;
             foreach (var shipInput in GetComponentsInChildren<ShipInput>(true)) shipInput.enabled = false;
             foreach (var movement in GetComponentsInChildren<ShipMovement>(true)) movement.enabled = false;
+            // A puppet must not vacuum the local player's per-client drops or trigger interactions.
+            foreach (var collector in GetComponentsInChildren<LootCollector>(true)) collector.enabled = false;
+            foreach (var interactor in GetComponentsInChildren<Interactor>(true)) interactor.enabled = false;
         }
 
         // Ship camera targets get (re-)registered by various game systems over the ship's life;
