@@ -1,0 +1,64 @@
+name: Build PunkMultiverse
+
+# Every push to main builds the mod and publishes the zip as a GitHub Release.
+# Proprietary reference DLLs are NOT in git; they come from the punkmultiverse-refs.zip asset on
+# the 'refs' release of the private Osanchez/PunkMods-refs repo (same infrastructure as the Mods
+# repo), pulled with a fine-grained PAT stored as the REFS_TOKEN secret.
+# First-time setup: run tools/update-refs.ps1 locally once to create/refresh that asset, and add
+# the REFS_TOKEN secret (read access to Osanchez/PunkMods-refs) to this repository.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Download reference DLLs (private PunkMods-refs release asset)
+        env:
+          GH_TOKEN: ${{ secrets.REFS_TOKEN }}
+        shell: pwsh
+        run: |
+          if (-not $env:GH_TOKEN) { throw "REFS_TOKEN secret is not set. Create a fine-grained PAT with read access to Osanchez/PunkMods-refs and add it as the REFS_TOKEN secret." }
+          New-Item -ItemType Directory -Force -Path gamedir | Out-Null
+          gh release download refs --repo Osanchez/PunkMods-refs --pattern punkmultiverse-refs.zip --dir . --clobber
+          Expand-Archive -Path punkmultiverse-refs.zip -DestinationPath gamedir -Force
+
+      - name: Build & package
+        shell: pwsh
+        run: ./build.ps1 -GameDir "$PWD/gamedir" -Zip
+
+      - name: Compute version tag
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "v{0}.{1}" -f (Get-Date -Format 'yyyy.MM.dd'), '${{ github.run_number }}'
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: PunkMultiverse ${{ steps.ver.outputs.tag }}
+          files: dist/*.zip
+          generate_release_notes: true

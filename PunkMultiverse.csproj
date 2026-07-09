@@ -1,0 +1,44 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>PunkMultiverse</AssemblyName>
+    <RootNamespace>PunkMultiverse</RootNamespace>
+    <Version>0.1.0</Version>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+
+    <!-- This folder lives inside the game install; override with -p:GameDir= for CI. -->
+    <GameDir Condition="'$(GameDir)' == ''">$(MSBuildProjectDirectory)\..</GameDir>
+    <ManagedDir>$(GameDir)\Punk_Data\Managed</ManagedDir>
+    <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core">      <HintPath>$(BepInExCore)\BepInEx.Core.dll</HintPath>       <Private>false</Private></Reference>
+    <Reference Include="BepInEx.Unity.Mono"><HintPath>$(BepInExCore)\BepInEx.Unity.Mono.dll</HintPath> <Private>false</Private></Reference>
+    <Reference Include="0Harmony">          <HintPath>$(BepInExCore)\0Harmony.dll</HintPath>           <Private>false</Private></Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Punk.Main">                  <HintPath>$(ManagedDir)\Punk.Main.dll</HintPath>                   <Private>false</Private></Reference>
+    <Reference Include="ServiceLocator">             <HintPath>$(ManagedDir)\ServiceLocator.dll</HintPath>              <Private>false</Private></Reference>
+    <Reference Include="com.rlabrecque.steamworks.net"><HintPath>$(ManagedDir)\com.rlabrecque.steamworks.net.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UniTask">                    <HintPath>$(ManagedDir)\UniTask.dll</HintPath>                     <Private>false</Private></Reference>
+    <Reference Include="Sirenix.Serialization">      <HintPath>$(ManagedDir)\Sirenix.Serialization.dll</HintPath>       <Private>false</Private></Reference>
+    <Reference Include="Sirenix.Serialization.Config"><HintPath>$(ManagedDir)\Sirenix.Serialization.Config.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.InputSystem">          <HintPath>$(ManagedDir)\Unity.InputSystem.dll</HintPath>           <Private>false</Private></Reference>
+    <Reference Include="Unity.Mathematics">          <HintPath>$(ManagedDir)\Unity.Mathematics.dll</HintPath>           <Private>false</Private></Reference>
+    <Reference Include="Unity.TextMeshPro">          <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>           <Private>false</Private></Reference>
+    <Reference Include="UnityEngine">                <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>                 <Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule">     <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>      <Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI">             <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>              <Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule">       <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>        <Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule">    <HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>     <Private>false</Private></Reference>
+    <Reference Include="UnityEngine.Physics2DModule"><HintPath>$(ManagedDir)\UnityEngine.Physics2DModule.dll</HintPath> <Private>false</Private></Reference>
+    <Reference Include="ProCamera2D.Runtime">       <HintPath>$(ManagedDir)\ProCamera2D.Runtime.dll</HintPath>          <Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>
