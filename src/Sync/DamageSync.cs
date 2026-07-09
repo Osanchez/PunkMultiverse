@@ -19,6 +19,7 @@ namespace PunkMultiverse.Sync
         private static readonly NetWriter Writer = new NetWriter(64);
         private static Dictionary<uint, Resource> _resourcesByHash;
         private static bool _applyingRemote;
+        internal static bool IsApplyingRemote => _applyingRemote;
 
         public static void Reset()
         {
@@ -182,6 +183,18 @@ namespace PunkMultiverse.Sync
             finally
             {
                 _applyingRemote = false;
+            }
+        }
+
+        // Puppets may only resurrect via their owner's SHIP_RESURRECTED event — vanilla systems
+        // (e.g. the station-unlock respawn) must not revive them locally.
+        [HarmonyPatch(typeof(Ship), "Resurrect")]
+        internal static class GatePuppetResurrect
+        {
+            private static bool Prefix(Ship __instance)
+            {
+                if (!NetSession.Active || _applyingRemote) return true;
+                return __instance.GetComponent<RemotePuppet>() == null;
             }
         }
 

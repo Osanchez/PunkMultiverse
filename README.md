@@ -56,13 +56,15 @@ Join in the other.
       pause policy, release packaging (build.ps1 -Zip)
 
 Known v1 gaps (by design or deferred):
-- Rejoiners restart with a fresh loadout/economy (per-player economy autosave is a follow-up).
-- Remote enemies don't render their own gunfire (their damage still arrives correctly); enemy
-  fire-event replay is a follow-up.
 - Merged-cell terrain visuals can differ cosmetically between clients (unseeded game RNG).
-- Projectile spread replays with local randomness (cosmetic).
+- Projectile spread replays with local randomness; replayed projectiles skip explosion VFX
+  (area damage/terrain arrive authoritatively instead — correctness over cosmetics).
+- Puppet cosmetics: no aim/turret tracking, boost particles, hook, or leg animation yet.
+- Plant destruction visuals are per-client.
+- Fast travel briefly teleports puppets locally (snapshots correct it within ~100 ms).
 - Steam two-account join implemented but needs a two-account validation pass.
-- Minion spawn / station upgrade / scanner paths are patch-validated but need a real gameplay pass.
+- Minion / station / scanner / instrument / scoreboard paths are patch-validated but need a
+  real gameplay pass.
 
 ## Mod interop
 

@@ -24,7 +24,8 @@
         Pong = 21,
         ShipState = 22,     // 20 Hz per-player ship snapshot
         EntityState = 23,   // 12 Hz batched entity snapshots (authority -> all)
-        FireEvent = 24,     // weapon fired (visual replay on peers)
+        FireEvent = 24,     // ship weapon fired (visual replay on peers)
+        EntityFire = 25,    // enemy/minion/boss weapon fired (visual replay on peers)
 
         // ---- Channel 2: reliable events ----
         DamageRequest = 40, // non-authority -> authority (routed via host)
@@ -41,5 +42,6 @@
         GameOver = 51,
         GameWon = 52,
         FogDiff = 53,       // shared map exploration (fogLevels runs)
+        InstrumentUsed = 54,
     }
 }

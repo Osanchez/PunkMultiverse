@@ -47,6 +47,9 @@ namespace PunkMultiverse.Sync
             PendingScanners.Clear();
             AppliedUpgrades.Clear();
             UsedScanners.Clear();
+            PendingInstruments.Clear();
+            UsedInstruments.Clear();
+            _discoverablesByHash = null;
         }
 
         // ---------------------------------------------------------------- station upgrades
@@ -219,6 +222,99 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // ---------------------------------------------------------------- instruments
+
+        private static readonly Dictionary<int, List<uint>> PendingInstruments = new Dictionary<int, List<uint>>();
+        private static readonly List<(int netId, uint hash)> UsedInstruments = new List<(int, uint)>();
+
+        public static List<(int netId, uint hash)> InstrumentSnapshot() => new List<(int, uint)>(UsedInstruments);
+
+        [HarmonyPatch(typeof(Instrument), "Discover")]
+        internal static class CaptureInstrumentUse
+        {
+            private static void Postfix(Instrument __instance, object __0)
+            {
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
+                try
+                {
+                    if (!EnemySync.TryGetNetId(__instance, out int netId)) return;
+                    var name = (__0 as UnityEngine.Object)?.name;
+                    if (string.IsNullOrEmpty(name)) return;
+                    uint hash = DamageSync.HashName(name);
+                    if (session.IsHost) UsedInstruments.Add((netId, hash));
+                    Writer.Reset();
+                    new InstrumentUsedMsg { NetId = netId, DiscoverableHash = hash }.Write(Writer);
+                    session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                    Plugin.Log.LogInfo($"[Progress] instrument used (netId {netId}) — broadcast");
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning($"[Progress] instrument capture failed: {e.Message}");
+                }
+            }
+        }
+
+        public static void ApplyInstrumentUsed(InstrumentUsedMsg msg)
+        {
+            var session = NetSession.Instance;
+            if (session != null && session.IsHost) UsedInstruments.Add((msg.NetId, msg.DiscoverableHash));
+            if (!TryApplyInstrument(msg.NetId, msg.DiscoverableHash))
+            {
+                if (!PendingInstruments.TryGetValue(msg.NetId, out var list))
+                    PendingInstruments[msg.NetId] = list = new List<uint>();
+                list.Add(msg.DiscoverableHash);
+            }
+        }
+
+        private static Dictionary<uint, UnityEngine.Object> _discoverablesByHash;
+
+        private static bool TryApplyInstrument(int netId, uint hash)
+        {
+            if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return false;
+            try
+            {
+                var egm = ServiceLocator.Get<EntityGameObjectManager>();
+                if (!egm.TryGetSavableEntity(instanceId, out var se) || se == null) return false;
+                var instrument = se.GetComponent<Instrument>();
+                if (instrument == null) return false;
+
+                if (_discoverablesByHash == null)
+                {
+                    _discoverablesByHash = new Dictionary<uint, UnityEngine.Object>();
+                    var t = AccessTools.TypeByName("InstrumentDiscoverable");
+                    if (t != null)
+                        foreach (var asset in Resources.FindObjectsOfTypeAll(t))
+                            _discoverablesByHash[DamageSync.HashName(asset.name)] = asset;
+                }
+                if (!_discoverablesByHash.TryGetValue(hash, out var discoverable)) return true; // unknown asset — drop
+
+                _applyingRemote = true;
+                try
+                {
+                    var discover = AccessTools.Method(typeof(Instrument), "Discover");
+                    discover.Invoke(instrument, new object[] { discoverable, ShipSync.LocalShip });
+                    Plugin.Log.LogInfo($"[Progress] applied remote instrument discovery (netId {netId})");
+                }
+                catch (Exception inner)
+                {
+                    Plugin.Log.LogWarning($"[Progress] instrument apply failed ({inner.Message}) — marking used only");
+                    var data = Traverse.Create(instrument).Property("Data").GetValue()
+                               ?? Traverse.Create(instrument).Field("data").GetValue();
+                    if (data != null) AccessTools.Method(data.GetType(), "SetUsed")?.Invoke(data, null);
+                }
+                finally
+                {
+                    _applyingRemote = false;
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         // ---------------------------------------------------------------- deferred application
 
         /// <summary>Called when an entity streams in — apply any progression events that arrived early.</summary>
@@ -233,6 +329,12 @@ namespace PunkMultiverse.Sync
             }
             if (PendingScanners.Contains(netId) && TryApplyScanner(netId))
                 PendingScanners.Remove(netId);
+            if (PendingInstruments.TryGetValue(netId, out var instruments))
+            {
+                bool all = true;
+                foreach (var hash in instruments) all &= TryApplyInstrument(netId, hash);
+                if (all) PendingInstruments.Remove(netId);
+            }
         }
     }
 }

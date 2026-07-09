@@ -231,15 +231,18 @@ namespace PunkMultiverse.Core
             _writer.Reset();
             new StartRunMsg { Seed = seed }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+            _isRejoin = false;
             BeginRun(seed);
         }
 
         private void HandleStartRun()
         {
             var msg = StartRunMsg.Read(_reader);
+            _isRejoin = msg.IsRejoin;
             BeginRun(msg.Seed);
         }
 
+        private bool _isRejoin;
         private bool _autoPicked;
         private float _autoPickAt;
 
@@ -263,6 +266,7 @@ namespace PunkMultiverse.Core
             AuthorityManager.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            EconomyStash.Reset();
             _autoPicked = false;
             _autoPickAt = Time.unscaledTime + 2f;
             SetState(SessionState.Loading);
@@ -353,6 +357,11 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             SetState(SessionState.InGame);
             Sync.ShipSync.ReleaseStartGate();
+            if (_isRejoin)
+            {
+                _isRejoin = false;
+                EconomyStash.TryRestore(CurrentRunSeed);
+            }
             if (NetConfig.AutoFly.Value > 0f)
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
         }
@@ -488,6 +497,7 @@ namespace PunkMultiverse.Core
             AuthorityManager.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            EconomyStash.Reset();
             if (State != SessionState.Offline)
             {
                 Plugin.Log.LogInfo($"[Session] stopped ({reason})");
@@ -554,6 +564,7 @@ namespace PunkMultiverse.Core
                 Sync.EnemySync.Tick(this);
                 Sync.ModuleGridSync.Tick(this);
                 Sync.FogSync.Tick(this);
+                EconomyStash.Tick(this);
                 if (IsHost) AuthorityManager.Tick(this);
             }
 
@@ -725,6 +736,13 @@ namespace PunkMultiverse.Core
                     Sync.EnemySync.ApplyEntityState(state);
                     break;
                 }
+                case MsgType.EntityFire:
+                {
+                    var efire = EntityFireMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: false);
+                    Sync.ProjectileSync.ReplayEntityFire(efire);
+                    break;
+                }
                 case MsgType.EntityKilled:
                 {
                     var killed = EntityKilledMsg.Read(_reader);
@@ -744,6 +762,13 @@ namespace PunkMultiverse.Core
                     var upgrade = StationUpgradeMsg.Read(_reader);
                     RelayToOthers(peer, channel, reliable: true);
                     Sync.ProgressionSync.ApplyStationUpgrade(upgrade);
+                    break;
+                }
+                case MsgType.InstrumentUsed:
+                {
+                    var inst = InstrumentUsedMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: true);
+                    Sync.ProgressionSync.ApplyInstrumentUsed(inst);
                     break;
                 }
                 case MsgType.ScannerUsed:
@@ -857,7 +882,7 @@ namespace PunkMultiverse.Core
             RosterChanged?.Invoke();
 
             _writer.Reset();
-            new StartRunMsg { Seed = CurrentRunSeed }.Write(_writer);
+            new StartRunMsg { Seed = CurrentRunSeed, IsRejoin = true }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             // Their LEVEL_READY (handled below while we're InGame) triggers the catch-up stream.
         }
@@ -903,6 +928,12 @@ namespace PunkMultiverse.Core
             {
                 _writer.Reset();
                 new StationUpgradeMsg { StationNetId = netId, UpgradeHash = hash }.Write(_writer);
+                _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
+            }
+            foreach (var (netId2, hash2) in Sync.ProgressionSync.InstrumentSnapshot())
+            {
+                _writer.Reset();
+                new InstrumentUsedMsg { NetId = netId2, DiscoverableHash = hash2 }.Write(_writer);
                 _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
             }
             foreach (var netId in Sync.ProgressionSync.ScannerSnapshot())

@@ -157,14 +157,16 @@ namespace PunkMultiverse.Protocol
     public struct StartRunMsg
     {
         public int Seed;
+        public bool IsRejoin; // reconnecting into a run in progress
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.StartRun);
             w.WriteInt(Seed);
+            w.WriteBool(IsRejoin);
         }
 
-        public static StartRunMsg Read(NetReader r) => new StartRunMsg { Seed = r.ReadInt() };
+        public static StartRunMsg Read(NetReader r) => new StartRunMsg { Seed = r.ReadInt(), IsRejoin = r.ReadBool() };
     }
 
     public struct LevelReadyMsg
@@ -432,6 +434,47 @@ namespace PunkMultiverse.Protocol
             }
             return new CellDiffMsg { Cells = cells };
         }
+    }
+
+    public struct EntityFireMsg
+    {
+        public int NetId;
+        public UnityEngine.Vector2 Pos;
+        public UnityEngine.Vector2 Dir;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntityFire);
+            w.WriteVarUInt((uint)NetId);
+            w.WritePosition(Pos);
+            w.WriteVector2Half(Dir);
+        }
+
+        public static EntityFireMsg Read(NetReader r) => new EntityFireMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+            Pos = r.ReadPosition(),
+            Dir = r.ReadVector2Half(),
+        };
+    }
+
+    public struct InstrumentUsedMsg
+    {
+        public int NetId;
+        public uint DiscoverableHash; // FNV-1a of the InstrumentDiscoverable asset name
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.InstrumentUsed);
+            w.WriteVarUInt((uint)NetId);
+            w.WriteUInt(DiscoverableHash);
+        }
+
+        public static InstrumentUsedMsg Read(NetReader r) => new InstrumentUsedMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+            DiscoverableHash = r.ReadUInt(),
+        };
     }
 
     public struct MinionSpawnedMsg
