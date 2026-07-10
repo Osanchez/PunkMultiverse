@@ -28,6 +28,7 @@ namespace PunkMultiverse.Core
         {
             NetToInstance.Clear();
             InstanceToNet.Clear();
+            LastManifest = new List<ulong>();
             _localFps = null;
             _expectedTotal = -1;
             _matched = 0;
@@ -125,6 +126,10 @@ namespace PunkMultiverse.Core
             for (int i = 0; i < msg.Fps.Length; i++)
             {
                 int netId = msg.StartIndex + i;
+                // Clients keep the host's manifest verbatim: a migration-promoted host must be
+                // able to replay it to rejoiners exactly as the original host handed it out.
+                while (LastManifest.Count <= netId) LastManifest.Add(0UL);
+                LastManifest[netId] = msg.Fps[i];
                 if (_localFps.TryGetValue(msg.Fps[i], out int instanceId))
                 {
                     NetToInstance[netId] = instanceId;

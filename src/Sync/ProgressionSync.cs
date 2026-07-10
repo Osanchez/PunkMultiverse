@@ -32,17 +32,17 @@ namespace PunkMultiverse.Sync
         /// checkpoint. Rejoiners spawn here instead of at the run start.</summary>
         public static int LatestStationNetId { get; private set; }
 
+        // Catch-up ledgers accumulate on EVERY machine (not just the host) so that a client
+        // promoted by host migration can serve full catch-up to rejoiners and late joiners.
         public static void RecordUpgrade(int netId, uint hash)
         {
             LatestStationNetId = netId;
-            var session = NetSession.Instance;
-            if (session != null && session.IsHost) AppliedUpgrades.Add((netId, hash));
+            AppliedUpgrades.Add((netId, hash));
         }
 
         public static void RecordScanner(int netId)
         {
-            var session = NetSession.Instance;
-            if (session != null && session.IsHost) UsedScanners.Add(netId);
+            UsedScanners.Add(netId);
         }
 
         public static void Reset()
@@ -248,7 +248,7 @@ namespace PunkMultiverse.Sync
                     var name = (__0 as UnityEngine.Object)?.name;
                     if (string.IsNullOrEmpty(name)) return;
                     uint hash = DamageSync.HashName(name);
-                    if (session.IsHost) UsedInstruments.Add((netId, hash));
+                    UsedInstruments.Add((netId, hash));
                     Writer.Reset();
                     new InstrumentUsedMsg { NetId = netId, DiscoverableHash = hash }.Write(Writer);
                     session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
@@ -263,8 +263,7 @@ namespace PunkMultiverse.Sync
 
         public static void ApplyInstrumentUsed(InstrumentUsedMsg msg)
         {
-            var session = NetSession.Instance;
-            if (session != null && session.IsHost) UsedInstruments.Add((msg.NetId, msg.DiscoverableHash));
+            UsedInstruments.Add((msg.NetId, msg.DiscoverableHash));
             if (!TryApplyInstrument(msg.NetId, msg.DiscoverableHash))
             {
                 if (!PendingInstruments.TryGetValue(msg.NetId, out var list))

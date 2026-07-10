@@ -34,6 +34,9 @@ namespace PunkMultiverse.Core
         public SessionState State { get; private set; } = SessionState.Offline;
         public bool IsHost => _transport?.IsHost ?? false;
         public int LocalSlot { get; private set; } = -1;
+        /// <summary>Slot of the current session host — 0 until host migration promotes someone
+        /// else. Registrar fallbacks and client send-targets key off this, never literal 0.</summary>
+        public byte HostSlot { get; private set; }
         public string LastError { get; private set; }
 
         private readonly NetPlayer[] _players = new NetPlayer[MaxPlayers];
@@ -211,11 +214,11 @@ namespace PunkMultiverse.Core
                 BroadcastLobbyState();
                 RosterChanged?.Invoke();
             }
-            else if (_players[0] != null)
+            else if (_players[HostSlot] != null)
             {
                 _writer.Reset();
                 new SetLobbyPrefsMsg { ColorIndex = colorIndex, Ready = ready }.Write(_writer);
-                _transport.Send(_players[0].PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
+                _transport.Send(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
                 RosterChanged?.Invoke();
             }
         }
@@ -258,6 +261,10 @@ namespace PunkMultiverse.Core
 
         private bool _isRejoin;
         private int _spawnStationNetId;
+        private bool _migrating;          // host-migration election in progress
+        private bool _reattaching;        // reconnecting to the migrated host mid-run
+        private float _reattachDeadline;
+        private ulong _joinTargetPeerId;  // SteamID64 we connected to (0 on loopback)
         private bool _autoPicked;
         private float _autoPickAt;
 
@@ -299,12 +306,12 @@ namespace PunkMultiverse.Core
                 _levelChecksums[0] = checksum;
                 CheckGoLive();
             }
-            else if (_players[0] != null)
+            else if (_players[HostSlot] != null)
             {
                 NetIds.PrepareLocal(); // ready before the host's manifest chunks arrive
                 _writer.Reset();
                 new LevelReadyMsg { Checksum = checksum }.Write(_writer);
-                _transport.Send(_players[0].PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
+                _transport.Send(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
             }
         }
 
@@ -467,6 +474,7 @@ namespace PunkMultiverse.Core
                 Name = LocalName(),
                 IsLocal = true,
             };
+            HostSlot = 0;
             ChosenSeed = _pendingHostSeed; // seed picked on the pre-lobby screen (0 = random)
             _pendingHostSeed = 0;
             SetState(SessionState.Lobby);
@@ -477,6 +485,8 @@ namespace PunkMultiverse.Core
         public void JoinSession(string address)
         {
             if (State != SessionState.Offline) StopSession("rejoining");
+            HostSlot = 0;
+            ulong.TryParse(address, out _joinTargetPeerId); // SteamID64; loopback "ip:port" -> 0
             try
             {
                 _transport = CreateTransport();
@@ -530,6 +540,9 @@ namespace PunkMultiverse.Core
             }
             for (int i = 0; i < MaxPlayers; i++) _players[i] = null;
             LocalSlot = -1;
+            HostSlot = 0;
+            _migrating = false;
+            _reattaching = false;
             ChosenSeed = 0;
             _levelChecksums.Clear();
             Sync.ShipSync.Reset();
@@ -631,6 +644,12 @@ namespace PunkMultiverse.Core
                 Fail("Could not reach host — no response for 15 seconds.");
                 return;
             }
+            if (_reattaching && Time.unscaledTime >= _reattachDeadline)
+            {
+                _reattaching = false;
+                Fail("Could not reach the new host.");
+                return;
+            }
 
             if (State == SessionState.InGame)
             {
@@ -676,9 +695,9 @@ namespace PunkMultiverse.Core
                     if (p != null && !p.IsLocal && p.Connected)
                         send(p.PeerId);
             }
-            else if (_players[0] != null)
+            else if (_players[HostSlot] != null)
             {
-                send(_players[0].PeerId);
+                send(_players[HostSlot].PeerId);
             }
         }
 
@@ -692,7 +711,7 @@ namespace PunkMultiverse.Core
 
         private void OnPeerConnected(ulong peer)
         {
-            if (!IsHost && State == SessionState.Connecting)
+            if (!IsHost && (State == SessionState.Connecting || _reattaching))
             {
                 // Connected to the host: introduce ourselves.
                 var hello = new HelloMsg
@@ -702,13 +721,114 @@ namespace PunkMultiverse.Core
                     GameVersion = Application.version,
                     SteamId = _transport is SteamMessagesTransport ? _transport.LocalPeerId : 0,
                     Name = LocalName(),
+                    Resuming = _reattaching,
                 };
                 _writer.Reset();
                 hello.Write(_writer);
                 _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
-                Plugin.Log.LogInfo("[Session] sent HELLO");
+                Plugin.Log.LogInfo(_reattaching ? "[Session] sent HELLO (resume)" : "[Session] sent HELLO");
             }
             // Host side: wait for the HELLO before creating a player.
+        }
+
+        // ---------------------------------------------------------------- host migration
+
+        /// <summary>The host is gone. Mid-run on Steam we migrate instead of dying: Steam has
+        /// already re-assigned lobby ownership to a remaining member — that member promotes
+        /// itself, everyone else reattaches, and the old host's slot is reserved for rejoin.</summary>
+        private void OnHostLost(string reason)
+        {
+            if (State == SessionState.InGame && UsingSteam && _lobby != null && _lobby.InLobby && !_migrating)
+            {
+                _migrating = true;
+                StartCoroutine(MigrateHost(reason));
+                return;
+            }
+            Fail(reason);
+        }
+
+        private System.Collections.IEnumerator MigrateHost(string reason)
+        {
+            Plugin.Log.LogInfo($"[Session] {reason} — electing a new host…");
+            var oldHost = _players[HostSlot];
+            if (oldHost != null)
+            {
+                oldHost.Connected = false;
+                oldHost.RttMs = -1;
+            }
+            RosterChanged?.Invoke();
+
+            // Steam migrates lobby ownership to a remaining member; every client sees the same
+            // new owner, so no election protocol is needed. Wait for the handover.
+            ulong newHostId = 0;
+            float deadline = Time.unscaledTime + 15f;
+            while (Time.unscaledTime < deadline)
+            {
+                ulong owner = 0;
+                try { owner = Steamworks.SteamMatchmaking.GetLobbyOwner(_lobby.CurrentLobby).m_SteamID; }
+                catch { }
+                if (owner != 0 && (oldHost == null || owner != oldHost.PeerId)
+                    && _players.Any(p => p != null && p.PeerId == owner))
+                {
+                    newHostId = owner;
+                    break;
+                }
+                yield return new WaitForSecondsRealtime(0.5f);
+            }
+            if (newHostId == 0)
+            {
+                _migrating = false;
+                Fail(reason);
+                yield break;
+            }
+
+            if (newHostId == _transport.LocalPeerId) BecomeHost();
+            else ReattachTo(newHostId);
+            _migrating = false;
+        }
+
+        private void BecomeHost()
+        {
+            Plugin.Log.LogInfo("[Session] promoted to host (migration)");
+            _transport.Stop();
+            _transport.Dispose();
+            _transport = new SteamMessagesTransport();
+            WireTransport();
+            _transport.StartHost();
+            HostSlot = (byte)LocalSlot;
+            // Everyone else is disconnected from ME right now — reserve their slots; their
+            // resume-HELLOs (or full rejoins) bring them back.
+            foreach (var p in _players)
+                if (p != null && !p.IsLocal)
+                {
+                    p.Connected = false;
+                    p.RttMs = -1;
+                }
+            _lobby.TakeOverLobby();
+            UI.Toast.Show("HOST LEFT — YOU ARE NOW THE HOST", 6f);
+            RosterChanged?.Invoke();
+        }
+
+        private void ReattachTo(ulong newHostId)
+        {
+            var hostPlayer = _players.FirstOrDefault(p => p != null && p.PeerId == newHostId);
+            if (hostPlayer == null)
+            {
+                Fail("Lost connection to host");
+                return;
+            }
+            Plugin.Log.LogInfo($"[Session] reattaching to new host {hostPlayer}");
+            HostSlot = hostPlayer.Slot;
+            UI.Toast.Show($"HOST LEFT — {hostPlayer.Name} IS NOW HOST", 6f);
+            _transport.Stop();
+            _transport.Dispose();
+            _transport = new SteamMessagesTransport();
+            WireTransport();
+            _reattaching = true;
+            _reattachDeadline = Time.unscaledTime + 20f;
+            _joinTargetPeerId = newHostId;
+            _transport.StartClient(newHostId.ToString());
+            // PeerConnected (first Poll) sends the resume-HELLO; Welcome completes reattach.
         }
 
         private void OnPeerDisconnected(ulong peer)
@@ -735,7 +855,7 @@ namespace PunkMultiverse.Core
             }
             else
             {
-                Fail("Lost connection to host");
+                OnHostLost("Lost connection to host");
             }
         }
 
@@ -764,7 +884,7 @@ namespace PunkMultiverse.Core
                 case MsgType.SetLobbyPrefs when IsHost: HandleSetLobbyPrefs(peer); break;
                 case MsgType.Welcome when !IsHost: HandleWelcome(); break;
                 case MsgType.Reject when !IsHost: HandleReject(); break;
-                case MsgType.SessionEnded when !IsHost: Fail("Host ended the session."); break;
+                case MsgType.SessionEnded when !IsHost: OnHostLost("Host ended the session."); break;
                 case MsgType.LobbyState when !IsHost: HandleLobbyState(); break;
                 case MsgType.Ping: HandlePing(peer); break;
                 case MsgType.Pong: HandlePong(peer); break;
@@ -930,7 +1050,8 @@ namespace PunkMultiverse.Core
                     && ((hello.SteamId != 0 && p.PeerId == hello.SteamId) || p.Name == hello.Name));
                 if (reserved != null)
                 {
-                    HandleRejoin(peer, hello, reserved);
+                    if (hello.Resuming) HandleResume(peer, hello, reserved);
+                    else HandleRejoin(peer, hello, reserved);
                     return;
                 }
             }
@@ -981,6 +1102,24 @@ namespace PunkMultiverse.Core
             }
         }
 
+        /// <summary>Host-migration reattach: the peer is already live in the same world — no
+        /// regen, just roster + the reliable events it may have missed during the handover gap
+        /// (all idempotent on the receiving side).</summary>
+        private void HandleResume(ulong peer, HelloMsg hello, NetPlayer reserved)
+        {
+            reserved.PeerId = peer;
+            reserved.Connected = true;
+            reserved.Name = hello.Name;
+            Plugin.Log.LogInfo($"[Session] {reserved} reattached after host migration");
+
+            _writer.Reset();
+            new WelcomeMsg { Slot = reserved.Slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
+            _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+            BroadcastLobbyState();
+            RosterChanged?.Invoke();
+            SendEventCatchUp(peer);
+        }
+
         private void HandleRejoin(ulong peer, HelloMsg hello, NetPlayer reserved)
         {
             reserved.PeerId = peer;
@@ -1029,6 +1168,20 @@ namespace PunkMultiverse.Core
             }
 
             // 3) Deaths, ownership, shared progression.
+            SendEventCatchUp(peer);
+
+            // 4) Go.
+            _writer.Reset();
+            _writer.WriteMsgType(MsgType.GoLive);
+            _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+            Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} " +
+                $"({ledger.Count} cells, manifest {fps.Count})");
+        }
+
+        /// <summary>Deaths, ownership, and shared progression — every message idempotent on the
+        /// receiver, so it serves both full rejoins and post-migration resume gaps.</summary>
+        private void SendEventCatchUp(ulong peer)
+        {
             foreach (var netId in Sync.EnemySync.KilledSnapshot())
             {
                 _writer.Reset();
@@ -1060,13 +1213,6 @@ namespace PunkMultiverse.Core
                 new ScannerUsedMsg { NetId = netId }.Write(_writer);
                 _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
             }
-
-            // 4) Go.
-            _writer.Reset();
-            _writer.WriteMsgType(MsgType.GoLive);
-            _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
-            Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} " +
-                $"({ledger.Count} cells, {owners.Count} owners, manifest {fps.Count})");
         }
 
         private List<RosterEntry> BuildRoster()
@@ -1093,6 +1239,16 @@ namespace PunkMultiverse.Core
             ApplyRoster(welcome.Roster);
             LocalSlot = welcome.Slot;
             if (_players[LocalSlot] != null) _players[LocalSlot].IsLocal = true;
+            // The host is whoever we connected to — after a migration that isn't slot 0.
+            var hostPlayer = _players.FirstOrDefault(p => p != null && _joinTargetPeerId != 0 && p.PeerId == _joinTargetPeerId);
+            HostSlot = hostPlayer != null ? hostPlayer.Slot : (byte)0;
+            if (_reattaching)
+            {
+                _reattaching = false;
+                Plugin.Log.LogInfo($"[Session] reattached to new host (slot {welcome.Slot}, host slot {HostSlot})");
+                RosterChanged?.Invoke();
+                return; // still InGame — the run never stopped
+            }
             SetState(SessionState.Lobby);
             Plugin.Log.LogInfo($"[Session] welcomed as slot {welcome.Slot} (host mod v{welcome.HostModVersion})");
             RosterChanged?.Invoke();

@@ -40,7 +40,14 @@ namespace PunkMultiverse.Sync
             _loggedFirstState = false;
         }
 
-        public static byte OwnerOf(int netId) => Owners.TryGetValue(netId, out var slot) ? slot : (byte)0;
+        /// <summary>netId -> owner slot; unassigned entities belong to the CURRENT host
+        /// (which is not necessarily slot 0 after a host migration).</summary>
+        public static byte OwnerOf(int netId)
+        {
+            if (Owners.TryGetValue(netId, out var slot)) return slot;
+            var session = NetSession.Instance;
+            return session != null ? session.HostSlot : (byte)0;
+        }
 
         public static List<int> KilledSnapshot() => new List<int>(KilledNetIds);
 
@@ -145,7 +152,7 @@ namespace PunkMultiverse.Sync
                 CollectEntry(egm, kv.Key, entries);
             }
             // Host also owns every un-assigned entity; it only streams the spawned ones.
-            if (session.IsHost && session.LocalSlot == 0)
+            if (session.IsHost)
             {
                 foreach (var netId in HostSpawnedUnassigned(egm))
                     CollectEntry(egm, netId, entries);

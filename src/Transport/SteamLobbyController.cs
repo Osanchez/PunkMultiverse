@@ -128,6 +128,17 @@ namespace PunkMultiverse.Transport
             if (InLobby) SteamFriends.ActivateGameOverlayInviteDialog(CurrentLobby);
         }
 
+        /// <summary>Host migration: Steam already made us the lobby owner; stamp our identity
+        /// into the lobby data so the code keeps working for joiners and rejoiners.</summary>
+        public void TakeOverLobby()
+        {
+            if (!InLobby) return;
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyModVersion, Plugin.Version);
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyGameVersion, UnityEngine.Application.version);
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyHostId, SteamUser.GetSteamID().m_SteamID.ToString());
+            Plugin.Log.LogInfo($"[Lobby] took over lobby {CurrentLobby.m_SteamID} as the new host");
+        }
+
         /// <summary>Transport session gate: only current lobby members get P2P sessions accepted.</summary>
         public bool IsMember(CSteamID user)
         {

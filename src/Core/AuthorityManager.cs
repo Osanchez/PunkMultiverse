@@ -75,19 +75,20 @@ namespace PunkMultiverse.Core
                     if (slot == current) ownerDist = d;
                 }
 
+                byte hostSlot = session.HostSlot;
                 byte desired = current;
                 if (closest.dist > interest)
                 {
-                    desired = 0; // dormant — host fallback
+                    desired = hostSlot; // dormant — host fallback
                 }
-                else if (current == 0)
+                else if (current == hostSlot)
                 {
-                    if (closest.dist <= authority && closest.slot != 0) desired = closest.slot;
+                    if (closest.dist <= authority && closest.slot != hostSlot) desired = closest.slot;
                 }
                 else if (ownerDist > authority * 1.15f) // release hysteresis: no flip-flop at the radius edge
                 {
                     if (closest.dist <= authority) desired = closest.slot;
-                    else if (ownerDist > interest) desired = 0; // out of everyone's range entirely
+                    else if (ownerDist > interest) desired = hostSlot; // out of everyone's range entirely
                     // Owner in the release..interest band with nobody clearly closer: keep them.
                     // Bouncing to the host and back every scan is worse than a stretched radius.
                 }

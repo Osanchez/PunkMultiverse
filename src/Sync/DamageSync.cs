@@ -172,8 +172,9 @@ namespace PunkMultiverse.Sync
             DamagableResource dr = null;
             if (msg.IsEntity)
             {
-                if (!EnemySync.IsLocallyOwned(msg.TargetNetId)
-                    && !(session.IsHost && EnemySync.OwnerOf(msg.TargetNetId) == 0)) return;
+                // OwnerOf defaults unassigned entities to the current host's slot, so this
+                // single check covers both assigned and host-fallback ownership.
+                if (!EnemySync.IsLocallyOwned(msg.TargetNetId)) return;
                 if (Core.NetIds.TryGetInstanceId(msg.TargetNetId, out int instanceId))
                 {
                     try

@@ -12,6 +12,7 @@ namespace PunkMultiverse.Protocol
         public string GameVersion;
         public ulong SteamId;      // 0 on loopback
         public string Name;
+        public bool Resuming;      // host-migration reattach: already in-world, skip the regen
 
         public void Write(NetWriter w)
         {
@@ -21,6 +22,7 @@ namespace PunkMultiverse.Protocol
             w.WriteString(GameVersion);
             w.WriteULong(SteamId);
             w.WriteString(Name);
+            w.WriteBool(Resuming);
         }
 
         public static HelloMsg Read(NetReader r) => new HelloMsg
@@ -30,6 +32,7 @@ namespace PunkMultiverse.Protocol
             GameVersion = r.ReadString(),
             SteamId = r.ReadULong(),
             Name = r.ReadString(),
+            Resuming = r.ReadBool(),
         };
     }
 

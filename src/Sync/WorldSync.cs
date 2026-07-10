@@ -151,7 +151,8 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- flush / apply
 
-        // Host-side record of every cell changed since generation — the rejoin catch-up source.
+        // Record of every cell changed since generation — the rejoin catch-up source. Kept on
+        // EVERY machine so a migration-promoted host can serve rejoins too.
         private static readonly Dictionary<int, byte> Ledger = new Dictionary<int, byte>();
 
         public static List<(int index, byte type)> LedgerSnapshot()
@@ -163,9 +164,8 @@ namespace PunkMultiverse.Sync
             if (Pending.Count == 0) return;
             var cells = Pending.OrderBy(kv => kv.Key).Select(kv => (kv.Key, kv.Value)).ToList();
             Pending.Clear();
-            if (session.IsHost)
-                foreach (var (index, type) in cells)
-                    Ledger[index] = type;
+            foreach (var (index, type) in cells)
+                Ledger[index] = type;
             Writer.Reset();
             new CellDiffMsg { Cells = cells }.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
@@ -173,10 +173,8 @@ namespace PunkMultiverse.Sync
 
         public static void Apply(CellDiffMsg msg)
         {
-            var session = NetSession.Instance;
-            if (session != null && session.IsHost)
-                foreach (var (index, type) in msg.Cells)
-                    Ledger[index] = type;
+            foreach (var (index, type) in msg.Cells)
+                Ledger[index] = type;
             var level = Level;
             if (level == null) return;
             _applying = true;
