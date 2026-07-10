@@ -836,10 +836,39 @@ namespace PunkMultiverse.Core
             EndRunToLobby();
         }
 
+        /// <summary>Host: synchronized retry — the vanilla Restart is intercepted in net runs
+        /// and lands here. Ends the current run quietly if needed (everyone drops to Lobby
+        /// state under the hood, gates reset), then launches a fresh run for the whole party.</summary>
+        public void RestartRun()
+        {
+            if (!IsHost) return;
+            if (State == SessionState.InGame || State == SessionState.Loading)
+            {
+                _writer.Reset();
+                _writer.WriteMsgType(MsgType.RunEnded);
+                ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+                EndRunToLobby(announce: false);
+            }
+            if (State != SessionState.Lobby) return;
+            Plugin.Log.LogInfo("[Session] host retry — starting a fresh synchronized run");
+            StartRun();
+        }
+
+        private bool _quietLobbyOnce;
+
+        /// <summary>One-shot: the lobby state change after a wipe/retry shouldn't pop the
+        /// lobby overlay — players are looking at the game-over screen.</summary>
+        public bool ConsumeQuietLobby()
+        {
+            if (!_quietLobbyOnce) return false;
+            _quietLobbyOnce = false;
+            return true;
+        }
+
         /// <summary>The run is over but the session lives: reset all run-scoped sync state
-        /// (including the start gates a vanilla retry would trip over), clear ready flags, and
-        /// reopen the lobby. A wiped run's save is deleted — defeat isn't resumable.</summary>
-        private void EndRunToLobby()
+        /// (including the start gates a vanilla retry would trip over) and clear ready flags.
+        /// A wiped run's save is deleted — defeat isn't resumable.</summary>
+        private void EndRunToLobby(bool announce = true)
         {
             _allDeadSince = -1f;
             _levelChecksums.Clear();
@@ -862,7 +891,11 @@ namespace PunkMultiverse.Core
             foreach (var p in _players)
                 if (p != null)
                     p.Ready = false;
-            UI.Toast.Show("RUN OVER — BACK TO LOBBY", 5f);
+            if (announce)
+                UI.Toast.Show(IsHost
+                    ? "RUN OVER — PRESS RETRY FOR A NEW RUN"
+                    : "RUN OVER — WAITING FOR THE HOST TO RETRY", 6f);
+            _quietLobbyOnce = true; // stay on the game-over screen, not the lobby overlay
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
         }

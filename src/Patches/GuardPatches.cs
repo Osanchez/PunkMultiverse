@@ -32,6 +32,54 @@ namespace PunkMultiverse.Patches
             }
         }
 
+        // GameController.Restart is the single chokepoint for game-over retry, game-won
+        // restart, and pause-menu restart. A vanilla restart would regenerate a world past the
+        // netcode's gates — in a net run the HOST's restart becomes a synchronized retry for
+        // the whole party, and clients are told to wait.
+        [HarmonyPatch(typeof(GameController), "Restart")]
+        internal static class NetRunRestart
+        {
+            private static bool Prefix()
+            {
+                if (!NetSession.Active) return true;
+                var session = NetSession.Instance;
+                if (session.IsHost)
+                {
+                    session.RestartRun();
+                    return false;
+                }
+                UI.Toast.Show("ONLY THE HOST CAN RETRY — WAITING FOR THE HOST", 5f);
+                return false;
+            }
+        }
+
+        // Clients don't get a retry button at all on the game-over screen — only the host's
+        // retry does anything in a net run.
+        [HarmonyPatch(typeof(GameOverScreen), "OnGameOver")]
+        internal static class NetRunGameOverButtons
+        {
+            private static void Postfix(GameOverScreen __instance)
+            {
+                try
+                {
+                    bool show = !NetSession.Active || NetSession.Instance.IsHost;
+                    foreach (var button in __instance.GetComponentsInChildren<UnityEngine.UI.Button>(true))
+                    {
+                        var ev = button.onClick;
+                        for (int i = 0; i < ev.GetPersistentEventCount(); i++)
+                        {
+                            if (ev.GetPersistentMethodName(i) == "OnRestartButtonClicked")
+                            {
+                                button.gameObject.SetActive(show);
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
         // In a net run the suspend-save is blocked (below) but the run auto-saves through
         // NetRunSave — so the pause menu's "Save & Exit" would lie in both directions. While
         // networking is live it reads just EXIT (localization stripped from that one label).

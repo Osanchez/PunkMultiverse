@@ -23,8 +23,17 @@ namespace PunkMultiverse.UI
             public TMP_Text Name;
             public RectTransform HpFill;
             public Image HpFillImage;
-            public TMP_Text Stats;
+            public TMP_Text Kills;
+            public TMP_Text Deaths;
+            public TMP_Text Dist;
         }
+
+        // Shared column bands (fraction of the 616-wide row) — header and rows use the same
+        // ones so the numbers always sit under their titles.
+        private const float ColHpMin = 0.46f, ColHpMax = 0.66f;
+        private const float ColKillsMin = 0.68f, ColKillsMax = 0.78f;
+        private const float ColDeathsMin = 0.78f, ColDeathsMax = 0.89f;
+        private const float ColDistMin = 0.89f, ColDistMax = 1.00f;
 
         private readonly Row[] _rows = new Row[NetSession.MaxPlayers];
 
@@ -71,9 +80,24 @@ namespace PunkMultiverse.UI
             prt.sizeDelta = new Vector2(640, 64 + NetSession.MaxPlayers * 56);
 
             MakeText(panel.transform, "Title", "PARTY", 26, new Color(0.98f, 0.55f, 0.18f), y: -8, height: 34);
-            var header = MakeText(panel.transform, "Header", "", 16, new Color(1, 1, 1, 0.5f), y: -40, height: 20);
-            header.text = "<pos=8%>PLAYER<pos=52%>HP<pos=72%>KILLS<pos=84%>DEATHS<pos=94%>DIST";
-            header.alignment = TextAlignmentOptions.MidlineLeft;
+
+            // Header shares the exact row width and column bands, so titles can't collide and
+            // always align with the values below them.
+            var headerGo = new GameObject("Header", typeof(RectTransform));
+            headerGo.transform.SetParent(panel.transform, false);
+            var hrt = (RectTransform)headerGo.transform;
+            hrt.anchorMin = hrt.anchorMax = new Vector2(0.5f, 1f);
+            hrt.pivot = new Vector2(0.5f, 1f);
+            hrt.anchoredPosition = new Vector2(0, -40);
+            hrt.sizeDelta = new Vector2(616, 20);
+            var headerColor = new Color(1, 1, 1, 0.5f);
+            var playerHead = MakeCell(headerGo.transform, "HPlayer", "PLAYER", 16, headerColor, 0f, ColHpMin,
+                TextAlignmentOptions.MidlineLeft);
+            playerHead.rectTransform.offsetMin = new Vector2(48, 0);
+            MakeCell(headerGo.transform, "HHp", "HP", 16, headerColor, ColHpMin, ColHpMax);
+            MakeCell(headerGo.transform, "HKills", "KILLS", 16, headerColor, ColKillsMin, ColKillsMax);
+            MakeCell(headerGo.transform, "HDeaths", "DEATHS", 16, headerColor, ColDeathsMin, ColDeathsMax);
+            MakeCell(headerGo.transform, "HDist", "DIST", 16, headerColor, ColDistMin, ColDistMax);
 
             for (int i = 0; i < NetSession.MaxPlayers; i++)
             {
@@ -105,8 +129,8 @@ namespace PunkMultiverse.UI
                 // HP bar: background track + fill whose anchorMax.x is the HP fraction.
                 var track = MakeImage(bg.transform, "HpTrack", new Color(1, 1, 1, 0.12f));
                 var trt = track.rectTransform;
-                trt.anchorMin = new Vector2(0.46f, 0.5f);
-                trt.anchorMax = new Vector2(0.66f, 0.5f);
+                trt.anchorMin = new Vector2(ColHpMin, 0.5f);
+                trt.anchorMax = new Vector2(ColHpMax, 0.5f);
                 trt.pivot = new Vector2(0f, 0.5f);
                 trt.anchoredPosition = Vector2.zero;
                 trt.sizeDelta = new Vector2(0, 14);
@@ -118,13 +142,9 @@ namespace PunkMultiverse.UI
                 row.HpFill.offsetMax = Vector2.zero;
                 row.HpFillImage = fill;
 
-                row.Stats = MakeText(bg.transform, "Stats", "", 18, Color.white, y: 0, height: 48);
-                row.Stats.alignment = TextAlignmentOptions.MidlineRight;
-                var strt = row.Stats.rectTransform;
-                strt.anchorMin = Vector2.zero;
-                strt.anchorMax = Vector2.one;
-                strt.offsetMin = new Vector2(420, 0);
-                strt.offsetMax = new Vector2(-12, 0);
+                row.Kills = MakeCell(bg.transform, "Kills", "", 18, Color.white, ColKillsMin, ColKillsMax);
+                row.Deaths = MakeCell(bg.transform, "Deaths", "", 18, Color.white, ColDeathsMin, ColDeathsMax);
+                row.Dist = MakeCell(bg.transform, "Dist", "", 18, new Color(0.53f, 0.53f, 0.53f), ColDistMin, ColDistMax);
 
                 _rows[i] = row;
             }
@@ -162,8 +182,9 @@ namespace PunkMultiverse.UI
                 row.HpFillImage.color = hp > 0.5f ? new Color(0.31f, 0.85f, 0.47f)
                     : hp > 0.25f ? new Color(0.98f, 0.83f, 0.22f) : new Color(0.95f, 0.30f, 0.24f);
 
-                string distText = p.IsLocal ? "—" : (dist >= 0 ? $"{dist:0}m" : "?");
-                row.Stats.text = $"{NetStats.Kills[i]}   {NetStats.Deaths[i]}   <color=#888888>{distText}</color>";
+                row.Kills.text = NetStats.Kills[i].ToString();
+                row.Deaths.text = NetStats.Deaths[i].ToString();
+                row.Dist.text = p.IsLocal ? "—" : (dist >= 0 ? $"{dist:0}m" : "?");
             }
         }
 
@@ -176,6 +197,21 @@ namespace PunkMultiverse.UI
             var img = go.AddComponent<Image>();
             img.color = color;
             return img;
+        }
+
+        /// <summary>Text spanning a horizontal anchor band of its parent (a column cell).</summary>
+        private TMP_Text MakeCell(Transform parent, string name, string text, float size, Color color,
+            float xMin, float xMax, TextAlignmentOptions align = TextAlignmentOptions.Midline)
+        {
+            var tmp = MakeText(parent, name, text, size, color, 0, 0);
+            var rt = tmp.rectTransform;
+            rt.anchorMin = new Vector2(xMin, 0f);
+            rt.anchorMax = new Vector2(xMax, 1f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
+            tmp.alignment = align;
+            return tmp;
         }
 
         private TMP_Text MakeText(Transform parent, string name, string text, float size, Color color, float y, float height)

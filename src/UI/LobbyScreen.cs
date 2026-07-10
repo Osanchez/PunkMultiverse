@@ -79,7 +79,11 @@ namespace PunkMultiverse.UI
 
         private void OnSessionState(SessionState state)
         {
-            if (state == SessionState.Lobby && !Visible) Show();
+            if (state == SessionState.Lobby)
+            {
+                bool quiet = NetSession.Instance != null && NetSession.Instance.ConsumeQuietLobby();
+                if (!Visible && !quiet) Show();
+            }
             if (state == SessionState.Loading || state == SessionState.InGame) Hide();
             // Session died mid-run (host quit / connection lost): surface it instead of silently
             // letting the player continue in a now-solo world.
