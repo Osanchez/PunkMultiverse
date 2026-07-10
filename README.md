@@ -10,24 +10,35 @@ Steam's relay, so a pasted lobby code just works.
 
 ## Features
 
-- **Lobby in the main menu** — PLAY ONLINE → host, copy a code (`PMV-XXXXX-XXXXX-XXXX`),
-  friends join from clipboard or a Steam invite. Pick ship colors, the host can set the
-  world seed, ready up, go.
+- **Lobby in the main menu** — PLAY ONLINE → pick a world seed (type one, paste one, or go
+  random) → host, copy a code (`PMV-XXXXX-XXXXX-XXXX`), friends join from clipboard or a
+  Steam invite. Pick ship colors, ready up, go. The host can re-roll the seed in the lobby
+  and kick players from the roster.
 - **One shared world** — identical seed-generated terrain (verified by checksum before the
   run starts), synced destruction, shared station upgrades, scanner/instrument map reveals,
   and merged map exploration.
 - **Real co-op combat** — every enemy is simulated exactly once (the closest player runs it,
   authority hands off as you move), damage applies exactly once through the game's full
-  shields/armor pipeline, and you see teammates' gunfire, minions, boosts, and hooks.
+  shields/armor pipeline, and you only get hit by shots that visibly reach you on your own
+  screen. Enemies aim, animate, telegraph, and home their missiles identically for everyone;
+  teammates' gunfire, minions, boosts, hovers, dashes, and hooks all replicate with their
+  sounds and effects.
 - **Per-player economy** — drops, gold, vault, and shop are yours alone. No loot stealing;
   progression is shared, purchases are not.
 - **Find your friends** — name labels in each player's color, screen-edge arrows with
   distance when they're off-screen, and a hold-**Tab** scoreboard (HP, kills, deaths, distance).
-- **Drop-proof** — if someone crashes, their slot is reserved; joining again with the lobby
-  code puts them back into the same run with their build, vault, and gold restored. New
-  players can also join a run already in progress.
-- **Version safety** — everyone must run the same mod version. Mismatched joins are rejected
-  with both versions named, and the lobby shows an UPDATE banner when a newer release exists.
+- **Death spectating** — when you die, the camera follows an alive teammate; **Q/E** (or the
+  arrow keys) cycle between them until you're revived.
+- **Drop-proof, host included** — if someone crashes, their slot is reserved; joining again
+  with the lobby code puts them back into the same run with their build, vault, and gold
+  restored, spawning at the party's most recently unlocked station. New players can join a
+  run already in progress the same way. If the **host** quits or crashes mid-run, the run
+  survives: a remaining player is promoted (announced on screen), the same lobby code keeps
+  working, and the old host can rejoin like anyone else.
+- **Version & mod-set safety** — everyone must run the same mod version; mismatched joins
+  are rejected with both versions named, and the main menu shows the mod version with an
+  update notice when a newer release exists. Joiners' other installed BepInEx mods are
+  compared against the host's too — see *Configuration*.
 
 ## Installation (players)
 
@@ -35,20 +46,38 @@ Steam's relay, so a pasted lobby code just works.
    `PUNK Playtest` folder.
 2. Download the latest zip from [Releases](https://github.com/Osanchez/PunkMultiverse/releases)
    and extract it over the game folder (it lands in `BepInEx/plugins/PunkMultiverse/`).
-3. Launch the game through Steam. You'll see **PLAY ONLINE** in the main menu.
+3. Launch the game through Steam. You'll see **PLAY ONLINE** in the main menu, and the mod
+   version at the bottom of the menu — it says **UP TO DATE** or names the newer release.
 
-Everyone in a lobby needs the **same mod version** — the lobby screen shows yours under the
-title, and it tells you when you're out of date.
+Everyone in a lobby needs the **same mod version** — mismatches are rejected with a message
+naming both versions and where to update.
+
+### Configuration
+
+Settings live in `BepInEx/plugins/PunkMultiverse/config.cfg` (created on first launch).
+The one you're most likely to touch:
+
+- `[Session] ModManifestPolicy` — what the **host** does when a joiner's installed BepInEx
+  mod set differs from the host's:
+  - `Reject` *(default)* — the join is refused, with the differing mods named.
+  - `Warn` — they join, and everyone sees a `[!] MODS` marker next to their name.
+  - `Ignore` — no check. Other mods aren't *synced* either way — mixing gameplay mods means
+    different rules per player; cosmetic/UI mods are generally fine.
 
 ## Playing
 
-- **Host:** PLAY ONLINE → HOST LOBBY → COPY CODE → send it to your friends (or INVITE FRIENDS
-  for the Steam overlay). Optionally paste a WORLD SEED. When everyone's ready: START GAME.
-  You can also start solo — friends join mid-run with the code.
+- **Host:** PLAY ONLINE → HOST LOBBY → pick a WORLD SEED (type it, PASTE from clipboard, or
+  leave empty for random) → COPY CODE → send it to your friends (or INVITE FRIENDS for the
+  Steam overlay). When everyone's ready: START GAME. You can also start solo — friends join
+  mid-run with the code. KICK buttons on the roster remove troublemakers (kick, not ban).
 - **Join:** copy the code your host sent → PLAY ONLINE → JOIN FROM CLIPBOARD. Works while the
-  run is already going: you'll spawn at the start station, caught up to the world's state.
+  run is already going: you'll spawn at the party's latest unlocked station, caught up to the
+  world's state.
 - **Reconnect:** crashed or dropped? JOIN FROM CLIPBOARD with the same code — your build,
-  vault, and gold come back with you.
+  vault, and gold come back with you, and you spawn at the latest unlocked station.
+- **Host leaving:** the run keeps going — a remaining player becomes the host (a banner names
+  them), the lobby code stays the same, and the old host can rejoin with it.
+- **When you die:** the camera follows an alive teammate; **Q/E** switch between them.
 - **In game:** hold **Tab** for the party scoreboard. F11 opens a small network debug overlay.
 
 See **[TESTING.md](TESTING.md)** for the full test checklist and a solo two-instance setup
@@ -75,19 +104,26 @@ reference DLLs come from a private refs bundle:
 - One-time: add a `REFS_TOKEN` repo secret (fine-grained PAT with read access to
   `Osanchez/PunkMods-refs`) and run `tools\update-refs.ps1` locally once to upload the bundle.
 - After a game update or a new csproj reference: rerun `tools\update-refs.ps1`.
-- Bump `<Version>` in `PunkMultiverse.csproj` when cutting a release — it drives both the
-  version handshake and the update banner.
+- Versioning is automatic: a pre-commit hook bumps the csproj `<Version>` patch number on
+  every non-docs commit to main, and the build bakes it into the plugin (handshake, lobby
+  data, menu banner, zip name — single source of truth). Stage a manual `<Version>` change
+  to bump minor/major instead.
 
 ## How it works (short version)
 
 Host-relay star over Steam Networking Messages (loopback UDP transport for solo testing).
 The run seed replicates and every client generates the same world, verified by terrain
 checksum. Entities get network identity from a deterministic fingerprint manifest; the
-closest player simulates each enemy (NEW-style proximity authority with a host registrar)
-while everyone else runs muted, interpolated puppets. Damage routes to the victim's
-authority and applies once through the vanilla pipeline; weapon fire replays as visual-only
-projectiles. Terrain diffs, kills, runtime spawns, progression events, and fog exploration
-replicate as reliable events — and a rejoining player gets the whole ledger replayed.
+closest player simulates each enemy (NEW-style proximity authority with a host registrar,
+with per-entity handoff cooldowns) while everyone else runs muted, interpolated puppets that
+mirror the authority's aim, AI state, and weapon audio. Damage applies once on the victim's
+own machine — enemy fire hit-detects against you locally, player-vs-player routes to the
+victim's authority — always through the vanilla pipeline; weapon fire replays as visual
+projectiles that re-target homing at the authority's victim. Terrain diffs, kills, runtime
+spawns, progression events, and fog exploration replicate as idempotent reliable events,
+kept as ledgers on every machine — so a rejoiner gets the whole run replayed, and when the
+host disappears the Steam lobby's ownership migration elects a replacement who serves the
+same ledgers without anyone reloading.
 
 ## Known behavior / limitations
 
@@ -95,9 +131,13 @@ replicate as reliable events — and a rejoining player gets the whole ledger re
 - Merged-cell terrain patches and projectile spread can look slightly different per client
   (game RNG; damage and terrain state are authoritative).
 - Menus don't pause the world in multiplayer; slow-mo effects are disabled; Save & Exit is
-  disabled during net runs (rejoin covers crashes). Rejoiners and late joiners respawn at the
-  start station.
-- Daily-challenge runs and other installed mods aren't supported in net runs yet.
+  disabled during net runs (rejoin covers crashes). Rejoiners and late joiners spawn at the
+  party's most recently unlocked station (the run start until the first unlock).
+- Host migration only engages mid-run — if the host leaves while everyone is still in the
+  lobby or loading, the session ends (it's cheap to recreate). Kicks aren't bans: a kicked
+  player can rejoin with the code.
+- Other installed mods are detected and policed (see *Configuration*) but never synced;
+  daily-challenge runs aren't supported in net runs yet.
 - Hook tethers to unstreamed targets and hooked-prop spring physics are approximate on peers.
 
 ## Credits
