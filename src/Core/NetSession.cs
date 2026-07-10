@@ -722,6 +722,7 @@ namespace PunkMultiverse.Core
                     SteamId = _transport is SteamMessagesTransport ? _transport.LocalPeerId : 0,
                     Name = LocalName(),
                     Resuming = _reattaching,
+                    Mods = ModManifest.Local,
                 };
                 _writer.Reset();
                 hello.Write(_writer);
@@ -1038,11 +1039,26 @@ namespace PunkMultiverse.Core
             var hello = HelloMsg.Read(_reader);
             string reject = null;
             bool midRun = State != SessionState.Lobby;
+
+            // Other installed mods can change gameplay rules or conflict with the netcode's
+            // patches — the host's ModManifestPolicy decides how strict to be.
+            bool modsMismatch = false;
+            if (!ModManifest.Matches(hello.Mods)
+                && !NetConfig.ModManifestPolicy.Value.Equals("Ignore", StringComparison.OrdinalIgnoreCase))
+            {
+                modsMismatch = true;
+                string diff = ModManifest.Describe(hello.Mods);
+                Plugin.Log.LogWarning($"[Mods] '{hello.Name}' mod set differs — {diff}");
+                if (NetConfig.ModManifestPolicy.Value.Equals("Reject", StringComparison.OrdinalIgnoreCase))
+                    reject = $"Installed mods differ from the host's ({diff}). " +
+                             "Match the host's mod set, or the host can set ModManifestPolicy=Warn.";
+            }
+
             if (hello.ProtocolVersion != ProtocolVersion || hello.ModVersion != Plugin.Version)
                 reject = $"Version mismatch: host has mod {Plugin.Version} (protocol {ProtocolVersion}), you have {hello.ModVersion} (protocol {hello.ProtocolVersion}).";
             else if (hello.GameVersion != Application.version)
                 reject = $"Game version mismatch: host {Application.version}, you {hello.GameVersion}.";
-            else if (midRun)
+            else if (reject == null && midRun)
             {
                 // Mid-run: a reserved slot matching (SteamID, else name) is a rejoin; anyone
                 // else is a late joiner and takes a free slot below.
@@ -1050,6 +1066,7 @@ namespace PunkMultiverse.Core
                     && ((hello.SteamId != 0 && p.PeerId == hello.SteamId) || p.Name == hello.Name));
                 if (reserved != null)
                 {
+                    reserved.ModsMismatch = modsMismatch;
                     if (hello.Resuming) HandleResume(peer, hello, reserved);
                     else HandleRejoin(peer, hello, reserved);
                     return;
@@ -1078,8 +1095,10 @@ namespace PunkMultiverse.Core
                 Slot = (byte)slot,
                 PeerId = peer,
                 Name = hello.Name,
+                ModsMismatch = modsMismatch,
             };
             Plugin.Log.LogInfo($"[Session] {_players[slot]} joined{(midRun ? " (mid-run, catching up)" : "")}");
+            if (modsMismatch) UI.Toast.Show($"{hello.Name} JOINED WITH A DIFFERENT MOD SET", 5f);
 
             _writer.Reset();
             new WelcomeMsg { Slot = (byte)slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
@@ -1220,7 +1239,16 @@ namespace PunkMultiverse.Core
             var roster = new List<RosterEntry>();
             foreach (var p in _players)
                 if (p != null)
-                    roster.Add(new RosterEntry { Slot = p.Slot, PeerId = p.PeerId, Name = p.Name, ColorIndex = p.ColorIndex, Ready = p.Ready, Connected = p.Connected });
+                    roster.Add(new RosterEntry
+                    {
+                        Slot = p.Slot,
+                        PeerId = p.PeerId,
+                        Name = p.Name,
+                        ColorIndex = p.ColorIndex,
+                        Ready = p.Ready,
+                        Connected = p.Connected,
+                        ModsMismatch = p.ModsMismatch,
+                    });
             return roster;
         }
 
@@ -1284,6 +1312,7 @@ namespace PunkMultiverse.Core
                     ColorIndex = e.ColorIndex,
                     Ready = e.Ready,
                     Connected = e.Connected,
+                    ModsMismatch = e.ModsMismatch,
                     RttMs = oldRtt.TryGetValue(e.PeerId, out var rtt) ? rtt : -1,
                 };
             }

@@ -413,6 +413,7 @@ namespace PunkMultiverse.UI
                 row.Swatch.color = PlayerColors.Get(p.ColorIndex);
                 string tags = p.Slot == session.HostSlot ? "  <color=#f08c2e>HOST</color>" : "";
                 if (p.IsLocal) tags += "  <color=#888888>(YOU)</color>";
+                if (p.ModsMismatch) tags += "  <color=#ffb84d>[!] MODS</color>";
                 row.Name.text = p.Name + tags;
                 string rtt = p.IsLocal || p.RttMs < 0 ? "" : $"<color=#888888>{p.RttMs} ms</color>  ";
                 row.Status.text = !p.Connected

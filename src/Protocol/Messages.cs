@@ -13,6 +13,7 @@ namespace PunkMultiverse.Protocol
         public ulong SteamId;      // 0 on loopback
         public string Name;
         public bool Resuming;      // host-migration reattach: already in-world, skip the regen
+        public string Mods;        // canonical BepInEx plugin manifest (ModManifest.Local)
 
         public void Write(NetWriter w)
         {
@@ -23,6 +24,7 @@ namespace PunkMultiverse.Protocol
             w.WriteULong(SteamId);
             w.WriteString(Name);
             w.WriteBool(Resuming);
+            w.WriteString(Mods);
         }
 
         public static HelloMsg Read(NetReader r) => new HelloMsg
@@ -33,6 +35,7 @@ namespace PunkMultiverse.Protocol
             SteamId = r.ReadULong(),
             Name = r.ReadString(),
             Resuming = r.ReadBool(),
+            Mods = r.ReadString(),
         };
     }
 
@@ -44,6 +47,7 @@ namespace PunkMultiverse.Protocol
         public byte ColorIndex;
         public bool Ready;
         public bool Connected;
+        public bool ModsMismatch; // joiner's plugin set differs from the host's (Warn policy)
 
         public void Write(NetWriter w)
         {
@@ -53,6 +57,7 @@ namespace PunkMultiverse.Protocol
             w.WriteByte(ColorIndex);
             w.WriteBool(Ready);
             w.WriteBool(Connected);
+            w.WriteBool(ModsMismatch);
         }
 
         public static RosterEntry Read(NetReader r) => new RosterEntry
@@ -63,6 +68,7 @@ namespace PunkMultiverse.Protocol
             ColorIndex = r.ReadByte(),
             Ready = r.ReadBool(),
             Connected = r.ReadBool(),
+            ModsMismatch = r.ReadBool(),
         };
     }
 

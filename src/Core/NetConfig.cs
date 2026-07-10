@@ -14,6 +14,8 @@ namespace PunkMultiverse
         public static ConfigEntry<int> SteamAppId;
         public static ConfigEntry<bool> AcceptAnySteamSession;
 
+        public static ConfigEntry<string> ModManifestPolicy;
+
         public static ConfigEntry<string> AutoStart;
         public static ConfigEntry<bool> AutoReady;
         public static ConfigEntry<bool> AutoLaunchRun;
@@ -44,6 +46,13 @@ namespace PunkMultiverse
                 "DEV ONLY: accept P2P sessions from anyone, not just lobby members.");
             SteamAppId = cfg.Bind("Transport", "SteamAppId", 2850470,
                 "Playtest appid, used only when the game didn't init Steam itself (direct Punk.exe launch).");
+
+            ModManifestPolicy = cfg.Bind("Session", "ModManifestPolicy", "Reject",
+                new ConfigDescription(
+                    "Host-side policy when a joiner's installed BepInEx mod set differs from the host's: " +
+                    "Reject refuses the join (naming the difference); Warn lets them join with a [!] MODS " +
+                    "marker on the roster; Ignore skips the check entirely.",
+                    new AcceptableValueList<string>("Reject", "Warn", "Ignore")));
 
             AutoStart = cfg.Bind("Debug", "AutoStart", "None",
                 new ConfigDescription("DEV ONLY: start a session automatically a few seconds after boot.",

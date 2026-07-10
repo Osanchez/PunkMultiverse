@@ -10,6 +10,7 @@
         public bool Ready;
         public bool IsLocal;
         public bool Connected = true; // false = slot reserved for a dropped player (rejoin)
+        public bool ModsMismatch;  // plugin set differs from the host's (Warn policy marker)
         public int RttMs = -1;     // -1 = unknown
 
         /// <summary>Set once in-game: the Ship this player controls (local) or their puppet (remote).</summary>
