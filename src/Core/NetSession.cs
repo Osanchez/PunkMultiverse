@@ -496,6 +496,31 @@ namespace PunkMultiverse.Core
 
         public void StopSession(string reason)
         {
+            bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
+
+            // Tell everyone this is a deliberate end, not a connection hiccup, while the
+            // transport is still up (host only — a quitting client just drops and gets its
+            // slot reserved for rejoin).
+            if (IsHost && State >= SessionState.Lobby && _transport != null && _transport.IsRunning)
+            {
+                try
+                {
+                    _writer.Reset();
+                    _writer.WriteMsgType(MsgType.SessionEnded);
+                    ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+                }
+                catch { }
+            }
+
+            if (wasInRun)
+            {
+                // Final economy stash (the periodic one may be seconds stale) and world
+                // cleanup: the run continues solo, so it must be coherent — teammate puppets
+                // despawn and remote-simulated enemies get their AI back.
+                try { EconomyStash.Save(CurrentRunSeed); } catch { }
+                CleanupAbandonedRun();
+            }
+
             _lobby?.LeaveLobby();
             if (_transport != null)
             {
@@ -527,6 +552,27 @@ namespace PunkMultiverse.Core
                 Plugin.Log.LogInfo($"[Session] stopped ({reason})");
                 SetState(SessionState.Offline);
                 RosterChanged?.Invoke();
+            }
+        }
+
+        private static void CleanupAbandonedRun()
+        {
+            try
+            {
+                foreach (var puppet in UnityEngine.Object.FindObjectsByType<Sync.RemotePuppet>(
+                             FindObjectsInactive.Include, FindObjectsSortMode.None))
+                {
+                    try { puppet.gameObject.SetActive(false); } catch { }
+                }
+                foreach (var puppet in UnityEngine.Object.FindObjectsByType<Sync.RemoteEntityPuppet>(
+                             FindObjectsInactive.Include, FindObjectsSortMode.None))
+                {
+                    try { UnityEngine.Object.Destroy(puppet); } catch { } // OnDestroy unmutes the AI
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Session] world cleanup failed: {e.Message}");
             }
         }
 
@@ -718,6 +764,7 @@ namespace PunkMultiverse.Core
                 case MsgType.SetLobbyPrefs when IsHost: HandleSetLobbyPrefs(peer); break;
                 case MsgType.Welcome when !IsHost: HandleWelcome(); break;
                 case MsgType.Reject when !IsHost: HandleReject(); break;
+                case MsgType.SessionEnded when !IsHost: Fail("Host ended the session."); break;
                 case MsgType.LobbyState when !IsHost: HandleLobbyState(); break;
                 case MsgType.Ping: HandlePing(peer); break;
                 case MsgType.Pong: HandlePong(peer); break;

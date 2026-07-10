@@ -18,6 +18,7 @@
         GoLive = 10,        // host -> all: everyone verified, start playing
         RejoinState = 11,   // host -> rejoiner: cell ledger, upgrades, kills, grids
         SetLobbyPrefs = 12, // client -> host: my color / ready state
+        SessionEnded = 13,  // host -> all: deliberate session end (not a connection loss)
 
         // ---- Channel 1: unreliable state ----
         Ping = 20,
