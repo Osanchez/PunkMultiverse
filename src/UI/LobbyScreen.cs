@@ -35,8 +35,6 @@ namespace PunkMultiverse.UI
         private TMP_Text _versionText;
         private TMP_Text _codeText;
         private TMP_Text _seedText;
-        private GameObject _seedPasteButton;
-        private GameObject _seedRandomButton;
         private TMP_Text _readyButtonLabel;
         private GameObject _startButton;
         private GameObject _inviteButton;
@@ -205,12 +203,8 @@ namespace PunkMultiverse.UI
 
             _codeText = MakeText(_lobbyPanel.transform, "Code", "", 24, Color.white, y: -74, height: 30);
 
-            // World seed: everyone sees it; only the host can change it (paste a shared seed / reroll).
+            // World seed: read-only here — it's chosen on the GAME SETTINGS screen before hosting.
             _seedText = MakeText(_lobbyPanel.transform, "Seed", "", 20, new Color(1f, 1f, 1f, 0.85f), y: -106, height: 26);
-            _seedPasteButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "PASTE", new Vector2(240, 231), new Vector2(90, 26),
-                PasteSeedFromClipboard));
-            _seedRandomButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "RND", new Vector2(333, 231), new Vector2(76, 26),
-                () => NetSession.Instance.SetChosenSeed(0)));
 
             MakeButton(_lobbyPanel.transform, "COPY CODE", new Vector2(-140, 186), new Vector2(240, 48),
                 () => NetSession.Instance.CopyLobbyCodeToClipboard());
@@ -409,16 +403,6 @@ namespace PunkMultiverse.UI
 
         // ---------------------------------------------------------------- actions
 
-        private void PasteSeedFromClipboard()
-        {
-            var text = GUIUtility.systemCopyBuffer ?? "";
-            var digits = new string(text.Where(char.IsDigit).Take(9).ToArray());
-            if (int.TryParse(digits, out var seed) && seed > 0)
-                NetSession.Instance.SetChosenSeed(seed);
-            else
-                Plugin.Log.LogWarning($"[UI] clipboard has no usable seed ('{text.Substring(0, Mathf.Min(text.Length, 24))}…')");
-        }
-
         private void SetLocalColor(byte color)
         {
             _localColor = color;
@@ -468,8 +452,6 @@ namespace PunkMultiverse.UI
             _codeText.text = session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
             _seedText.text = $"WORLD SEED   {(session.ChosenSeed != 0 ? session.ChosenSeed.ToString() : "RANDOM")}"
                 + (session.FriendlyFire ? "   <color=#ffb84d>FRIENDLY FIRE ON</color>" : "");
-            _seedPasteButton.SetActive(session.IsHost);
-            _seedRandomButton.SetActive(session.IsHost && session.ChosenSeed != 0);
             _inviteButton.SetActive(session.UsingSteam);
             _startButton.SetActive(session.IsHost);
             var startBtn = _startButton.GetComponent<Button>();

@@ -277,17 +277,9 @@ namespace PunkMultiverse.Core
 
         private readonly Dictionary<int, ulong> _levelChecksums = new Dictionary<int, ulong>();
 
-        /// <summary>Host's chosen world seed; 0 = roll a random one at start. Visible to all in lobby.</summary>
+        /// <summary>Host's chosen world seed (picked on the GAME SETTINGS screen);
+        /// 0 = roll a random one at start. Visible to all in lobby.</summary>
         public int ChosenSeed { get; private set; }
-
-        /// <summary>Host only: set the lobby's world seed (0 = random) and tell everyone.</summary>
-        public void SetChosenSeed(int seed)
-        {
-            if (!IsHost) return;
-            ChosenSeed = seed;
-            BroadcastLobbyState();
-            RosterChanged?.Invoke();
-        }
 
         /// <summary>Host only: broadcast the seed and launch the synchronized run.</summary>
         public void StartRun()

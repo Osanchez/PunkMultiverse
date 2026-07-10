@@ -13,7 +13,7 @@ Steam's relay, so a pasted lobby code just works.
 - **Lobby in the main menu** — PLAY ONLINE → a GAME SETTINGS screen (world seed: type,
   paste, or random; friendly fire toggle, off by default) → host, copy a code
   (`PMV-XXXXX-XXXXX-XXXX`), friends join from clipboard or a Steam invite. Pick ship colors,
-  ready up, go. The host can re-roll the seed in the lobby and kick players from the roster.
+  ready up, go. The host can kick players from the roster.
 - **One shared world** — identical seed-generated terrain (verified by checksum before the
   run starts), synced destruction, shared station upgrades, scanner/instrument map reveals,
   and merged map exploration.
