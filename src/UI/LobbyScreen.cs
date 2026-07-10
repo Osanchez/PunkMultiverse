@@ -72,6 +72,7 @@ namespace PunkMultiverse.UI
                 session.RosterChanged -= Refresh;
                 session.StateChanged -= OnSessionState;
             }
+            SetMenuBlocked(false);
             if (_canvasGo != null) Destroy(_canvasGo);
         }
 
@@ -95,10 +96,44 @@ namespace PunkMultiverse.UI
             if (_canvasGo == null) Build();
             _seedSetupOpen = false;
             _canvasGo.SetActive(true);
+            SetMenuBlocked(true);
             Refresh();
         }
 
-        public void Hide() => _canvasGo?.SetActive(false);
+        public void Hide()
+        {
+            _canvasGo?.SetActive(false);
+            SetMenuBlocked(false);
+        }
+
+        // The dim layer swallows mouse rays, but keyboard/gamepad NAVIGATION still reaches the
+        // menu behind — especially after a panel switch deactivates the selected button and the
+        // EventSystem re-grabs a menu selectable. Block the menu's interactivity outright.
+        private CanvasGroup _menuBlock;
+
+        private void SetMenuBlocked(bool blocked)
+        {
+            try
+            {
+                if (blocked)
+                {
+                    if (_menuBlock == null) // also re-finds after a scene reload destroyed it
+                    {
+                        var selector = GameObject.Find("GameModeSelector");
+                        var canvas = selector != null ? selector.GetComponentInParent<Canvas>() : null;
+                        if (canvas == null) return;
+                        _menuBlock = canvas.GetComponent<CanvasGroup>();
+                        if (_menuBlock == null) _menuBlock = canvas.gameObject.AddComponent<CanvasGroup>();
+                    }
+                    _menuBlock.interactable = false;
+                }
+                else if (_menuBlock != null)
+                {
+                    _menuBlock.interactable = true;
+                }
+            }
+            catch { }
+        }
 
         public void Toggle()
         {
@@ -384,6 +419,13 @@ namespace PunkMultiverse.UI
             _connectPanel.SetActive(!inLobby && !_seedSetupOpen);
             if (_seedPanel != null) _seedPanel.SetActive(!inLobby && _seedSetupOpen);
             _lobbyPanel.SetActive(inLobby);
+
+            // Panel switches deactivate the selected button; if the EventSystem's selection
+            // escaped our canvas, clear it so nav input can't drive the menu behind us.
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es != null && es.currentSelectedGameObject != null
+                && !es.currentSelectedGameObject.transform.IsChildOf(_canvasGo.transform))
+                es.SetSelectedGameObject(null);
             _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
 
             if (!inLobby) return;
