@@ -128,8 +128,6 @@ same ledgers without anyone reloading.
 ## Known behavior / limitations
 
 - Loot, gold, vault, and shop stock are per-player **by design**.
-- Merged-cell terrain patches and projectile spread can look slightly different per client
-  (game RNG; damage and terrain state are authoritative).
 - Menus don't pause the world in multiplayer; slow-mo effects are disabled; Save & Exit is
   disabled during net runs (rejoin covers crashes). Rejoiners and late joiners spawn at the
   party's most recently unlocked station (the run start until the first unlock).
@@ -144,5 +142,5 @@ same ledgers without anyone reloading.
 
 - [IntQuant/noita_entangled_worlds](https://github.com/IntQuant/noita_entangled_worlds) —
   the blueprint for the lobby UX and the proximity-authority model.
-- The PUNK modding docs and prior mods in the community Mods repo, especially the local
-  four-player proof of concept whose ship-spawning recipe this builds on.
+- The PUNK modding docs and my earlier mods in the Mods repo — this builds directly on the
+  ship-spawning recipe from my local four-player mod (PunkFourPlayer).

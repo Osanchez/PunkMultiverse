@@ -35,11 +35,35 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- capture
 
+        // Spread, angle variance, and projectile noise all roll UnityEngine.Random inside the
+        // DoShoot call tree. The shooter seeds the RNG deterministically per burst tick (and
+        // restores the game's stream after), sends the seed with the fire event, and replays
+        // seed identically — so every client sees the exact same pellet pattern.
+        private static int _fireSeedCounter;
+        private static int _lastFireSeed;
+
         [HarmonyPatch(typeof(WeaponBase), "DoShoot")]
         internal static class CaptureFire
         {
-            private static void Postfix(WeaponBase __instance, IBarrel __0)
+            private static void Prefix(out (bool seeded, UnityEngine.Random.State state) __state)
             {
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame || _replayDepth > 0)
+                {
+                    __state = (false, default);
+                    return;
+                }
+                __state = (true, UnityEngine.Random.state);
+                _fireSeedCounter = unchecked(_fireSeedCounter * 486187739 + 1);
+                _lastFireSeed = unchecked(_fireSeedCounter ^ (session.LocalSlot << 20) ^ session.CurrentRunSeed);
+                UnityEngine.Random.InitState(_lastFireSeed);
+            }
+
+            private static void Postfix(WeaponBase __instance, IBarrel __0,
+                (bool seeded, UnityEngine.Random.State state) __state)
+            {
+                if (__state.seeded) UnityEngine.Random.state = __state.state;
+
                 var session = NetSession.Instance;
                 if (session == null || session.State != SessionState.InGame || _replayDepth > 0) return;
                 try
@@ -53,6 +77,7 @@ namespace PunkMultiverse.Sync
                             Holder = (byte)holder,
                             Pos = __0.Position,
                             Dir = __0.Direction,
+                            Seed = _lastFireSeed,
                         };
                         Writer.Reset();
                         msg.Write(Writer);
@@ -65,6 +90,21 @@ namespace PunkMultiverse.Sync
                 {
                     Plugin.Log.LogWarning($"[Fire] capture failed: {e.Message}");
                 }
+            }
+        }
+
+        /// <summary>Replay DoShoot with the shooter's RNG seed, restoring the local stream after.</summary>
+        private static void InvokeSeededDoShoot(WeaponBase weapon, FakeBarrel barrel, int seed)
+        {
+            var saved = UnityEngine.Random.state;
+            UnityEngine.Random.InitState(seed);
+            try
+            {
+                AccessTools.Method(typeof(WeaponBase), "DoShoot").Invoke(weapon, new object[] { barrel });
+            }
+            finally
+            {
+                UnityEngine.Random.state = saved;
             }
         }
 
@@ -126,6 +166,7 @@ namespace PunkMultiverse.Sync
                 Dir = barrel.Direction,
                 BodyPos = owner.se.transform.position,
                 TargetSlot = targetSlot,
+                Seed = _lastFireSeed,
             };
             Writer.Reset();
             msg.Write(Writer);
@@ -169,8 +210,7 @@ namespace PunkMultiverse.Sync
                 _replayDepth++;
                 try
                 {
-                    AccessTools.Method(typeof(WeaponBase), "DoShoot")
-                        .Invoke(weapon, new object[] { new FakeBarrel(pos, msg.Dir) });
+                    InvokeSeededDoShoot(weapon, new FakeBarrel(pos, msg.Dir), msg.Seed);
                 }
                 finally { _replayDepth--; }
 
@@ -212,8 +252,7 @@ namespace PunkMultiverse.Sync
             _replayDepth++;
             try
             {
-                var barrel = new FakeBarrel(msg.Pos, msg.Dir);
-                AccessTools.Method(typeof(WeaponBase), "DoShoot").Invoke(weapon, new object[] { barrel });
+                InvokeSeededDoShoot(weapon, new FakeBarrel(msg.Pos, msg.Dir), msg.Seed);
             }
             catch (System.Exception e)
             {

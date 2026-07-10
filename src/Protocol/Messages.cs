@@ -294,6 +294,7 @@ namespace PunkMultiverse.Protocol
         public byte Holder; // 0 = primary, 1 = secondary
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Dir;
+        public int Seed;    // RNG seed the shooter used for this burst tick — replays match exactly
 
         public void Write(NetWriter w)
         {
@@ -302,6 +303,7 @@ namespace PunkMultiverse.Protocol
             w.WriteByte(Holder);
             w.WritePosition(Pos);
             w.WriteVector2Half(Dir);
+            w.WriteInt(Seed);
         }
 
         public static FireEventMsg Read(NetReader r) => new FireEventMsg
@@ -310,6 +312,7 @@ namespace PunkMultiverse.Protocol
             Holder = r.ReadByte(),
             Pos = r.ReadPosition(),
             Dir = r.ReadVector2Half(),
+            Seed = r.ReadInt(),
         };
     }
 
@@ -500,6 +503,7 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 BodyPos; // shooter's body position at fire time — lets the
                                             // replay re-anchor the muzzle to the local puppet
         public byte TargetSlot;             // player the shooter is targeting (homing), 255 = none
+        public int Seed;                    // RNG seed used for this burst tick
 
         public void Write(NetWriter w)
         {
@@ -509,6 +513,7 @@ namespace PunkMultiverse.Protocol
             w.WriteVector2Half(Dir);
             w.WritePosition(BodyPos);
             w.WriteByte(TargetSlot);
+            w.WriteInt(Seed);
         }
 
         public static EntityFireMsg Read(NetReader r) => new EntityFireMsg
@@ -518,6 +523,7 @@ namespace PunkMultiverse.Protocol
             Dir = r.ReadVector2Half(),
             BodyPos = r.ReadPosition(),
             TargetSlot = r.ReadByte(),
+            Seed = r.ReadInt(),
         };
     }
 
