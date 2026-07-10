@@ -28,9 +28,21 @@ namespace PunkMultiverse.Sync
         private Rigidbody2D _rb;
         private float _lastSnapAt;
 
+        private RigidbodyInterpolation2D _savedInterpolation;
+
         private void Awake()
         {
             _rb = GetComponent<Rigidbody2D>();
+            if (_rb != null)
+            {
+                _savedInterpolation = _rb.interpolation;
+                _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (_rb != null) _rb.interpolation = _savedInterpolation;
         }
 
         public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot)

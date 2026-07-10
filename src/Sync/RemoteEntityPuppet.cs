@@ -48,10 +48,19 @@ namespace PunkMultiverse.Sync
         private Rigidbody2D _rb;
         private BarrelTransform[] _barrels;
 
+        private RigidbodyInterpolation2D _savedInterpolation;
+
         private void Awake()
         {
             _rb = GetComponent<Rigidbody2D>();
             _barrels = GetComponentsInChildren<BarrelTransform>(true);
+            if (_rb != null)
+            {
+                // Fixed-step snapshot driving needs render interpolation or the enemy stutters
+                // on high-refresh displays; restored on handoff (OnDestroy) below.
+                _savedInterpolation = _rb.interpolation;
+                _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
+            }
         }
 
         // The muted AI no longer steers the barrels; mirror the authority's aim through the
@@ -101,6 +110,7 @@ namespace PunkMultiverse.Sync
         {
             StopWeaponSounds();
             Unmute();
+            if (_rb != null) _rb.interpolation = _savedInterpolation;
         }
 
         // Replicated warmup/continuous loops must not outlive the puppet (death mid-telegraph
