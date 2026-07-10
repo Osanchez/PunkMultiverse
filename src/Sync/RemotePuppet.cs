@@ -85,6 +85,35 @@ namespace PunkMultiverse.Sync
             // A puppet must not vacuum the local player's per-client drops or trigger interactions.
             foreach (var collector in GetComponentsInChildren<LootCollector>(true)) collector.enabled = false;
             foreach (var interactor in GetComponentsInChildren<Interactor>(true)) interactor.enabled = false;
+            // Puppets spawn on the start station and may register hover before this runs.
+            ScrubInteractions(this);
+        }
+
+        /// <summary>Remove a puppet ship's Interactor from every Interactable it registered
+        /// with. Hover state only ever exits via Interactor.Update — disabled on puppets — so
+        /// without this a station stays in its "shop available" pose forever (most visibly
+        /// after the player dies on it).</summary>
+        public static void ScrubInteractions(Component shipRoot)
+        {
+            if (shipRoot == null) return;
+            try
+            {
+                foreach (var interactor in shipRoot.GetComponentsInChildren<Interactor>(true))
+                {
+                    var inRange = interactor.InteractablesInRange;
+                    if (inRange == null) continue;
+                    foreach (var interactable in new List<Interactable>(inRange))
+                    {
+                        if (interactable == null) continue;
+                        try { interactable.OnHoverExited(interactor); } catch { }
+                    }
+                    inRange.Clear();
+                }
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[Puppet] interaction scrub failed: {e.Message}");
+            }
         }
 
         // Ship camera targets get (re-)registered by various game systems over the ship's life;
@@ -103,7 +132,8 @@ namespace PunkMultiverse.Sync
                         for (int i = cam.CameraTargets.Count - 1; i >= 0; i--)
                         {
                             var t = cam.CameraTargets[i].TargetTransform;
-                            if (t != null && (t == transform || t.IsChildOf(transform)))
+                            if (t != null && (t == transform || t.IsChildOf(transform))
+                                && UI.SpectatorCam.SpectatedSlot != Slot)
                                 cam.RemoveCameraTarget(t);
                         }
                     }

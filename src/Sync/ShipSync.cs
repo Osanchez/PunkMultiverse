@@ -317,6 +317,7 @@ namespace PunkMultiverse.Sync
         // Anything farther than ~45u from the local ship has no business steering our camera.
         private static void SweepDistantCameraTargets()
         {
+            if (UI.SpectatorCam.Active) return; // spectating a (distant) teammate is the point
             if (LocalShip == null || Time.unscaledTime < _nextCameraSweepAt) return;
             _nextCameraSweepAt = Time.unscaledTime + 1f;
             try
@@ -352,7 +353,13 @@ namespace PunkMultiverse.Sync
                 if (dr != null && dr.MaxHealth > 0)
                 {
                     float target = msg.HpFraction * dr.MaxHealth;
-                    if (Mathf.Abs(dr.CurrentHealth - target) > 0.5f) dr.CurrentHealth = target;
+                    if (Mathf.Abs(dr.CurrentHealth - target) > 0.5f)
+                    {
+                        // Snapshot writes bypass the damage pipeline — surface the hit flash
+                        // observers would see in vanilla.
+                        if (target < dr.CurrentHealth) UnitStatus.PlayDamageFlash(ship);
+                        dr.CurrentHealth = target;
+                    }
                 }
             }
             catch { }

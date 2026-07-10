@@ -88,6 +88,11 @@ namespace PunkMultiverse.Core
             yield return new WaitForSecondsRealtime(2f);
             SteamBootstrap.EnsureInitialized();
 
+            // The overlay join-request callback registers in the lobby controller's ctor —
+            // create it NOW, or accepting a Steam invite does nothing until the player has
+            // opened PLAY ONLINE at least once.
+            if (UsingSteam && SteamBootstrap.Available) EnsureLobbyController();
+
             // Steam overlay "join game" on a cold start.
             var launchLobby = SteamLobbyController.ParseLaunchArgs();
 

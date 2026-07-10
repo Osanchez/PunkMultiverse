@@ -225,7 +225,11 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- death / resurrection
 
-        [HarmonyPatch(typeof(Ship), "Die")]
+        // Organic deaths never call Ship.Die() — the chain is DamagableResource.Die ->
+        // onDeath (UnityEvent) -> Ship.OnDeath. Hooking OnDeath catches both organic and
+        // scripted deaths; without it a damage death was never broadcast and the victim's
+        // puppet stayed visible, frozen, on everyone else's screen.
+        [HarmonyPatch(typeof(Ship), "OnDeath")]
         internal static class BroadcastDeath
         {
             private static void Postfix(Ship __instance)
@@ -263,8 +267,21 @@ namespace PunkMultiverse.Sync
             _applyingRemote = true;
             try
             {
-                if (died) ship.Die();
-                else ship.Resurrect();
+                if (died)
+                {
+                    // Ship.Die routes through DamagableResource.Damage, which i-frames or
+                    // invincibility can silently swallow on a puppet — the ship then never
+                    // deactivates and its station keeps the shop pose. DamagableResource.Die
+                    // is unconditional (same approach the enemy kill path uses).
+                    var dr = ship.GetComponent<DamagableResource>();
+                    if (dr != null && !dr.IsDead) dr.Die();
+                    else ship.Die();
+                    RemotePuppet.ScrubInteractions(ship);
+                }
+                else
+                {
+                    ship.Resurrect();
+                }
                 Plugin.Log.LogInfo($"[Damage] applied remote {(died ? "death" : "resurrect")} for slot {msg.Slot}");
             }
             catch (System.Exception e)

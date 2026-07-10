@@ -232,8 +232,19 @@ namespace PunkMultiverse.Sync
                 if (!NetSession.Active) return true;
                 var owner = OwnerUnit(__0);
                 if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
-                    return IsLocalShip(__instance); // replayed enemy fire: victim-side, self only
-                if (IsVisual(__0)) return false;    // teammate replays & other visuals stay cosmetic
+                {
+                    if (IsLocalShip(__instance)) return true; // replayed enemy fire: victim-side
+                    UnitStatus.PlayDamageFlash(__instance);   // cosmetic — the authority owns the hit
+                    return false;
+                }
+                if (IsVisual(__0))
+                {
+                    // A teammate's replayed shot landing here means the real hit is being applied
+                    // on their machine right now — show the flash they're seeing (plants and other
+                    // props never sync damage, only death, so this is the ONLY feedback).
+                    UnitStatus.PlayDamageFlash(__instance);
+                    return false;
+                }
                 // Environmental (ownerless) projectiles fire independently on every client — only
                 // the victim's own authority applies their damage, or shared enemies eat it twice.
                 if (owner == null) return !VictimIsRemote(__instance);
@@ -286,9 +297,21 @@ namespace PunkMultiverse.Sync
                 if (!NetSession.Active) return true;
                 var owner = OwnerUnit(__0);
                 if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
-                    return IsLocalShip(__instance); // replayed enemy beam: victim-side, self only
-                if (_replayDepth > 0) return false;
-                if (owner != null && owner.GetComponent<RemotePuppet>() != null) return false;
+                {
+                    if (IsLocalShip(__instance)) return true; // replayed enemy beam: victim-side
+                    UnitStatus.PlayDamageFlash(__instance);
+                    return false;
+                }
+                if (_replayDepth > 0)
+                {
+                    UnitStatus.PlayDamageFlash(__instance); // replayed teammate beam: cosmetic hit
+                    return false;
+                }
+                if (owner != null && owner.GetComponent<RemotePuppet>() != null)
+                {
+                    UnitStatus.PlayDamageFlash(__instance);
+                    return false;
+                }
                 if (owner == null) return !VictimIsRemote(__instance);
                 if (owner.GetComponent<Ship>() == null && IsPuppetShip(__instance)) return false;
                 return true;

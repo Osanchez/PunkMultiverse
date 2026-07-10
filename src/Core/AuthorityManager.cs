@@ -47,10 +47,12 @@ namespace PunkMultiverse.Core
             float interest = NetConfig.InterestRadius.Value;
 
             var changes = new List<(int netId, byte owner)>();
+            var seen = new HashSet<int>();
             foreach (var entity in em.GetAllEntities())
             {
                 if (entity == null || entity.entityId == "Ship") continue;
                 if (!NetIds.TryGetNetId(entity.instanceId, out int netId)) continue;
+                if (!seen.Add(netId)) continue; // one decision per netId per scan, even if aliased
                 if (EnemySync.FixedOwners.Contains(netId)) continue; // minions: fixed owner-authority
 
                 Vector2 pos = entity.position;

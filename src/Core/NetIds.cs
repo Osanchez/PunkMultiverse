@@ -40,6 +40,13 @@ namespace PunkMultiverse.Core
 
         public static void RegisterRuntime(int netId, int instanceId)
         {
+            // A netId must never alias two entities — remove the stale reverse mapping, or
+            // authority/state/kill traffic cross-applies between the pair.
+            if (NetToInstance.TryGetValue(netId, out int oldInstance) && oldInstance != instanceId)
+            {
+                Plugin.Log.LogWarning($"[Ids] netId {netId} remapped (instance {oldInstance} -> {instanceId})");
+                InstanceToNet.Remove(oldInstance);
+            }
             NetToInstance[netId] = instanceId;
             InstanceToNet[instanceId] = netId;
         }

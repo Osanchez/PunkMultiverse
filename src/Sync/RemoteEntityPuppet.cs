@@ -12,10 +12,21 @@ namespace PunkMultiverse.Sync
     {
         // AI drivers to mute, by type name (game types looked up per-instance so new enemy
         // variants keep working). Shooter is muted so puppets don't fire duplicate projectiles.
-        // AimAction subclasses are muted by base type below — left running they keep steering
-        // the barrel (AimInRandomDirectionAction literally at random) against the synced aim.
+        // AimAction/MovementAction subclasses are muted by base type below.
+        // The action types matter because actions call into disabled components DIRECTLY
+        // (ShootComplexAction.Update -> Shooter.Shoot fires weapons — and MinionSpawnerWeapon
+        // spawns entities — even while Shooter itself is disabled; SelfDestructAction kills the
+        // puppet locally; ProjectileDispenser is a prop-mounted auto-firer).
         private static readonly string[] MutedTypes =
-            { "AIAgent", "Vision", "UnitMovement", "Seeker", "Shooter", "StateMachine", "PushMovement", "SwimmingMovement", "ChargerRam" };
+        {
+            "AIAgent", "Vision", "UnitMovement", "Seeker", "Shooter", "StateMachine",
+            "PushMovement", "SwimmingMovement", "ChargerRam",
+            "ShootComplexAction", "ShootAction", "ActivateShooterAction", "SelfDestructAction",
+            "ProjectileDispenser", "WaitForTargetAction", "MoveAwayFromTargetAction",
+            "MoveToPositionAction", "PushSelfAction", "StopAction", "ApplyTorqueAction",
+            "ReduceAngularVelocityAction", "RepeateChildrenAction", "ForgetTargetAction",
+            "ChangeAnimatorParamAction",
+        };
 
         private const float InterpDelay = 0.12f;
         private const float HardSnapDistance = 4f;
@@ -53,27 +64,29 @@ namespace PunkMultiverse.Sync
                     barrel.Direction = AimDirection;
         }
 
-        private void OnEnable()
+        private void OnEnable() => MuteNow();
+
+        /// <summary>Idempotent, and callable while the GameObject is still INACTIVE — replicas
+        /// must be muted before their first activation, because prefab-active actions fire
+        /// from OnEnable and their UniTask bursts only cancel on destroy.</summary>
+        public void MuteNow()
         {
+            if (_muted.Count > 0) return;
             foreach (var behaviour in GetComponentsInChildren<Behaviour>(true))
             {
                 if (behaviour == null || !behaviour.enabled) continue;
-                if (behaviour is AimAction)
+                bool mute = behaviour is AimAction || behaviour is MovementAction;
+                if (!mute)
                 {
-                    behaviour.enabled = false;
-                    _muted.Add(behaviour);
-                    continue;
-                }
-                var tn = behaviour.GetType().Name;
-                for (int i = 0; i < MutedTypes.Length; i++)
-                {
-                    if (tn == MutedTypes[i])
+                    var tn = behaviour.GetType().Name;
+                    for (int i = 0; i < MutedTypes.Length; i++)
                     {
-                        behaviour.enabled = false;
-                        _muted.Add(behaviour);
-                        break;
+                        if (tn == MutedTypes[i]) { mute = true; break; }
                     }
                 }
+                if (!mute) continue;
+                behaviour.enabled = false;
+                _muted.Add(behaviour);
             }
         }
 

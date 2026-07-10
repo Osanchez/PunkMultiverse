@@ -51,6 +51,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<MainMenuInjection>();
             _runtime.AddComponent<PlayerTracker>();
             _runtime.AddComponent<Scoreboard>();
+            _runtime.AddComponent<SpectatorCam>();
 
             Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F11 = net overlay.");
         }

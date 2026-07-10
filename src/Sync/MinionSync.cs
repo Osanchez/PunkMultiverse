@@ -19,7 +19,10 @@ namespace PunkMultiverse.Sync
     /// </summary>
     internal static class MinionSync
     {
-        public const int RuntimeIdBase = 1 << 12;
+        // Runtime ids must clear every manifest id (manifest netIds are 0..N-1 and real worlds
+        // exceed 6,500 entities — 1<<12 collided mid-manifest, aliasing a pickup and an enemy
+        // under one netId). 1<<20 per slot keeps them disjoint unless a world has >1M entities.
+        public const int RuntimeIdBase = 1 << 20;
 
         private static int _counter;
         private static bool _applyingRemote;
@@ -51,6 +54,10 @@ namespace PunkMultiverse.Sync
                     var em = ServiceLocator.Get<EntityManager>();
                     var data = em.GetEntity(instanceId);
                     if (data == null || data.entityId == "Ship") return;
+                    // Per-player economy: loot drops spawn locally on every client by design —
+                    // replicating them would duplicate loot and drag pickups into the authority
+                    // pool. Gate by call-site (the loot factories) with an id-suffix fallback.
+                    if (MarkLootSpawns.Depth > 0 || IsPerPlayerLoot(data.entityId)) return;
 
                     int netId = AllocateNetId(session);
                     NetIds.RegisterRuntime(netId, instanceId);
@@ -173,8 +180,23 @@ namespace PunkMultiverse.Sync
                     return;
                 }
                 var egm = ServiceLocator.Get<EntityGameObjectManager>();
-                var created = AccessTools.Method(typeof(EntityGameObjectManager), "CreateEntity")
-                    .Invoke(egm, new object[] { prefab, pos });
+                // Instantiate the replica INACTIVE so prefab-active actions (ShootComplexAction,
+                // ProjectileDispenser) can't fire from OnEnable before the puppet mutes them —
+                // their bursts only cancel on destroy, and anything they spawn here is an
+                // unsynced local orphan.
+                var prefabGo = prefab.gameObject;
+                bool prefabWasActive = prefabGo.activeSelf;
+                object created;
+                try
+                {
+                    prefabGo.SetActive(false);
+                    created = AccessTools.Method(typeof(EntityGameObjectManager), "CreateEntity")
+                        .Invoke(egm, new object[] { prefab, pos });
+                }
+                finally
+                {
+                    prefabGo.SetActive(prefabWasActive);
+                }
 
                 int instanceId = ExtractInstanceId(created);
                 if (instanceId == 0)
@@ -185,10 +207,14 @@ namespace PunkMultiverse.Sync
                 NetIds.RegisterRuntime(netId, instanceId);
                 EnemySync.Owners[netId] = ownerSlot;
 
-                if (egm.TryGetSavableEntity(instanceId, out var se) && se != null && se.GetComponent<Unit>() != null)
+                if (egm.TryGetSavableEntity(instanceId, out var se) && se != null)
                 {
+                    // Every replica gets the puppet — non-Unit spawned props carry auto-firers
+                    // (ProjectileDispenser) that must be muted too, not just enemy AI.
                     var puppet = se.gameObject.AddComponent<RemoteEntityPuppet>();
                     puppet.NetId = netId;
+                    puppet.MuteNow();
+                    se.gameObject.SetActive(true);
                 }
                 if (wireOwnerShip) WireMinionOwner(netId, ownerSlot);
                 Plugin.Log.LogInfo($"[Spawns] replica '{entityId}' netId {netId} (P{ownerSlot + 1})");
@@ -219,6 +245,34 @@ namespace PunkMultiverse.Sync
             {
                 Plugin.Log.LogWarning($"[Minions] owner wiring failed: {e.Message}");
             }
+        }
+
+        private static bool IsPerPlayerLoot(string entityId) =>
+            entityId != null && entityId.EndsWith("_pickup", StringComparison.OrdinalIgnoreCase);
+
+        // Every loot/pickup factory Create() runs on each machine for the same logical event
+        // (cell-destruction drops, death drops) — anything they spawn is per-player and must
+        // never broadcast, whatever its entityId.
+        [HarmonyPatch]
+        internal static class MarkLootSpawns
+        {
+            internal static int Depth;
+
+            private static System.Collections.Generic.IEnumerable<System.Reflection.MethodBase> TargetMethods()
+            {
+                foreach (var typeName in new[]
+                         { "LootFactory", "ModulePickupFactory", "IngredientPickupFactory", "ConsumablePickupFactory" })
+                {
+                    var t = AccessTools.TypeByName(typeName);
+                    if (t == null) continue;
+                    foreach (var m in AccessTools.GetDeclaredMethods(t))
+                        if (m.Name == "Create")
+                            yield return m;
+                }
+            }
+
+            private static void Prefix() => Depth++;
+            private static void Finalizer() => Depth--;
         }
 
         private static int ExtractInstanceId(object created)
