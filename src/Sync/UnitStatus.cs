@@ -13,6 +13,9 @@ namespace PunkMultiverse.Sync
     {
         private static readonly Dictionary<Component, float> InitialShieldCharge = new Dictionary<Component, float>();
         private static readonly Dictionary<Component, BarrelTransform> BarrelCache = new Dictionary<Component, BarrelTransform>();
+        private static readonly Dictionary<Component, (StateMachine sm, State[] states)> StateCache
+            = new Dictionary<Component, (StateMachine, State[])>();
+        private static readonly Dictionary<Component, Shooter> ShooterCache = new Dictionary<Component, Shooter>();
         private static bool _warnedShield;
         private static bool _warnedBurn;
 
@@ -20,8 +23,118 @@ namespace PunkMultiverse.Sync
         {
             InitialShieldCharge.Clear();
             BarrelCache.Clear();
+            StateCache.Clear();
+            ShooterCache.Clear();
             _warnedShield = false;
             _warnedBurn = false;
+        }
+
+        // ---------------------------------------------------------------- weapon audio state
+
+        // Warmup/continuous weapon sounds (charge-up telegraphs, beam loops) are driven by
+        // Shooter.Update — muted on puppets — so the audio state replicates instead. The
+        // Play*/Stop* methods are idempotent (handle-guarded) and update loop positions when
+        // called repeatedly, so applying per snapshot is exactly right.
+
+        private static Shooter ShooterOf(Component root)
+        {
+            var unit = root != null ? root.GetComponentInParent<Unit>() : null;
+            if (unit == null) return null;
+            if (!ShooterCache.TryGetValue(unit, out var shooter))
+                ShooterCache[unit] = shooter = unit.GetComponentInChildren<Shooter>(true);
+            return shooter;
+        }
+
+        /// <summary>0 = idle, 1 = warming up, 2 = warmed/firing (continuous loop).</summary>
+        public static byte ReadFireState(Component root)
+        {
+            try
+            {
+                var shooter = ShooterOf(root);
+                var weapon = shooter != null ? shooter.Weapon : null;
+                if (weapon == null || !weapon.IsTriggerPulled) return 0;
+                return weapon.IsWarmedUp ? (byte)2 : (byte)1;
+            }
+            catch { return 0; }
+        }
+
+        public static void WriteFireState(Component root, byte state)
+        {
+            try
+            {
+                var shooter = ShooterOf(root);
+                if (shooter == null) return;
+                switch (state)
+                {
+                    case 1:
+                        shooter.StopContinousSound();
+                        shooter.PlayWarmupSound();
+                        break;
+                    case 2:
+                        shooter.StopWarmupSound();
+                        shooter.PlayContinousSound();
+                        break;
+                    default:
+                        shooter.StopWarmupSound();
+                        shooter.StopContinousSound();
+                        break;
+                }
+            }
+            catch { }
+        }
+
+        // ---------------------------------------------------------------- AI state (visual)
+
+        // Enemy behavior states are child GameObjects toggled by StateMachine — muted on
+        // puppets, so without replication a puppet stays frozen in its spawn-time state
+        // (no attack poses, telegraph VFX, or animator changes).
+
+        private static (StateMachine sm, State[] states) StatesOf(Component root)
+        {
+            var unit = root != null ? root.GetComponentInParent<Unit>() : null;
+            if (unit == null) return (null, null);
+            if (!StateCache.TryGetValue(unit, out var entry))
+            {
+                var sm = unit.GetComponentInChildren<StateMachine>(true);
+                entry = (sm, sm != null ? sm.GetComponentsInChildren<State>(true) : null);
+                StateCache[unit] = entry;
+            }
+            return entry;
+        }
+
+        /// <summary>Index of the unit's current AI state (prefab child order — identical on
+        /// every client); 255 = no state machine / unknown.</summary>
+        public static byte ReadState(Component root)
+        {
+            try
+            {
+                var (sm, states) = StatesOf(root);
+                if (sm == null || states == null) return 255;
+                var current = Traverse.Create(sm).Field("currentState").GetValue() as State;
+                if (current == null) return 255;
+                for (int i = 0; i < states.Length && i < 255; i++)
+                    if (states[i] == current)
+                        return (byte)i;
+                return 255;
+            }
+            catch { return 255; }
+        }
+
+        /// <summary>Drive the puppet's StateMachine to the authority's state. ChangeState works
+        /// on the disabled component and toggles the state child GameObjects (visuals); muted
+        /// action Behaviours inside them stay disabled.</summary>
+        public static void WriteState(Component root, byte index)
+        {
+            if (index == 255) return;
+            try
+            {
+                var (sm, states) = StatesOf(root);
+                if (sm == null || states == null || index >= states.Length) return;
+                var current = Traverse.Create(sm).Field("currentState").GetValue() as State;
+                if (current == states[index]) return;
+                sm.ChangeState(states[index], false);
+            }
+            catch { }
         }
 
         // ---------------------------------------------------------------- aim / facing

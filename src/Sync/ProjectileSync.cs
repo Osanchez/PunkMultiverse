@@ -103,12 +103,29 @@ namespace PunkMultiverse.Sync
                         || (session.IsHost && !EnemySync.Owners.ContainsKey(owner.netId));
             if (!mine || owner.se.GetComponent<RemoteEntityPuppet>() != null) return;
 
+            // Homing projectiles get their target at fire time from the shooter's AIAgent —
+            // muted on puppets, so peers must be told who is being shot at.
+            byte targetSlot = 255;
+            try
+            {
+                var agent = owner.se.GetComponentInChildren<AIAgent>(true);
+                var target = agent != null && agent.HasTarget ? agent.Target : null;
+                var targetShip = target != null ? target.GetComponent<Ship>() : null;
+                if (targetShip != null)
+                {
+                    foreach (var kv in ShipSync.ShipsBySlot)
+                        if (kv.Value == targetShip) { targetSlot = (byte)kv.Key; break; }
+                }
+            }
+            catch { }
+
             var msg = new EntityFireMsg
             {
                 NetId = owner.netId,
                 Pos = barrel.Position,
                 Dir = barrel.Direction,
                 BodyPos = owner.se.transform.position,
+                TargetSlot = targetSlot,
             };
             Writer.Reset();
             msg.Write(Writer);
@@ -148,6 +165,7 @@ namespace PunkMultiverse.Sync
                 Vector2 pos = msg.BodyPos != Vector2.zero
                     ? (Vector2)se.transform.position + (msg.Pos - msg.BodyPos)
                     : msg.Pos;
+                ReplaySpawned.Clear();
                 _replayDepth++;
                 try
                 {
@@ -155,6 +173,24 @@ namespace PunkMultiverse.Sync
                         .Invoke(weapon, new object[] { new FakeBarrel(pos, msg.Dir) });
                 }
                 finally { _replayDepth--; }
+
+                // Prefab-wired fire cosmetics (recoil VFX etc.) hang off Shooter.OnShoot,
+                // which the DoShoot-direct replay skips.
+                try { shooter.OnShoot?.Invoke(); } catch { }
+
+                // Re-target replayed homing projectiles: their HomingTargetFromAIAgent read the
+                // puppet's muted AIAgent (no target), so they'd fly straight while the
+                // authority's real ones curve. Aim them at the same player the authority is
+                // shooting at — if that's the local ship, victim-side hit detection makes them
+                // genuinely dangerous, exactly like the authority's copies.
+                if (msg.TargetSlot != 255
+                    && ShipSync.ShipsBySlot.TryGetValue(msg.TargetSlot, out var targetShip) && targetShip != null)
+                {
+                    foreach (var spawned in ReplaySpawned)
+                        if (spawned is PhysicsProjectile pp)
+                            pp.Target = targetShip.gameObject;
+                }
+                ReplaySpawned.Clear();
             }
             catch (System.Exception e)
             {
@@ -189,13 +225,29 @@ namespace PunkMultiverse.Sync
             }
         }
 
-        // Anything spawned while replaying is visual-only.
+        // Anything spawned while replaying is visual-only; also collected so the replay can
+        // post-process it (homing re-target).
+        private static readonly List<Component> ReplaySpawned = new List<Component>();
+
         [HarmonyPatch(typeof(Projectile), "Shoot")]
         internal static class MarkVisualProjectile
         {
             private static void Prefix(Projectile __instance)
             {
-                if (_replayDepth > 0) VisualProjectiles.Add(__instance.gameObject.GetInstanceID());
+                if (_replayDepth <= 0) return;
+                VisualProjectiles.Add(__instance.gameObject.GetInstanceID());
+                ReplaySpawned.Add(__instance);
+            }
+        }
+
+        [HarmonyPatch(typeof(PhysicsProjectile), "Shoot")]
+        internal static class MarkVisualPhysicsProjectile
+        {
+            private static void Prefix(PhysicsProjectile __instance)
+            {
+                if (_replayDepth <= 0) return;
+                VisualProjectiles.Add(__instance.gameObject.GetInstanceID());
+                ReplaySpawned.Add(__instance);
             }
         }
 

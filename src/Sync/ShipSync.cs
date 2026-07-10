@@ -339,8 +339,10 @@ namespace PunkMultiverse.Sync
             }
         }
 
-        /// <summary>Fire the puppet's DashStarted subscribers (VFX/audio) — never ShipMovement.Dash
-        /// itself; the velocity impulse belongs to the owner's simulation, ours comes by snapshot.</summary>
+        /// <summary>Fire the puppet's DashStarted subscribers (VFX) and the dash sfx — never
+        /// ShipMovement.Dash itself; the velocity impulse belongs to the owner's simulation,
+        /// ours comes by snapshot. The sfx is played manually because vanilla plays it inside
+        /// Dash(), not from the event.</summary>
         public static void ApplyDash(ShipDashMsg msg)
         {
             if (!ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
@@ -348,7 +350,10 @@ namespace PunkMultiverse.Sync
             try
             {
                 var movement = ship.GetComponent<ShipMovement>();
-                movement?.DashStarted?.Invoke();
+                if (movement == null) return;
+                movement.DashStarted?.Invoke();
+                if (!string.IsNullOrEmpty(movement.dashSfx))
+                    AudioManager.PlaySfx(movement.dashSfx, (Vector2)ship.transform.position);
             }
             catch { }
         }

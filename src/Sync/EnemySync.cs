@@ -201,7 +201,10 @@ namespace PunkMultiverse.Sync
                 Vel = rb != null ? rb.linearVelocity : Vector2.zero,
                 Rot = rb != null ? rb.rotation : se.transform.eulerAngles.z,
                 Aim = UnitStatus.ReadAim(se),
+                State = UnitStatus.ReadState(se),
+                Fire = UnitStatus.ReadFireState(se),
                 HpFraction = hp,
+                ShieldFraction = UnitStatus.ReadShieldFraction(se),
                 BurnLevel = UnitStatus.ReadBurnLevel(se),
             });
         }
@@ -244,6 +247,12 @@ namespace PunkMultiverse.Sync
                         if (propRb != null) propRb.position = e.Pos;
                     }
                     puppet?.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot, e.Aim);
+                    if (puppet != null)
+                    {
+                        UnitStatus.WriteState(se, e.State);
+                        UnitStatus.WriteFireState(se, e.Fire);
+                        UnitStatus.WriteShieldFraction(se, e.ShieldFraction);
+                    }
                     UnitStatus.WriteBurnLevel(se, e.BurnLevel);
                     try
                     {

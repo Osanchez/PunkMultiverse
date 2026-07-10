@@ -25,7 +25,8 @@ namespace PunkMultiverse.Sync
             "ProjectileDispenser", "WaitForTargetAction", "MoveAwayFromTargetAction",
             "MoveToPositionAction", "PushSelfAction", "StopAction", "ApplyTorqueAction",
             "ReduceAngularVelocityAction", "RepeateChildrenAction", "ForgetTargetAction",
-            "ChangeAnimatorParamAction",
+            // ChangeAnimatorParamAction is deliberately NOT muted: it only sets animator bools
+            // (pure cosmetics), and with AI states replicated it keeps puppet animations correct.
         };
 
         private const float InterpDelay = 0.12f;
@@ -90,8 +91,32 @@ namespace PunkMultiverse.Sync
             }
         }
 
-        private void OnDisable() => Unmute();
-        private void OnDestroy() => Unmute();
+        private void OnDisable()
+        {
+            StopWeaponSounds();
+            Unmute();
+        }
+
+        private void OnDestroy()
+        {
+            StopWeaponSounds();
+            Unmute();
+        }
+
+        // Replicated warmup/continuous loops must not outlive the puppet (death mid-telegraph
+        // would leave the charge-up sound playing forever).
+        private void StopWeaponSounds()
+        {
+            try
+            {
+                foreach (var shooter in GetComponentsInChildren<Shooter>(true))
+                {
+                    shooter.StopWarmupSound();
+                    shooter.StopContinousSound();
+                }
+            }
+            catch { }
+        }
 
         private void Unmute()
         {

@@ -356,7 +356,10 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Vel;
         public float Rot;
         public UnityEngine.Vector2 Aim; // authority's visual facing/aim; zero = unknown
+        public byte State;              // index into the unit's StateMachine states; 255 = none
+        public byte Fire;               // weapon audio state: 0 idle, 1 warming up, 2 firing loop
         public float HpFraction;
+        public float ShieldFraction;
         public float BurnLevel;
     }
 
@@ -375,7 +378,10 @@ namespace PunkMultiverse.Protocol
                 w.WriteVector2Half(e.Vel);
                 w.WriteHalf(e.Rot);
                 w.WriteVector2Half(e.Aim);
+                w.WriteByte(e.State);
+                w.WriteByte(e.Fire);
                 w.WriteHalf(e.HpFraction);
+                w.WriteHalf(e.ShieldFraction);
                 w.WriteHalf(e.BurnLevel);
             }
         }
@@ -393,7 +399,10 @@ namespace PunkMultiverse.Protocol
                     Vel = r.ReadVector2Half(),
                     Rot = r.ReadHalf(),
                     Aim = r.ReadVector2Half(),
+                    State = r.ReadByte(),
+                    Fire = r.ReadByte(),
                     HpFraction = r.ReadHalf(),
+                    ShieldFraction = r.ReadHalf(),
                     BurnLevel = r.ReadHalf(),
                 });
             }
@@ -471,6 +480,7 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Dir;
         public UnityEngine.Vector2 BodyPos; // shooter's body position at fire time — lets the
                                             // replay re-anchor the muzzle to the local puppet
+        public byte TargetSlot;             // player the shooter is targeting (homing), 255 = none
 
         public void Write(NetWriter w)
         {
@@ -479,6 +489,7 @@ namespace PunkMultiverse.Protocol
             w.WritePosition(Pos);
             w.WriteVector2Half(Dir);
             w.WritePosition(BodyPos);
+            w.WriteByte(TargetSlot);
         }
 
         public static EntityFireMsg Read(NetReader r) => new EntityFireMsg
@@ -487,6 +498,7 @@ namespace PunkMultiverse.Protocol
             Pos = r.ReadPosition(),
             Dir = r.ReadVector2Half(),
             BodyPos = r.ReadPosition(),
+            TargetSlot = r.ReadByte(),
         };
     }
 

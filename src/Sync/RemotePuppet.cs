@@ -47,25 +47,50 @@ namespace PunkMultiverse.Sync
             StartCoroutine(RemoveCameraTargets());
         }
 
-        /// <summary>Owner's boost flag from the ship snapshot — drives the vanilla boost VFX.
-        /// ShipMovement.SetBoosted works while the component is disabled (Awake populated its
-        /// particle list), and nothing fights us since its Update isn't running.</summary>
+        private int? _boostLoopHandle;
+
+        /// <summary>Owner's boost flag from the ship snapshot — drives the vanilla boost VFX
+        /// and audio. ShipMovement.SetBoosted works while the component is disabled (Awake
+        /// populated its particle list), and nothing fights us since its Update isn't running.
+        /// Sounds are played manually: vanilla plays them in StartBoosting/StopBoosting, which
+        /// puppets never run.</summary>
         public void SetBoosting(bool boosting)
         {
             if (boosting == _boosting) return;
             _boosting = boosting;
-            var movement = GetComponent<ShipMovement>();
-            if (movement == null) return;
+            if (_movement == null) return;
             try
             {
-                movement.SetBoosted(boosting);
+                _movement.SetBoosted(boosting);
                 // SetBoosted also arms boost ram damage — a puppet's is cosmetic only.
-                if (movement.impactDamage != null) movement.impactDamage.enabled = false;
-                if (boosting && movement.boostStartParticle != null) movement.boostStartParticle.Play();
+                if (_movement.impactDamage != null) _movement.impactDamage.enabled = false;
+                if (boosting && _movement.boostStartParticle != null) _movement.boostStartParticle.Play();
+
+                if (boosting)
+                {
+                    if (!string.IsNullOrEmpty(_movement.boostSfx))
+                        AudioManager.PlaySfx(_movement.boostSfx, (Vector2)transform.position);
+                    if (!string.IsNullOrEmpty(_movement.boostLoopedSfx))
+                        _boostLoopHandle = AudioManager.PlaySfx(_movement.boostLoopedSfx, transform); // tracks the ship
+                }
+                else if (_boostLoopHandle.HasValue)
+                {
+                    AudioManager.Stop(_boostLoopHandle.Value);
+                    _boostLoopHandle = null;
+                }
             }
             catch (System.Exception e)
             {
                 Plugin.Log.LogWarning($"[Puppet] boost VFX failed: {e.Message}");
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (_boostLoopHandle.HasValue)
+            {
+                try { AudioManager.Stop(_boostLoopHandle.Value); } catch { }
+                _boostLoopHandle = null;
             }
         }
 
