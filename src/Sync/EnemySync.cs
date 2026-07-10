@@ -200,6 +200,7 @@ namespace PunkMultiverse.Sync
                 Pos = pos,
                 Vel = rb != null ? rb.linearVelocity : Vector2.zero,
                 Rot = rb != null ? rb.rotation : se.transform.eulerAngles.z,
+                Aim = UnitStatus.ReadAim(se),
                 HpFraction = hp,
                 BurnLevel = UnitStatus.ReadBurnLevel(se),
             });
@@ -242,7 +243,7 @@ namespace PunkMultiverse.Sync
                         var propRb = se.GetComponent<Rigidbody2D>();
                         if (propRb != null) propRb.position = e.Pos;
                     }
-                    puppet?.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot);
+                    puppet?.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot, e.Aim);
                     UnitStatus.WriteBurnLevel(se, e.BurnLevel);
                     try
                     {
@@ -250,7 +251,13 @@ namespace PunkMultiverse.Sync
                         if (dr != null && dr.MaxHealth > 0)
                         {
                             float target = e.HpFraction * dr.MaxHealth;
-                            if (Mathf.Abs(dr.CurrentHealth - target) > 0.5f) dr.CurrentHealth = target;
+                            if (Mathf.Abs(dr.CurrentHealth - target) > 0.5f)
+                            {
+                                // Someone else hurt this entity — show the hit flash observers
+                                // would see in vanilla (the pipeline didn't run locally).
+                                if (target < dr.CurrentHealth) UnitStatus.PlayDamageFlash(se);
+                                dr.CurrentHealth = target;
+                            }
                         }
                     }
                     catch { }

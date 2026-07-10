@@ -12,14 +12,56 @@ namespace PunkMultiverse.Sync
     internal static class UnitStatus
     {
         private static readonly Dictionary<Component, float> InitialShieldCharge = new Dictionary<Component, float>();
+        private static readonly Dictionary<Component, BarrelTransform> BarrelCache = new Dictionary<Component, BarrelTransform>();
         private static bool _warnedShield;
         private static bool _warnedBurn;
 
         public static void Reset()
         {
             InitialShieldCharge.Clear();
+            BarrelCache.Clear();
             _warnedShield = false;
             _warnedBurn = false;
+        }
+
+        // ---------------------------------------------------------------- aim / facing
+
+        /// <summary>The direction this unit visibly aims — BarrelTransform.Direction is the
+        /// game's single source of truth for aim (body facing is rb.rotation, synced separately;
+        /// the game has no sprite flips). Zero = no barrel; receivers skip zero aims.</summary>
+        public static Vector2 ReadAim(Component root)
+        {
+            try
+            {
+                var unit = root != null ? root.GetComponentInParent<Unit>() : null;
+                if (unit == null) return Vector2.zero;
+                if (!BarrelCache.TryGetValue(unit, out var barrel))
+                    BarrelCache[unit] = barrel = unit.GetComponentInChildren<BarrelTransform>(true);
+                return barrel != null ? barrel.Direction : Vector2.zero;
+            }
+            catch { return Vector2.zero; }
+        }
+
+        // ---------------------------------------------------------------- damage flash
+
+        // DamageHighlight.OnDamage just stamps lastDamageTime; its Update applies/clears the
+        // material swap. Invoking it directly gives the cosmetic flash WITHOUT the other
+        // onDamage subscribers (camera shake, rumble, HUD) and without touching health.
+        private static readonly System.Reflection.MethodInfo FlashMethod =
+            AccessTools.Method(typeof(DamageHighlight), "OnDamage");
+
+        /// <summary>Play the vanilla hit flash on an entity without applying damage. Safe to
+        /// call once per replicated hit — repeats just refresh the flash timer.</summary>
+        public static void PlayDamageFlash(Component root)
+        {
+            if (root == null || FlashMethod == null) return;
+            try
+            {
+                var dh = root.GetComponentInChildren<DamageHighlight>(true);
+                if (dh == null) dh = root.GetComponentInParent<DamageHighlight>();
+                if (dh != null && dh.isActiveAndEnabled) FlashMethod.Invoke(dh, null);
+            }
+            catch { }
         }
 
         // ---------------------------------------------------------------- shields

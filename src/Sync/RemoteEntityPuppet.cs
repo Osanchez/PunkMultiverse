@@ -12,6 +12,8 @@ namespace PunkMultiverse.Sync
     {
         // AI drivers to mute, by type name (game types looked up per-instance so new enemy
         // variants keep working). Shooter is muted so puppets don't fire duplicate projectiles.
+        // AimAction subclasses are muted by base type below — left running they keep steering
+        // the barrel (AimInRandomDirectionAction literally at random) against the synced aim.
         private static readonly string[] MutedTypes =
             { "AIAgent", "Vision", "UnitMovement", "Seeker", "Shooter", "StateMachine", "PushMovement", "SwimmingMovement", "ChargerRam" };
 
@@ -19,6 +21,7 @@ namespace PunkMultiverse.Sync
         private const float HardSnapDistance = 4f;
 
         public int NetId;
+        public Vector2 AimDirection { get; private set; }
 
         private struct Snap
         {
@@ -31,10 +34,23 @@ namespace PunkMultiverse.Sync
         private readonly List<Snap> _buffer = new List<Snap>(16);
         private readonly List<Behaviour> _muted = new List<Behaviour>();
         private Rigidbody2D _rb;
+        private BarrelTransform[] _barrels;
 
         private void Awake()
         {
             _rb = GetComponent<Rigidbody2D>();
+            _barrels = GetComponentsInChildren<BarrelTransform>(true);
+        }
+
+        // The muted AI no longer steers the barrels; mirror the authority's aim through the
+        // game's own BarrelTransform.Direction (kept enabled) so its LateUpdate applies the
+        // visible rotation. Body facing arrives separately via the rb.rotation snapshots.
+        private void Update()
+        {
+            if (_barrels == null || AimDirection.sqrMagnitude < 0.01f) return;
+            foreach (var barrel in _barrels)
+                if (barrel != null)
+                    barrel.Direction = AimDirection;
         }
 
         private void OnEnable()
@@ -42,6 +58,12 @@ namespace PunkMultiverse.Sync
             foreach (var behaviour in GetComponentsInChildren<Behaviour>(true))
             {
                 if (behaviour == null || !behaviour.enabled) continue;
+                if (behaviour is AimAction)
+                {
+                    behaviour.enabled = false;
+                    _muted.Add(behaviour);
+                    continue;
+                }
                 var tn = behaviour.GetType().Name;
                 for (int i = 0; i < MutedTypes.Length; i++)
                 {
@@ -66,8 +88,9 @@ namespace PunkMultiverse.Sync
             _muted.Clear();
         }
 
-        public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot)
+        public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot, Vector2 aim)
         {
+            AimDirection = aim;
             _buffer.Add(new Snap { Time = time, Pos = pos, Vel = vel, Rot = rot });
             if (_buffer.Count > 20) _buffer.RemoveRange(0, _buffer.Count - 20);
         }

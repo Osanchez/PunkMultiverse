@@ -90,7 +90,6 @@ namespace PunkMultiverse.UI
         {
             if (_canvasGo == null) Build();
             _canvasGo.SetActive(true);
-            Core.UpdateCheck.Kick(this);
             Refresh();
         }
 
@@ -276,10 +275,6 @@ namespace PunkMultiverse.UI
             _connectPanel.SetActive(!inLobby);
             _lobbyPanel.SetActive(inLobby);
             _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
-            if (_versionText != null)
-                _versionText.text = Core.UpdateCheck.UpdateAvailable != null
-                    ? $"<color=#f0a03c>mod v{Plugin.Version} — UPDATE v{Core.UpdateCheck.UpdateAvailable} AVAILABLE: github.com/Osanchez/PunkMultiverse/releases</color>"
-                    : $"mod v{Plugin.Version}";
 
             if (!inLobby) return;
 

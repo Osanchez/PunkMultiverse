@@ -339,6 +339,7 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Vel;
         public float Rot;
+        public UnityEngine.Vector2 Aim; // authority's visual facing/aim; zero = unknown
         public float HpFraction;
         public float BurnLevel;
     }
@@ -357,6 +358,7 @@ namespace PunkMultiverse.Protocol
                 w.WritePosition(e.Pos);
                 w.WriteVector2Half(e.Vel);
                 w.WriteHalf(e.Rot);
+                w.WriteVector2Half(e.Aim);
                 w.WriteHalf(e.HpFraction);
                 w.WriteHalf(e.BurnLevel);
             }
@@ -374,6 +376,7 @@ namespace PunkMultiverse.Protocol
                     Pos = r.ReadPosition(),
                     Vel = r.ReadVector2Half(),
                     Rot = r.ReadHalf(),
+                    Aim = r.ReadVector2Half(),
                     HpFraction = r.ReadHalf(),
                     BurnLevel = r.ReadHalf(),
                 });
@@ -450,6 +453,8 @@ namespace PunkMultiverse.Protocol
         public int NetId;
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Dir;
+        public UnityEngine.Vector2 BodyPos; // shooter's body position at fire time — lets the
+                                            // replay re-anchor the muzzle to the local puppet
 
         public void Write(NetWriter w)
         {
@@ -457,6 +462,7 @@ namespace PunkMultiverse.Protocol
             w.WriteVarUInt((uint)NetId);
             w.WritePosition(Pos);
             w.WriteVector2Half(Dir);
+            w.WritePosition(BodyPos);
         }
 
         public static EntityFireMsg Read(NetReader r) => new EntityFireMsg
@@ -464,6 +470,7 @@ namespace PunkMultiverse.Protocol
             NetId = (int)r.ReadVarUInt(),
             Pos = r.ReadPosition(),
             Dir = r.ReadVector2Half(),
+            BodyPos = r.ReadPosition(),
         };
     }
 

@@ -19,6 +19,8 @@ namespace PunkMultiverse.Core
 
         /// <summary>Newest published version, when it's newer than this build; else null.</summary>
         public static Version UpdateAvailable { get; private set; }
+        /// <summary>True once the GitHub query returned a definitive answer (up to date OR update).</summary>
+        public static bool Resolved { get; private set; }
         private static bool _checked;
 
         public static void Kick(MonoBehaviour runner)
@@ -53,6 +55,7 @@ namespace PunkMultiverse.Core
                     {
                         Plugin.Log.LogInfo($"[Update] up to date (v{current})");
                     }
+                    Resolved = true;
                 }
                 catch (Exception e)
                 {

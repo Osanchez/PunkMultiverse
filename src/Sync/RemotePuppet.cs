@@ -30,7 +30,6 @@ namespace PunkMultiverse.Sync
         private readonly List<Snap> _buffer = new List<Snap>(32);
         private Rigidbody2D _rb;
         private BarrelTransform[] _barrels;
-        private ParticleSystem[] _boostParticles;
         private bool _boosting;
 
         private void Awake()
@@ -42,35 +41,39 @@ namespace PunkMultiverse.Sync
         {
             Neuter();
             _barrels = GetComponentsInChildren<BarrelTransform>(true);
-            var boost = new List<ParticleSystem>();
-            foreach (var ps in GetComponentsInChildren<ParticleSystem>(true))
-                if (ps.name.IndexOf("boost", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                    boost.Add(ps);
-            _boostParticles = boost.ToArray();
             StartCoroutine(RemoveCameraTargets());
         }
 
-        /// <summary>Owner's boost flag from the ship snapshot — drives the boost particles.</summary>
+        /// <summary>Owner's boost flag from the ship snapshot — drives the vanilla boost VFX.
+        /// ShipMovement.SetBoosted works while the component is disabled (Awake populated its
+        /// particle list), and nothing fights us since its Update isn't running.</summary>
         public void SetBoosting(bool boosting)
         {
-            if (boosting == _boosting || _boostParticles == null) return;
+            if (boosting == _boosting) return;
             _boosting = boosting;
-            foreach (var ps in _boostParticles)
+            var movement = GetComponent<ShipMovement>();
+            if (movement == null) return;
+            try
             {
-                if (ps == null) continue;
-                if (boosting) ps.Play(true);
-                else ps.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+                movement.SetBoosted(boosting);
+                // SetBoosted also arms boost ram damage — a puppet's is cosmetic only.
+                if (movement.impactDamage != null) movement.impactDamage.enabled = false;
+                if (boosting && movement.boostStartParticle != null) movement.boostStartParticle.Play();
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[Puppet] boost VFX failed: {e.Message}");
             }
         }
 
-        // Turrets track the owner's aim (their real barrels do this from input; ours is muted).
-        private void LateUpdate()
+        // Turrets track the owner's aim: write the game's own BarrelTransform.Direction and let
+        // its LateUpdate apply the visible rotation (rotating the transform ourselves would race it).
+        private void Update()
         {
             if (_barrels == null || AimDirection.sqrMagnitude < 0.01f) return;
-            float angle = Mathf.Atan2(AimDirection.y, AimDirection.x) * Mathf.Rad2Deg;
             foreach (var barrel in _barrels)
                 if (barrel != null)
-                    barrel.transform.rotation = Quaternion.Euler(0, 0, angle);
+                    barrel.Direction = AimDirection;
         }
 
         /// <summary>Disable local input/physics-driving components; replication owns this body.</summary>

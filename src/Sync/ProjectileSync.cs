@@ -103,7 +103,13 @@ namespace PunkMultiverse.Sync
                         || (session.IsHost && !EnemySync.Owners.ContainsKey(owner.netId));
             if (!mine || owner.se.GetComponent<RemoteEntityPuppet>() != null) return;
 
-            var msg = new EntityFireMsg { NetId = owner.netId, Pos = barrel.Position, Dir = barrel.Direction };
+            var msg = new EntityFireMsg
+            {
+                NetId = owner.netId,
+                Pos = barrel.Position,
+                Dir = barrel.Direction,
+                BodyPos = owner.se.transform.position,
+            };
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
@@ -134,11 +140,17 @@ namespace PunkMultiverse.Sync
                 var shooter = se.GetComponentInChildren<Shooter>(true);
                 var weapon = shooter != null ? Traverse.Create(shooter).Field("weapon").GetValue() as WeaponBase : null;
                 if (weapon == null) return;
+                // The puppet is drawn where the interpolation buffer says, ~100-250 ms behind the
+                // authority — anchor the muzzle to the local body (keeping the authority's muzzle
+                // offset) so shots visibly come out of the enemy, not out of empty space.
+                Vector2 pos = msg.BodyPos != Vector2.zero
+                    ? (Vector2)se.transform.position + (msg.Pos - msg.BodyPos)
+                    : msg.Pos;
                 _replayDepth++;
                 try
                 {
                     AccessTools.Method(typeof(WeaponBase), "DoShoot")
-                        .Invoke(weapon, new object[] { new FakeBarrel(msg.Pos, msg.Dir) });
+                        .Invoke(weapon, new object[] { new FakeBarrel(pos, msg.Dir) });
                 }
                 finally { _replayDepth--; }
             }
@@ -206,16 +218,28 @@ namespace PunkMultiverse.Sync
             return false;
         }
 
+        // Enemy fire hit-detects on the VICTIM's machine (NEW-style): the only enemy bullets that
+        // exist here for a remote-simulated enemy are its replayed ones, and they may damage the
+        // local ship — full vanilla pipeline — and nothing else. The mirror half: this machine's
+        // real enemies never damage player puppets; that victim sees the replay and applies it
+        // themselves. Matches how contact/hazard damage already works (victim-side), and means
+        // you can only be hit by shots that visibly reach you on your own screen.
         [HarmonyPatch(typeof(HealthBase), "ProjectileCollided")]
         internal static class SuppressVisualProjectileDamage
         {
             private static bool Prefix(HealthBase __instance, object __0)
             {
                 if (!NetSession.Active) return true;
-                if (IsVisual(__0)) return false;
+                var owner = OwnerUnit(__0);
+                if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
+                    return IsLocalShip(__instance); // replayed enemy fire: victim-side, self only
+                if (IsVisual(__0)) return false;    // teammate replays & other visuals stay cosmetic
                 // Environmental (ownerless) projectiles fire independently on every client — only
                 // the victim's own authority applies their damage, or shared enemies eat it twice.
-                if (VictimIsRemote(__instance) && IsOwnerless(__0)) return false;
+                if (owner == null) return !VictimIsRemote(__instance);
+                // Real local enemy vs a teammate's puppet: suppressed — they apply the replay.
+                // (Player-vs-player stays shooter-routed: Ship owners fall through.)
+                if (owner.GetComponent<Ship>() == null && IsPuppetShip(__instance)) return false;
                 return true;
             }
         }
@@ -226,45 +250,56 @@ namespace PunkMultiverse.Sync
                                       || victim.GetComponent<RemoteEntityPuppet>() != null);
         }
 
-        private static bool IsOwnerless(object projectile)
+        private static bool IsLocalShip(Component victim)
         {
-            try
-            {
-                var owner = Traverse.Create(projectile).Property("Owner").GetValue() as Unit;
-                if (owner == null)
-                    owner = Traverse.Create(projectile).Field("owner").GetValue() as Unit;
-                return owner == null;
-            }
-            catch { return false; }
+            return victim != null && victim.GetComponent<Ship>() != null
+                   && victim.GetComponent<RemotePuppet>() == null;
         }
 
-        // Replayed hitscan shots do a REAL raycast — their hits must not deal damage here
-        // (the simulating machine already routed it). Covers both the synchronous replay scope
-        // and any beam owned by a remote-simulated unit.
-        [HarmonyPatch(typeof(HealthBase), "OnHitByHitscanWeapon")]
-        internal static class SuppressVisualHitscanDamage
+        private static bool IsPuppetShip(Component victim)
         {
-            private static bool Prefix(HealthBase __instance, object __0)
-            {
-                if (!NetSession.Active) return true;
-                if (_replayDepth > 0) return false;
-                if (OwnerIsRemote(__0)) return false;
-                if (VictimIsRemote(__instance) && IsOwnerless(__0)) return false;
-                return true;
-            }
+            return victim != null && victim.GetComponent<RemotePuppet>() != null;
         }
 
-        private static bool OwnerIsRemote(object weaponOrProjectile)
+        private static Unit OwnerUnit(object weaponOrProjectile)
         {
             try
             {
                 var owner = Traverse.Create(weaponOrProjectile).Property("Owner").GetValue() as Unit;
                 if (owner == null)
                     owner = Traverse.Create(weaponOrProjectile).Field("owner").GetValue() as Unit;
-                return owner != null && (owner.GetComponent<RemotePuppet>() != null
-                                         || owner.GetComponent<RemoteEntityPuppet>() != null);
+                return owner;
             }
-            catch { return false; }
+            catch { return null; }
+        }
+
+        private static bool IsOwnerless(object projectile) => OwnerUnit(projectile) == null;
+
+        // Hitscan mirrors the projectile rules; the raycast happens synchronously inside the
+        // replayed DoShoot, so the enemy-puppet-owner allowance must come before the blanket
+        // replay suppression.
+        [HarmonyPatch(typeof(HealthBase), "OnHitByHitscanWeapon")]
+        internal static class SuppressVisualHitscanDamage
+        {
+            private static bool Prefix(HealthBase __instance, object __0)
+            {
+                if (!NetSession.Active) return true;
+                var owner = OwnerUnit(__0);
+                if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
+                    return IsLocalShip(__instance); // replayed enemy beam: victim-side, self only
+                if (_replayDepth > 0) return false;
+                if (owner != null && owner.GetComponent<RemotePuppet>() != null) return false;
+                if (owner == null) return !VictimIsRemote(__instance);
+                if (owner.GetComponent<Ship>() == null && IsPuppetShip(__instance)) return false;
+                return true;
+            }
+        }
+
+        private static bool OwnerIsRemote(object weaponOrProjectile)
+        {
+            var owner = OwnerUnit(weaponOrProjectile);
+            return owner != null && (owner.GetComponent<RemotePuppet>() != null
+                                     || owner.GetComponent<RemoteEntityPuppet>() != null);
         }
 
         // Visual projectiles must not spawn REAL explosions (area damage + cell destruction would

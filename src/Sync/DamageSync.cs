@@ -83,6 +83,7 @@ namespace PunkMultiverse.Sync
                 if (!NetSession.Active || _applyingRemote) return true;
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId)) return true;
                 SendDamageRequest(isEntity, slot, netId, __0);
+                UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
                 return false;
             }
         }
@@ -95,6 +96,7 @@ namespace PunkMultiverse.Sync
                 if (!NetSession.Active || _applyingRemote) return true;
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId)) return true;
                 foreach (var damage in __0) SendDamageRequest(isEntity, slot, netId, damage);
+                UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
                 return false;
             }
         }

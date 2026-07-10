@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using TMPro;
 using UnityEngine;
@@ -40,12 +41,21 @@ namespace PunkMultiverse.UI
                 yield break;
             }
 
+            // Vanilla-rendered widths, captured before the clone exists — these are the
+            // "default sizes" the buttons must keep.
+            float wSingle = single != null ? ((RectTransform)single).rect.width : 0f;
+            float wCoop = ((RectTransform)coop).rect.width;
+
             var clone = Instantiate(coop.gameObject, coop.parent);
             clone.name = "PunkMV_PlayOnline";
             clone.transform.SetSiblingIndex(coop.GetSiblingIndex() + 1);
 
+            TMP_FontAsset menuFont = null;
             foreach (var tmp in clone.GetComponentsInChildren<TMP_Text>(true))
+            {
                 tmp.text = "PLAY ONLINE";
+                menuFont = tmp.font;
+            }
             // Strip anything that could reset the label or call menu logic; keep Button + ButtonSounds.
             foreach (var comp in clone.GetComponentsInChildren<MonoBehaviour>(true))
             {
@@ -65,103 +75,95 @@ namespace PunkMultiverse.UI
             button.onClick = new Button.ButtonClickedEvent(); // drops vanilla persistent SelectGameMode call
             button.onClick.AddListener(() => GetComponent<LobbyScreen>()?.Show());
 
-            Plugin.Log.LogInfo("[UI] PLAY ONLINE button injected into main menu");
+            // Freeze the selector's HorizontalLayoutGroup before its next rebuild and place
+            // the row ourselves — letting it re-run with a third child is what packed (and,
+            // with child width control, stretched) the buttons.
+            SetupRowLayout((RectTransform)selector, single, coop, (RectTransform)clone.transform, wSingle, wCoop);
 
-            // Give whatever arranges the selector a frame to see the new sibling, then
-            // re-slot the row so three buttons share it without overlap.
-            yield return null;
-            SetupRowLayout((RectTransform)selector, single, coop, clone.transform);
+            Core.UpdateCheck.Kick(this);
+            CreateVersionBanner(selector, menuFont);
+
+            Plugin.Log.LogInfo("[UI] PLAY ONLINE button injected into main menu");
+        }
+
+        // ---------------------------------------------------------------- version banner
+
+        private TMP_Text _versionBanner;
+
+        // Sits just above the developer-name listing at the bottom of the main menu. Plain
+        // version until the GitHub check resolves; then "UP TO DATE" or an update notice.
+        private void CreateVersionBanner(Transform selector, TMP_FontAsset font)
+        {
+            var canvas = selector.GetComponentInParent<Canvas>();
+            if (canvas == null) return;
+            var go = new GameObject("PunkMV_Version", typeof(RectTransform));
+            go.transform.SetParent(canvas.transform, false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0f);
+            rt.pivot = new Vector2(0.5f, 0f);
+            rt.anchoredPosition = new Vector2(0, 64);
+            rt.sizeDelta = new Vector2(1400, 28);
+            var tmp = go.AddComponent<TextMeshProUGUI>();
+            if (font != null) tmp.font = font;
+            tmp.fontSize = 18;
+            tmp.alignment = TextAlignmentOptions.Center;
+            tmp.color = new Color(1f, 1f, 1f, 0.45f);
+            tmp.text = $"PUNK MULTIVERSE v{Plugin.Version}";
+            _versionBanner = tmp;
+            StartCoroutine(RefreshVersionBanner());
+        }
+
+        private IEnumerator RefreshVersionBanner()
+        {
+            while (_versionBanner != null && !Core.UpdateCheck.Resolved)
+                yield return new WaitForSecondsRealtime(0.5f);
+            if (_versionBanner == null) yield break;
+            if (Core.UpdateCheck.UpdateAvailable != null)
+            {
+                _versionBanner.text =
+                    $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{Core.UpdateCheck.UpdateAvailable} AVAILABLE ON GITHUB";
+                _versionBanner.color = new Color(0.98f, 0.63f, 0.24f);
+            }
+            else
+            {
+                _versionBanner.text = $"PUNK MULTIVERSE v{Plugin.Version} — UP TO DATE";
+            }
         }
 
         // ---------------------------------------------------------------- row layout
 
-        // The selector row was designed for two buttons; with PLAY ONLINE it holds three and
-        // the game packs them edge-to-edge. Re-slot: even widths, gaps between, side margins.
-        private const float RowMarginFrac = 0.05f;
-        private const float RowGapFrac = 0.03f;
-
-        private RectTransform _row;
-        private readonly RectTransform[] _rowButtons = new RectTransform[3];
-        private bool _enforceRowLayout;
-
-        private void SetupRowLayout(RectTransform row, Transform single, Transform coop, Transform online)
+        private void SetupRowLayout(RectTransform row, Transform single, Transform coop,
+            RectTransform online, float wSingle, float wCoop)
         {
-            _row = row;
-            _rowButtons[0] = single as RectTransform;
-            _rowButtons[1] = coop as RectTransform;
-            _rowButtons[2] = online as RectTransform;
             Plugin.Log.LogInfo("[UI] GameModeSelector components: "
                 + string.Join(",", row.GetComponents<Component>().Select(c => c.GetType().Name)));
 
-            // Narrower slots must not clip the labels (SINGLE PLAYER is the widest).
-            foreach (var b in _rowButtons)
-            {
-                if (b == null) continue;
-                foreach (var tmp in b.GetComponentsInChildren<TMP_Text>(true))
-                {
-                    tmp.enableAutoSizing = true;
-                    tmp.fontSizeMax = tmp.fontSize;
-                    tmp.fontSizeMin = tmp.fontSize * 0.4f;
-                }
-            }
-
-            float width = row.rect.width;
-            int margin = Mathf.RoundToInt(width * RowMarginFrac);
+            // The selector is a HorizontalLayoutGroup (verified via the log line above).
+            // Disable it before its next rebuild so the vanilla button sizes stay untouched.
             var hlg = row.GetComponent<HorizontalLayoutGroup>();
-            if (hlg != null)
-            {
-                hlg.padding.left = margin;
-                hlg.padding.right = margin;
-                hlg.spacing = width * RowGapFrac;
-                hlg.childControlWidth = true;
-                hlg.childForceExpandWidth = true;
-                LayoutRebuilder.MarkLayoutForRebuild(row);
-                return;
-            }
-            var grid = row.GetComponent<GridLayoutGroup>();
-            if (grid != null)
-            {
-                grid.padding.left = margin;
-                grid.padding.right = margin;
-                grid.spacing = new Vector2(width * RowGapFrac, grid.spacing.y);
-                grid.cellSize = new Vector2(SlotWidth(width, CountRowButtons()), grid.cellSize.y);
-                LayoutRebuilder.MarkLayoutForRebuild(row);
-                return;
-            }
-            // No layout group, yet something game-side rowed the clone up — keep re-asserting
-            // our slots (epsilon-guarded) rather than positioning once and losing the fight.
-            _enforceRowLayout = true;
-        }
+            if (hlg != null) hlg.enabled = false;
 
-        private int CountRowButtons()
-        {
-            int n = 0;
-            foreach (var b in _rowButtons)
-                if (b != null) n++;
-            return n;
-        }
+            var rts = new List<RectTransform>(3);
+            var widths = new List<float>(3);
+            if (single != null) { rts.Add((RectTransform)single); widths.Add(wSingle); }
+            rts.Add((RectTransform)coop); widths.Add(wCoop);
+            rts.Add(online); widths.Add(Mathf.Max(wCoop, wSingle)); // fits the PLAY ONLINE label
 
-        private static float SlotWidth(float rowWidth, int count) =>
-            (rowWidth - rowWidth * RowMarginFrac * 2f - rowWidth * RowGapFrac * (count - 1)) / count;
+            float total = 0f;
+            foreach (var w in widths) total += w;
 
-        private void LateUpdate()
-        {
-            if (!_enforceRowLayout) return;
-            if (_row == null) { _enforceRowLayout = false; return; }
-            int count = CountRowButtons();
-            if (count == 0) return;
-            float width = _row.rect.width;
-            float slotW = SlotWidth(width, count);
-            float x = _row.rect.xMin + width * RowMarginFrac;
-            foreach (var b in _rowButtons)
+            // Equal side margins and inner gaps; clamped so the row stays grouped near the
+            // center on wide screens and never overlaps on narrow ones.
+            float gap = Mathf.Clamp((row.rect.width - total) / (rts.Count + 1), 12f, 64f);
+
+            float x = row.rect.center.x - (total + gap * (rts.Count - 1)) / 2f;
+            for (int i = 0; i < rts.Count; i++)
             {
-                if (b == null) continue;
-                if (Mathf.Abs(b.rect.width - slotW) > 0.5f)
-                    b.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, slotW);
-                float pivotX = x + slotW * b.pivot.x;
-                var lp = b.localPosition;
-                if (Mathf.Abs(lp.x - pivotX) > 0.5f) { lp.x = pivotX; b.localPosition = lp; }
-                x += slotW + width * RowGapFrac;
+                rts[i].SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, widths[i]);
+                var lp = rts[i].localPosition;
+                lp.x = x + widths[i] * rts[i].pivot.x;
+                rts[i].localPosition = lp;
+                x += widths[i] + gap;
             }
         }
 
