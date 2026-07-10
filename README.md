@@ -136,7 +136,6 @@ same ledgers without anyone reloading.
   player can rejoin with the code.
 - Other installed mods are detected and policed (see *Configuration*) but never synced;
   daily-challenge runs aren't supported in net runs yet.
-- Hook tethers to unstreamed targets and hooked-prop spring physics are approximate on peers.
 
 ## Credits
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using HarmonyLib;
 using PunkMultiverse.Core;
 using PunkMultiverse.Protocol;
@@ -15,9 +16,31 @@ namespace PunkMultiverse.Sync
     internal static class HookSync
     {
         private static readonly NetWriter Writer = new NetWriter(32);
+        // Attaches whose target hasn't streamed in locally yet: slot -> targetNetId. Retried
+        // from the entity spawn hook, so the tether appears the moment the target exists here.
+        private static readonly Dictionary<byte, int> PendingAttach = new Dictionary<byte, int>();
         private static bool _warned;
 
-        public static void Reset() => _warned = false;
+        public static void Reset()
+        {
+            PendingAttach.Clear();
+            _warned = false;
+        }
+
+        /// <summary>Called when an entity streams in — completes any tether waiting on it.</summary>
+        public static void ApplyPendingFor(int netId)
+        {
+            List<byte> slots = null;
+            foreach (var kv in PendingAttach)
+                if (kv.Value == netId)
+                    (slots ??= new List<byte>()).Add(kv.Key);
+            if (slots == null) return;
+            foreach (var slot in slots)
+            {
+                PendingAttach.Remove(slot);
+                Apply(new HookStateMsg { Slot = slot, Attached = true, TargetNetId = netId });
+            }
+        }
 
         [HarmonyPatch(typeof(Hook), "Activate")]
         internal static class CaptureHook
@@ -63,7 +86,12 @@ namespace PunkMultiverse.Sync
                     if (egm.TryGetSavableEntity(instanceId, out var se) && se != null)
                         target = se.GetComponentInChildren<Rigidbody2D>();
                 }
-                if (msg.Attached && target == null) return; // target not streamed in here — no tether
+                if (msg.Attached && target == null)
+                {
+                    PendingAttach[msg.Slot] = msg.TargetNetId; // attach once it streams in
+                    return;
+                }
+                if (!msg.Attached) PendingAttach.Remove(msg.Slot);
 
                 if (!TrySetAttachment(hook, target) && !_warned)
                 {

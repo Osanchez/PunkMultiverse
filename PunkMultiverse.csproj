@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>PunkMultiverse</AssemblyName>
     <RootNamespace>PunkMultiverse</RootNamespace>
-    <Version>0.1.16</Version>
+    <Version>0.1.17</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

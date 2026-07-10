@@ -86,6 +86,7 @@ namespace PunkMultiverse.Sync
                 if (!NetIds.TryGetNetId(__0.instanceId, out int netId)) return;
                 try { ApplyOwnership(netId, __0.instanceId); } catch { }
                 try { ProgressionSync.ApplyPendingFor(netId); } catch { }
+                try { HookSync.ApplyPendingFor(netId); } catch { }
             }
         }
 
@@ -250,9 +251,14 @@ namespace PunkMultiverse.Sync
                     }
                     if (puppet == null)
                     {
-                        // Pushed physics prop: snap its body to the authority's position.
-                        var propRb = se.GetComponent<Rigidbody2D>();
-                        if (propRb != null) propRb.position = e.Pos;
+                        // Pushed/hooked physics prop: interpolate while its authority streams
+                        // it (PropPuppet self-expires and returns the prop to local physics).
+                        if (se.GetComponent<Rigidbody2D>() != null)
+                        {
+                            var prop = se.GetComponent<PropPuppet>();
+                            if (prop == null) prop = se.gameObject.AddComponent<PropPuppet>();
+                            prop.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot);
+                        }
                     }
                     puppet?.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot, e.Aim);
                     if (puppet != null)
