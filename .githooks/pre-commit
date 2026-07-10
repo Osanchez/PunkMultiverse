@@ -17,8 +17,9 @@ if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$)'
     exit 0
 fi
 
-# Manual version change already staged? Respect it.
-if git diff --cached -U0 -- "$csproj" | grep -q '^\+.*<Version>'; then
+# Manual version change already staged? Respect it. Anchor to the property line itself —
+# a stray "<Version>" in a comment or elsewhere must not suppress the auto-bump.
+if git diff --cached -U0 -- "$csproj" | grep -qE '^\+[[:space:]]*<Version>[0-9]'; then
     exit 0
 fi
 
