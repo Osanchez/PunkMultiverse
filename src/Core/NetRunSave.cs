@@ -14,9 +14,10 @@ namespace PunkMultiverse.Core
     internal static class NetRunSave
     {
         private const int FormatVersion = 1;
-        private const float SaveInterval = 20f;
+        private const float SaveInterval = 60f; // ledgers can reach map scale — don't write 20 MB every 20 s
 
         private static float _nextSaveAt;
+        private static volatile bool _writing;
 
         public sealed class Data
         {
@@ -60,39 +61,61 @@ namespace PunkMultiverse.Core
         {
             try
             {
-                if (session == null || session.CurrentRunSeed == 0) return;
-                using (var fs = new FileStream(PathFor(), FileMode.Create))
-                using (var bw = new BinaryWriter(fs))
+                if (session == null || session.CurrentRunSeed == 0 || _writing) return;
+
+                // Snapshot on the main thread (the Snapshot() helpers return copies), then
+                // serialize on a worker — the terrain ledger can be tens of MB.
+                int seed = session.CurrentRunSeed;
+                bool ff = session.FriendlyFire;
+                bool hp = session.HpScaling;
+                int station = Sync.ProgressionSync.LatestStationNetId;
+                var cells = Sync.WorldSync.LedgerSnapshot();
+                var kills = Sync.EnemySync.KilledSnapshot();
+                var upgrades = Sync.ProgressionSync.UpgradeSnapshot();
+                var instruments = Sync.ProgressionSync.InstrumentSnapshot();
+                var scanners = Sync.ProgressionSync.ScannerSnapshot();
+
+                _writing = true;
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    bw.Write(FormatVersion);
-                    bw.Write(session.CurrentRunSeed);
-                    bw.Write(session.FriendlyFire);
-                    bw.Write(session.HpScaling);
-                    bw.Write(Sync.ProgressionSync.LatestStationNetId);
-
-                    var cells = Sync.WorldSync.LedgerSnapshot();
-                    bw.Write(cells.Count);
-                    foreach (var (index, type) in cells) { bw.Write(index); bw.Write(type); }
-
-                    var kills = Sync.EnemySync.KilledSnapshot();
-                    bw.Write(kills.Count);
-                    foreach (var id in kills) bw.Write(id);
-
-                    var upgrades = Sync.ProgressionSync.UpgradeSnapshot();
-                    bw.Write(upgrades.Count);
-                    foreach (var (id, hash) in upgrades) { bw.Write(id); bw.Write(hash); }
-
-                    var instruments = Sync.ProgressionSync.InstrumentSnapshot();
-                    bw.Write(instruments.Count);
-                    foreach (var (id, hash) in instruments) { bw.Write(id); bw.Write(hash); }
-
-                    var scanners = Sync.ProgressionSync.ScannerSnapshot();
-                    bw.Write(scanners.Count);
-                    foreach (var id in scanners) bw.Write(id);
-                }
+                    try
+                    {
+                        string tmp = PathFor() + ".tmp";
+                        using (var fs = new FileStream(tmp, FileMode.Create))
+                        using (var bw = new BinaryWriter(fs))
+                        {
+                            bw.Write(FormatVersion);
+                            bw.Write(seed);
+                            bw.Write(ff);
+                            bw.Write(hp);
+                            bw.Write(station);
+                            bw.Write(cells.Count);
+                            foreach (var (index, type) in cells) { bw.Write(index); bw.Write(type); }
+                            bw.Write(kills.Count);
+                            foreach (var id in kills) bw.Write(id);
+                            bw.Write(upgrades.Count);
+                            foreach (var (id, hash) in upgrades) { bw.Write(id); bw.Write(hash); }
+                            bw.Write(instruments.Count);
+                            foreach (var (id, hash) in instruments) { bw.Write(id); bw.Write(hash); }
+                            bw.Write(scanners.Count);
+                            foreach (var id in scanners) bw.Write(id);
+                        }
+                        if (File.Exists(PathFor())) File.Delete(PathFor());
+                        File.Move(tmp, PathFor());
+                    }
+                    catch (Exception e)
+                    {
+                        Plugin.Log.LogWarning($"[RunSave] save failed: {e.Message}");
+                    }
+                    finally
+                    {
+                        _writing = false;
+                    }
+                });
             }
             catch (Exception e)
             {
+                _writing = false;
                 Plugin.Log.LogWarning($"[RunSave] save failed: {e.Message}");
             }
         }

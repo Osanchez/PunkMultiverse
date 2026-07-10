@@ -174,6 +174,7 @@ namespace PunkMultiverse.Protocol
     {
         public int Seed;
         public bool IsRejoin;          // reconnecting into a run in progress
+        public bool IsResume;          // whole-party resume of a saved run (terrain from local save)
         public int SpawnStationNetId;  // rejoin/late-join spawn checkpoint; 0 = run start
         public float EnemyHpMult;      // enemy max-health multiplier for this run; <=0 = 1x
 
@@ -182,6 +183,7 @@ namespace PunkMultiverse.Protocol
             w.WriteMsgType(MsgType.StartRun);
             w.WriteInt(Seed);
             w.WriteBool(IsRejoin);
+            w.WriteBool(IsResume);
             w.WriteVarUInt((uint)SpawnStationNetId);
             w.WriteHalf(EnemyHpMult);
         }
@@ -190,6 +192,7 @@ namespace PunkMultiverse.Protocol
         {
             Seed = r.ReadInt(),
             IsRejoin = r.ReadBool(),
+            IsResume = r.ReadBool(),
             SpawnStationNetId = (int)r.ReadVarUInt(),
             EnemyHpMult = r.ReadHalf(),
         };

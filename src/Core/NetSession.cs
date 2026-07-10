@@ -297,7 +297,8 @@ namespace PunkMultiverse.Core
                 Plugin.Log.LogInfo($"[Run] enemy HP x{EnemyHpMult:F2} ({playerCount} players)");
 
             // Resuming a saved run rides the rejoin path for EVERYONE: economy stash restore
-            // and checkpoint spawn included. The ledgers replay after go-live.
+            // and checkpoint spawn included. Terrain restores from each machine's OWN save
+            // (it can be map-scale); the small ledgers replay after go-live.
             bool resume = _pendingResume != null;
             int spawnStation = resume ? _pendingResume.LatestStationNetId : 0;
 
@@ -306,6 +307,7 @@ namespace PunkMultiverse.Core
             {
                 Seed = seed,
                 IsRejoin = resume,
+                IsResume = resume,
                 SpawnStationNetId = spawnStation,
                 EnemyHpMult = EnemyHpMult,
             }.Write(_writer);
@@ -315,10 +317,13 @@ namespace PunkMultiverse.Core
             BeginRun(seed);
         }
 
+        private bool _isResume;
+
         private void HandleStartRun()
         {
             var msg = StartRunMsg.Read(_reader);
             _isRejoin = msg.IsRejoin;
+            _isResume = msg.IsResume;
             _spawnStationNetId = msg.SpawnStationNetId;
             EnemyHpMult = msg.EnemyHpMult > 0f ? msg.EnemyHpMult : 1f;
             BeginRun(msg.Seed);
@@ -446,6 +451,7 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             SetState(SessionState.InGame);
             Sync.ShipSync.ReleaseStartGate();
+            bool wasRejoin = _isRejoin;
             if (_isRejoin)
             {
                 _isRejoin = false;
@@ -458,6 +464,24 @@ namespace PunkMultiverse.Core
                 var data = _pendingResume;
                 _pendingResume = null;
                 ApplyResumePayload(data);
+            }
+            else if (!IsHost && (_isResume || wasRejoin))
+            {
+                // Terrain restores from OUR OWN auto-save when it matches this run: the ledger
+                // can be map-scale, far too big to ship over the wire (on rejoin the host still
+                // sends terrain when its ledger is small — both applications are idempotent).
+                bool wantLocalTerrain = _isResume;
+                _isResume = false;
+                var local = NetRunSave.Load();
+                if (local != null && local.Seed == CurrentRunSeed)
+                {
+                    StartCoroutine(ApplyCellsPaced(local.Cells, "local save"));
+                }
+                else if (wantLocalTerrain)
+                {
+                    Plugin.Log.LogWarning("[Session] no matching local run save — terrain history unavailable");
+                    UI.Toast.Show("NO LOCAL RUN SAVE — TERRAIN MAY DIFFER", 6f);
+                }
             }
             if (NetConfig.AutoFly.Value > 0f)
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
@@ -1378,13 +1402,22 @@ namespace PunkMultiverse.Core
                 if (fps.Count == 0) break;
             }
 
-            // 2) Terrain changes since generation.
+            // 2) Terrain changes since generation — only when small. Map-scale ledgers
+            // (mass cell conversion can touch millions of cells) overflow the reliable send
+            // buffer; the rejoiner restores those from its own auto-save instead.
             var ledger = Sync.WorldSync.LedgerSnapshot();
-            for (int start = 0; start < ledger.Count; start += 500)
+            if (ledger.Count <= 50000)
             {
-                _writer.Reset();
-                new CellDiffMsg { Cells = ledger.GetRange(start, Math.Min(500, ledger.Count - start)) }.Write(_writer);
-                _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
+                for (int start = 0; start < ledger.Count; start += 500)
+                {
+                    _writer.Reset();
+                    new CellDiffMsg { Cells = ledger.GetRange(start, Math.Min(500, ledger.Count - start)) }.Write(_writer);
+                    _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
+                }
+            }
+            else
+            {
+                Plugin.Log.LogInfo($"[Session] terrain ledger too large to send ({ledger.Count} cells) — rejoiner restores from local save");
             }
 
             // 3) Deaths, ownership, shared progression.
@@ -1398,24 +1431,55 @@ namespace PunkMultiverse.Core
                 $"({ledger.Count} cells, manifest {fps.Count})");
         }
 
-        /// <summary>Replay a saved run's ledgers: applied locally on the host AND broadcast —
-        /// every message is idempotent, exactly the rejoin catch-up in broadcast form.</summary>
+        /// <summary>Replay a saved run's ledgers on the host. Terrain applies LOCALLY only,
+        /// paced over frames (it can be millions of cells — every client restores terrain from
+        /// its own auto-save instead of the wire). The small event ledgers apply locally and
+        /// broadcast, throttled so Steam's reliable buffer never overflows again.</summary>
         private void ApplyResumePayload(NetRunSave.Data data)
         {
+            StartCoroutine(ApplyCellsPaced(data.Cells, "resume"));
+            StartCoroutine(BroadcastEventLedgersPaced(data));
+        }
+
+        private System.Collections.IEnumerator ApplyCellsPaced(List<(int index, byte type)> cells, string source)
+        {
+            const int cellsPerFrame = 20000;
+            int sinceYield = 0;
+            for (int start = 0; start < cells.Count; start += 500)
+            {
+                var msg = new CellDiffMsg { Cells = cells.GetRange(start, Math.Min(500, cells.Count - start)) };
+                Sync.WorldSync.Apply(msg);
+                sinceYield += msg.Cells.Count;
+                if (sinceYield >= cellsPerFrame)
+                {
+                    sinceYield = 0;
+                    yield return null;
+                }
+                if (State != SessionState.InGame) yield break; // run ended mid-restore
+            }
+            Plugin.Log.LogInfo($"[Session] terrain restored from {source} ({cells.Count} cells)");
+        }
+
+        private System.Collections.IEnumerator BroadcastEventLedgersPaced(NetRunSave.Data data)
+        {
+            const int messagesPerFrame = 32;
+            int sent = 0;
+
+            System.Collections.IEnumerator Pace()
+            {
+                if (++sent >= messagesPerFrame)
+                {
+                    sent = 0;
+                    yield return null;
+                }
+            }
+
             void Broadcast()
             {
                 var segment = _writer.ToSegment();
                 ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Events, segment, reliable: true));
             }
 
-            for (int start = 0; start < data.Cells.Count; start += 500)
-            {
-                var msg = new CellDiffMsg { Cells = data.Cells.GetRange(start, Math.Min(500, data.Cells.Count - start)) };
-                Sync.WorldSync.Apply(msg);
-                _writer.Reset();
-                msg.Write(_writer);
-                Broadcast();
-            }
             foreach (var netId in data.Kills)
             {
                 var msg = new EntityKilledMsg { NetId = netId, KillerSlot = 0 };
@@ -1423,6 +1487,8 @@ namespace PunkMultiverse.Core
                 _writer.Reset();
                 msg.Write(_writer);
                 Broadcast();
+                yield return Pace();
+                if (State != SessionState.InGame) yield break;
             }
             foreach (var (netId, hash) in data.Upgrades)
             {
@@ -1431,6 +1497,7 @@ namespace PunkMultiverse.Core
                 _writer.Reset();
                 msg.Write(_writer);
                 Broadcast();
+                yield return Pace();
             }
             foreach (var (netId, hash) in data.Instruments)
             {
@@ -1439,6 +1506,7 @@ namespace PunkMultiverse.Core
                 _writer.Reset();
                 msg.Write(_writer);
                 Broadcast();
+                yield return Pace();
             }
             foreach (var netId in data.Scanners)
             {
@@ -1447,10 +1515,11 @@ namespace PunkMultiverse.Core
                 _writer.Reset();
                 msg.Write(_writer);
                 Broadcast();
+                yield return Pace();
             }
             Sync.ProgressionSync.RestoreCheckpoint(data.LatestStationNetId);
             UI.Toast.Show("RUN RESUMED", 4f);
-            Plugin.Log.LogInfo($"[Session] resume replayed ({data.Cells.Count} cells, {data.Kills.Count} kills, " +
+            Plugin.Log.LogInfo($"[Session] resume events replayed ({data.Kills.Count} kills, " +
                 $"{data.Upgrades.Count} upgrades, {data.Scanners.Count} scanners)");
         }
 
