@@ -1,0 +1,35 @@
+#!/bin/sh
+# Auto-bump the patch version on every commit to main, so the release zip, the in-game update
+# banner and the join handshake always reflect a new build. Rules:
+#   - doc-only commits (md/gitignore/LICENSE) don't bump — mirrors CI's paths-ignore, no build happens
+#   - a manual <Version> change staged in the same commit wins (bump minor/major by hand when you want)
+# Setup happens automatically when you run build.ps1, or once per clone with:
+#   git config core.hooksPath .githooks
+
+branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+[ "$branch" = "main" ] || [ "$branch" = "master" ] || exit 0
+
+csproj="PunkMultiverse.csproj"
+[ -f "$csproj" ] || exit 0
+
+# Doc-only commit? CI won't build it; don't burn a version.
+if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$)'; then
+    exit 0
+fi
+
+# Manual version change already staged? Respect it.
+if git diff --cached -U0 -- "$csproj" | grep -q '^\+.*<Version>'; then
+    exit 0
+fi
+
+current=$(sed -n 's/.*<Version>\([0-9][0-9.]*\)<\/Version>.*/\1/p' "$csproj" | head -1)
+[ -n "$current" ] || exit 0
+major=$(echo "$current" | cut -d. -f1)
+minor=$(echo "$current" | cut -d. -f2)
+patch=$(echo "$current" | cut -d. -f3)
+next="$major.$minor.$((patch + 1))"
+
+sed -i "s|<Version>$current</Version>|<Version>$next</Version>|" "$csproj"
+git add "$csproj"
+echo "pre-commit: mod version $current -> $next"
+exit 0

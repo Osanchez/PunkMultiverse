@@ -17,6 +17,9 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 if (-not $GameDir) { $GameDir = (Resolve-Path (Join-Path $root "..")).Path }
 
+# Wire up the repo's git hooks (version auto-bump on commit) — safe no-op outside a clone.
+try { git -C $root config core.hooksPath .githooks 2>$null | Out-Null } catch { }
+
 $config = if ($Debug) { "Debug" } else { "Release" }
 $csproj = Join-Path $root "PunkMultiverse.csproj"
 
