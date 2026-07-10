@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Generic;
 using HarmonyLib;
 using PunkMultiverse.Core;
 using PunkMultiverse.Protocol;
@@ -34,6 +35,7 @@ namespace PunkMultiverse.Sync
         {
             _counter = 0;
             _applyingRemote = false;
+            _prefabsById = null; // prefab assets can unload between runs
         }
 
         private static int AllocateNetId(NetSession session) => RuntimeIdBase * (session.LocalSlot + 1) + _counter++;
@@ -290,30 +292,32 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        private static Dictionary<string, SavableEntity> _prefabsById;
+
         private static SavableEntity FindPrefab(string entityId)
         {
-            SavablesCollection collection = null;
-            try { collection = ServiceLocator.Get<SavablesCollection>(); } catch { }
-            if (collection == null)
+            // The game's own stream-in resolver: EntityGameObjectManager.entityPrefabDictionary
+            // (entityId -> prefab, built at boot from SavablesCollection.savableObjectInfos).
+            // This is what SpawnObjectForEntity uses, so it covers every spawnable entity.
+            try
             {
-                var all = Resources.FindObjectsOfTypeAll<SavablesCollection>();
-                if (all.Length > 0) collection = all[0];
+                var egm = ServiceLocator.Get<EntityGameObjectManager>();
+                var dict = Traverse.Create(egm).Field("entityPrefabDictionary").GetValue()
+                    as Dictionary<string, SavableEntity>;
+                if (dict != null && dict.TryGetValue(entityId, out var prefab) && prefab != null)
+                    return prefab;
             }
-            if (collection == null) return null;
+            catch { }
 
-            // The collection holds a list of {entityId, prefab} items; walk it reflectively.
-            foreach (var fieldName in new[] { "entities", "entityPrefabs", "prefabs", "items" })
+            // Fallback: every SavableEntity prefab asset carries its entityId publicly.
+            if (_prefabsById == null)
             {
-                var list = Traverse.Create(collection).Field(fieldName).GetValue() as IEnumerable;
-                if (list == null) continue;
-                foreach (var item in list)
-                {
-                    var id = Traverse.Create(item).Field("entityId").GetValue() as string;
-                    if (id != entityId) continue;
-                    return Traverse.Create(item).Field("prefab").GetValue() as SavableEntity;
-                }
+                _prefabsById = new Dictionary<string, SavableEntity>();
+                foreach (var se in Resources.FindObjectsOfTypeAll<SavableEntity>())
+                    if (se != null && !se.gameObject.scene.IsValid() && !string.IsNullOrEmpty(se.entityId))
+                        _prefabsById[se.entityId] = se;
             }
-            return null;
+            return _prefabsById.TryGetValue(entityId, out var fallback) ? fallback : null;
         }
     }
 }
