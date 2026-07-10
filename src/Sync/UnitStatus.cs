@@ -58,6 +58,49 @@ namespace PunkMultiverse.Sync
             catch { return 0; }
         }
 
+        // ---------------------------------------------------------------- weapon resource (ammo)
+
+        // The weapon's ResourceUsed tank drives the reload particle and recharge indicator.
+        // Minions SHARE their owner's tank — writing a shared tank would clobber another
+        // player's resource copy, so shared tanks report/apply nothing (255).
+
+        private static ResourceTank WeaponTankOf(Component root)
+        {
+            var shooter = ShooterOf(root);
+            var weapon = shooter != null ? shooter.Weapon : null;
+            var res = weapon != null ? weapon.ResourceUsed : null;
+            var unit = root != null ? root.GetComponentInParent<Unit>() : null;
+            if (res == null || unit == null || !unit.HasTank(res)) return null;
+            var tank = unit.GetTank(res);
+            if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return null;
+            return unit.GetNotSharedTanks().Contains(tank) ? tank : null;
+        }
+
+        /// <summary>Weapon tank fraction quantized to 0..254; 255 = no own tank.</summary>
+        public static byte ReadAmmoFraction(Component root)
+        {
+            try
+            {
+                var tank = WeaponTankOf(root);
+                if (tank == null) return 255;
+                return (byte)Mathf.Clamp(Mathf.RoundToInt(tank.Value / tank.Capacity * 254f), 0, 254);
+            }
+            catch { return 255; }
+        }
+
+        public static void WriteAmmoFraction(Component root, byte quantized)
+        {
+            if (quantized == 255) return;
+            try
+            {
+                var tank = WeaponTankOf(root);
+                if (tank == null) return;
+                float target = quantized / 254f * tank.Capacity;
+                if (Mathf.Abs(tank.Value - target) > tank.Capacity * 0.01f) tank.Value = target;
+            }
+            catch { }
+        }
+
         public static void WriteFireState(Component root, byte state)
         {
             try

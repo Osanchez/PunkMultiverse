@@ -358,6 +358,7 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Aim; // authority's visual facing/aim; zero = unknown
         public byte State;              // index into the unit's StateMachine states; 255 = none
         public byte Fire;               // weapon audio state: 0 idle, 1 warming up, 2 firing loop
+        public byte Ammo;               // weapon resource tank fraction, 0..254; 255 = none/shared
         public float HpFraction;
         public float ShieldFraction;
         public float BurnLevel;
@@ -380,6 +381,7 @@ namespace PunkMultiverse.Protocol
                 w.WriteVector2Half(e.Aim);
                 w.WriteByte(e.State);
                 w.WriteByte(e.Fire);
+                w.WriteByte(e.Ammo);
                 w.WriteHalf(e.HpFraction);
                 w.WriteHalf(e.ShieldFraction);
                 w.WriteHalf(e.BurnLevel);
@@ -401,6 +403,7 @@ namespace PunkMultiverse.Protocol
                     Aim = r.ReadVector2Half(),
                     State = r.ReadByte(),
                     Fire = r.ReadByte(),
+                    Ammo = r.ReadByte(),
                     HpFraction = r.ReadHalf(),
                     ShieldFraction = r.ReadHalf(),
                     BurnLevel = r.ReadHalf(),

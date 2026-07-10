@@ -203,6 +203,7 @@ namespace PunkMultiverse.Sync
                 Aim = UnitStatus.ReadAim(se),
                 State = UnitStatus.ReadState(se),
                 Fire = UnitStatus.ReadFireState(se),
+                Ammo = UnitStatus.ReadAmmoFraction(se),
                 HpFraction = hp,
                 ShieldFraction = UnitStatus.ReadShieldFraction(se),
                 BurnLevel = UnitStatus.ReadBurnLevel(se),
@@ -252,6 +253,7 @@ namespace PunkMultiverse.Sync
                         UnitStatus.WriteState(se, e.State);
                         UnitStatus.WriteFireState(se, e.Fire);
                         UnitStatus.WriteShieldFraction(se, e.ShieldFraction);
+                        UnitStatus.WriteAmmoFraction(se, e.Ammo);
                     }
                     UnitStatus.WriteBurnLevel(se, e.BurnLevel);
                     try
