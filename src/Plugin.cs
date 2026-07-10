@@ -22,7 +22,8 @@ namespace PunkMultiverse
     {
         public const string Guid = "com.osanchez.punkmultiverse";
         public const string Name = "Punk Multiverse";
-        public const string Version = "0.1.0";
+        // Baked from the csproj <Version> at build time (GeneratePluginVersion target).
+        public const string Version = PluginVersionInfo.Version;
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
