@@ -29,7 +29,7 @@ namespace PunkMultiverse.Sync
             // (pure cosmetics), and with AI states replicated it keeps puppet animations correct.
         };
 
-        private const float InterpDelay = 0.12f;
+        private const float InterpDelay = 0.1f; // two snapshot intervals at the unified 20 Hz
         private const float HardSnapDistance = 4f;
 
         public int NetId;

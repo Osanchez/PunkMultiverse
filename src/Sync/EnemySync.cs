@@ -143,7 +143,7 @@ namespace PunkMultiverse.Sync
         public static void Tick(NetSession session)
         {
             if (!NetIds.ManifestComplete || Time.unscaledTime < _nextSendAt) return;
-            _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.EntityStateHz.Value);
+            _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.StateHz.Value);
 
             var egm = TryGetEgm();
             if (egm == null) return;

@@ -12,7 +12,7 @@ namespace PunkMultiverse.Sync
     /// </summary>
     public sealed class PropPuppet : MonoBehaviour
     {
-        private const float InterpDelay = 0.12f;
+        private const float InterpDelay = 0.1f; // two snapshot intervals at the unified 20 Hz
         private const float HardSnapDistance = 4f;
         private const float ExpireAfter = 1.5f;
 

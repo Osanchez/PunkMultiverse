@@ -27,8 +27,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> ShareMapExploration;
         public static ConfigEntry<bool> Scoreboard;
 
-        public static ConfigEntry<float> ShipStateHz;
-        public static ConfigEntry<float> EntityStateHz;
+        public static ConfigEntry<float> StateHz;
         public static ConfigEntry<float> AuthorityRadius;
         public static ConfigEntry<float> TransferRadius;
         public static ConfigEntry<float> InterestRadius;
@@ -79,8 +78,9 @@ namespace PunkMultiverse
             ShareMapExploration = cfg.Bind("Tracker", "ShareMapExploration", true,
                 "Merge explored map regions between players (fog-of-war sync).");
 
-            ShipStateHz = cfg.Bind("Sync", "ShipStateHz", 20f, "Ship snapshot send rate.");
-            EntityStateHz = cfg.Bind("Sync", "EntityStateHz", 12f, "Entity snapshot send rate (authority side).");
+            StateHz = cfg.Bind("Sync", "StateHz", 20f,
+                "Snapshot send rate for ALL moving objects — ships and enemies alike (one truth " +
+                "cadence; 20 Hz = a fresh state every 50 ms).");
             AuthorityRadius = cfg.Bind("Authority", "AuthorityRadius", 60f,
                 "Max distance (world units) at which a player can hold authority over an entity.");
             TransferRadius = cfg.Bind("Authority", "TransferRadius", 45f,

@@ -280,7 +280,7 @@ namespace PunkMultiverse.Sync
             EnsureLatePuppets(session);
             SweepDistantCameraTargets();
             if (LocalShip == null || Time.unscaledTime < _nextSendAt) return;
-            _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
+            _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.StateHz.Value);
 
             var rb = LocalShip.GetComponent<Rigidbody2D>();
             if (rb == null) return;
