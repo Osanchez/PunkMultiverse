@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using HarmonyLib;
+using PunkMultiverse.Core;
 using UnityEngine;
 
 namespace PunkMultiverse.Sync
@@ -16,6 +17,7 @@ namespace PunkMultiverse.Sync
         private static readonly Dictionary<Component, (StateMachine sm, State[] states)> StateCache
             = new Dictionary<Component, (StateMachine, State[])>();
         private static readonly Dictionary<Component, Shooter> ShooterCache = new Dictionary<Component, Shooter>();
+        private static readonly HashSet<int> HpScaledInstances = new HashSet<int>();
         private static bool _warnedShield;
         private static bool _warnedBurn;
 
@@ -25,8 +27,35 @@ namespace PunkMultiverse.Sync
             BarrelCache.Clear();
             StateCache.Clear();
             ShooterCache.Clear();
+            HpScaledInstances.Clear();
             _warnedShield = false;
             _warnedBurn = false;
+        }
+
+        // ---------------------------------------------------------------- enemy HP scaling
+
+        /// <summary>Apply the run's enemy health multiplier (host game setting, fixed at run
+        /// start) to a freshly spawned enemy — once per entity per run, every machine applies
+        /// the same replicated multiplier. Player minions and ships are exempt.</summary>
+        public static void ApplyEnemyHpScale(Component root, int instanceId, int netId)
+        {
+            try
+            {
+                var session = NetSession.Instance;
+                float mult = session != null ? session.EnemyHpMult : 1f;
+                if (mult <= 1.0001f) return;
+                if (EnemySync.FixedOwners.Contains(netId)) return; // player minions aren't enemies
+                var unit = root != null ? root.GetComponentInParent<Unit>() : null;
+                if (unit == null || unit.GetComponent<Ship>() != null) return;
+                if (!HpScaledInstances.Add(instanceId)) return;
+                var dr = unit.GetComponent<DamagableResource>();
+                var tank = dr != null ? dr.Tank : null;
+                if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return;
+                float fraction = tank.Value / tank.Capacity;
+                tank.Capacity *= mult;
+                tank.Value = tank.Capacity * fraction;
+            }
+            catch { }
         }
 
         // ---------------------------------------------------------------- weapon audio state

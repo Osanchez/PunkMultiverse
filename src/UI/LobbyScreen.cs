@@ -269,7 +269,9 @@ namespace PunkMultiverse.UI
         // ---------------------------------------------------------------- seed setup (pre-lobby)
 
         private TMP_Text _ffToggleLabel;
+        private TMP_Text _hpToggleLabel;
         private bool _friendlyFire;
+        private bool _hpScaling = true;
 
         private void BuildSeedPanel(Transform parent)
         {
@@ -285,11 +287,13 @@ namespace PunkMultiverse.UI
             MakeButton(_seedPanel.transform, "RANDOM", new Vector2(110, 0), new Vector2(200, 48),
                 () => { if (_seedInput != null) _seedInput.text = ""; });
 
-            _ffToggleLabel = MakeButton(_seedPanel.transform, "FRIENDLY FIRE: OFF", new Vector2(0, -70),
+            _ffToggleLabel = MakeButton(_seedPanel.transform, "FRIENDLY FIRE: OFF", new Vector2(0, -60),
                 new Vector2(420, 52), ToggleFriendlyFire);
+            _hpToggleLabel = MakeButton(_seedPanel.transform, "ENEMY HP SCALING: ON", new Vector2(0, -120),
+                new Vector2(420, 52), ToggleHpScaling);
 
-            MakeButton(_seedPanel.transform, "HOST LOBBY", new Vector2(0, -145), new Vector2(420, 64), HostWithSeed);
-            MakeButton(_seedPanel.transform, "BACK", new Vector2(0, -220), new Vector2(220, 52),
+            MakeButton(_seedPanel.transform, "HOST LOBBY", new Vector2(0, -190), new Vector2(420, 64), HostWithSeed);
+            MakeButton(_seedPanel.transform, "BACK", new Vector2(0, -255), new Vector2(220, 52),
                 () => { _seedSetupOpen = false; Refresh(); });
         }
 
@@ -301,11 +305,22 @@ namespace PunkMultiverse.UI
             _ffToggleLabel.color = _friendlyFire ? new Color(1f, 0.72f, 0.3f) : Color.white;
         }
 
+        // Base Health * (1 + (EnemyHealthScalePerPlayer * number of players)), counted at
+        // START GAME; the per-player value (default 0.25) lives in config.cfg.
+        private void ToggleHpScaling()
+        {
+            _hpScaling = !_hpScaling;
+            if (_hpToggleLabel == null) return;
+            _hpToggleLabel.text = _hpScaling ? "ENEMY HP SCALING: ON" : "ENEMY HP SCALING: OFF";
+            _hpToggleLabel.color = _hpScaling ? Color.white : new Color(1f, 0.72f, 0.3f);
+        }
+
         private void ShowSeedSetup()
         {
             _seedSetupOpen = true;
             if (_seedInput != null) _seedInput.text = "";
             if (_friendlyFire) ToggleFriendlyFire(); // settings screen always opens at defaults
+            if (!_hpScaling) ToggleHpScaling();
             Refresh();
         }
 
@@ -324,7 +339,7 @@ namespace PunkMultiverse.UI
                 if (digits.Length > 0) int.TryParse(digits, out seed);
             }
             _seedSetupOpen = false;
-            NetSession.Instance.HostOnline(seed, _friendlyFire);
+            NetSession.Instance.HostOnline(seed, _friendlyFire, _hpScaling);
             Refresh();
         }
 

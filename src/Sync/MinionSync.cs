@@ -217,6 +217,7 @@ namespace PunkMultiverse.Sync
                     puppet.NetId = netId;
                     puppet.MuteNow();
                     se.gameObject.SetActive(true);
+                    UnitStatus.ApplyEnemyHpScale(se, instanceId, netId);
                 }
                 if (wireOwnerShip) WireMinionOwner(netId, ownerSlot);
                 Plugin.Log.LogInfo($"[Spawns] replica '{entityId}' netId {netId} (P{ownerSlot + 1})");

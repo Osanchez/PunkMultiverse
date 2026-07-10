@@ -127,16 +127,24 @@ namespace PunkMultiverse.Core
         /// every LOBBY_STATE; each machine enforces it at its own damage chokepoints.</summary>
         public bool FriendlyFire { get; private set; }
 
+        private bool _pendingHpScaling;
+        /// <summary>Host's game-settings choice: scale enemy health by player count.</summary>
+        public bool HpScaling { get; private set; }
+        /// <summary>Enemy max-health multiplier for the current run, fixed at START GAME:
+        /// 1 + (EnemyHealthScalePerPlayer * connected players). Replicated in START_RUN.</summary>
+        public float EnemyHpMult { get; private set; } = 1f;
+
         /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
         /// directly. <paramref name="chosenSeed"/> (0 = random) becomes the lobby's world seed
         /// once the session is up.</summary>
-        public void HostOnline(int chosenSeed = 0, bool friendlyFire = false)
+        public void HostOnline(int chosenSeed = 0, bool friendlyFire = false, bool enemyHpScaling = true)
         {
             try
             {
                 LastError = null;
                 _pendingHostSeed = chosenSeed;
                 _pendingFriendlyFire = friendlyFire;
+                _pendingHpScaling = enemyHpScaling;
                 if (!UsingSteam) { HostSession(); return; }
                 EnsureLobbyController();
                 _lobby.CreateLobby(); // -> LobbyCreated -> HostSession()
@@ -267,8 +275,18 @@ namespace PunkMultiverse.Core
         {
             if (!IsHost || State != SessionState.Lobby) return;
             int seed = ChosenSeed != 0 ? ChosenSeed : UnityEngine.Random.Range(1, int.MaxValue);
+
+            // Enemy health scaling is fixed for the whole run at start:
+            // Base Health * (1 + (EnemyHealthScalePerPlayer * number of players)).
+            int playerCount = _players.Count(p => p != null && p.Connected);
+            EnemyHpMult = HpScaling
+                ? 1f + Mathf.Max(0f, NetConfig.EnemyHealthScalePerPlayer.Value) * playerCount
+                : 1f;
+            if (EnemyHpMult > 1f)
+                Plugin.Log.LogInfo($"[Run] enemy HP x{EnemyHpMult:F2} ({playerCount} players)");
+
             _writer.Reset();
-            new StartRunMsg { Seed = seed }.Write(_writer);
+            new StartRunMsg { Seed = seed, EnemyHpMult = EnemyHpMult }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
             _isRejoin = false;
             BeginRun(seed);
@@ -279,6 +297,7 @@ namespace PunkMultiverse.Core
             var msg = StartRunMsg.Read(_reader);
             _isRejoin = msg.IsRejoin;
             _spawnStationNetId = msg.SpawnStationNetId;
+            EnemyHpMult = msg.EnemyHpMult > 0f ? msg.EnemyHpMult : 1f;
             BeginRun(msg.Seed);
         }
 
@@ -500,8 +519,10 @@ namespace PunkMultiverse.Core
             HostSlot = 0;
             ChosenSeed = _pendingHostSeed; // settings picked on the pre-lobby screen
             FriendlyFire = _pendingFriendlyFire;
+            HpScaling = _pendingHpScaling;
             _pendingHostSeed = 0;
             _pendingFriendlyFire = false;
+            _pendingHpScaling = false;
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
             Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
@@ -570,6 +591,8 @@ namespace PunkMultiverse.Core
             _reattaching = false;
             ChosenSeed = 0;
             FriendlyFire = false;
+            HpScaling = false;
+            EnemyHpMult = 1f;
             _levelChecksums.Clear();
             Sync.ShipSync.Reset();
             Sync.ShipSync.ResetStartGate();
@@ -1146,6 +1169,7 @@ namespace PunkMultiverse.Core
                     Seed = CurrentRunSeed,
                     IsRejoin = true,
                     SpawnStationNetId = Sync.ProgressionSync.LatestStationNetId,
+                    EnemyHpMult = EnemyHpMult,
                 }.Write(_writer);
                 _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             }
@@ -1188,6 +1212,7 @@ namespace PunkMultiverse.Core
                 Seed = CurrentRunSeed,
                 IsRejoin = true,
                 SpawnStationNetId = Sync.ProgressionSync.LatestStationNetId,
+                EnemyHpMult = EnemyHpMult,
             }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             // Their LEVEL_READY (handled below while we're InGame) triggers the catch-up stream.

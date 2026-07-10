@@ -15,6 +15,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> AcceptAnySteamSession;
 
         public static ConfigEntry<string> ModManifestPolicy;
+        public static ConfigEntry<float> EnemyHealthScalePerPlayer;
 
         public static ConfigEntry<string> AutoStart;
         public static ConfigEntry<bool> AutoReady;
@@ -46,6 +47,11 @@ namespace PunkMultiverse
                 "DEV ONLY: accept P2P sessions from anyone, not just lobby members.");
             SteamAppId = cfg.Bind("Transport", "SteamAppId", 2850470,
                 "Playtest appid, used only when the game didn't init Steam itself (direct Punk.exe launch).");
+
+            EnemyHealthScalePerPlayer = cfg.Bind("Session", "EnemyHealthScalePerPlayer", 0.25f,
+                "Per-player enemy health scaling used when ENEMY HP SCALING is enabled on the " +
+                "GAME SETTINGS screen: Base Health * (1 + (0.25 * number of players)), counted " +
+                "when the game starts. The host's value applies to the whole session.");
 
             ModManifestPolicy = cfg.Bind("Session", "ModManifestPolicy", "Reject",
                 new ConfigDescription(

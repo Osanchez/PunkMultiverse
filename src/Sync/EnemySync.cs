@@ -105,6 +105,7 @@ namespace PunkMultiverse.Sync
                 puppet = se.gameObject.AddComponent<RemoteEntityPuppet>();
                 puppet.NetId = netId;
             }
+            UnitStatus.ApplyEnemyHpScale(se, instanceId, netId);
         }
 
         // ---------------------------------------------------------------- authority messages
