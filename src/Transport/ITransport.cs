@@ -28,7 +28,10 @@ namespace PunkMultiverse.Transport
         void StartHost();
         /// <summary>Loopback: "host:port". Steam: decimal SteamID64 of the host.</summary>
         void StartClient(string address);
-        void Send(ulong peer, NetChannel channel, ArraySegment<byte> data, bool reliable);
+        /// <summary>False = the transport did not accept the message (send buffer full, no
+        /// session). Bulk senders (terrain streaming) treat that as backpressure and retry;
+        /// fire-and-forget callers may ignore the result.</summary>
+        bool Send(ulong peer, NetChannel channel, ArraySegment<byte> data, bool reliable);
         /// <summary>Pump receives + timers. Call once per frame.</summary>
         void Poll();
         void Stop();

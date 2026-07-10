@@ -342,6 +342,22 @@ namespace PunkMultiverse.Sync
         /// <summary>Move the local ship (and camera) to a station — used right after a rejoin
         /// goes live so the player resumes at the party's latest unlocked station instead of
         /// the run start. Works from EntityData alone; the station needn't be streamed in.</summary>
+        /// <summary>World position of a netId'd entity (stations for spawn/stream targeting).
+        /// Works from EntityData alone; the entity needn't be streamed in.</summary>
+        public static bool TryGetEntityPosition(int netId, out Vector2 pos)
+        {
+            pos = default;
+            try
+            {
+                if (netId == 0 || !NetIds.TryGetInstanceId(netId, out int instanceId)) return false;
+                var data = ServiceLocator.Get<EntityManager>().GetEntity(instanceId);
+                if (data == null) return false;
+                pos = data.position;
+                return true;
+            }
+            catch { return false; }
+        }
+
         public static void TeleportLocalShip(int stationNetId)
         {
             try

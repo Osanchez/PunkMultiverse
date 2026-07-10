@@ -24,6 +24,7 @@ namespace PunkMultiverse.Transport
                 if (Available)
                 {
                     Plugin.Log.LogInfo($"[Steam] game initialized Steam, identity {id.m_SteamID}");
+                    RaiseSendLimits();
                     return;
                 }
             }
@@ -41,6 +42,7 @@ namespace PunkMultiverse.Transport
                     Available = true;
                     SelfInitialized = true;
                     Plugin.Log.LogInfo($"[Steam] self-initialized (appid {NetConfig.SteamAppId.Value}), identity {SteamUser.GetSteamID().m_SteamID}");
+                    RaiseSendLimits();
                 }
                 else
                 {
@@ -51,6 +53,37 @@ namespace PunkMultiverse.Transport
             {
                 Plugin.Log.LogWarning($"[Steam] init failed: {e.Message} — Steam transport unavailable.");
             }
+        }
+
+        /// <summary>Terrain catch-up streams push far more reliable data than the Steam
+        /// defaults expect (256 KB/s rate, 512 KB buffer). Raise both so a stream and live
+        /// gameplay traffic coexist; the streamer still paces itself off send backpressure.</summary>
+        private static void RaiseSendLimits()
+        {
+            try
+            {
+                SetGlobalInt32(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, 1024 * 1024);
+                SetGlobalInt32(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendBufferSize, 2 * 1024 * 1024);
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Steam] could not raise send limits: {e.Message}");
+            }
+        }
+
+        private static void SetGlobalInt32(ESteamNetworkingConfigValue key, int value)
+        {
+            var handle = System.Runtime.InteropServices.GCHandle.Alloc(value,
+                System.Runtime.InteropServices.GCHandleType.Pinned);
+            try
+            {
+                SteamNetworkingUtils.SetConfigValue(key,
+                    ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global,
+                    IntPtr.Zero,
+                    ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32,
+                    handle.AddrOfPinnedObject());
+            }
+            finally { handle.Free(); }
         }
 
         /// <summary>Call once per frame; pumps callbacks only when we own the Steam init.</summary>

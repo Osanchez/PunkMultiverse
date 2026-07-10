@@ -49,5 +49,7 @@
         FogDiff = 53,       // shared map exploration (fogLevels runs)
         InstrumentUsed = 54,
         HookState = 55,     // grappling hook attach/detach (visual)
+        TerrainSync = 56,   // host -> one client: terrain chunk stream begin/end markers
+                            // (the chunks themselves travel as ordinary CellDiff messages)
     }
 }

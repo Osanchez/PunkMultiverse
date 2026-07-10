@@ -317,13 +317,11 @@ namespace PunkMultiverse.Core
             BeginRun(seed);
         }
 
-        private bool _isResume;
-
         private void HandleStartRun()
         {
             var msg = StartRunMsg.Read(_reader);
-            _isRejoin = msg.IsRejoin;
-            _isResume = msg.IsResume;
+            _isRejoin = msg.IsRejoin; // IsResume needs no client-side handling anymore:
+                                      // terrain always streams from the host either way
             _spawnStationNetId = msg.SpawnStationNetId;
             EnemyHpMult = msg.EnemyHpMult > 0f ? msg.EnemyHpMult : 1f;
             BeginRun(msg.Seed);
@@ -451,7 +449,6 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             SetState(SessionState.InGame);
             Sync.ShipSync.ReleaseStartGate();
-            bool wasRejoin = _isRejoin;
             if (_isRejoin)
             {
                 _isRejoin = false;
@@ -465,24 +462,9 @@ namespace PunkMultiverse.Core
                 _pendingResume = null;
                 ApplyResumePayload(data);
             }
-            else if (!IsHost && (_isResume || wasRejoin))
-            {
-                // Terrain restores from OUR OWN auto-save when it matches this run: the ledger
-                // can be map-scale, far too big to ship over the wire (on rejoin the host still
-                // sends terrain when its ledger is small — both applications are idempotent).
-                bool wantLocalTerrain = _isResume;
-                _isResume = false;
-                var local = NetRunSave.Load();
-                if (local != null && local.Seed == CurrentRunSeed)
-                {
-                    StartCoroutine(ApplyCellsPaced(local.Cells, "local save"));
-                }
-                else if (wantLocalTerrain)
-                {
-                    Plugin.Log.LogWarning("[Session] no matching local run save — terrain history unavailable");
-                    UI.Toast.Show("NO LOCAL RUN SAVE — TERRAIN MAY DIFFER", 6f);
-                }
-            }
+            // Clients never restore terrain from their own save: the host's ledger is the one
+            // source of truth and streams in vicinity-first chunks (resume: after its local
+            // restore; rejoin: from SendRejoinState) — no save required, no divergence.
             if (NetConfig.AutoFly.Value > 0f)
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
         }
@@ -761,6 +743,7 @@ namespace PunkMultiverse.Core
                 TickAutoFly();
                 Sync.ShipSync.Tick(this);
                 Sync.WorldSync.Flush(this);
+                Sync.WorldSync.Tick(this); // paced cell application + catch-up streams
                 Sync.EnemySync.Tick(this);
                 Sync.ModuleGridSync.Tick(this);
                 Sync.FogSync.Tick(this);
@@ -1049,6 +1032,7 @@ namespace PunkMultiverse.Core
 
         private void OnPeerDisconnected(ulong peer)
         {
+            Sync.WorldSync.CancelStream(peer); // a rejoin restarts it from scratch
             if (IsHost)
             {
                 var player = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
@@ -1249,6 +1233,9 @@ namespace PunkMultiverse.Core
                     Sync.WorldSync.Apply(diff);
                     break;
                 }
+                case MsgType.TerrainSync when !IsHost:
+                    Sync.WorldSync.ApplyTerrainSync(TerrainSyncMsg.Read(_reader));
+                    break;
                 default:
                     Plugin.Log.LogDebug($"[Session] unhandled {type} on ch{(int)channel} from {peer}");
                     break;
@@ -1361,6 +1348,9 @@ namespace PunkMultiverse.Core
             BroadcastLobbyState();
             RosterChanged?.Invoke();
             SendEventCatchUp(peer);
+            // Cell diffs sent during the handover gap are gone for good — stream the ledger
+            // (idempotent, vicinity-first) so the reattached peer converges regardless.
+            Sync.WorldSync.BeginStreamTo(this, peer, reserved.Slot, StreamFallbackPos());
         }
 
         private void HandleRejoin(ulong peer, HelloMsg hello, NetPlayer reserved)
@@ -1402,23 +1392,11 @@ namespace PunkMultiverse.Core
                 if (fps.Count == 0) break;
             }
 
-            // 2) Terrain changes since generation — only when small. Map-scale ledgers
-            // (mass cell conversion can touch millions of cells) overflow the reliable send
-            // buffer; the rejoiner restores those from its own auto-save instead.
-            var ledger = Sync.WorldSync.LedgerSnapshot();
-            if (ledger.Count <= 50000)
-            {
-                for (int start = 0; start < ledger.Count; start += 500)
-                {
-                    _writer.Reset();
-                    new CellDiffMsg { Cells = ledger.GetRange(start, Math.Min(500, ledger.Count - start)) }.Write(_writer);
-                    _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
-                }
-            }
-            else
-            {
-                Plugin.Log.LogInfo($"[Session] terrain ledger too large to send ({ledger.Count} cells) — rejoiner restores from local save");
-            }
+            // 2) Terrain changes since generation stream in vicinity-first chunks around the
+            // rejoiner — the whole ledger regardless of size, budgeted per frame so the
+            // reliable buffer can't overflow and no size cutoff can leave them divergent.
+            var rejoiner = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+            Sync.WorldSync.BeginStreamTo(this, peer, rejoiner?.Slot ?? 0, StreamFallbackPos());
 
             // 3) Deaths, ownership, shared progression.
             SendEventCatchUp(peer);
@@ -1427,18 +1405,39 @@ namespace PunkMultiverse.Core
             _writer.Reset();
             _writer.WriteMsgType(MsgType.GoLive);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
-            Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} " +
-                $"({ledger.Count} cells, manifest {fps.Count})");
+            Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} (manifest {fps.Count})");
         }
 
-        /// <summary>Replay a saved run's ledgers on the host. Terrain applies LOCALLY only,
-        /// paced over frames (it can be millions of cells — every client restores terrain from
-        /// its own auto-save instead of the wire). The small event ledgers apply locally and
-        /// broadcast, throttled so Steam's reliable buffer never overflows again.</summary>
+        /// <summary>Where a joiner will appear, for chunk prioritization before their ship
+        /// exists: the party's latest station, else the host's own ship, else map center.</summary>
+        private Vector2 StreamFallbackPos()
+        {
+            if (Sync.ShipSync.TryGetEntityPosition(Sync.ProgressionSync.LatestStationNetId, out var station))
+                return station;
+            if (Sync.ShipSync.LocalShip != null)
+                return Sync.ShipSync.LocalShip.transform.position;
+            return Vector2.zero;
+        }
+
+        /// <summary>Replay a saved run's ledgers on the host: terrain applies locally paced
+        /// (it can be millions of cells), then streams to every client in vicinity-first
+        /// chunks — clients need no save of their own and can never diverge. The small event
+        /// ledgers apply locally and broadcast, throttled so the reliable buffer holds.</summary>
         private void ApplyResumePayload(NetRunSave.Data data)
         {
-            StartCoroutine(ApplyCellsPaced(data.Cells, "resume"));
+            StartCoroutine(RestoreTerrainThenStream(data));
             StartCoroutine(BroadcastEventLedgersPaced(data));
+        }
+
+        private System.Collections.IEnumerator RestoreTerrainThenStream(NetRunSave.Data data)
+        {
+            // The paced apply fills the ledger as it goes; streams start once it's complete
+            // so every chunk a client receives reflects the full saved history.
+            yield return StartCoroutine(ApplyCellsPaced(data.Cells, "resume"));
+            if (State != SessionState.InGame) yield break;
+            foreach (var p in _players)
+                if (p != null && !p.IsLocal && p.Connected)
+                    Sync.WorldSync.BeginStreamTo(this, p.PeerId, p.Slot, StreamFallbackPos());
         }
 
         private System.Collections.IEnumerator ApplyCellsPaced(List<(int index, byte type)> cells, string source)

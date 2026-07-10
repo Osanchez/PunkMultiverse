@@ -87,15 +87,17 @@ namespace PunkMultiverse.Transport
             return s;
         }
 
-        public void Send(ulong peer, NetChannel channel, ArraySegment<byte> data, bool reliable)
+        public bool Send(ulong peer, NetChannel channel, ArraySegment<byte> data, bool reliable)
         {
-            if (!IsRunning) return;
+            if (!IsRunning) return false;
             // reliable flag ignored: localhost is lossless in practice (dev transport only)
             _sendBuf[0] = FrameData;
             _sendBuf[1] = (byte)channel;
             Buffer.BlockCopy(data.Array, data.Offset, _sendBuf, 2, data.Count);
             var ep = ResolveEndpoint(peer);
-            if (ep != null) SendRaw(ep, _sendBuf, data.Count + 2);
+            if (ep == null) return false;
+            SendRaw(ep, _sendBuf, data.Count + 2);
+            return true;
         }
 
         private IPEndPoint ResolveEndpoint(ulong peer)

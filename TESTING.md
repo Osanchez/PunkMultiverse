@@ -79,6 +79,8 @@ is for the *human* passes: real Steam accounts, real combat, 3–4 players.
       keep working (host takes over)
 - [ ] Relaunch + JOIN FROM CLIPBOARD with the same code: back in the same run with your build,
       vault and gold (`[Stash] rejoin restore applied` in the log), terrain/kills/upgrades caught up
+      (terrain streams in around your ship first — far map regions fill in over the next
+      seconds; `[World] terrain stream ... complete` in the host log when done)
 - [ ] Host quitting mid-run pops the session-lost screen on clients
 
 ### 3–4 players (untested territory — extra eyes here)
@@ -104,3 +106,5 @@ Log markers worth searching: `GO LIVE`, `checksum`, `manifest applied` (matched/
 - Pause menus don't pause the world in multiplayer; slow-mo effects are disabled.
 - Save & Exit is disabled during net runs — rejoining with the lobby code covers crashes.
 - A rejoining or late-joining player's ship starts at the spawn station (not where they dropped).
+- On heavily converted maps (mass pink growth), rejoin/resume terrain appears nearest-first
+  around your ship and the rest of the map fills in over the following seconds.

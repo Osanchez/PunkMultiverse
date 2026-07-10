@@ -89,9 +89,9 @@ namespace PunkMultiverse.Transport
             if (_knownPeers.Remove(steamId)) PeerDisconnected?.Invoke(steamId);
         }
 
-        public void Send(ulong peer, NetChannel channel, ArraySegment<byte> data, bool reliable)
+        public bool Send(ulong peer, NetChannel channel, ArraySegment<byte> data, bool reliable)
         {
-            if (!IsRunning) return;
+            if (!IsRunning) return false;
             var identity = new SteamNetworkingIdentity();
             identity.SetSteamID(new CSteamID(peer));
             int flags = reliable
@@ -102,8 +102,13 @@ namespace PunkMultiverse.Transport
             {
                 IntPtr ptr = handle.AddrOfPinnedObject() + data.Offset;
                 var result = SteamNetworkingMessages.SendMessageToUser(ref identity, ptr, (uint)data.Count, flags, (int)channel);
-                if (result != EResult.k_EResultOK && result != EResult.k_EResultNoConnection)
+                // LimitExceeded = send buffer full. Bulk senders (terrain streaming) pace
+                // themselves off the return value, so log it quietly instead of once per drop.
+                if (result == EResult.k_EResultLimitExceeded)
+                    Plugin.Log.LogDebug($"[Steam] send buffer full for {peer} ch{(int)channel}");
+                else if (result != EResult.k_EResultOK && result != EResult.k_EResultNoConnection)
                     Plugin.Log.LogWarning($"[Steam] send to {peer} ch{(int)channel} failed: {result}");
+                return result == EResult.k_EResultOK;
             }
             finally { handle.Free(); }
         }

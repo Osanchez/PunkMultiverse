@@ -676,6 +676,31 @@ namespace PunkMultiverse.Protocol
         public static ScannerUsedMsg Read(NetReader r) => new ScannerUsedMsg { NetId = (int)r.ReadVarUInt() };
     }
 
+    public struct TerrainSyncMsg
+    {
+        public const byte PhaseBegin = 0;
+        public const byte PhaseEnd = 1;
+
+        public byte Phase;
+        public int Chunks; // begin: chunks queued; end: chunks actually sent
+        public int Cells;  // begin: ledger cells at queue time; end: cells actually sent
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.TerrainSync);
+            w.WriteByte(Phase);
+            w.WriteVarUInt((uint)Chunks);
+            w.WriteVarUInt((uint)Cells);
+        }
+
+        public static TerrainSyncMsg Read(NetReader r) => new TerrainSyncMsg
+        {
+            Phase = r.ReadByte(),
+            Chunks = (int)r.ReadVarUInt(),
+            Cells = (int)r.ReadVarUInt(),
+        };
+    }
+
     public struct PingMsg
     {
         public uint TimeMs;
