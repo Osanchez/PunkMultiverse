@@ -52,7 +52,11 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          $tag = "v{0}.{1}" -f (Get-Date -Format 'yyyy.MM.dd'), '${{ github.run_number }}'
+          # Tag releases with the mod version itself (the pre-commit hook bumps it every
+          # buildable commit, so tags stay unique) — matches the zip name and the handshake.
+          $version = (Select-Xml -Path PunkMultiverse.csproj -XPath '//Version' | Select-Object -First 1).Node.InnerText
+          if (-not $version) { throw "Could not read <Version> from PunkMultiverse.csproj" }
+          $tag = "v$version"
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Publish Release
