@@ -82,6 +82,7 @@ namespace PunkMultiverse.Sync
             {
                 if (!NetSession.Active || _applyingRemote) return true;
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId)) return true;
+                if (ProjectileSync.FriendlyExplosionBlocked(__instance)) return false; // FF off: my AoE spares teammates
                 SendDamageRequest(isEntity, slot, netId, __0);
                 UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
                 return false;
@@ -95,6 +96,7 @@ namespace PunkMultiverse.Sync
             {
                 if (!NetSession.Active || _applyingRemote) return true;
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId)) return true;
+                if (ProjectileSync.FriendlyExplosionBlocked(__instance)) return false; // FF off: my AoE spares teammates
                 foreach (var damage in __0) SendDamageRequest(isEntity, slot, netId, damage);
                 UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
                 return false;

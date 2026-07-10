@@ -121,16 +121,22 @@ namespace PunkMultiverse.Core
         // ------------------------------------------------ transport-agnostic facade (UI entry points)
 
         private int _pendingHostSeed;
+        private bool _pendingFriendlyFire;
+
+        /// <summary>Host's game-settings choice: players can damage each other. Replicated in
+        /// every LOBBY_STATE; each machine enforces it at its own damage chokepoints.</summary>
+        public bool FriendlyFire { get; private set; }
 
         /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
         /// directly. <paramref name="chosenSeed"/> (0 = random) becomes the lobby's world seed
         /// once the session is up.</summary>
-        public void HostOnline(int chosenSeed = 0)
+        public void HostOnline(int chosenSeed = 0, bool friendlyFire = false)
         {
             try
             {
                 LastError = null;
                 _pendingHostSeed = chosenSeed;
+                _pendingFriendlyFire = friendlyFire;
                 if (!UsingSteam) { HostSession(); return; }
                 EnsureLobbyController();
                 _lobby.CreateLobby(); // -> LobbyCreated -> HostSession()
@@ -492,8 +498,10 @@ namespace PunkMultiverse.Core
                 IsLocal = true,
             };
             HostSlot = 0;
-            ChosenSeed = _pendingHostSeed; // seed picked on the pre-lobby screen (0 = random)
+            ChosenSeed = _pendingHostSeed; // settings picked on the pre-lobby screen
+            FriendlyFire = _pendingFriendlyFire;
             _pendingHostSeed = 0;
+            _pendingFriendlyFire = false;
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
             Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
@@ -561,6 +569,7 @@ namespace PunkMultiverse.Core
             _migrating = false;
             _reattaching = false;
             ChosenSeed = 0;
+            FriendlyFire = false;
             _levelChecksums.Clear();
             Sync.ShipSync.Reset();
             Sync.ShipSync.ResetStartGate();
@@ -1276,7 +1285,7 @@ namespace PunkMultiverse.Core
         private void BroadcastLobbyState()
         {
             _writer.Reset();
-            new LobbyStateMsg { Roster = BuildRoster(), HostSeed = ChosenSeed }.Write(_writer);
+            new LobbyStateMsg { Roster = BuildRoster(), HostSeed = ChosenSeed, FriendlyFire = FriendlyFire }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
         }
 
@@ -1314,6 +1323,7 @@ namespace PunkMultiverse.Core
         {
             var lobby = LobbyStateMsg.Read(_reader);
             ChosenSeed = lobby.HostSeed;
+            FriendlyFire = lobby.FriendlyFire;
             ApplyRoster(lobby.Roster);
             if (LocalSlot >= 0 && _players[LocalSlot] != null) _players[LocalSlot].IsLocal = true;
             RosterChanged?.Invoke();

@@ -268,28 +268,44 @@ namespace PunkMultiverse.UI
 
         // ---------------------------------------------------------------- seed setup (pre-lobby)
 
+        private TMP_Text _ffToggleLabel;
+        private bool _friendlyFire;
+
         private void BuildSeedPanel(Transform parent)
         {
-            _seedPanel = MakeGroup(parent, "SeedSetup");
-            MakeText(_seedPanel.transform, "SeedTitle", "WORLD SEED", 28, Color.white, y: -130, height: 40);
+            _seedPanel = MakeGroup(parent, "GameSettings");
+            MakeText(_seedPanel.transform, "SetupTitle", "GAME SETTINGS", 28, Color.white, y: -130, height: 40);
             MakeText(_seedPanel.transform, "SeedHint",
-                "Type a seed (or PASTE one from the clipboard).\nLeave empty for a random world.",
-                20, new Color(1f, 1f, 1f, 0.7f), y: -176, height: 60);
+                "WORLD SEED — type one, PASTE from clipboard, or leave empty for random.",
+                18, new Color(1f, 1f, 1f, 0.7f), y: -176, height: 30);
 
-            _seedInput = MakeSeedInput(_seedPanel.transform, new Vector2(0, 40), new Vector2(420, 56));
+            _seedInput = MakeSeedInput(_seedPanel.transform, new Vector2(0, 70), new Vector2(420, 56));
 
-            MakeButton(_seedPanel.transform, "PASTE", new Vector2(-110, -40), new Vector2(200, 48), PasteSeedIntoInput);
-            MakeButton(_seedPanel.transform, "RANDOM", new Vector2(110, -40), new Vector2(200, 48),
+            MakeButton(_seedPanel.transform, "PASTE", new Vector2(-110, 0), new Vector2(200, 48), PasteSeedIntoInput);
+            MakeButton(_seedPanel.transform, "RANDOM", new Vector2(110, 0), new Vector2(200, 48),
                 () => { if (_seedInput != null) _seedInput.text = ""; });
-            MakeButton(_seedPanel.transform, "HOST LOBBY", new Vector2(0, -120), new Vector2(420, 64), HostWithSeed);
-            MakeButton(_seedPanel.transform, "BACK", new Vector2(0, -196), new Vector2(220, 52),
+
+            _ffToggleLabel = MakeButton(_seedPanel.transform, "FRIENDLY FIRE: OFF", new Vector2(0, -70),
+                new Vector2(420, 52), ToggleFriendlyFire);
+
+            MakeButton(_seedPanel.transform, "HOST LOBBY", new Vector2(0, -145), new Vector2(420, 64), HostWithSeed);
+            MakeButton(_seedPanel.transform, "BACK", new Vector2(0, -220), new Vector2(220, 52),
                 () => { _seedSetupOpen = false; Refresh(); });
+        }
+
+        private void ToggleFriendlyFire()
+        {
+            _friendlyFire = !_friendlyFire;
+            if (_ffToggleLabel == null) return;
+            _ffToggleLabel.text = _friendlyFire ? "FRIENDLY FIRE: ON" : "FRIENDLY FIRE: OFF";
+            _ffToggleLabel.color = _friendlyFire ? new Color(1f, 0.72f, 0.3f) : Color.white;
         }
 
         private void ShowSeedSetup()
         {
             _seedSetupOpen = true;
             if (_seedInput != null) _seedInput.text = "";
+            if (_friendlyFire) ToggleFriendlyFire(); // settings screen always opens at defaults
             Refresh();
         }
 
@@ -308,7 +324,7 @@ namespace PunkMultiverse.UI
                 if (digits.Length > 0) int.TryParse(digits, out seed);
             }
             _seedSetupOpen = false;
-            NetSession.Instance.HostOnline(seed);
+            NetSession.Instance.HostOnline(seed, _friendlyFire);
             Refresh();
         }
 
@@ -431,7 +447,8 @@ namespace PunkMultiverse.UI
             if (!inLobby) return;
 
             _codeText.text = session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
-            _seedText.text = $"WORLD SEED   {(session.ChosenSeed != 0 ? session.ChosenSeed.ToString() : "RANDOM")}";
+            _seedText.text = $"WORLD SEED   {(session.ChosenSeed != 0 ? session.ChosenSeed.ToString() : "RANDOM")}"
+                + (session.FriendlyFire ? "   <color=#ffb84d>FRIENDLY FIRE ON</color>" : "");
             _seedPasteButton.SetActive(session.IsHost);
             _seedRandomButton.SetActive(session.IsHost && session.ChosenSeed != 0);
             _inviteButton.SetActive(session.UsingSteam);

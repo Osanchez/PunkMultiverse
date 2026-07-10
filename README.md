@@ -10,10 +10,10 @@ Steam's relay, so a pasted lobby code just works.
 
 ## Features
 
-- **Lobby in the main menu** — PLAY ONLINE → pick a world seed (type one, paste one, or go
-  random) → host, copy a code (`PMV-XXXXX-XXXXX-XXXX`), friends join from clipboard or a
-  Steam invite. Pick ship colors, ready up, go. The host can re-roll the seed in the lobby
-  and kick players from the roster.
+- **Lobby in the main menu** — PLAY ONLINE → a GAME SETTINGS screen (world seed: type,
+  paste, or random; friendly fire toggle, off by default) → host, copy a code
+  (`PMV-XXXXX-XXXXX-XXXX`), friends join from clipboard or a Steam invite. Pick ship colors,
+  ready up, go. The host can re-roll the seed in the lobby and kick players from the roster.
 - **One shared world** — identical seed-generated terrain (verified by checksum before the
   run starts), synced destruction, shared station upgrades, scanner/instrument map reveals,
   and merged map exploration.
@@ -66,10 +66,11 @@ The one you're most likely to touch:
 
 ## Playing
 
-- **Host:** PLAY ONLINE → HOST LOBBY → pick a WORLD SEED (type it, PASTE from clipboard, or
-  leave empty for random) → COPY CODE → send it to your friends (or INVITE FRIENDS for the
-  Steam overlay). When everyone's ready: START GAME. You can also start solo — friends join
-  mid-run with the code. KICK buttons on the roster remove troublemakers (kick, not ban).
+- **Host:** PLAY ONLINE → HOST LOBBY → GAME SETTINGS (WORLD SEED: type it, PASTE from
+  clipboard, or leave empty for random; FRIENDLY FIRE on/off — off by default) → COPY CODE →
+  send it to your friends (or INVITE FRIENDS for the Steam overlay). When everyone's ready:
+  START GAME. You can also start solo — friends join mid-run with the code. KICK buttons on
+  the roster remove troublemakers (kick, not ban).
 - **Join:** copy the code your host sent → PLAY ONLINE → JOIN FROM CLIPBOARD. Works while the
   run is already going: you'll spawn at the party's latest unlocked station, caught up to the
   world's state.

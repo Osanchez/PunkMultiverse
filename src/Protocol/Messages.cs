@@ -112,19 +112,26 @@ namespace PunkMultiverse.Protocol
     public struct LobbyStateMsg
     {
         public List<RosterEntry> Roster;
-        public int HostSeed; // 0 = random at start
+        public int HostSeed;       // 0 = random at start
+        public bool FriendlyFire;  // host's game-settings choice; every client enforces it
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.LobbyState);
             w.WriteInt(HostSeed);
+            w.WriteBool(FriendlyFire);
             w.WriteByte((byte)(Roster?.Count ?? 0));
             if (Roster != null) foreach (var e in Roster) e.Write(w);
         }
 
         public static LobbyStateMsg Read(NetReader r)
         {
-            var m = new LobbyStateMsg { HostSeed = r.ReadInt(), Roster = new List<RosterEntry>() };
+            var m = new LobbyStateMsg
+            {
+                HostSeed = r.ReadInt(),
+                FriendlyFire = r.ReadBool(),
+                Roster = new List<RosterEntry>(),
+            };
             int n = r.ReadByte();
             for (int i = 0; i < n; i++) m.Roster.Add(RosterEntry.Read(r));
             return m;

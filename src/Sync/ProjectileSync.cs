@@ -346,7 +346,61 @@ namespace PunkMultiverse.Sync
                 // Real local enemy vs a teammate's puppet: suppressed — they apply the replay.
                 // (Player-vs-player stays shooter-routed: Ship owners fall through.)
                 if (owner.GetComponent<Ship>() == null && IsPuppetShip(__instance)) return false;
+                if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
+            }
+        }
+
+        /// <summary>My real shot against a teammate's puppet while the host disabled friendly
+        /// fire — drop it before it reaches the routed damage path.</summary>
+        private static bool FriendlyFireBlocked(Unit owner, Component victim)
+        {
+            var session = NetSession.Instance;
+            if (session == null || session.FriendlyFire) return false;
+            return owner != null
+                   && owner.GetComponent<Ship>() != null
+                   && owner.GetComponent<RemotePuppet>() == null
+                   && IsPuppetShip(victim);
+        }
+
+        // My own weapon explosions apply AoE synchronously inside SpawnExplosion — the depth
+        // flag lets the TakeDamage interceptor drop teammate-puppet AoE when friendly fire is off.
+        private static int _localShipExplosionDepth;
+
+        public static bool FriendlyExplosionBlocked(Component victim)
+        {
+            var session = NetSession.Instance;
+            if (session == null || session.FriendlyFire) return false;
+            return _localShipExplosionDepth > 0 && victim != null && victim.GetComponent<RemotePuppet>() != null;
+        }
+
+        [HarmonyPatch]
+        internal static class TrackLocalShipExplosions
+        {
+            private static IEnumerable<System.Reflection.MethodBase> TargetMethods()
+            {
+                foreach (var typeName in new[] { "Projectile", "PhysicsProjectile" })
+                {
+                    var t = AccessTools.TypeByName(typeName);
+                    var m = t != null ? AccessTools.Method(t, "SpawnExplosion") : null;
+                    if (m != null) yield return m;
+                }
+            }
+
+            private static void Prefix(object __instance, out bool __state)
+            {
+                __state = false;
+                if (!NetSession.Active || IsVisual(__instance)) return;
+                var owner = OwnerUnit(__instance);
+                var local = ShipSync.LocalShip;
+                if (owner == null || local == null || owner.gameObject != local.gameObject) return;
+                __state = true;
+                _localShipExplosionDepth++;
+            }
+
+            private static void Finalizer(bool __state)
+            {
+                if (__state) _localShipExplosionDepth--;
             }
         }
 
@@ -409,6 +463,7 @@ namespace PunkMultiverse.Sync
                 }
                 if (owner == null) return !VictimIsRemote(__instance);
                 if (owner.GetComponent<Ship>() == null && IsPuppetShip(__instance)) return false;
+                if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
             }
         }
