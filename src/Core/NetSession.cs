@@ -117,12 +117,17 @@ namespace PunkMultiverse.Core
 
         // ------------------------------------------------ transport-agnostic facade (UI entry points)
 
-        /// <summary>Host: Steam = create lobby then open transport; loopback = open transport directly.</summary>
-        public void HostOnline()
+        private int _pendingHostSeed;
+
+        /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
+        /// directly. <paramref name="chosenSeed"/> (0 = random) becomes the lobby's world seed
+        /// once the session is up.</summary>
+        public void HostOnline(int chosenSeed = 0)
         {
             try
             {
                 LastError = null;
+                _pendingHostSeed = chosenSeed;
                 if (!UsingSteam) { HostSession(); return; }
                 EnsureLobbyController();
                 _lobby.CreateLobby(); // -> LobbyCreated -> HostSession()
@@ -247,10 +252,12 @@ namespace PunkMultiverse.Core
         {
             var msg = StartRunMsg.Read(_reader);
             _isRejoin = msg.IsRejoin;
+            _spawnStationNetId = msg.SpawnStationNetId;
             BeginRun(msg.Seed);
         }
 
         private bool _isRejoin;
+        private int _spawnStationNetId;
         private bool _autoPicked;
         private float _autoPickAt;
 
@@ -370,6 +377,8 @@ namespace PunkMultiverse.Core
             {
                 _isRejoin = false;
                 EconomyStash.TryRestore(CurrentRunSeed);
+                // Spawn at the party's latest unlocked station instead of the run start.
+                if (_spawnStationNetId != 0) Sync.ShipSync.TeleportLocalShip(_spawnStationNetId);
             }
             if (NetConfig.AutoFly.Value > 0f)
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
@@ -458,6 +467,8 @@ namespace PunkMultiverse.Core
                 Name = LocalName(),
                 IsLocal = true,
             };
+            ChosenSeed = _pendingHostSeed; // seed picked on the pre-lobby screen (0 = random)
+            _pendingHostSeed = 0;
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
             Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
@@ -913,7 +924,12 @@ namespace PunkMultiverse.Core
                 // Late joiner rides the rejoin path: their LEVEL_READY triggers the catch-up
                 // replay (InGame) or joins the go-live barrier (Loading).
                 _writer.Reset();
-                new StartRunMsg { Seed = CurrentRunSeed, IsRejoin = true }.Write(_writer);
+                new StartRunMsg
+                {
+                    Seed = CurrentRunSeed,
+                    IsRejoin = true,
+                    SpawnStationNetId = Sync.ProgressionSync.LatestStationNetId,
+                }.Write(_writer);
                 _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             }
         }
@@ -932,7 +948,12 @@ namespace PunkMultiverse.Core
             RosterChanged?.Invoke();
 
             _writer.Reset();
-            new StartRunMsg { Seed = CurrentRunSeed, IsRejoin = true }.Write(_writer);
+            new StartRunMsg
+            {
+                Seed = CurrentRunSeed,
+                IsRejoin = true,
+                SpawnStationNetId = Sync.ProgressionSync.LatestStationNetId,
+            }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             // Their LEVEL_READY (handled below while we're InGame) triggers the catch-up stream.
         }

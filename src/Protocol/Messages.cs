@@ -157,16 +157,23 @@ namespace PunkMultiverse.Protocol
     public struct StartRunMsg
     {
         public int Seed;
-        public bool IsRejoin; // reconnecting into a run in progress
+        public bool IsRejoin;          // reconnecting into a run in progress
+        public int SpawnStationNetId;  // rejoin/late-join spawn checkpoint; 0 = run start
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.StartRun);
             w.WriteInt(Seed);
             w.WriteBool(IsRejoin);
+            w.WriteVarUInt((uint)SpawnStationNetId);
         }
 
-        public static StartRunMsg Read(NetReader r) => new StartRunMsg { Seed = r.ReadInt(), IsRejoin = r.ReadBool() };
+        public static StartRunMsg Read(NetReader r) => new StartRunMsg
+        {
+            Seed = r.ReadInt(),
+            IsRejoin = r.ReadBool(),
+            SpawnStationNetId = (int)r.ReadVarUInt(),
+        };
     }
 
     public struct LevelReadyMsg

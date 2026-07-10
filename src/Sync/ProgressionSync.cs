@@ -28,8 +28,13 @@ namespace PunkMultiverse.Sync
         public static List<(int netId, uint hash)> UpgradeSnapshot() => new List<(int, uint)>(AppliedUpgrades);
         public static List<int> ScannerSnapshot() => new List<int>(UsedScanners);
 
+        /// <summary>Most recently upgraded/unlocked station by anyone — the party's respawn
+        /// checkpoint. Rejoiners spawn here instead of at the run start.</summary>
+        public static int LatestStationNetId { get; private set; }
+
         public static void RecordUpgrade(int netId, uint hash)
         {
+            LatestStationNetId = netId;
             var session = NetSession.Instance;
             if (session != null && session.IsHost) AppliedUpgrades.Add((netId, hash));
         }
@@ -43,6 +48,7 @@ namespace PunkMultiverse.Sync
         public static void Reset()
         {
             _applyingRemote = false;
+            LatestStationNetId = 0;
             PendingUpgrades.Clear();
             PendingScanners.Clear();
             AppliedUpgrades.Clear();

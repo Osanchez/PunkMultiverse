@@ -339,6 +339,41 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        /// <summary>Move the local ship (and camera) to a station — used right after a rejoin
+        /// goes live so the player resumes at the party's latest unlocked station instead of
+        /// the run start. Works from EntityData alone; the station needn't be streamed in.</summary>
+        public static void TeleportLocalShip(int stationNetId)
+        {
+            try
+            {
+                if (LocalShip == null || !NetIds.TryGetInstanceId(stationNetId, out int instanceId)) return;
+                var em = ServiceLocator.Get<EntityManager>();
+                var data = em.GetEntity(instanceId);
+                if (data == null) return;
+                Vector2 pos = (Vector2)data.position + Vector2.up * 2f; // hover above the platform
+                var rb = LocalShip.GetComponent<Rigidbody2D>();
+                if (rb != null)
+                {
+                    rb.position = pos;
+                    rb.linearVelocity = Vector2.zero;
+                }
+                LocalShip.transform.position = pos;
+                var shipData = LocalShip.SavableEntity != null ? LocalShip.SavableEntity.EntityData : null;
+                if (shipData != null) shipData.position = new Vector3(pos.x, pos.y, shipData.position.z);
+                try
+                {
+                    var cam = Com.LuisPedroFonseca.ProCamera2D.ProCamera2D.Instance;
+                    if (cam != null) cam.MoveCameraInstantlyToPosition(pos);
+                }
+                catch { }
+                Plugin.Log.LogInfo($"[Ships] rejoin spawn at station #{stationNetId} ({pos.x:F0},{pos.y:F0})");
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[Ships] station spawn failed: {e.Message}");
+            }
+        }
+
         /// <summary>Fire the puppet's DashStarted subscribers (VFX) and the dash sfx — never
         /// ShipMovement.Dash itself; the velocity impulse belongs to the owner's simulation,
         /// ours comes by snapshot. The sfx is played manually because vanilla plays it inside

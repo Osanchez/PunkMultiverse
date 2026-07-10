@@ -27,6 +27,9 @@ namespace PunkMultiverse.UI
         private GameObject _canvasGo;
         private GameObject _connectPanel;
         private GameObject _lobbyPanel;
+        private GameObject _seedPanel;
+        private TMP_InputField _seedInput;
+        private bool _seedSetupOpen;
         private TMP_Text _statusText;
         private TMP_Text _versionText;
         private TMP_Text _codeText;
@@ -89,6 +92,7 @@ namespace PunkMultiverse.UI
         public void Show()
         {
             if (_canvasGo == null) Build();
+            _seedSetupOpen = false;
             _canvasGo.SetActive(true);
             Refresh();
         }
@@ -138,7 +142,9 @@ namespace PunkMultiverse.UI
 
             BuildConnectPanel(panel.transform);
             BuildLobbyPanel(panel.transform);
+            BuildSeedPanel(panel.transform);
             _lobbyPanel.SetActive(false);
+            _seedPanel.SetActive(false);
         }
 
         private void BuildConnectPanel(Transform parent)
@@ -148,7 +154,7 @@ namespace PunkMultiverse.UI
                 "Host a lobby and send the code to your friends,\nor copy their code and join from clipboard.",
                 22, Color.white, y: -140, height: 70);
             MakeButton(_connectPanel.transform, "HOST LOBBY", new Vector2(0, 60), new Vector2(420, 64),
-                () => NetSession.Instance.HostOnline());
+                ShowSeedSetup); // seed screen first, then the lobby
             MakeButton(_connectPanel.transform, "JOIN FROM CLIPBOARD", new Vector2(0, -20), new Vector2(420, 64),
                 () => NetSession.Instance.JoinByCode(null));
             MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -100), new Vector2(220, 52), Hide);
@@ -219,6 +225,102 @@ namespace PunkMultiverse.UI
             MakeButton(_lobbyPanel.transform, "LEAVE", new Vector2(0, -282), new Vector2(180, 44), Leave);
         }
 
+        // ---------------------------------------------------------------- seed setup (pre-lobby)
+
+        private void BuildSeedPanel(Transform parent)
+        {
+            _seedPanel = MakeGroup(parent, "SeedSetup");
+            MakeText(_seedPanel.transform, "SeedTitle", "WORLD SEED", 28, Color.white, y: -130, height: 40);
+            MakeText(_seedPanel.transform, "SeedHint",
+                "Type a seed (or PASTE one from the clipboard).\nLeave empty for a random world.",
+                20, new Color(1f, 1f, 1f, 0.7f), y: -176, height: 60);
+
+            _seedInput = MakeSeedInput(_seedPanel.transform, new Vector2(0, 40), new Vector2(420, 56));
+
+            MakeButton(_seedPanel.transform, "PASTE", new Vector2(-110, -40), new Vector2(200, 48), PasteSeedIntoInput);
+            MakeButton(_seedPanel.transform, "RANDOM", new Vector2(110, -40), new Vector2(200, 48),
+                () => { if (_seedInput != null) _seedInput.text = ""; });
+            MakeButton(_seedPanel.transform, "HOST LOBBY", new Vector2(0, -120), new Vector2(420, 64), HostWithSeed);
+            MakeButton(_seedPanel.transform, "BACK", new Vector2(0, -196), new Vector2(220, 52),
+                () => { _seedSetupOpen = false; Refresh(); });
+        }
+
+        private void ShowSeedSetup()
+        {
+            _seedSetupOpen = true;
+            if (_seedInput != null) _seedInput.text = "";
+            Refresh();
+        }
+
+        private void PasteSeedIntoInput()
+        {
+            var digits = new string((GUIUtility.systemCopyBuffer ?? "").Where(char.IsDigit).Take(9).ToArray());
+            if (_seedInput != null) _seedInput.text = digits;
+        }
+
+        private void HostWithSeed()
+        {
+            int seed = 0;
+            if (_seedInput != null)
+            {
+                var digits = new string(_seedInput.text.Where(char.IsDigit).Take(9).ToArray());
+                if (digits.Length > 0) int.TryParse(digits, out seed);
+            }
+            _seedSetupOpen = false;
+            NetSession.Instance.HostOnline(seed);
+            Refresh();
+        }
+
+        private TMP_InputField MakeSeedInput(Transform parent, Vector2 centerOffset, Vector2 size)
+        {
+            var go = new GameObject("SeedInput", typeof(RectTransform));
+            go.transform.SetParent(parent, false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = centerOffset;
+            rt.sizeDelta = size;
+            var bg = go.AddComponent<Image>();
+            bg.color = new Color(0.10f, 0.12f, 0.17f, 1f);
+
+            var areaGo = new GameObject("TextArea", typeof(RectTransform));
+            areaGo.transform.SetParent(go.transform, false);
+            var area = (RectTransform)areaGo.transform;
+            area.anchorMin = Vector2.zero;
+            area.anchorMax = Vector2.one;
+            area.offsetMin = new Vector2(16, 8);
+            area.offsetMax = new Vector2(-16, -8);
+            areaGo.AddComponent<RectMask2D>();
+
+            var textGo = new GameObject("Text", typeof(RectTransform));
+            textGo.transform.SetParent(areaGo.transform, false);
+            var text = textGo.AddComponent<TextMeshProUGUI>();
+            if (_font != null) text.font = _font;
+            text.fontSize = 26;
+            text.color = Color.white;
+            text.alignment = TextAlignmentOptions.Center;
+            Stretch(text.rectTransform);
+
+            var phGo = new GameObject("Placeholder", typeof(RectTransform));
+            phGo.transform.SetParent(areaGo.transform, false);
+            var ph = phGo.AddComponent<TextMeshProUGUI>();
+            if (_font != null) ph.font = _font;
+            ph.fontSize = 26;
+            ph.color = new Color(1f, 1f, 1f, 0.3f);
+            ph.alignment = TextAlignmentOptions.Center;
+            ph.text = "RANDOM";
+            Stretch(ph.rectTransform);
+
+            var input = go.AddComponent<TMP_InputField>();
+            input.targetGraphic = bg;
+            input.textViewport = area;
+            input.textComponent = text;
+            input.placeholder = ph;
+            input.contentType = TMP_InputField.ContentType.IntegerNumber;
+            input.characterLimit = 9;
+            return input;
+        }
+
         private static GameObject ButtonRoot(TMP_Text label) => label.transform.parent.gameObject;
 
         private static void StretchWithMargins(RectTransform rt, float left, float right)
@@ -272,7 +374,9 @@ namespace PunkMultiverse.UI
             if (_canvasGo == null || !_canvasGo.activeSelf) return;
             var session = NetSession.Instance;
             bool inLobby = session.State == SessionState.Lobby || session.State == SessionState.Connecting;
-            _connectPanel.SetActive(!inLobby);
+            if (inLobby) _seedSetupOpen = false;
+            _connectPanel.SetActive(!inLobby && !_seedSetupOpen);
+            if (_seedPanel != null) _seedPanel.SetActive(!inLobby && _seedSetupOpen);
             _lobbyPanel.SetActive(inLobby);
             _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
 
