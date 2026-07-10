@@ -290,7 +290,17 @@ namespace PunkMultiverse.Sync
 
             var flags = ShipFlags.None;
             if (LocalShip.IsDead) flags |= ShipFlags.Dead;
-            try { if (movement != null && movement.IsBoosted) flags |= ShipFlags.Boost; } catch { }
+            Vector2 move = Vector2.zero;
+            try
+            {
+                if (movement != null)
+                {
+                    if (movement.IsBoosted) flags |= ShipFlags.Boost;
+                    if (movement.isHovering) flags |= ShipFlags.Hover;
+                    move = movement.flyDirection;
+                }
+            }
+            catch { }
 
             float hp = 1f;
             try { if (dr != null && dr.MaxHealth > 0) hp = dr.CurrentHealth / dr.MaxHealth; } catch { }
@@ -302,6 +312,7 @@ namespace PunkMultiverse.Sync
                 Vel = rb.linearVelocity,
                 RotDeg = rb.rotation,
                 Aim = input != null ? (Vector2)input.AimDirection : Vector2.right,
+                Move = move,
                 Flags = flags,
                 HpFraction = hp,
                 ShieldFraction = UnitStatus.ReadShieldFraction(LocalShip),
@@ -310,6 +321,36 @@ namespace PunkMultiverse.Sync
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+        }
+
+        // Dash is an instantaneous event, not state — DashParticle (and any dash audio) hang off
+        // ShipMovement.DashStarted, so peers replay the event instead of inferring it from motion.
+        [HarmonyPatch(typeof(ShipMovement), "Dash")]
+        internal static class BroadcastDash
+        {
+            private static void Postfix(ShipMovement __instance)
+            {
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame) return;
+                if (LocalShip == null || __instance.gameObject != LocalShip.gameObject) return;
+                Writer.Reset();
+                new ShipDashMsg { Slot = (byte)session.LocalSlot }.Write(Writer);
+                session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+            }
+        }
+
+        /// <summary>Fire the puppet's DashStarted subscribers (VFX/audio) — never ShipMovement.Dash
+        /// itself; the velocity impulse belongs to the owner's simulation, ours comes by snapshot.</summary>
+        public static void ApplyDash(ShipDashMsg msg)
+        {
+            if (!ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
+            if (ship.GetComponent<RemotePuppet>() == null) return; // our own echo
+            try
+            {
+                var movement = ship.GetComponent<ShipMovement>();
+                movement?.DashStarted?.Invoke();
+            }
+            catch { }
         }
 
         // POI camera targets activate off the AVERAGE alive-ship position — with the party split
@@ -343,7 +384,9 @@ namespace PunkMultiverse.Sync
             if (puppet == null) return; // our own echo — ignore
 
             puppet.PushSnapshot(Time.unscaledTime, msg.Pos, msg.Vel, msg.RotDeg, msg.Aim);
+            puppet.SetMoveInput(msg.Move);
             puppet.SetBoosting((msg.Flags & ShipFlags.Boost) != 0);
+            puppet.SetHovering((msg.Flags & ShipFlags.Hover) != 0);
             UnitStatus.WriteShieldFraction(ship, msg.ShieldFraction);
             UnitStatus.WriteBurnLevel(ship, msg.BurnLevel);
 

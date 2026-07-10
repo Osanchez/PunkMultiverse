@@ -131,6 +131,8 @@ namespace PunkMultiverse.Sync
 
         public static void ReplayEntityFire(EntityFireMsg msg)
         {
+            var session = NetSession.Instance;
+            if (session == null || session.State != SessionState.InGame) return; // stale post-run traffic
             if (!Core.NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
             try
             {
@@ -164,6 +166,8 @@ namespace PunkMultiverse.Sync
 
         public static void ReplayFire(FireEventMsg msg)
         {
+            var session = NetSession.Instance;
+            if (session == null || session.State != SessionState.InGame) return; // stale post-run traffic
             if (!ShipSync.ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
             if (ship.GetComponent<RemotePuppet>() == null) return; // our own echo
             var weapon = GetHolderWeapon(ship, msg.Holder);

@@ -27,6 +27,7 @@
         FireEvent = 24,     // ship weapon fired (visual replay on peers)
         EntityFire = 25,    // enemy/minion/boss weapon fired (visual replay on peers)
         EntitySpawned = 26, // (ch2) generic runtime entity spawn (boss adds, spawner enemies)
+        ShipDash = 27,      // ship dashed (visual/audio replay on peers)
 
         // ---- Channel 2: reliable events ----
         DamageRequest = 40, // non-authority -> authority (routed via host)

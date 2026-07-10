@@ -17,11 +17,17 @@ namespace PunkMultiverse.Core
     {
         private const float ScanInterval = 0.5f;
         private const float HysteresisFactor = 0.75f; // challenger must be at least 25% closer
+        private const float HoldSeconds = 3f;         // min time between handoffs per entity
 
         private static float _nextScanAt;
+        private static readonly Dictionary<int, float> HoldUntil = new Dictionary<int, float>();
         private static readonly NetWriter Writer = new NetWriter(2048);
 
-        public static void Reset() => _nextScanAt = 0;
+        public static void Reset()
+        {
+            _nextScanAt = 0;
+            HoldUntil.Clear();
+        }
 
         /// <summary>Called from NetSession.Update on the host while InGame.</summary>
         public static void Tick(NetSession session)
@@ -54,6 +60,9 @@ namespace PunkMultiverse.Core
                 if (!NetIds.TryGetNetId(entity.instanceId, out int netId)) continue;
                 if (!seen.Add(netId)) continue; // one decision per netId per scan, even if aliased
                 if (EnemySync.FixedOwners.Contains(netId)) continue; // minions: fixed owner-authority
+                // Handoff cooldown: every flip tears down and rebuilds the puppet's whole AI
+                // stack on two machines, and a kill landing mid-flip is lost. Stay put.
+                if (HoldUntil.TryGetValue(netId, out float holdUntil) && Time.unscaledTime < holdUntil) continue;
 
                 Vector2 pos = entity.position;
                 byte current = EnemySync.OwnerOf(netId);
@@ -77,7 +86,10 @@ namespace PunkMultiverse.Core
                 }
                 else if (ownerDist > authority * 1.15f) // release hysteresis: no flip-flop at the radius edge
                 {
-                    desired = closest.dist <= authority ? closest.slot : (byte)0; // owner left entirely
+                    if (closest.dist <= authority) desired = closest.slot;
+                    else if (ownerDist > interest) desired = 0; // out of everyone's range entirely
+                    // Owner in the release..interest band with nobody clearly closer: keep them.
+                    // Bouncing to the host and back every scan is worse than a stretched radius.
                 }
                 else if (ownerDist > transfer && closest.slot != current && closest.dist < ownerDist * HysteresisFactor)
                 {
@@ -88,7 +100,7 @@ namespace PunkMultiverse.Core
                 {
                     changes.Add((netId, desired));
                     EnemySync.Owners[netId] = desired;
-                    if (NetIds.TryGetInstanceId(netId, out _)) { }
+                    HoldUntil[netId] = Time.unscaledTime + HoldSeconds;
                 }
             }
 

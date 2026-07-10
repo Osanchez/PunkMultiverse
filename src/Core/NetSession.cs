@@ -728,6 +728,13 @@ namespace PunkMultiverse.Core
                     Sync.ProjectileSync.ReplayFire(fire);
                     break;
                 }
+                case MsgType.ShipDash:
+                {
+                    var dash = ShipDashMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: false);
+                    Sync.ShipSync.ApplyDash(dash);
+                    break;
+                }
                 case MsgType.DamageRequest:
                 {
                     var dmg = DamageRequestMsg.Read(_reader);

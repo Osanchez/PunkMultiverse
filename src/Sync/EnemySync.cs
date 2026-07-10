@@ -276,7 +276,11 @@ namespace PunkMultiverse.Sync
                 if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
                 if (__instance.GetComponent<Ship>() != null) return; // ships have their own life events
                 if (!TryGetNetId(__instance, out int netId)) return;
-                if (!IsLocallyOwned(netId) && !(session.IsHost && !Owners.ContainsKey(netId))) return;
+                // Announce any death WE simulated (no puppet = live local sim). Checking the
+                // ownership registrar instead loses kills that land mid-handoff — the other
+                // machine then keeps a live copy and HP-syncs our corpse back up (zombies).
+                // A double announce after a race is harmless: receivers dedupe on KilledNetIds.
+                if (__instance.GetComponentInParent<RemoteEntityPuppet>() != null) return;
                 if (!KilledNetIds.Add(netId)) return;
                 NetStats.AddKill(session.LocalSlot);
 

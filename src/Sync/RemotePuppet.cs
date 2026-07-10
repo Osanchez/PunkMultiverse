@@ -1,5 +1,6 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
+using HarmonyLib;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -29,12 +30,14 @@ namespace PunkMultiverse.Sync
 
         private readonly List<Snap> _buffer = new List<Snap>(32);
         private Rigidbody2D _rb;
+        private ShipMovement _movement;
         private BarrelTransform[] _barrels;
         private bool _boosting;
 
         private void Awake()
         {
             _rb = GetComponent<Rigidbody2D>();
+            _movement = GetComponent<ShipMovement>();
         }
 
         private void Start()
@@ -66,10 +69,25 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        private Vector2 _moveInput;
+
+        /// <summary>Owner's movement input from the ship snapshot — feeds the vanilla engine /
+        /// hover VFX and engine audio, which read ShipMovement.flyDirection every frame even
+        /// while ShipMovement itself is disabled.</summary>
+        public void SetMoveInput(Vector2 move) => _moveInput = move;
+
+        /// <summary>Owner's hover state — HoverParticles/ShipEngineSound read this field live.</summary>
+        public void SetHovering(bool hovering)
+        {
+            if (_movement != null) _movement.isHovering = hovering;
+        }
+
         // Turrets track the owner's aim: write the game's own BarrelTransform.Direction and let
         // its LateUpdate apply the visible rotation (rotating the transform ourselves would race it).
         private void Update()
         {
+            if (_movement != null) _movement.flyDirection = _moveInput;
+
             if (_barrels == null || AimDirection.sqrMagnitude < 0.01f) return;
             foreach (var barrel in _barrels)
                 if (barrel != null)
@@ -85,6 +103,11 @@ namespace PunkMultiverse.Sync
             // A puppet must not vacuum the local player's per-client drops or trigger interactions.
             foreach (var collector in GetComponentsInChildren<LootCollector>(true)) collector.enabled = false;
             foreach (var interactor in GetComponentsInChildren<Interactor>(true)) interactor.enabled = false;
+            // ShipVirtualJoyInput writes ShipMovement.flyDirection from LOCAL input every frame —
+            // on a puppet that mirrors the local player's thrust VFX onto the wrong ship.
+            // (ShipControlActionMap feeds flyDirection too, but it hangs off PlayerInput, which
+            // is disabled above.)
+            foreach (var joy in GetComponentsInChildren<ShipVirtualJoyInput>(true)) joy.enabled = false;
             // Puppets spawn on the start station and may register hover before this runs.
             ScrubInteractions(this);
         }

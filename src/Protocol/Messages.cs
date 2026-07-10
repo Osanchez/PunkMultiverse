@@ -198,6 +198,7 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Vel;
         public float RotDeg;
         public UnityEngine.Vector2 Aim;
+        public UnityEngine.Vector2 Move; // owner's flyDirection input — drives puppet engine VFX
         public ShipFlags Flags;
         public float HpFraction;
         public float ShieldFraction;
@@ -211,6 +212,7 @@ namespace PunkMultiverse.Protocol
             w.WriteVector2Half(Vel);
             w.WriteHalf(RotDeg);
             w.WriteVector2Half(Aim);
+            w.WriteVector2Half(Move);
             w.WriteByte((byte)Flags);
             w.WriteHalf(HpFraction);
             w.WriteHalf(ShieldFraction);
@@ -224,11 +226,25 @@ namespace PunkMultiverse.Protocol
             Vel = r.ReadVector2Half(),
             RotDeg = r.ReadHalf(),
             Aim = r.ReadVector2Half(),
+            Move = r.ReadVector2Half(),
             Flags = (ShipFlags)r.ReadByte(),
             HpFraction = r.ReadHalf(),
             ShieldFraction = r.ReadHalf(),
             BurnLevel = r.ReadHalf(),
         };
+    }
+
+    public struct ShipDashMsg
+    {
+        public byte Slot;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ShipDash);
+            w.WriteByte(Slot);
+        }
+
+        public static ShipDashMsg Read(NetReader r) => new ShipDashMsg { Slot = r.ReadByte() };
     }
 
     public struct ManifestMsg
