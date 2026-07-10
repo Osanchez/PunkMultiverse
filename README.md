@@ -23,8 +23,9 @@ Steam's relay, so a pasted lobby code just works.
   progression is shared, purchases are not.
 - **Find your friends** — name labels in each player's color, screen-edge arrows with
   distance when they're off-screen, and a hold-**Tab** scoreboard (HP, kills, deaths, distance).
-- **Drop-proof** — if someone crashes, their slot is reserved; REJOIN LAST SESSION puts them
-  back into the same run with their build, vault, and gold restored.
+- **Drop-proof** — if someone crashes, their slot is reserved; joining again with the lobby
+  code puts them back into the same run with their build, vault, and gold restored. New
+  players can also join a run already in progress.
 - **Version safety** — everyone must run the same mod version. Mismatched joins are rejected
   with both versions named, and the lobby shows an UPDATE banner when a newer release exists.
 
@@ -43,8 +44,11 @@ title, and it tells you when you're out of date.
 
 - **Host:** PLAY ONLINE → HOST LOBBY → COPY CODE → send it to your friends (or INVITE FRIENDS
   for the Steam overlay). Optionally paste a WORLD SEED. When everyone's ready: START GAME.
-- **Join:** copy the code your host sent → PLAY ONLINE → JOIN FROM CLIPBOARD.
-- **Reconnect:** crashed or dropped? PLAY ONLINE → REJOIN LAST SESSION.
+  You can also start solo — friends join mid-run with the code.
+- **Join:** copy the code your host sent → PLAY ONLINE → JOIN FROM CLIPBOARD. Works while the
+  run is already going: you'll spawn at the start station, caught up to the world's state.
+- **Reconnect:** crashed or dropped? JOIN FROM CLIPBOARD with the same code — your build,
+  vault, and gold come back with you.
 - **In game:** hold **Tab** for the party scoreboard. F11 opens a small network debug overlay.
 
 See **[TESTING.md](TESTING.md)** for the full test checklist and a solo two-instance setup
@@ -91,7 +95,8 @@ replicate as reliable events — and a rejoining player gets the whole ledger re
 - Merged-cell terrain patches and projectile spread can look slightly different per client
   (game RNG; damage and terrain state are authoritative).
 - Menus don't pause the world in multiplayer; slow-mo effects are disabled; Save & Exit is
-  disabled during net runs (rejoin covers crashes). Rejoiners respawn at the start station.
+  disabled during net runs (rejoin covers crashes). Rejoiners and late joiners respawn at the
+  start station.
 - Daily-challenge runs and other installed mods aren't supported in net runs yet.
 - Hook tethers to unstreamed targets and hooked-prop spring physics are approximate on peers.
 

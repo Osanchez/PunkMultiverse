@@ -13,7 +13,7 @@ namespace PunkMultiverse.UI
     ///   CONNECT  — Host Lobby / Join from Clipboard / Back
     ///   LOBBY    — 4 player rows (name, color swatch, ready), Copy Code, Invite, Ready, Start (host)
     /// Auto-shows when a session reaches Lobby state; hides on game start / stop.
-    /// Layout: panel is 760x640; texts anchor to the panel top (negative y down), buttons to the
+    /// Layout: panel is 760x700; texts anchor to the panel top (negative y down), buttons to the
     /// panel center (positive y up).
     /// </summary>
     public sealed class LobbyScreen : MonoBehaviour
@@ -33,7 +33,6 @@ namespace PunkMultiverse.UI
         private TMP_Text _seedText;
         private GameObject _seedPasteButton;
         private GameObject _seedRandomButton;
-        private GameObject _rejoinButton;
         private TMP_Text _readyButtonLabel;
         private GameObject _startButton;
         private GameObject _inviteButton;
@@ -132,11 +131,11 @@ namespace PunkMultiverse.UI
             var prt = panel.rectTransform;
             prt.anchorMin = prt.anchorMax = new Vector2(0.5f, 0.5f);
             prt.pivot = new Vector2(0.5f, 0.5f);
-            prt.sizeDelta = new Vector2(760, 640);
+            prt.sizeDelta = new Vector2(760, 700);
 
             MakeText(panel.transform, "Title", "PUNK MULTIVERSE", 42, Accent, y: -10, height: 60);
             _versionText = MakeText(panel.transform, "Version", $"mod v{Plugin.Version}", 16, new Color(1, 1, 1, 0.45f), y: -56, height: 22);
-            _statusText = MakeText(panel.transform, "Status", "", 20, new Color(1f, 0.55f, 0.45f), y: -600, height: 36);
+            _statusText = MakeText(panel.transform, "Status", "", 20, new Color(1f, 0.55f, 0.45f), y: -660, height: 36);
 
             BuildConnectPanel(panel.transform);
             BuildLobbyPanel(panel.transform);
@@ -153,9 +152,7 @@ namespace PunkMultiverse.UI
                 () => NetSession.Instance.HostOnline());
             MakeButton(_connectPanel.transform, "JOIN FROM CLIPBOARD", new Vector2(0, -20), new Vector2(420, 64),
                 () => NetSession.Instance.JoinByCode(null));
-            _rejoinButton = ButtonRoot(MakeButton(_connectPanel.transform, "REJOIN LAST SESSION", new Vector2(0, -100), new Vector2(420, 52),
-                () => NetSession.Instance.JoinByCode(NetSession.LastSessionCode)));
-            MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -170), new Vector2(220, 52), Hide);
+            MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -100), new Vector2(220, 52), Hide);
         }
 
         private void BuildLobbyPanel(Transform parent)
@@ -166,14 +163,14 @@ namespace PunkMultiverse.UI
 
             // World seed: everyone sees it; only the host can change it (paste a shared seed / reroll).
             _seedText = MakeText(_lobbyPanel.transform, "Seed", "", 20, new Color(1f, 1f, 1f, 0.85f), y: -106, height: 26);
-            _seedPasteButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "PASTE", new Vector2(240, 201), new Vector2(90, 26),
+            _seedPasteButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "PASTE", new Vector2(240, 231), new Vector2(90, 26),
                 PasteSeedFromClipboard));
-            _seedRandomButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "RND", new Vector2(333, 201), new Vector2(76, 26),
+            _seedRandomButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "RND", new Vector2(333, 231), new Vector2(76, 26),
                 () => NetSession.Instance.SetChosenSeed(0)));
 
-            MakeButton(_lobbyPanel.transform, "COPY CODE", new Vector2(-140, 156), new Vector2(240, 48),
+            MakeButton(_lobbyPanel.transform, "COPY CODE", new Vector2(-140, 186), new Vector2(240, 48),
                 () => NetSession.Instance.CopyLobbyCodeToClipboard());
-            _inviteButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "INVITE FRIENDS", new Vector2(140, 156),
+            _inviteButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "INVITE FRIENDS", new Vector2(140, 186),
                 new Vector2(240, 48), () => NetSession.Instance.Lobby?.OpenInviteOverlay()));
 
             // Player rows: top-anchored band from y=-196 to y=-452.
@@ -210,17 +207,17 @@ namespace PunkMultiverse.UI
             for (int c = 0; c < PlayerColors.All.Length; c++)
             {
                 int colorIndex = c;
-                var label = MakeButton(_lobbyPanel.transform, "", new Vector2(-158 + c * 45, -190), new Vector2(38, 38),
+                var label = MakeButton(_lobbyPanel.transform, "", new Vector2(-158 + c * 45, -160), new Vector2(38, 38),
                     () => SetLocalColor((byte)colorIndex));
                 ButtonRoot(label).GetComponent<Image>().color = PlayerColors.Get(colorIndex);
             }
 
-            _readyButtonLabel = MakeButton(_lobbyPanel.transform, "READY", new Vector2(-140, -246), new Vector2(240, 56),
+            _readyButtonLabel = MakeButton(_lobbyPanel.transform, "READY", new Vector2(-140, -216), new Vector2(240, 56),
                 ToggleReady);
-            _startButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "START GAME", new Vector2(140, -246),
+            _startButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "START GAME", new Vector2(140, -216),
                 new Vector2(240, 56), StartGame));
 
-            MakeButton(_lobbyPanel.transform, "LEAVE", new Vector2(-250, -296), new Vector2(180, 44), Leave);
+            MakeButton(_lobbyPanel.transform, "LEAVE", new Vector2(0, -282), new Vector2(180, 44), Leave);
         }
 
         private static GameObject ButtonRoot(TMP_Text label) => label.transform.parent.gameObject;
@@ -278,7 +275,6 @@ namespace PunkMultiverse.UI
             bool inLobby = session.State == SessionState.Lobby || session.State == SessionState.Connecting;
             _connectPanel.SetActive(!inLobby);
             _lobbyPanel.SetActive(inLobby);
-            if (!inLobby && _rejoinButton != null) _rejoinButton.SetActive(!string.IsNullOrEmpty(NetSession.LastSessionCode));
             _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
             if (_versionText != null)
                 _versionText.text = Core.UpdateCheck.UpdateAvailable != null

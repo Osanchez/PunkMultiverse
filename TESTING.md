@@ -35,7 +35,8 @@ is for the *human* passes: real Steam accounts, real combat, 3–4 players.
 - [ ] Version display correct; joining with a DIFFERENT mod version is cleanly rejected and the
       message names both versions + the releases URL
 - [ ] Colors change live for everyone; seed PASTE/RND (host only) shows for all
-- [ ] REJOIN LAST SESSION appears after you've been in a session once
+- [ ] Solo host + READY enables START GAME; a friend joining mid-run with the code lands in
+      the same world and catches up
 
 ### Run start
 - [ ] All players land in the SAME world (station layout, terrain) — a checksum mismatch aborts
@@ -76,8 +77,8 @@ is for the *human* passes: real Steam accounts, real combat, 3–4 players.
 ### Disconnect / rejoin
 - [ ] Kill a client's game mid-run: host lobby shows OFFLINE, their ship freezes, their enemies
       keep working (host takes over)
-- [ ] Relaunch + REJOIN LAST SESSION: back in the same run with your build, vault and gold
-      (`[Stash] rejoin restore applied` in the log), terrain/kills/upgrades caught up
+- [ ] Relaunch + JOIN FROM CLIPBOARD with the same code: back in the same run with your build,
+      vault and gold (`[Stash] rejoin restore applied` in the log), terrain/kills/upgrades caught up
 - [ ] Host quitting mid-run pops the session-lost screen on clients
 
 ### 3–4 players (untested territory — extra eyes here)
@@ -101,5 +102,5 @@ Log markers worth searching: `GO LIVE`, `checksum`, `manifest applied` (matched/
 - Merged-cell terrain patches can look slightly different across clients (game RNG; cosmetic).
 - Projectile spread patterns differ visually per client (damage is authoritative).
 - Pause menus don't pause the world in multiplayer; slow-mo effects are disabled.
-- Save & Exit is disabled during net runs — reconnecting via REJOIN covers crashes.
-- A rejoining player's ship starts back at the spawn station (not where they dropped).
+- Save & Exit is disabled during net runs — rejoining with the lobby code covers crashes.
+- A rejoining or late-joining player's ship starts at the spawn station (not where they dropped).

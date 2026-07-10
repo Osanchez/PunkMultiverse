@@ -25,10 +25,17 @@ namespace PunkMultiverse.Sync
         private static float _nextCameraSweepAt;
         private static readonly NetWriter Writer = new NetWriter(256);
 
+        // Cached at the level-load spawn pass so mid-run (late-join) puppets use the same recipe.
+        private static ShipManager _shipManager;
+        private static Level _level;
+        private static float _nextLateSpawnAt;
+
         public static void Reset()
         {
             ShipsBySlot.Clear();
             LocalShip = null;
+            _shipManager = null;
+            _level = null;
         }
 
         // ---------------------------------------------------------------- puppet spawning
@@ -60,50 +67,77 @@ namespace PunkMultiverse.Sync
                     Plugin.Log.LogError("[Ships] no local ship spawned?");
                     return;
                 }
+                _shipManager = sm;
+                _level = level;
                 LocalShip = sm.Ships[0];
                 ShipsBySlot[session.LocalSlot] = LocalShip;
 
-                var smT = typeof(ShipManager);
-                var entityManager = AccessTools.Field(smT, "entityManager").GetValue(sm);
-                var getShipsM = AccessTools.Method(entityManager.GetType(), "GetShips");
-                var placeM = AccessTools.Method(smT, "PlaceShipEntity");
-                var spawnM = AccessTools.Method(smT, "Spawn", new[] { typeof(EntityData), typeof(Ship), typeof(InputDevice), typeof(bool) });
-                var shipsConfig = AccessTools.Field(smT, "shipsConfig").GetValue(sm) as ShipsConfig;
-                var prefab = shipsConfig != null ? shipsConfig.AutoSwichShipPrefab : null;
-                var loadout = RunStarter.CurrentLoadout;
-                if (prefab == null || loadout == null)
-                {
-                    Plugin.Log.LogError("[Ships] missing prefab/loadout for puppet spawn");
-                    return;
-                }
-
-                var remoteSlots = session.Players.Where(p => p != null && !p.IsLocal).Select(p => (int)p.Slot).OrderBy(s => s).ToList();
-                Vector2 c = level.graph.StartNode.center;
-                Vector2[] off = { Vector2.up * 2f, Vector2.down * 2f, Vector2.left * 2f, Vector2.right * 2f };
-
-                var known = new HashSet<EntityData>(sm.Ships.Select(s => s.SavableEntity.EntityData));
-                foreach (var slot in remoteSlots)
-                {
-                    var p = c + off[slot % off.Length];
-                    placeM.Invoke(sm, new object[] { new Vector3(p.x, p.y, 0f), loadout });
-                    var entity = (getShipsM.Invoke(entityManager, null) as IEnumerable<EntityData>)
-                        .FirstOrDefault(e => !known.Contains(e));
-                    if (entity == null)
-                    {
-                        Plugin.Log.LogError($"[Ships] placed entity for slot {slot} not found");
-                        continue;
-                    }
-                    known.Add(entity);
-
-                    spawnM.Invoke(sm, new object[] { entity, prefab, null, false });
-                    var ship = sm.Ships[sm.Ships.Count - 1];
-                    var puppet = ship.gameObject.AddComponent<RemotePuppet>();
-                    puppet.Slot = (byte)slot;
-                    ShipsBySlot[slot] = ship;
-                    Plugin.Log.LogInfo($"[Ships] puppet spawned for slot {slot}");
-                }
+                foreach (var p in session.Players.Where(p => p != null && !p.IsLocal).OrderBy(p => p.Slot))
+                    SpawnPuppet(p.Slot);
 
                 ApplyThemes(sm, session);
+            }
+        }
+
+        /// <summary>Place + spawn one puppet Ship at the start station (reflection into ShipManager).</summary>
+        private static bool SpawnPuppet(int slot)
+        {
+            var sm = _shipManager;
+            var smT = typeof(ShipManager);
+            var entityManager = AccessTools.Field(smT, "entityManager").GetValue(sm);
+            var getShipsM = AccessTools.Method(entityManager.GetType(), "GetShips");
+            var placeM = AccessTools.Method(smT, "PlaceShipEntity");
+            var spawnM = AccessTools.Method(smT, "Spawn", new[] { typeof(EntityData), typeof(Ship), typeof(InputDevice), typeof(bool) });
+            var shipsConfig = AccessTools.Field(smT, "shipsConfig").GetValue(sm) as ShipsConfig;
+            var prefab = shipsConfig != null ? shipsConfig.AutoSwichShipPrefab : null;
+            var loadout = RunStarter.CurrentLoadout;
+            if (prefab == null || loadout == null)
+            {
+                Plugin.Log.LogError("[Ships] missing prefab/loadout for puppet spawn");
+                return false;
+            }
+
+            Vector2 c = _level.graph.StartNode.center;
+            Vector2[] off = { Vector2.up * 2f, Vector2.down * 2f, Vector2.left * 2f, Vector2.right * 2f };
+            var known = new HashSet<EntityData>(sm.Ships.Select(s => s.SavableEntity.EntityData));
+            var pos = c + off[slot % off.Length];
+            placeM.Invoke(sm, new object[] { new Vector3(pos.x, pos.y, 0f), loadout });
+            var entity = (getShipsM.Invoke(entityManager, null) as IEnumerable<EntityData>)
+                .FirstOrDefault(e => !known.Contains(e));
+            if (entity == null)
+            {
+                Plugin.Log.LogError($"[Ships] placed entity for slot {slot} not found");
+                return false;
+            }
+
+            spawnM.Invoke(sm, new object[] { entity, prefab, null, false });
+            var ship = sm.Ships[sm.Ships.Count - 1];
+            var puppet = ship.gameObject.AddComponent<RemotePuppet>();
+            puppet.Slot = (byte)slot;
+            ShipsBySlot[slot] = ship;
+            Plugin.Log.LogInfo($"[Ships] puppet spawned for slot {slot}");
+            return true;
+        }
+
+        // A player who joined mid-run wasn't in the level-load spawn pass — give them a puppet
+        // as soon as they show up in the roster.
+        private static void EnsureLatePuppets(NetSession session)
+        {
+            if (_shipManager == null || _level == null || Time.unscaledTime < _nextLateSpawnAt) return;
+            _nextLateSpawnAt = Time.unscaledTime + 1f;
+            foreach (var p in session.Players)
+            {
+                // ContainsKey, not a null check: a destroyed-but-known ship is the
+                // death/respawn flow, which owns that slot's lifecycle.
+                if (p == null || p.IsLocal || ShipsBySlot.ContainsKey(p.Slot)) continue;
+                try
+                {
+                    if (SpawnPuppet(p.Slot)) ApplyThemes(_shipManager, session);
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogError($"[Ships] late puppet spawn failed for slot {p.Slot}: {e}");
+                }
             }
         }
 
@@ -243,6 +277,7 @@ namespace PunkMultiverse.Sync
         /// <summary>Called from NetSession.Update while InGame.</summary>
         public static void Tick(NetSession session)
         {
+            EnsureLatePuppets(session);
             SweepDistantCameraTargets();
             if (LocalShip == null || Time.unscaledTime < _nextSendAt) return;
             _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);

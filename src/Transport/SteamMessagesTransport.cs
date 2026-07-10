@@ -26,6 +26,7 @@ namespace PunkMultiverse.Transport
         private Callback<SteamNetworkingMessagesSessionFailed_t> _sessionFailed;
 
         private ulong _hostSteamId; // client mode
+        private bool _announceHostOnPoll;
 
         /// <summary>Gate for incoming sessions — set by the lobby controller to "is a member of my lobby".</summary>
         public Func<CSteamID, bool> AllowPeer;
@@ -60,8 +61,10 @@ namespace PunkMultiverse.Transport
             {
                 // Optimistic connect: sessions are implicit, so treat the host as connected now.
                 // A real failure surfaces via SteamNetworkingMessagesSessionFailed_t.
+                // Announced from Poll, not here — the caller must finish its own setup after
+                // StartClient returns before it can act on the event.
                 _knownPeers.Add(hostSteamId);
-                PeerConnected?.Invoke(hostSteamId);
+                _announceHostOnPoll = true;
             }
         }
 
@@ -108,6 +111,11 @@ namespace PunkMultiverse.Transport
         public void Poll()
         {
             if (!IsRunning) return;
+            if (_announceHostOnPoll)
+            {
+                _announceHostOnPoll = false;
+                PeerConnected?.Invoke(_hostSteamId);
+            }
             // Callback pumping is centralized in SteamBootstrap.Pump (NetSession.Update).
             for (int channel = 0; channel <= (int)NetChannel.Events; channel++)
             {
@@ -146,6 +154,7 @@ namespace PunkMultiverse.Transport
                 SteamNetworkingMessages.CloseSessionWithUser(ref identity);
             }
             _knownPeers.Clear();
+            _announceHostOnPoll = false;
             _sessionRequest?.Dispose();
             _sessionRequest = null;
             _sessionFailed?.Dispose();

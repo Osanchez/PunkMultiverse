@@ -25,6 +25,7 @@ namespace PunkMultiverse.Core
         public const int ProtocolVersion = 1;
         public const int MaxPlayers = 4;
         private const float PingInterval = 1f;
+        private const float ConnectTimeout = 15f;
 
         public static NetSession Instance { get; private set; }
         /// <summary>True whenever networking is live — every Harmony patch gates on this.</summary>
@@ -63,13 +64,15 @@ namespace PunkMultiverse.Core
                     count++;
                     if (!p.Ready) return false;
                 }
-                return count >= 2;
+                // Solo start is allowed — friends can join a run in progress with the code.
+                return count >= 1;
             }
         }
 
         private readonly NetWriter _writer = new NetWriter(8 * 1024);
         private readonly NetReader _reader = new NetReader();
         private float _nextPingAt;
+        private float _connectDeadline;
 
         public event Action RosterChanged;
         public event Action<SessionState> StateChanged;
@@ -452,7 +455,6 @@ namespace PunkMultiverse.Core
             };
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
-            if (CurrentLobbyCode != null) LastSessionCode = CurrentLobbyCode;
             Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
         }
 
@@ -463,6 +465,10 @@ namespace PunkMultiverse.Core
             {
                 _transport = CreateTransport();
                 WireTransport();
+                // Must be Connecting before the transport starts: the HELLO goes out from
+                // PeerConnected, which is a no-op in any other state.
+                SetState(SessionState.Connecting);
+                _connectDeadline = Time.unscaledTime + ConnectTimeout;
                 _transport.StartClient(address);
             }
             catch (Exception e)
@@ -470,7 +476,6 @@ namespace PunkMultiverse.Core
                 Fail($"Join failed: {e.Message}");
                 return;
             }
-            SetState(SessionState.Connecting);
         }
 
         public void StopSession(string reason)
@@ -533,13 +538,6 @@ namespace PunkMultiverse.Core
             StopSession(error);
         }
 
-        /// <summary>Persist the join target so "REJOIN LAST" survives a crash.</summary>
-        public static string LastSessionCode
-        {
-            get { try { var p = System.IO.Path.Combine(ModFolder.Dir, "lastsession.txt"); return System.IO.File.Exists(p) ? System.IO.File.ReadAllText(p).Trim() : null; } catch { return null; } }
-            set { try { System.IO.File.WriteAllText(System.IO.Path.Combine(ModFolder.Dir, "lastsession.txt"), value ?? ""); } catch { } }
-        }
-
         private void SetState(SessionState s)
         {
             if (State == s) return;
@@ -565,6 +563,12 @@ namespace PunkMultiverse.Core
             SteamBootstrap.Pump();
             if (_transport == null || !_transport.IsRunning) return;
             _transport.Poll();
+
+            if (State == SessionState.Connecting && Time.unscaledTime >= _connectDeadline)
+            {
+                Fail("Could not reach host — no response for 15 seconds.");
+                return;
+            }
 
             if (State == SessionState.InGame)
             {
@@ -843,13 +847,15 @@ namespace PunkMultiverse.Core
         {
             var hello = HelloMsg.Read(_reader);
             string reject = null;
+            bool midRun = State != SessionState.Lobby;
             if (hello.ProtocolVersion != ProtocolVersion || hello.ModVersion != Plugin.Version)
                 reject = $"Version mismatch: host has mod {Plugin.Version} (protocol {ProtocolVersion}), you have {hello.ModVersion} (protocol {hello.ProtocolVersion}).";
             else if (hello.GameVersion != Application.version)
                 reject = $"Game version mismatch: host {Application.version}, you {hello.GameVersion}.";
-            else if (State != SessionState.Lobby)
+            else if (midRun)
             {
-                // Mid-run: this is a rejoin if a reserved slot matches (SteamID, else name).
+                // Mid-run: a reserved slot matching (SteamID, else name) is a rejoin; anyone
+                // else is a late joiner and takes a free slot below.
                 var reserved = _players.FirstOrDefault(p => p != null && !p.Connected
                     && ((hello.SteamId != 0 && p.PeerId == hello.SteamId) || p.Name == hello.Name));
                 if (reserved != null)
@@ -857,7 +863,6 @@ namespace PunkMultiverse.Core
                     HandleRejoin(peer, hello, reserved);
                     return;
                 }
-                reject = "Session already in progress.";
             }
 
             int slot = -1;
@@ -883,13 +888,22 @@ namespace PunkMultiverse.Core
                 PeerId = peer,
                 Name = hello.Name,
             };
-            Plugin.Log.LogInfo($"[Session] {_players[slot]} joined");
+            Plugin.Log.LogInfo($"[Session] {_players[slot]} joined{(midRun ? " (mid-run, catching up)" : "")}");
 
             _writer.Reset();
             new WelcomeMsg { Slot = (byte)slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             BroadcastLobbyState();
             RosterChanged?.Invoke();
+
+            if (midRun)
+            {
+                // Late joiner rides the rejoin path: their LEVEL_READY triggers the catch-up
+                // replay (InGame) or joins the go-live barrier (Loading).
+                _writer.Reset();
+                new StartRunMsg { Seed = CurrentRunSeed, IsRejoin = true }.Write(_writer);
+                _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+            }
         }
 
         private void HandleRejoin(ulong peer, HelloMsg hello, NetPlayer reserved)
@@ -999,7 +1013,6 @@ namespace PunkMultiverse.Core
             ApplyRoster(welcome.Roster);
             LocalSlot = welcome.Slot;
             if (_players[LocalSlot] != null) _players[LocalSlot].IsLocal = true;
-            if (CurrentLobbyCode != null) LastSessionCode = CurrentLobbyCode;
             SetState(SessionState.Lobby);
             Plugin.Log.LogInfo($"[Session] welcomed as slot {welcome.Slot} (host mod v{welcome.HostModVersion})");
             RosterChanged?.Invoke();
