@@ -33,6 +33,7 @@ namespace PunkMultiverse.Sync
             FixedOwners.Clear();
             KilledNetIds.Clear();
             LastSentPos.Clear();
+            NextReleaseAt.Clear();
             UnitStatus.Reset();
             _nextSendAt = 0;
             _applyingRemote = false;
@@ -151,6 +152,14 @@ namespace PunkMultiverse.Sync
             foreach (var kv in Owners)
             {
                 if (kv.Value != session.LocalSlot || KilledNetIds.Contains(kv.Key)) continue;
+                // Authority follows distance but simulation needs the GameObject — segment
+                // streaming can unload an entity we still own. Owning what we can't simulate
+                // starves everyone else's puppets (frozen, brainless enemies): hand it back.
+                if (!IsSpawnedHere(egm, kv.Key))
+                {
+                    MaybeReleaseAuthority(session, kv.Key);
+                    continue;
+                }
                 CollectEntry(egm, kv.Key, entries);
             }
             // Host also owns every un-assigned entity; it only streams the spawned ones.
@@ -167,6 +176,41 @@ namespace PunkMultiverse.Sync
                 new EntityStateMsg { Entries = entries.GetRange(start, count) }.Write(Writer);
                 session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
             }
+        }
+
+        private static bool IsSpawnedHere(EntityGameObjectManager egm, int netId)
+        {
+            return NetIds.TryGetInstanceId(netId, out int instanceId)
+                   && egm.TryGetSavableEntity(instanceId, out var se) && se != null;
+        }
+
+        private static readonly Dictionary<int, float> NextReleaseAt = new Dictionary<int, float>();
+
+        private static void MaybeReleaseAuthority(NetSession session, int netId)
+        {
+            // Host-owned unspawned entities are simply dormant (by design); clients ask the
+            // host to reassign. Rate-limited per entity — reassignment arrives as AUTH_ASSIGN.
+            if (session.IsHost) return;
+            if (NextReleaseAt.TryGetValue(netId, out float at) && Time.unscaledTime < at) return;
+            NextReleaseAt[netId] = Time.unscaledTime + 5f;
+            Writer.Reset();
+            new AuthReleaseMsg { NetId = netId }.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+        }
+
+        /// <summary>Host: an owner can't simulate this entity — take it back (dormant) and let
+        /// the next scan give it to whoever is genuinely close, with the hold cleared.</summary>
+        public static void ApplyAuthRelease(AuthReleaseMsg msg, NetSession session)
+        {
+            var assign = new AuthAssignMsg
+            {
+                Entries = new List<(int netId, byte owner)> { (msg.NetId, session.HostSlot) },
+            };
+            ApplyAuthAssign(assign);
+            AuthorityManager.ClearHold(msg.NetId);
+            Writer.Reset();
+            assign.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
         }
 
         private static readonly List<int> _hostScratch = new List<int>(64);

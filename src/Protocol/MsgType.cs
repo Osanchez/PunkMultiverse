@@ -20,6 +20,7 @@
         SetLobbyPrefs = 12, // client -> host: my color / ready state
         SessionEnded = 13,  // host -> all: deliberate session end (not a connection loss)
         Kicked = 14,        // host -> one client: removed from the lobby by the host
+        RunEnded = 15,      // host -> all: party wiped — back to the lobby, session intact
 
         // ---- Channel 1: unreliable state ----
         Ping = 20,

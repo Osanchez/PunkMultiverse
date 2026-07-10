@@ -33,6 +33,8 @@ namespace PunkMultiverse.Sync
         private ShipMovement _movement;
         private BarrelTransform[] _barrels;
         private bool _boosting;
+        private bool _frozenStale;
+        private float _savedGravityScale;
 
         private void Awake()
         {
@@ -214,8 +216,22 @@ namespace PunkMultiverse.Sync
 
             if (Time.unscaledTime - last.Time > StaleAfter)
             {
-                _rb.linearVelocity = Vector2.zero; // owner went quiet — freeze in place
+                // Owner went quiet — hard freeze. Zeroing velocity per-frame still lets gravity
+                // integrate a slow sink; kill gravity until snapshots resume instead.
+                if (!_frozenStale)
+                {
+                    _frozenStale = true;
+                    _savedGravityScale = _rb.gravityScale;
+                    _rb.gravityScale = 0f;
+                    _rb.linearVelocity = Vector2.zero;
+                    _rb.angularVelocity = 0f;
+                }
                 return;
+            }
+            if (_frozenStale)
+            {
+                _frozenStale = false;
+                _rb.gravityScale = _savedGravityScale;
             }
 
             // Find the two snapshots bracketing renderTime.

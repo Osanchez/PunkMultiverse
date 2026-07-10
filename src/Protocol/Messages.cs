@@ -260,6 +260,19 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    public struct AuthReleaseMsg
+    {
+        public int NetId;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.AuthRelease);
+            w.WriteVarUInt((uint)NetId);
+        }
+
+        public static AuthReleaseMsg Read(NetReader r) => new AuthReleaseMsg { NetId = (int)r.ReadVarUInt() };
+    }
+
     public struct ShipDashMsg
     {
         public byte Slot;

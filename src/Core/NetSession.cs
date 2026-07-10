@@ -742,7 +742,11 @@ namespace PunkMultiverse.Core
                 Sync.FogSync.Tick(this);
                 EconomyStash.Tick(this);
                 NetRunSave.Tick(this);
-                if (IsHost) AuthorityManager.Tick(this);
+                if (IsHost)
+                {
+                    AuthorityManager.Tick(this);
+                    CheckPartyWipe();
+                }
             }
 
             // DEV autostart: clickless loadout pick while loading.
@@ -790,6 +794,78 @@ namespace PunkMultiverse.Core
         }
 
         // ---------------------------------------------------------------- transport events
+
+        // ---------------------------------------------------------------- party wipe
+
+        private float _allDeadSince = -1f;
+
+        /// <summary>Host: when every connected player's ship is dead (debounced), the run is
+        /// over. The vanilla game-over Retry can't restart a NET run (its world regenerates
+        /// past the mod's start gates) — instead everyone returns to the LOBBY, session
+        /// intact, and the host launches the next run through the synchronized path.</summary>
+        private void CheckPartyWipe()
+        {
+            bool anyAlive = false;
+            int counted = 0;
+            foreach (var p in _players)
+            {
+                if (p == null || !p.Connected) continue;
+                Ship ship = p.IsLocal
+                    ? Sync.ShipSync.LocalShip
+                    : (Sync.ShipSync.ShipsBySlot.TryGetValue(p.Slot, out var s) ? s : null);
+                if (ship == null) continue;
+                counted++;
+                try { if (!ship.IsDead) anyAlive = true; } catch { anyAlive = true; }
+            }
+            if (counted == 0 || anyAlive)
+            {
+                _allDeadSince = -1f;
+                return;
+            }
+            if (_allDeadSince < 0f)
+            {
+                _allDeadSince = Time.unscaledTime;
+                return;
+            }
+            if (Time.unscaledTime - _allDeadSince < 2f) return;
+
+            Plugin.Log.LogInfo("[Session] party wiped — returning everyone to the lobby");
+            _writer.Reset();
+            _writer.WriteMsgType(MsgType.RunEnded);
+            ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+            EndRunToLobby();
+        }
+
+        /// <summary>The run is over but the session lives: reset all run-scoped sync state
+        /// (including the start gates a vanilla retry would trip over), clear ready flags, and
+        /// reopen the lobby. A wiped run's save is deleted — defeat isn't resumable.</summary>
+        private void EndRunToLobby()
+        {
+            _allDeadSince = -1f;
+            _levelChecksums.Clear();
+            Sync.ShipSync.Reset();
+            Sync.ShipSync.ResetStartGate();
+            Sync.ProjectileSync.Reset();
+            Sync.DamageSync.Reset();
+            Sync.WorldSync.Reset();
+            Sync.EnemySync.Reset();
+            Sync.MinionSync.Reset();
+            Sync.ProgressionSync.Reset();
+            Sync.ModuleGridSync.Reset();
+            Sync.FogSync.Reset();
+            AuthorityManager.Reset();
+            NetIds.Reset();
+            EconomyStash.Reset();
+            NetRunSave.Reset();
+            NetRunSave.Delete();
+            Sync.HookSync.Reset();
+            foreach (var p in _players)
+                if (p != null)
+                    p.Ready = false;
+            UI.Toast.Show("RUN OVER — BACK TO LOBBY", 5f);
+            SetState(SessionState.Lobby);
+            RosterChanged?.Invoke();
+        }
 
         private void OnPeerConnected(ulong peer)
         {
@@ -971,6 +1047,10 @@ namespace PunkMultiverse.Core
                 case MsgType.Kicked when !IsHost:
                     UI.Toast.Show("YOU HAVE BEEN KICKED FROM THE LOBBY", 6f);
                     Fail("You were kicked by the host.");
+                    break;
+                case MsgType.RunEnded when !IsHost: EndRunToLobby(); break;
+                case MsgType.AuthRelease when IsHost:
+                    Sync.EnemySync.ApplyAuthRelease(AuthReleaseMsg.Read(_reader), this);
                     break;
                 case MsgType.LobbyState when !IsHost: HandleLobbyState(); break;
                 case MsgType.Ping: HandlePing(peer); break;

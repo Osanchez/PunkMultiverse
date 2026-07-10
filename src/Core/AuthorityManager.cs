@@ -29,6 +29,9 @@ namespace PunkMultiverse.Core
             HoldUntil.Clear();
         }
 
+        /// <summary>Drop the handoff cooldown for one entity (owner released it — reassign asap).</summary>
+        public static void ClearHold(int netId) => HoldUntil.Remove(netId);
+
         /// <summary>Called from NetSession.Update on the host while InGame.</summary>
         public static void Tick(NetSession session)
         {

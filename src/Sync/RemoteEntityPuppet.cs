@@ -138,7 +138,13 @@ namespace PunkMultiverse.Sync
             if (_rb == null || _buffer.Count == 0) return;
             float renderTime = Time.unscaledTime - InterpDelay;
             var last = _buffer[_buffer.Count - 1];
-            if (Time.unscaledTime - last.Time > 2f) { _rb.linearVelocity = Vector2.zero; return; }
+            if (Time.unscaledTime - last.Time > 2f)
+            {
+                // Stream starved (owner unloaded the GameObject, dormancy, corpse): release the
+                // body to local physics — pinning it per-frame fights gravity forever.
+                _buffer.Clear();
+                return;
+            }
 
             Snap a = _buffer[0], b = last;
             for (int i = _buffer.Count - 1; i >= 1; i--)

@@ -41,6 +41,13 @@ namespace PunkMultiverse.Core
 
         public static void Reset() => _nextSaveAt = 0;
 
+        /// <summary>A wiped run is not resumable — remove the save.</summary>
+        public static void Delete()
+        {
+            try { if (File.Exists(PathFor())) File.Delete(PathFor()); }
+            catch (Exception e) { Plugin.Log.LogWarning($"[RunSave] delete failed: {e.Message}"); }
+        }
+
         /// <summary>Called per frame while InGame; also call directly at session end.</summary>
         public static void Tick(NetSession session)
         {
