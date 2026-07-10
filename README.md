@@ -76,6 +76,10 @@ The one you're most likely to touch:
   world's state.
 - **Reconnect:** crashed or dropped? JOIN FROM CLIPBOARD with the same code — your build,
   vault, and gold come back with you, and you spawn at the latest unlocked station.
+- **Stop and play later:** net runs auto-save continuously on every machine (the pause menu
+  says EXIT — no manual save needed). Whoever hosts next can RESUME LAST RUN from the PLAY
+  ONLINE screen: same world, terrain damage, kills, and unlocks; everyone rejoins with the
+  code, gets their build back, and spawns at the checkpoint.
 - **Host leaving:** the run keeps going — a remaining player becomes the host (a banner names
   them), the lobby code stays the same, and the old host can rejoin with it.
 - **When you die:** the camera follows an alive teammate; **Q/E** switch between them.
@@ -129,9 +133,10 @@ same ledgers without anyone reloading.
 ## Known behavior / limitations
 
 - Loot, gold, vault, and shop stock are per-player **by design**.
-- Menus don't pause the world in multiplayer; slow-mo effects are disabled; Save & Exit is
-  disabled during net runs (rejoin covers crashes). Rejoiners and late joiners spawn at the
-  party's most recently unlocked station (the run start until the first unlock).
+- Menus don't pause the world in multiplayer; slow-mo effects are disabled. The vanilla
+  suspend-save is replaced in net runs by the continuous run auto-save (the pause menu button
+  reads EXIT). Rejoiners and late joiners spawn at the party's most recently unlocked station
+  (the run start until the first unlock).
 - Host migration only engages mid-run — if the host leaves while everyone is still in the
   lobby or loading, the session ends (it's cheap to recreate). Kicks aren't bans: a kicked
   player can rejoin with the code.

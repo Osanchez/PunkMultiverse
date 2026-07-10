@@ -28,6 +28,7 @@ namespace PunkMultiverse.UI
         private GameObject _connectPanel;
         private GameObject _lobbyPanel;
         private GameObject _seedPanel;
+        private GameObject _resumeButton;
         private TMP_InputField _seedInput;
         private bool _seedSetupOpen;
         private TMP_Text _statusText;
@@ -193,7 +194,9 @@ namespace PunkMultiverse.UI
                 ShowSeedSetup); // seed screen first, then the lobby
             MakeButton(_connectPanel.transform, "JOIN FROM CLIPBOARD", new Vector2(0, -20), new Vector2(420, 64),
                 () => NetSession.Instance.JoinByCode(null));
-            MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -100), new Vector2(220, 52), Hide);
+            _resumeButton = ButtonRoot(MakeButton(_connectPanel.transform, "RESUME LAST RUN", new Vector2(0, -100),
+                new Vector2(420, 52), () => NetSession.Instance.HostResume()));
+            MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -170), new Vector2(220, 52), Hide);
         }
 
         private void BuildLobbyPanel(Transform parent)
@@ -447,6 +450,7 @@ namespace PunkMultiverse.UI
             var session = NetSession.Instance;
             bool inLobby = session.State == SessionState.Lobby || session.State == SessionState.Connecting;
             if (inLobby) _seedSetupOpen = false;
+            if (_resumeButton != null) _resumeButton.SetActive(Core.NetRunSave.Exists());
             _connectPanel.SetActive(!inLobby && !_seedSetupOpen);
             if (_seedPanel != null) _seedPanel.SetActive(!inLobby && _seedSetupOpen);
             _lobbyPanel.SetActive(inLobby);

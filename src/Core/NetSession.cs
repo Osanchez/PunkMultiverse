@@ -134,6 +134,25 @@ namespace PunkMultiverse.Core
         /// 1 + (EnemyHealthScalePerPlayer * connected players). Replicated in START_RUN.</summary>
         public float EnemyHpMult { get; private set; } = 1f;
 
+        private NetRunSave.Data _pendingResume;
+
+        /// <summary>Host a lobby that resumes the saved run: same seed and settings; after
+        /// go-live the ledgers replay to everyone and players spawn at the saved checkpoint
+        /// with their stashed builds.</summary>
+        public void HostResume()
+        {
+            var data = NetRunSave.Load();
+            if (data == null)
+            {
+                LastError = "No saved run to resume.";
+                return;
+            }
+            HostOnline(data.Seed, data.FriendlyFire, data.HpScaling);
+            _pendingResume = data; // after HostOnline: a synchronous loopback restart won't clear it
+            Plugin.Log.LogInfo($"[Session] hosting resume of run seed {data.Seed} " +
+                $"({data.Cells.Count} cells, {data.Kills.Count} kills, {data.Upgrades.Count} upgrades)");
+        }
+
         /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
         /// directly. <paramref name="chosenSeed"/> (0 = random) becomes the lobby's world seed
         /// once the session is up.</summary>
@@ -285,10 +304,22 @@ namespace PunkMultiverse.Core
             if (EnemyHpMult > 1f)
                 Plugin.Log.LogInfo($"[Run] enemy HP x{EnemyHpMult:F2} ({playerCount} players)");
 
+            // Resuming a saved run rides the rejoin path for EVERYONE: economy stash restore
+            // and checkpoint spawn included. The ledgers replay after go-live.
+            bool resume = _pendingResume != null;
+            int spawnStation = resume ? _pendingResume.LatestStationNetId : 0;
+
             _writer.Reset();
-            new StartRunMsg { Seed = seed, EnemyHpMult = EnemyHpMult }.Write(_writer);
+            new StartRunMsg
+            {
+                Seed = seed,
+                IsRejoin = resume,
+                SpawnStationNetId = spawnStation,
+                EnemyHpMult = EnemyHpMult,
+            }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
-            _isRejoin = false;
+            _isRejoin = resume;
+            _spawnStationNetId = spawnStation;
             BeginRun(seed);
         }
 
@@ -331,6 +362,7 @@ namespace PunkMultiverse.Core
             NetIds.Reset();
             NetStats.Reset();
             EconomyStash.Reset();
+            NetRunSave.Reset();
             Sync.HookSync.Reset();
             _autoPicked = false;
             _autoPickAt = Time.unscaledTime + 2f;
@@ -428,6 +460,12 @@ namespace PunkMultiverse.Core
                 EconomyStash.TryRestore(CurrentRunSeed);
                 // Spawn at the party's latest unlocked station instead of the run start.
                 if (_spawnStationNetId != 0) Sync.ShipSync.TeleportLocalShip(_spawnStationNetId);
+            }
+            if (IsHost && _pendingResume != null)
+            {
+                var data = _pendingResume;
+                _pendingResume = null;
+                ApplyResumePayload(data);
             }
             if (NetConfig.AutoFly.Value > 0f)
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
@@ -570,10 +608,11 @@ namespace PunkMultiverse.Core
 
             if (wasInRun)
             {
-                // Final economy stash (the periodic one may be seconds stale) and world
-                // cleanup: the run continues solo, so it must be coherent — teammate puppets
-                // despawn and remote-simulated enemies get their AI back.
+                // Final economy stash + run save (the periodic ones may be seconds stale) and
+                // world cleanup: the run continues solo, so it must be coherent — teammate
+                // puppets despawn and remote-simulated enemies get their AI back.
                 try { EconomyStash.Save(CurrentRunSeed); } catch { }
+                try { NetRunSave.Save(this); } catch { }
                 CleanupAbandonedRun();
             }
 
@@ -593,6 +632,7 @@ namespace PunkMultiverse.Core
             FriendlyFire = false;
             HpScaling = false;
             EnemyHpMult = 1f;
+            _pendingResume = null;
             _levelChecksums.Clear();
             Sync.ShipSync.Reset();
             Sync.ShipSync.ResetStartGate();
@@ -709,6 +749,7 @@ namespace PunkMultiverse.Core
                 Sync.ModuleGridSync.Tick(this);
                 Sync.FogSync.Tick(this);
                 EconomyStash.Tick(this);
+                NetRunSave.Tick(this);
                 if (IsHost) AuthorityManager.Tick(this);
             }
 
@@ -1250,6 +1291,62 @@ namespace PunkMultiverse.Core
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} " +
                 $"({ledger.Count} cells, manifest {fps.Count})");
+        }
+
+        /// <summary>Replay a saved run's ledgers: applied locally on the host AND broadcast —
+        /// every message is idempotent, exactly the rejoin catch-up in broadcast form.</summary>
+        private void ApplyResumePayload(NetRunSave.Data data)
+        {
+            void Broadcast()
+            {
+                var segment = _writer.ToSegment();
+                ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Events, segment, reliable: true));
+            }
+
+            for (int start = 0; start < data.Cells.Count; start += 500)
+            {
+                var msg = new CellDiffMsg { Cells = data.Cells.GetRange(start, Math.Min(500, data.Cells.Count - start)) };
+                Sync.WorldSync.Apply(msg);
+                _writer.Reset();
+                msg.Write(_writer);
+                Broadcast();
+            }
+            foreach (var netId in data.Kills)
+            {
+                var msg = new EntityKilledMsg { NetId = netId, KillerSlot = 0 };
+                Sync.EnemySync.ApplyEntityKilled(msg);
+                _writer.Reset();
+                msg.Write(_writer);
+                Broadcast();
+            }
+            foreach (var (netId, hash) in data.Upgrades)
+            {
+                var msg = new StationUpgradeMsg { StationNetId = netId, UpgradeHash = hash };
+                Sync.ProgressionSync.ApplyStationUpgrade(msg);
+                _writer.Reset();
+                msg.Write(_writer);
+                Broadcast();
+            }
+            foreach (var (netId, hash) in data.Instruments)
+            {
+                var msg = new InstrumentUsedMsg { NetId = netId, DiscoverableHash = hash };
+                Sync.ProgressionSync.ApplyInstrumentUsed(msg);
+                _writer.Reset();
+                msg.Write(_writer);
+                Broadcast();
+            }
+            foreach (var netId in data.Scanners)
+            {
+                var msg = new ScannerUsedMsg { NetId = netId };
+                Sync.ProgressionSync.ApplyScannerUsed(msg);
+                _writer.Reset();
+                msg.Write(_writer);
+                Broadcast();
+            }
+            Sync.ProgressionSync.RestoreCheckpoint(data.LatestStationNetId);
+            UI.Toast.Show("RUN RESUMED", 4f);
+            Plugin.Log.LogInfo($"[Session] resume replayed ({data.Cells.Count} cells, {data.Kills.Count} kills, " +
+                $"{data.Upgrades.Count} upgrades, {data.Scanners.Count} scanners)");
         }
 
         /// <summary>Deaths, ownership, and shared progression — every message idempotent on the

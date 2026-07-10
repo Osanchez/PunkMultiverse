@@ -32,6 +32,47 @@ namespace PunkMultiverse.Patches
             }
         }
 
+        // In a net run the suspend-save is blocked (below) but the run auto-saves through
+        // NetRunSave — so the pause menu's "Save & Exit" would lie in both directions. While
+        // networking is live it reads just EXIT (localization stripped from that one label).
+        [HarmonyPatch(typeof(PauseScreen), "Open")]
+        internal static class NetRunExitButtonLabel
+        {
+            private static string _originalLabel;
+
+            private static void Postfix(PauseScreen __instance)
+            {
+                try
+                {
+                    foreach (var button in __instance.GetComponentsInChildren<UnityEngine.UI.Button>(true))
+                    {
+                        bool isSaveQuit = false;
+                        var ev = button.onClick;
+                        for (int i = 0; i < ev.GetPersistentEventCount(); i++)
+                            if (ev.GetPersistentMethodName(i) == "OnSaveAndQuitButtonClicked") { isSaveQuit = true; break; }
+                        if (!isSaveQuit) continue;
+
+                        var label = button.GetComponentInChildren<TMPro.TMP_Text>(true);
+                        if (label == null) return;
+                        if (NetSession.Active)
+                        {
+                            if (_originalLabel == null) _originalLabel = label.text;
+                            foreach (var comp in label.GetComponents<UnityEngine.MonoBehaviour>())
+                                if (comp != null && comp.GetType().Name.Contains("Localiz"))
+                                    UnityEngine.Object.Destroy(comp);
+                            label.text = "EXIT";
+                        }
+                        else if (_originalLabel != null)
+                        {
+                            label.text = _originalLabel;
+                        }
+                        return;
+                    }
+                }
+                catch { }
+            }
+        }
+
         // MergedCellsGenerator is the one level-generation step that rolls the UNSEEDED global
         // UnityEngine.Random (everything else uses the shared Seed service), which made merged
         // terrain patches differ per client. Seed it deterministically from the run seed and the

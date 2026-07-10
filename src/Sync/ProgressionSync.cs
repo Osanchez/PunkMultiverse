@@ -32,6 +32,10 @@ namespace PunkMultiverse.Sync
         /// checkpoint. Rejoiners spawn here instead of at the run start.</summary>
         public static int LatestStationNetId { get; private set; }
 
+        /// <summary>Run resume: replayed upgrades overwrite the checkpoint in arbitrary order,
+        /// so the saved value is restored explicitly afterwards.</summary>
+        public static void RestoreCheckpoint(int netId) => LatestStationNetId = netId;
+
         // Catch-up ledgers accumulate on EVERY machine (not just the host) so that a client
         // promoted by host migration can serve full catch-up to rejoiners and late joiners.
         public static void RecordUpgrade(int netId, uint hash)
