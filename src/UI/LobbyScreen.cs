@@ -49,6 +49,7 @@ namespace PunkMultiverse.UI
             public Image Swatch;
             public TMP_Text Name;
             public TMP_Text Status;
+            public GameObject Kick;
         }
 
         public bool Visible => _canvasGo != null && _canvasGo.activeSelf;
@@ -203,7 +204,12 @@ namespace PunkMultiverse.UI
 
                 row.Status = MakeText(bg.transform, "RowStatus", "", 20, Color.white, y: 0, height: 58);
                 row.Status.alignment = TextAlignmentOptions.MidlineRight;
-                StretchWithMargins(row.Status.rectTransform, 64, 14);
+                StretchWithMargins(row.Status.rectTransform, 64, 92); // leave room for KICK
+
+                int slotIndex = i;
+                row.Kick = ButtonRoot(MakeButton(bg.transform, "KICK", new Vector2(274, 0), new Vector2(64, 36),
+                    () => NetSession.Instance.KickPlayer((byte)slotIndex)));
+                row.Kick.SetActive(false);
 
                 _rows.Add(row);
             }
@@ -408,8 +414,10 @@ namespace PunkMultiverse.UI
                     row.Swatch.color = new Color(1, 1, 1, 0.08f);
                     row.Name.text = "<color=#666666>WAITING FOR PLAYER…</color>";
                     row.Status.text = "";
+                    row.Kick.SetActive(false);
                     continue;
                 }
+                row.Kick.SetActive(session.IsHost && !p.IsLocal && session.State == SessionState.Lobby);
                 row.Swatch.color = PlayerColors.Get(p.ColorIndex);
                 string tags = p.Slot == session.HostSlot ? "  <color=#f08c2e>HOST</color>" : "";
                 if (p.IsLocal) tags += "  <color=#888888>(YOU)</color>";

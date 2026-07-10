@@ -178,6 +178,23 @@ namespace PunkMultiverse.Core
             }
         }
 
+        /// <summary>Host: remove a player from the lobby (pre-run only). Their slot frees up;
+        /// they get told why. No ban — they can rejoin with the code.</summary>
+        public void KickPlayer(byte slot)
+        {
+            if (!IsHost || State != SessionState.Lobby) return;
+            var p = slot < MaxPlayers ? _players[slot] : null;
+            if (p == null || p.IsLocal) return;
+            Plugin.Log.LogInfo($"[Session] kicked {p}");
+            _writer.Reset();
+            _writer.WriteMsgType(MsgType.Kicked);
+            _transport.Send(p.PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
+            _players[slot] = null;
+            BroadcastLobbyState();
+            RosterChanged?.Invoke();
+            UI.Toast.Show($"{p.Name} WAS KICKED", 4f);
+        }
+
         public void CopyLobbyCodeToClipboard()
         {
             var code = CurrentLobbyCode;
@@ -886,6 +903,10 @@ namespace PunkMultiverse.Core
                 case MsgType.Welcome when !IsHost: HandleWelcome(); break;
                 case MsgType.Reject when !IsHost: HandleReject(); break;
                 case MsgType.SessionEnded when !IsHost: OnHostLost("Host ended the session."); break;
+                case MsgType.Kicked when !IsHost:
+                    UI.Toast.Show("YOU HAVE BEEN KICKED FROM THE LOBBY", 6f);
+                    Fail("You were kicked by the host.");
+                    break;
                 case MsgType.LobbyState when !IsHost: HandleLobbyState(); break;
                 case MsgType.Ping: HandlePing(peer); break;
                 case MsgType.Pong: HandlePong(peer); break;
