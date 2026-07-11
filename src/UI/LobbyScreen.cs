@@ -34,6 +34,9 @@ namespace PunkMultiverse.UI
         private TMP_Text _statusText;
         private TMP_Text _versionText;
         private TMP_Text _codeText;
+        private TMP_Text _copyChipLabel;
+        private RectTransform _copyChipRt;
+        private Coroutine _copyFlash;
         private TMP_Text _seedText;
         private TMP_Text _readyButtonLabel;
         private GameObject _startButton;
@@ -207,11 +210,21 @@ namespace PunkMultiverse.UI
 
             _codeText = MakeText(_lobbyPanel.transform, "Code", "", 24, Color.white, y: -74, height: 30);
 
+            // The code line copies itself: click anywhere on it, or the small COPY chip that
+            // rides at its right edge (positioned per-frame in Refresh — the code width varies).
+            var codeBtn = _codeText.gameObject.AddComponent<Button>();
+            codeBtn.targetGraphic = _codeText;
+            codeBtn.onClick.AddListener(CopyCodeWithFeedback);
+            _copyChipLabel = MakeButton(_codeText.transform, "COPY", Vector2.zero, new Vector2(84, 26),
+                CopyCodeWithFeedback);
+            _copyChipRt = (RectTransform)_copyChipLabel.transform.parent;
+            _copyChipRt.gameObject.SetActive(false);
+
             // World seed: read-only here — it's chosen on the GAME SETTINGS screen before hosting.
             _seedText = MakeText(_lobbyPanel.transform, "Seed", "", 20, new Color(1f, 1f, 1f, 0.85f), y: -106, height: 26);
 
             MakeButton(_lobbyPanel.transform, "COPY CODE", new Vector2(-140, 186), new Vector2(240, 48),
-                () => NetSession.Instance.CopyLobbyCodeToClipboard());
+                CopyCodeWithFeedback);
             _inviteButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "INVITE FRIENDS", new Vector2(140, 186),
                 new Vector2(240, 48), () => NetSession.Instance.Lobby?.OpenInviteOverlay()));
 
@@ -430,6 +443,25 @@ namespace PunkMultiverse.UI
             Refresh();
         }
 
+        // ---------------------------------------------------------------- copy code
+
+        private void CopyCodeWithFeedback()
+        {
+            NetSession.Instance.CopyLobbyCodeToClipboard();
+            if (_copyFlash != null) StopCoroutine(_copyFlash);
+            _copyFlash = StartCoroutine(FlashCopied());
+        }
+
+        private System.Collections.IEnumerator FlashCopied()
+        {
+            _copyChipLabel.text = "COPIED!";
+            _copyChipLabel.color = new Color(0.31f, 0.85f, 0.47f);
+            yield return new WaitForSecondsRealtime(1.2f);
+            _copyChipLabel.text = "COPY";
+            _copyChipLabel.color = Color.white;
+            _copyFlash = null;
+        }
+
         // ---------------------------------------------------------------- refresh
 
         private void Refresh()
@@ -454,6 +486,11 @@ namespace PunkMultiverse.UI
             if (!inLobby) return;
 
             _codeText.text = session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
+            bool hasCode = !string.IsNullOrEmpty(_codeText.text);
+            _copyChipRt.gameObject.SetActive(hasCode);
+            if (hasCode) // hug the right edge of the (centered, width-varying) code text
+                _copyChipRt.anchoredPosition = new Vector2(
+                    _codeText.GetPreferredValues(_codeText.text).x * 0.5f + 58f, 0f);
             _seedText.text = $"WORLD SEED   {(session.ChosenSeed != 0 ? session.ChosenSeed.ToString() : "RANDOM")}"
                 + (session.FriendlyFire ? "   <color=#ffb84d>FRIENDLY FIRE ON</color>" : "");
             _inviteButton.SetActive(session.UsingSteam);
