@@ -35,10 +35,11 @@ Steam's relay, so a pasted lobby code just works.
   run already in progress the same way. If the **host** quits or crashes mid-run, the run
   survives: a remaining player is promoted (announced on screen), the same lobby code keeps
   working, and the old host can rejoin like anyone else.
-- **Version & mod-set safety** — everyone must run the same mod version; mismatched joins
-  are rejected with both versions named, and the main menu shows the mod version with an
-  update notice when a newer release exists. Joiners' other installed BepInEx mods are
-  compared against the host's too — see *Configuration*.
+- **Version & mod-set safety, auto-updates** — everyone must run the same mod version;
+  mismatched joins are rejected with both versions named. New releases download
+  automatically at startup and apply on the next launch (the main menu banner says
+  RESTART TO APPLY; turn off with `[Update] AutoUpdate=false`). Joiners' other installed
+  BepInEx mods are compared against the host's too — see *Configuration*.
 
 ## Installation (players)
 
@@ -50,13 +51,17 @@ Steam's relay, so a pasted lobby code just works.
    version at the bottom of the menu — it says **UP TO DATE** or names the newer release.
 
 Everyone in a lobby needs the **same mod version** — mismatches are rejected with a message
-naming both versions and where to update.
+naming both versions. You normally never update by hand: new releases download at startup
+and apply on the next launch (the previous build is kept as `PunkMultiverse.dll.bak` if you
+ever need to roll back).
 
 ### Configuration
 
 Settings live in `BepInEx/plugins/PunkMultiverse/config.cfg` (created on first launch).
 The one you're most likely to touch:
 
+- `[Update] AutoUpdate` — `true` *(default)* downloads new releases at startup and stages
+  them; the update applies on the next launch. `false` = check only, update manually.
 - `[Session] ModManifestPolicy` — what the **host** does when a joiner's installed BepInEx
   mod set differs from the host's:
   - `Reject` *(default)* — the join is refused, with the differing mods named.

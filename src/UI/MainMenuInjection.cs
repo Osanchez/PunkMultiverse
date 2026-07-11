@@ -123,6 +123,18 @@ namespace PunkMultiverse.UI
                 _versionBanner.text =
                     $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{Core.UpdateCheck.UpdateAvailable} AVAILABLE ON GITHUB";
                 _versionBanner.color = new Color(0.98f, 0.63f, 0.24f);
+                // The auto-updater may be downloading right now — flip the banner when the
+                // new build lands on disk (a few seconds on any normal connection).
+                float deadline = Time.unscaledTime + 180f;
+                while (_versionBanner != null && Core.UpdateCheck.UpdateStaged == null
+                       && Time.unscaledTime < deadline)
+                    yield return new WaitForSecondsRealtime(0.5f);
+                if (_versionBanner != null && Core.UpdateCheck.UpdateStaged != null)
+                {
+                    _versionBanner.text =
+                        $"PUNK MULTIVERSE v{Plugin.Version} — v{Core.UpdateCheck.UpdateStaged} DOWNLOADED, RESTART TO APPLY";
+                    _versionBanner.color = new Color(0.31f, 0.85f, 0.47f);
+                }
             }
             else
             {

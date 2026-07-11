@@ -1627,7 +1627,9 @@ namespace PunkMultiverse.Core
         private void HandleReject()
         {
             var reject = RejectMsg.Read(_reader);
-            var hint = reject.Reason.Contains("Version mismatch") ? $" Get the latest: {UpdateCheck.ReleasesUrl}" : "";
+            var hint = reject.Reason.Contains("Version mismatch")
+                ? $" Restart your game to apply an auto-downloaded update, or get it manually: {UpdateCheck.ReleasesUrl}"
+                : "";
             Fail($"Rejected by host: {reject.Reason}{hint}");
         }
 

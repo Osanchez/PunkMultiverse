@@ -16,6 +16,7 @@ namespace PunkMultiverse
 
         public static ConfigEntry<string> ModManifestPolicy;
         public static ConfigEntry<float> EnemyHealthScalePerPlayer;
+        public static ConfigEntry<bool> AutoUpdate;
 
         public static ConfigEntry<string> AutoStart;
         public static ConfigEntry<bool> AutoReady;
@@ -46,6 +47,12 @@ namespace PunkMultiverse
                 "DEV ONLY: accept P2P sessions from anyone, not just lobby members.");
             SteamAppId = cfg.Bind("Transport", "SteamAppId", 2850470,
                 "Playtest appid, used only when the game didn't init Steam itself (direct Punk.exe launch).");
+
+            AutoUpdate = cfg.Bind("Update", "AutoUpdate", true,
+                "Download new releases from GitHub at startup and stage them in place; the " +
+                "update applies on the next launch (the running DLL is already loaded). The " +
+                "replaced build is kept as PunkMultiverse.dll.bak for manual rollback. " +
+                "Off = check only, update by hand from the releases page.");
 
             EnemyHealthScalePerPlayer = cfg.Bind("Session", "EnemyHealthScalePerPlayer", 0.25f,
                 "Per-player enemy health scaling used when ENEMY HP SCALING is enabled on the " +
