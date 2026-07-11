@@ -28,23 +28,53 @@ namespace PunkMultiverse.Core
         private static readonly Dictionary<string, float> Throttle = new Dictionary<string, float>();
         private static float _nextDumpAt;
 
+        // Global rate cap. BepInEx's log writer is synchronous (disk + console), so an
+        // unbounded diagnostic stream during heavy authority thrash can stall frames badly —
+        // that's what made the game (and Escape) feel unresponsive. Cap the streaming lines
+        // per second; the overflow is counted and summarized instead of written. On-demand
+        // dumps (DumpOwnership) bypass this — they're bounded and user-triggered.
+        private const int MaxLinesPerSecond = 60;
+        private static float _windowEnd;
+        private static int _linesThisWindow;
+        private static int _suppressed;
+
         public static void Reset()
         {
             Throttle.Clear();
             _nextDumpAt = 0f;
+            _windowEnd = 0f;
+            _linesThisWindow = 0;
+            _suppressed = 0;
+        }
+
+        private static void Emit(bool warn, string category, string message)
+        {
+            float now = Time.unscaledTime;
+            if (now >= _windowEnd)
+            {
+                if (_suppressed > 0)
+                    Plugin.Log.LogWarning($"[Diag] rate cap: suppressed {_suppressed} line(s) in the last second (raise MaxLinesPerSecond or narrow what's on)");
+                _windowEnd = now + 1f;
+                _linesThisWindow = 0;
+                _suppressed = 0;
+            }
+            if (_linesThisWindow >= MaxLinesPerSecond) { _suppressed++; return; }
+            _linesThisWindow++;
+            if (warn) Plugin.Log.LogWarning($"[Diag:{category}] {message}");
+            else Plugin.Log.LogInfo($"[Diag:{category}] {message}");
         }
 
         public static void Log(string category, string message)
         {
             if (!Enabled) return;
-            Plugin.Log.LogInfo($"[Diag:{category}] {message}");
+            Emit(false, category, message);
         }
 
         /// <summary>Conflicts and anomalies — logged as warnings so they stand out in the trace.</summary>
         public static void Warn(string category, string message)
         {
             if (!Enabled) return;
-            Plugin.Log.LogWarning($"[Diag:{category}] {message}");
+            Emit(true, category, message);
         }
 
         /// <summary>Log at most once per <paramref name="interval"/>s per <paramref name="key"/>.
@@ -55,7 +85,7 @@ namespace PunkMultiverse.Core
             float now = Time.unscaledTime;
             if (Throttle.TryGetValue(key, out float next) && now < next) return;
             Throttle[key] = now + interval;
-            Plugin.Log.LogInfo($"[Diag:{category}] {message()}");
+            Emit(false, category, message());
         }
 
         /// <summary>"P1", or "P1(host)" for the current session host slot.</summary>

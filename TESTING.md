@@ -26,7 +26,8 @@ is for the *human* passes: real Steam accounts, real combat, 3–4 players.
    ```
 3. Launch both `Punk.exe` directly (not via Steam). Optional clickless automation in `[Debug]`:
    `AutoStart = Host` / `AutoStart = Join`, `AutoReady = true`, host `AutoLaunchRun = true`.
-4. The F11 overlay shows session state, peers and RTT anywhere.
+4. The F9 overlay shows session state, peers, RTT and per-slot ownership anywhere (F10
+   toggles verbose sync diagnostics, F11 dumps the ownership table to the log).
 
 ## 2. Test checklist
 
@@ -86,7 +87,7 @@ is for the *human* passes: real Steam accounts, real combat, 3–4 players.
 ### 3–4 players (untested territory — extra eyes here)
 - [ ] Third/fourth join, colors, all-pairs visibility
 - [ ] Authority handoffs between non-host players; damage routed between two clients (via host)
-- [ ] Bandwidth/latency feel with 4 (F11 RTT stays sane)
+- [ ] Bandwidth/latency feel with 4 (F9 overlay RTT stays sane)
 
 ## 3. When something breaks
 

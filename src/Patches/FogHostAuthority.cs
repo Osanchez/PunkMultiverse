@@ -33,25 +33,43 @@ namespace PunkMultiverse.Patches
         /// <summary>Host-migration handoff: a promoted machine was a client, so it never ran the
         /// fog sim — its <c>Level.fogLevels</c> is frozen at the gen-time seed while its cell
         /// types are fully current (WorldSync tracked every conversion). Resuming the sim on that
-        /// stale array makes the first tick "correct" fog back toward its generation layout: it
-        /// strips fog that spread and re-adds fog that decayed, rewriting shared terrain and
-        /// spiking traffic at the worst moment. Reconcile fogLevels with the CURRENT cell types
-        /// first — zero it, then let the game's own <see cref="FogManager.FillInitialFogLevels"/>
-        /// re-seed every live fog cell to startingFogLevel (the same invariant level-gen relies
-        /// on). Sub-threshold intensity gradients are lost (a half-decayed cloud restarts full),
-        /// which is imperceptible next to a whole-map fog snap. Called from NetSession.BecomeHost.</summary>
+        /// stale array makes the first tick "correct" fog back toward its generation layout,
+        /// rewriting shared terrain and spiking traffic at the worst moment.
+        ///
+        /// Reconcile fogLevels with the CURRENT cell types in one pass: every live fog cell gets
+        /// exactly <c>fogThreshold</c> — the minimum that keeps it a fog cell, and (since the
+        /// spread trigger sits above the existence threshold) BELOW the level that would make it
+        /// diffuse into its neighbours. That matters on big maps: seeding to startingFogLevel (as
+        /// the game does at generation) slams the whole evolved fog area to an actively-spreading
+        /// value at once, and the next tick's wavefront of threshold crossings floods SetCell ->
+        /// WorldSync and starves the new host's frames (observed: promoted player freezes, ship
+        /// stuck while boosters animate). Threshold-seeding keeps fog present and lets it
+        /// re-energise gently from its FogSources. Non-fog cells are cleared so decayed areas
+        /// don't re-add. Called from NetSession.BecomeHost.</summary>
         public static void ReseedFromTerrain()
         {
             try
             {
                 var level = ServiceLocator.Get<Level>();
-                var fog = level != null ? level.fogLevels : default;
-                if (!fog.IsCreated) return;
+                if (level == null || !level.fogLevels.IsCreated || !level.cellTypes.IsCreated) return;
                 var mgr = Object.FindAnyObjectByType<FogManager>();
                 if (mgr == null) return;
-                for (int i = 0; i < fog.Length; i++) fog[i] = 0;
-                mgr.FillInitialFogLevels(); // re-seeds live fog cells from current cellTypes
-                Plugin.Log.LogInfo($"[Fog] reseeded fogLevels from terrain on host promotion ({fog.Length} cells)");
+
+                var fogCellType = HarmonyLib.Traverse.Create(mgr).Field("fogCellType").GetValue() as CellType;
+                byte fogThreshold = HarmonyLib.Traverse.Create(mgr).Field("fogThreshold").GetValue<byte>();
+                if (fogCellType == null) { Plugin.Log.LogWarning("[Fog] reseed skipped — fogCellType not readable"); return; }
+                byte fogId = fogCellType.id;
+
+                var fog = level.fogLevels;
+                var cells = level.cellTypes;
+                int n = Mathf.Min(fog.Length, cells.Length);
+                int fogCells = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    if (cells[i] == fogId) { fog[i] = fogThreshold; fogCells++; }
+                    else fog[i] = 0;
+                }
+                Plugin.Log.LogInfo($"[Fog] reseeded fogLevels from terrain on host promotion ({fogCells} fog cells of {n}, held at threshold {fogThreshold})");
             }
             catch (System.Exception e)
             {

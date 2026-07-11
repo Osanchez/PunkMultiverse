@@ -5,8 +5,9 @@ using UnityEngine.InputSystem;
 namespace PunkMultiverse.UI
 {
     /// <summary>
-    /// F8 debug overlay (IMGUI — zero setup, dev-facing; the player-facing lobby is uGUI in M1).
-    /// Shows session state, roster with RTT, and host/join/stop controls.
+    /// Net debug overlay (IMGUI — zero setup, dev-facing; the player-facing lobby is uGUI in M1).
+    /// Shows session state, roster with RTT, per-slot ownership, and host/join/stop controls.
+    /// F9 toggles it; F10 toggles sync diagnostics; F11 dumps the ownership table to the log.
     /// </summary>
     public sealed class NetHud : MonoBehaviour
     {
@@ -26,10 +27,26 @@ namespace PunkMultiverse.UI
 
         private void Update()
         {
-            // F11: F5-F9 are taken by PunkSimController/PunkDebugKey, F10 by PunkDevReload.
+            // F9 = overlay, F10 = toggle sync diagnostics, F11 = dump ownership to the log.
+            // (The shipping Punk.Main has no F9–F11 or Escape key bindings of its own — verified
+            // by decompile — so these are free; pause is an Input System action, not KeyCode.)
             var kb = Keyboard.current;
-            if (kb != null && kb[Key.F11].wasPressedThisFrame)
-                _visible = !_visible;
+            if (kb != null)
+            {
+                if (kb[Key.F9].wasPressedThisFrame) _visible = !_visible;
+                if (kb[Key.F10].wasPressedThisFrame)
+                {
+                    bool on = !NetConfig.SyncDiagnostics.Value;
+                    NetConfig.SyncDiagnostics.Value = on;
+                    Toast.Show(on ? "SYNC DIAGNOSTICS ON" : "SYNC DIAGNOSTICS OFF", 2.5f);
+                    Plugin.Log.LogInfo($"[Diag] sync diagnostics {(on ? "ON" : "OFF")} (F10)");
+                }
+                if (kb[Key.F11].wasPressedThisFrame)
+                {
+                    Toast.Show("OWNERSHIP DUMPED TO LOG", 2f);
+                    NetDiag.DumpOwnership();
+                }
+            }
             if (_visible && Time.unscaledTime >= _nextSampleAt) Sample();
         }
 
@@ -71,7 +88,7 @@ namespace PunkMultiverse.UI
         private void OnGUI()
         {
             if (!_visible) return;
-            _rect = GUILayout.Window(GetInstanceID(), _rect, DrawWindow, "Punk Multiverse [F11]");
+            _rect = GUILayout.Window(GetInstanceID(), _rect, DrawWindow, "Punk Multiverse [F9]");
         }
 
         private void DrawWindow(int id)
@@ -119,13 +136,8 @@ namespace PunkMultiverse.UI
                                 $"releases {NetStats.AuthReleases} ({_releasesPerMin:0}/min)");
                 if (!string.IsNullOrEmpty(_ownSummary))
                     GUILayout.Label($"Owns  {_ownSummary}");
-                GUILayout.BeginHorizontal();
-                bool diag = NetConfig.SyncDiagnostics.Value;
-                if (GUILayout.Button(diag ? "Diag: ON" : "Diag: OFF"))
-                    NetConfig.SyncDiagnostics.Value = !diag;
-                if (GUILayout.Button("Dump owners → log"))
-                    NetDiag.DumpOwnership();
-                GUILayout.EndHorizontal();
+                GUILayout.Label($"Diag  {(NetConfig.SyncDiagnostics.Value ? "<color=#7CFC70>ON</color>" : "OFF")}" +
+                                "   [F10 toggle · F11 dump]");
                 if (GUILayout.Button("Stop / Disconnect"))
                     session.StopSession("user request");
             }

@@ -88,7 +88,8 @@ The one you're most likely to touch:
 - **Host leaving:** the run keeps going — a remaining player becomes the host (a banner names
   them), the lobby code stays the same, and the old host can rejoin with it.
 - **When you die:** the camera follows an alive teammate; **Q/E** switch between them.
-- **In game:** hold **Tab** for the party scoreboard. F11 opens a small network debug overlay.
+- **In game:** hold **Tab** for the party scoreboard. **F9** opens a small network debug
+  overlay (**F10** toggles verbose sync diagnostics, **F11** dumps the ownership table to the log).
 
 See **[TESTING.md](TESTING.md)** for the full test checklist and a solo two-instance setup
 that needs no second Steam account.

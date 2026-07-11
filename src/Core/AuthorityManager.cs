@@ -150,8 +150,18 @@ namespace PunkMultiverse.Core
                 }
                 else if (ownerDist > authority * 1.15f) // release hysteresis: no flip-flop at the radius edge
                 {
-                    if (closest.dist <= authority) { desired = closest.slot; reason = $"owner drifted {ownerDist:0}u, closer player at {closest.dist:0}u"; }
-                    else if (ownerDist > interest) { desired = hostSlot; reason = $"owner out of range ({ownerDist:0}u > interest)"; }
+                    if (closest.dist <= authority)
+                    {
+                        desired = closest.slot;
+                        reason = ownerDist >= float.MaxValue
+                            ? $"owner has no live ship, closer player at {closest.dist:0}u"
+                            : $"owner drifted {ownerDist:0}u, closer player at {closest.dist:0}u";
+                    }
+                    else if (ownerDist > interest)
+                    {
+                        desired = hostSlot;
+                        reason = ownerDist >= float.MaxValue ? "owner has no live ship (dormant)" : $"owner out of range ({ownerDist:0}u > interest)";
+                    }
                     // Owner in the release..interest band with nobody clearly closer: keep them.
                     // Bouncing to the host and back every scan is worse than a stretched radius.
                 }
