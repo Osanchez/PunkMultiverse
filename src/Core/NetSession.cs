@@ -372,6 +372,10 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Run] level generated, checksum {checksum:X16}");
             if (IsHost)
             {
+                // Fingerprint NOW, same simulation moment every client snapshots at. Waiting
+                // for go-live let entities drift first, and every early mover became a
+                // manifest mismatch (~2% of the map: phantom orphans on clients).
+                NetIds.PrepareLocal();
                 _levelChecksums[0] = checksum;
                 CheckGoLive();
             }

@@ -67,6 +67,7 @@ namespace PunkMultiverse.Sync
             var entityPuppet = dr.GetComponent<RemoteEntityPuppet>();
             if (entityPuppet != null)
             {
+                if (entityPuppet.NetId < 0) return false; // muted orphan — damage applies locally
                 isEntity = true;
                 netId = entityPuppet.NetId;
                 return true;

@@ -17,12 +17,19 @@ namespace PunkMultiverse.Core
     {
         private static readonly Dictionary<int, int> NetToInstance = new Dictionary<int, int>();
         private static readonly Dictionary<int, int> InstanceToNet = new Dictionary<int, int>();
-        private static Dictionary<ulong, int> _localFps; // fingerprint -> instanceId
+        private static Dictionary<ulong, int> _localFps;    // fingerprint -> instanceId
+        private static Dictionary<ulong, int> _neighborFps; // adjacent-cell fps (jitter net)
+        private static readonly List<(int netId, ulong fp)> _unmatched = new List<(int, ulong)>();
+        private static readonly HashSet<int> OrphanInstances = new HashSet<int>();
         private static int _expectedTotal = -1;
         private static int _matched, _missing;
 
         public static int Count => NetToInstance.Count;
         public static bool ManifestComplete { get; private set; }
+
+        /// <summary>Local entity with no cross-machine identity (fingerprint never matched the
+        /// host's manifest). Orphans must not run live AI — see EnemySync.MuteOrphan.</summary>
+        public static bool IsOrphanInstance(int instanceId) => OrphanInstances.Contains(instanceId);
 
         public static void Reset()
         {
@@ -30,6 +37,9 @@ namespace PunkMultiverse.Core
             InstanceToNet.Clear();
             LastManifest = new List<ulong>();
             _localFps = null;
+            _neighborFps = null;
+            _unmatched.Clear();
+            OrphanInstances.Clear();
             _expectedTotal = -1;
             _matched = 0;
             _missing = 0;
@@ -54,7 +64,7 @@ namespace PunkMultiverse.Core
 
         // ---------------------------------------------------------------- fingerprints
 
-        private static ulong Fingerprint(string entityId, Vector3 position, int ordinal)
+        private static ulong Fingerprint(string entityId, int qx, int qy, int ordinal)
         {
             ulong hash = 14695981039346656037UL;
             void Mix(ulong v)
@@ -66,27 +76,41 @@ namespace PunkMultiverse.Core
                 }
             }
             foreach (char c in entityId) { hash ^= (byte)c; hash *= 1099511628211UL; }
-            Mix((ulong)(long)Mathf.RoundToInt(position.x * 2f));
-            Mix((ulong)(long)Mathf.RoundToInt(position.y * 2f));
+            Mix((ulong)(long)qx);
+            Mix((ulong)(long)qy);
             Mix((ulong)ordinal);
             return hash;
         }
 
         /// <summary>Walk the EntityManager and build fingerprint -> instanceId for this client.
-        /// Ships are excluded — they're identified by player slot, not by manifest.</summary>
+        /// Ships are excluded — they're identified by player slot, not by manifest. Also fills
+        /// the neighbor map: the same entity fingerprinted in each of the 8 adjacent
+        /// quantization cells, so a position sitting on a rounding boundary (float jitter
+        /// between machines) still matches in ApplyChunk's second pass.</summary>
         public static Dictionary<ulong, int> BuildLocalFingerprints()
         {
             var result = new Dictionary<ulong, int>();
+            _neighborFps = new Dictionary<ulong, int>();
             var seen = new Dictionary<ulong, int>(); // base fp -> duplicate count
             var em = ServiceLocator.Get<EntityManager>();
             foreach (var e in em.GetAllEntities())
             {
                 if (e == null || e.entityId == "Ship") continue;
-                ulong baseFp = Fingerprint(e.entityId, e.position, 0);
+                int qx = Mathf.RoundToInt(e.position.x * 2f);
+                int qy = Mathf.RoundToInt(e.position.y * 2f);
+                ulong baseFp = Fingerprint(e.entityId, qx, qy, 0);
                 seen.TryGetValue(baseFp, out int ordinal);
                 seen[baseFp] = ordinal + 1;
-                ulong fp = ordinal == 0 ? baseFp : Fingerprint(e.entityId, e.position, ordinal);
+                ulong fp = ordinal == 0 ? baseFp : Fingerprint(e.entityId, qx, qy, ordinal);
                 result[fp] = e.instanceId;
+                if (ordinal != 0) continue; // duplicates keep exact-match only
+                for (int dx = -1; dx <= 1; dx++)
+                    for (int dy = -1; dy <= 1; dy++)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+                        ulong nfp = Fingerprint(e.entityId, qx + dx, qy + dy, 0);
+                        if (!_neighborFps.ContainsKey(nfp)) _neighborFps[nfp] = e.instanceId;
+                    }
             }
             return result;
         }
@@ -101,10 +125,13 @@ namespace PunkMultiverse.Core
         /// <summary>The manifest the host handed out — replayed to rejoining players.</summary>
         public static List<ulong> LastManifest { get; private set; } = new List<ulong>();
 
-        /// <summary>Host: netId = index in the fingerprint list sorted ascending.</summary>
+        /// <summary>Host: netId = index in the fingerprint list sorted ascending. Uses the
+        /// fingerprints cached at level generation (PrepareLocal): go-live can be seconds
+        /// later, and entities that moved in the meantime would fingerprint differently from
+        /// every client's generation-time snapshot.</summary>
         public static List<ulong> BuildManifest()
         {
-            _localFps = BuildLocalFingerprints();
+            if (_localFps == null) _localFps = BuildLocalFingerprints();
             var sorted = _localFps.Keys.OrderBy(fp => fp).ToList();
             for (int netId = 0; netId < sorted.Count; netId++)
             {
@@ -138,15 +165,43 @@ namespace PunkMultiverse.Core
                 }
                 else
                 {
+                    _unmatched.Add((netId, msg.Fps[i]));
                     _missing++;
                 }
             }
             if (_matched + _missing >= _expectedTotal)
             {
+                // Second pass, after every exact match has claimed its instance: a miss whose
+                // fingerprint lands in a neighboring quantization cell of an unclaimed local
+                // entity is the same entity seen through cross-machine float jitter.
+                int jitterMatched = 0;
+                foreach (var (netId, fp) in _unmatched)
+                {
+                    if (_neighborFps != null && _neighborFps.TryGetValue(fp, out int instanceId)
+                        && !InstanceToNet.ContainsKey(instanceId))
+                    {
+                        NetToInstance[netId] = instanceId;
+                        InstanceToNet[instanceId] = netId;
+                        _matched++;
+                        _missing--;
+                        jitterMatched++;
+                    }
+                }
+                _unmatched.Clear();
+
+                // Whatever still has no netId must not run live AI (it would be a phantom the
+                // sync layer can't see): mute what's spawned now, the spawn hook gets the rest.
+                OrphanInstances.Clear();
+                foreach (var inst in _localFps.Values)
+                    if (!InstanceToNet.ContainsKey(inst))
+                        OrphanInstances.Add(inst);
                 ManifestComplete = true;
-                int orphans = _localFps.Count - _matched;
-                var log = $"[Ids] manifest applied: {_expectedTotal} total, {_matched} matched, {_missing} missing here, {orphans} local orphans";
-                if (_missing > 0 || orphans > 0) Plugin.Log.LogWarning(log);
+                foreach (var inst in OrphanInstances)
+                    Sync.EnemySync.MuteOrphan(inst);
+
+                var log = $"[Ids] manifest applied: {_expectedTotal} total, {_matched} matched " +
+                    $"({jitterMatched} via jitter), {_missing} missing here, {OrphanInstances.Count} local orphans (muted)";
+                if (_missing > 0 || OrphanInstances.Count > 0) Plugin.Log.LogWarning(log);
                 else Plugin.Log.LogInfo(log);
             }
         }

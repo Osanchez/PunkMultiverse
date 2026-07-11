@@ -83,12 +83,40 @@ namespace PunkMultiverse.Sync
             private static void Postfix(EntityData __0)
             {
                 var session = NetSession.Instance;
-                if (session == null || session.State != SessionState.InGame || __0 == null) return;
-                if (!NetIds.TryGetNetId(__0.instanceId, out int netId)) return;
+                if (session == null || __0 == null) return;
+                if (session.State != SessionState.InGame && session.State != SessionState.Loading) return;
+                if (!NetIds.TryGetNetId(__0.instanceId, out int netId))
+                {
+                    // Manifest completes during Loading — orphans must be muted from the
+                    // first spawn, whichever side of go-live they stream in on.
+                    if (NetIds.ManifestComplete && NetIds.IsOrphanInstance(__0.instanceId))
+                        MuteOrphan(__0.instanceId);
+                    return;
+                }
+                if (session.State != SessionState.InGame) return;
                 try { ApplyOwnership(netId, __0.instanceId); } catch { }
                 try { ProgressionSync.ApplyPendingFor(netId); } catch { }
                 try { HookSync.ApplyPendingFor(netId); } catch { }
             }
+        }
+
+        /// <summary>A fingerprint orphan has no cross-machine identity: left alone it runs full
+        /// local AI invisible to the sync layer — a phantom enemy whose spawner adds multiply
+        /// on one machine only. Mute it like a puppet (frozen body, no AI, still shootable —
+        /// DamageSync applies orphan damage locally). Props keep working untouched.</summary>
+        public static void MuteOrphan(int instanceId)
+        {
+            try
+            {
+                var egm = TryGetEgm();
+                if (egm == null || !egm.TryGetSavableEntity(instanceId, out var se) || se == null) return;
+                if (se.GetComponent<Unit>() == null) return; // static prop — no AI to mute
+                if (se.GetComponent<RemoteEntityPuppet>() != null) return;
+                var puppet = se.gameObject.AddComponent<RemoteEntityPuppet>();
+                puppet.NetId = -1; // orphan marker — never referenced in sync traffic
+                puppet.MuteNow();
+            }
+            catch { }
         }
 
         private static void ApplyOwnership(int netId, int instanceId)
