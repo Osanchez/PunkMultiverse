@@ -172,12 +172,27 @@ namespace PunkMultiverse.Sync
             return list;
         }
 
+        // Live-diff budget: a mass-conversion wave can touch tens of thousands of cells per
+        // frame — broadcasting them all at once floods the reliable channel (and the outbox
+        // behind it). Send a bounded slice per frame; the remainder stays in Pending, where a
+        // later change to the same cell just overwrites (only the final value ships).
+        private const int MaxLiveCellsPerFrame = 2500; // ~5.5 KB/frame, ~330 KB/s at 60 fps
+        private static readonly Comparison<(int index, byte type)> ByIndex
+            = (a, b) => a.index.CompareTo(b.index);
+
         /// <summary>Called once per frame from NetSession.Update while InGame.</summary>
         public static void Flush(NetSession session)
         {
             if (Pending.Count == 0) return;
-            var cells = Pending.OrderBy(kv => kv.Key).Select(kv => (kv.Key, kv.Value)).ToList();
-            Pending.Clear();
+            var cells = new List<(int index, byte type)>(Math.Min(Pending.Count, MaxLiveCellsPerFrame));
+            foreach (var kv in Pending)
+            {
+                cells.Add((kv.Key, kv.Value));
+                if (cells.Count >= MaxLiveCellsPerFrame) break;
+            }
+            foreach (var (index, _) in cells)
+                Pending.Remove(index);
+            cells.Sort(ByIndex); // CellDiff delta encoding needs ascending indexes
             foreach (var (index, type) in cells)
                 Ledger[index] = type;
             Writer.Reset();

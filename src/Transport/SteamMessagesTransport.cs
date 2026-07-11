@@ -95,7 +95,9 @@ namespace PunkMultiverse.Transport
             var identity = new SteamNetworkingIdentity();
             identity.SetSteamID(new CSteamID(peer));
             int flags = reliable
-                ? Constants.k_nSteamNetworkingSend_Reliable
+                ? (channel == NetChannel.Combat
+                    ? Constants.k_nSteamNetworkingSend_ReliableNoNagle // don't sit 5 ms on a hit
+                    : Constants.k_nSteamNetworkingSend_Reliable)
                 : Constants.k_nSteamNetworkingSend_UnreliableNoNagle;
             var handle = GCHandle.Alloc(data.Array, GCHandleType.Pinned);
             try
@@ -123,7 +125,7 @@ namespace PunkMultiverse.Transport
                 PeerConnected?.Invoke(_hostSteamId);
             }
             // Callback pumping is centralized in SteamBootstrap.Pump (NetSession.Update).
-            for (int channel = 0; channel <= (int)NetChannel.Events; channel++)
+            for (int channel = 0; channel <= (int)NetChannel.Combat; channel++)
             {
                 int count;
                 do

@@ -6,7 +6,9 @@ namespace PunkMultiverse.Transport
     {
         Control = 0,  // reliable: handshake, lobby, run flow, manifest, rejoin
         State = 1,    // unreliable: ship/entity snapshots, fire events, ping
-        Events = 2,   // reliable: damage, kills, cells, authority, progression
+        Events = 2,   // reliable: cells, authority, progression (bulk-tolerant)
+        Combat = 3,   // reliable + no-nagle: damage, kills, ship life — small and
+                      // latency-critical, never queued behind a terrain burst
     }
 
     /// <summary>

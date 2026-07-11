@@ -166,7 +166,7 @@ namespace PunkMultiverse.Sync
             };
             Writer.Reset();
             msg.Write(Writer);
-            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
         }
 
         // ---------------------------------------------------------------- application (on owner)
@@ -260,7 +260,7 @@ namespace PunkMultiverse.Sync
             if (ship != ShipSync.LocalShip) return; // only our own ship's fate is ours to announce
             Writer.Reset();
             new ShipLifeMsg { Slot = (byte)session.LocalSlot }.Write(Writer, died);
-            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             if (died) NetStats.AddDeath(session.LocalSlot);
             Plugin.Log.LogInfo($"[Damage] local ship {(died ? "died" : "resurrected")} — broadcast");
         }

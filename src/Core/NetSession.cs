@@ -499,7 +499,8 @@ namespace PunkMultiverse.Core
         public void SendToAll(NetChannel channel, ArraySegment<byte> data, bool reliable)
         {
             if (_transport == null || !_transport.IsRunning) return;
-            ForEachRemotePeer(peer => _transport.Send(peer, channel, data, reliable));
+            if (reliable) ForEachRemotePeer(peer => SendReliable(peer, channel, data));
+            else ForEachRemotePeer(peer => _transport.Send(peer, channel, data, reliable: false));
         }
 
         /// <summary>Host: relay the message currently being handled to every client except the sender.</summary>
@@ -507,8 +508,78 @@ namespace PunkMultiverse.Core
         {
             if (!IsHost) return;
             foreach (var p in _players)
-                if (p != null && !p.IsLocal && p.PeerId != senderPeer)
-                    _transport.Send(p.PeerId, channel, _lastPayload, reliable);
+            {
+                if (p == null || p.IsLocal || p.PeerId == senderPeer) continue;
+                if (reliable) SendReliable(p.PeerId, channel, _lastPayload);
+                else _transport.Send(p.PeerId, channel, _lastPayload, reliable: false);
+            }
+        }
+
+        // ------------------------------------------------ reliable outbox
+        //
+        // "Reliable" at the transport only means reliable ONCE ACCEPTED — a full send buffer
+        // refuses the message and it would be gone forever (a lost kill or cell diff is a
+        // permanent desync). Refused sends queue here and retry every frame; once a
+        // (peer, channel) lane has a backlog, later sends queue behind it to keep ordering.
+
+        private readonly Dictionary<(ulong peer, NetChannel channel), Queue<byte[]>> _outbox
+            = new Dictionary<(ulong, NetChannel), Queue<byte[]>>();
+        private readonly List<(ulong peer, NetChannel channel)> _outboxScratch
+            = new List<(ulong, NetChannel)>();
+
+        /// <summary>Reliable send that can never silently drop; may deliver next frame(s).</summary>
+        public void SendReliable(ulong peer, NetChannel channel, ArraySegment<byte> data)
+        {
+            var key = (peer, channel);
+            if (_outbox.TryGetValue(key, out var backlog) && backlog.Count > 0)
+            {
+                EnqueueOutbox(key, backlog, data);
+                return;
+            }
+            if (!_transport.Send(peer, channel, data, reliable: true))
+                EnqueueOutbox(key, backlog, data);
+        }
+
+        private void EnqueueOutbox((ulong, NetChannel) key, Queue<byte[]> backlog, ArraySegment<byte> data)
+        {
+            if (backlog == null) _outbox[key] = backlog = new Queue<byte[]>();
+            if (backlog.Count >= 8192)
+            {
+                // Minutes of refusal — the connection is effectively dead; the peer-timeout
+                // path will clean up. Dropping the oldest keeps memory bounded.
+                backlog.Dequeue();
+                Plugin.Log.LogWarning($"[Session] reliable outbox overflow for {key.Item1} ch{(int)key.Item2}");
+            }
+            var copy = new byte[data.Count];
+            Buffer.BlockCopy(data.Array, data.Offset, copy, 0, data.Count);
+            backlog.Enqueue(copy);
+        }
+
+        private void DrainOutbox()
+        {
+            if (_outbox.Count == 0) return;
+            _outboxScratch.Clear();
+            _outboxScratch.AddRange(_outbox.Keys);
+            foreach (var key in _outboxScratch)
+            {
+                var backlog = _outbox[key];
+                while (backlog.Count > 0)
+                {
+                    var payload = backlog.Peek();
+                    if (!_transport.Send(key.peer, key.channel, new ArraySegment<byte>(payload), reliable: true))
+                        break; // still congested — retry next frame
+                    backlog.Dequeue();
+                }
+                if (backlog.Count == 0) _outbox.Remove(key);
+            }
+        }
+
+        private void ClearOutboxFor(ulong peer)
+        {
+            _outboxScratch.Clear();
+            foreach (var key in _outbox.Keys)
+                if (key.peer == peer) _outboxScratch.Add(key);
+            foreach (var key in _outboxScratch) _outbox.Remove(key);
         }
 
         private ArraySegment<byte> _lastPayload;
@@ -620,6 +691,7 @@ namespace PunkMultiverse.Core
             }
 
             _lobby?.LeaveLobby();
+            _outbox.Clear();
             if (_transport != null)
             {
                 _transport.Stop();
@@ -731,6 +803,7 @@ namespace PunkMultiverse.Core
             SteamBootstrap.Pump();
             if (_transport == null || !_transport.IsRunning) return;
             _transport.Poll();
+            DrainOutbox();
 
             if (State == SessionState.Connecting && Time.unscaledTime >= _connectDeadline)
             {
@@ -1039,6 +1112,7 @@ namespace PunkMultiverse.Core
         private void OnPeerDisconnected(ulong peer)
         {
             Sync.WorldSync.CancelStream(peer); // a rejoin restarts it from scratch
+            ClearOutboxFor(peer);              // rejoin catch-up re-serves everything anyway
             if (IsHost)
             {
                 var player = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
@@ -1146,7 +1220,7 @@ namespace PunkMultiverse.Core
                         // Route to the victim's current authority.
                         var target = _players.FirstOrDefault(p => p != null && p.Slot == ownerSlot);
                         if (target != null && !target.IsLocal)
-                            _transport.Send(target.PeerId, NetChannel.Events, _lastPayload, reliable: true);
+                            SendReliable(target.PeerId, NetChannel.Combat, _lastPayload);
                     }
                     else
                     {

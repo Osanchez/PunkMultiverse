@@ -14,7 +14,7 @@ namespace PunkMultiverse.Sync
     public sealed class RemotePuppet : MonoBehaviour
     {
         // Two snapshot intervals of buffer at the configured rate — enough for one lost packet.
-        private static float InterpDelay => 2f / Mathf.Max(1f, NetConfig.StateHz.Value);
+        private static float InterpDelay => 2f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
         private const float HardSnapDistance = 3f;
         private const float StaleAfter = 1.5f;
 

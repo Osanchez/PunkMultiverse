@@ -414,7 +414,7 @@ namespace PunkMultiverse.Sync
 
                 Writer.Reset();
                 new EntityKilledMsg { NetId = netId, KillerSlot = (byte)session.LocalSlot }.Write(Writer);
-                session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             }
         }
 
@@ -468,7 +468,7 @@ namespace PunkMultiverse.Sync
                 if (!KilledNetIds.Add(netId)) return;
                 Writer.Reset();
                 new EntityKilledMsg { NetId = netId, KillerSlot = (byte)session.LocalSlot }.Write(Writer);
-                session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             }
         }
 

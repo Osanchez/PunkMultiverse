@@ -29,6 +29,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> Scoreboard;
 
         public static ConfigEntry<float> StateHz;
+        public static ConfigEntry<float> ShipStateHz;
         public static ConfigEntry<float> AuthorityRadius;
         public static ConfigEntry<float> TransferRadius;
         public static ConfigEntry<float> InterestRadius;
@@ -86,8 +87,13 @@ namespace PunkMultiverse
                 "Merge explored map regions between players (fog-of-war sync).");
 
             StateHz = cfg.Bind("Sync", "StateHz", 20f,
-                "Snapshot send rate for ALL moving objects — ships and enemies alike (one truth " +
-                "cadence; 20 Hz = a fresh state every 50 ms).");
+                "Snapshot send rate for entities (enemies, props). 20 Hz = a fresh state every " +
+                "50 ms, and puppets buffer two intervals — raising this lowers their visual delay " +
+                "at a bandwidth cost proportional to nearby entity count.");
+            ShipStateHz = cfg.Bind("Sync", "ShipStateHz", 40f,
+                "Snapshot send rate for player ships — the thing you watch most, and one tiny " +
+                "message per player, so it runs hotter than entities. 40 Hz halves teammate " +
+                "visual delay (~50 ms interpolation buffer) for ~2 KB/s per player.");
             AuthorityRadius = cfg.Bind("Authority", "AuthorityRadius", 60f,
                 "Max distance (world units) at which a player can hold authority over an entity.");
             TransferRadius = cfg.Bind("Authority", "TransferRadius", 45f,
