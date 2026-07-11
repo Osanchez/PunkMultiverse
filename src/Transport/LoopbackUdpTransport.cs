@@ -97,6 +97,7 @@ namespace PunkMultiverse.Transport
             var ep = ResolveEndpoint(peer);
             if (ep == null) return false;
             SendRaw(ep, _sendBuf, data.Count + 2);
+            Core.NetStats.AddOut(data.Count);
             return true;
         }
 

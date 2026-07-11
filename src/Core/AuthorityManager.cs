@@ -19,6 +19,9 @@ namespace PunkMultiverse.Core
         private const float HysteresisFactor = 0.75f; // challenger must be at least 25% closer
         private const float HoldSeconds = 3f;         // min time between handoffs per entity
         private const float ReleaseDenySeconds = 8f;  // released-by cooldown (see OnReleased)
+        private const float CombatDeferSeconds = 2.5f; // no handoffs mid-fight (see NoteCombat)
+        private const float AggroStickSeconds = 4f;    // recent victim keeps simulation priority
+        private const int MaxOptimizationChangesPerScan = 8; // spread puppet churn across scans
 
         private static float _nextScanAt;
         private static readonly Dictionary<int, float> HoldUntil = new Dictionary<int, float>();
@@ -29,6 +32,14 @@ namespace PunkMultiverse.Core
         // client frame drops. Deny that slot for a while; anyone else can still take over.
         private static readonly Dictionary<int, (byte slot, float until)> DeniedSlot
             = new Dictionary<int, (byte, float)>();
+        // Host-side combat knowledge, fed by the fire/damage traffic it already sees. A handoff
+        // tears down and rebuilds the enemy's AI mid-telegraph — exactly when players are
+        // looking — so entities that fought recently keep their owner (rescues excepted).
+        private static readonly Dictionary<int, float> LastCombatAt = new Dictionary<int, float>();
+        // netId -> (player it last fired at, when). The player being chased gets the tightest
+        // simulation of the thing chasing them; small distance deltas must not steal it away.
+        private static readonly Dictionary<int, (byte slot, float at)> LastAggro
+            = new Dictionary<int, (byte, float)>();
         private static readonly NetWriter Writer = new NetWriter(2048);
 
         public static void Reset()
@@ -36,6 +47,18 @@ namespace PunkMultiverse.Core
             _nextScanAt = 0;
             HoldUntil.Clear();
             DeniedSlot.Clear();
+            LastCombatAt.Clear();
+            LastAggro.Clear();
+        }
+
+        /// <summary>An entity attacked or took damage — defer optimization handoffs briefly.</summary>
+        public static void NoteCombat(int netId) => LastCombatAt[netId] = Time.unscaledTime;
+
+        /// <summary>An entity fired at a player — that player is its preferred authority.</summary>
+        public static void NoteAggro(int netId, byte targetSlot)
+        {
+            LastCombatAt[netId] = Time.unscaledTime;
+            if (targetSlot != 255) LastAggro[netId] = (targetSlot, Time.unscaledTime);
         }
 
         /// <summary>An owner reported it can't simulate this entity. Keep it host-dormant for a
@@ -71,6 +94,7 @@ namespace PunkMultiverse.Core
 
             var changes = new List<(int netId, byte owner)>();
             var seen = new HashSet<int>();
+            int optimizationChanges = 0;
             foreach (var entity in em.GetAllEntities())
             {
                 if (entity == null || entity.entityId == "Ship") continue;
@@ -114,6 +138,28 @@ namespace PunkMultiverse.Core
                     desired = closest.slot; // handoff to a clearly-closer player
                 }
 
+                // Aggro stickiness: an enemy that recently fired at a player belongs to that
+                // player while they're in range — a teammate drifting 25% closer must not
+                // steal the thing chasing you.
+                if (LastAggro.TryGetValue(netId, out var aggro))
+                {
+                    if (Time.unscaledTime - aggro.at >= AggroStickSeconds) LastAggro.Remove(netId);
+                    else foreach (var (slot, ppos) in playerPos)
+                        if (slot == aggro.slot)
+                        {
+                            if (Vector2.Distance(ppos, pos) <= authority) desired = aggro.slot;
+                            break;
+                        }
+                }
+
+                // Combat deferral: stability beats optimality mid-fight — a handoff restarts
+                // telegraphs and attack state right when players are watching. Rescues are
+                // exempt: an owner with no live ship stays MaxValue-distant and moves now.
+                if (desired != current && ownerDist != float.MaxValue
+                    && LastCombatAt.TryGetValue(netId, out float fought)
+                    && Time.unscaledTime - fought < CombatDeferSeconds)
+                    desired = current;
+
                 // Respect the release deny window: whoever just gave this entity up can't
                 // receive it again until the window passes (their machine likely still hasn't
                 // streamed the segment in). It stays with its current owner instead.
@@ -125,6 +171,11 @@ namespace PunkMultiverse.Core
 
                 if (desired != current)
                 {
+                    // Cap optimization flips per scan — each one is a component-walk on two
+                    // machines, and batches spike frames. Rescues always go through.
+                    bool rescue = ownerDist == float.MaxValue && current != hostSlot;
+                    if (!rescue && optimizationChanges >= MaxOptimizationChangesPerScan) continue;
+                    if (!rescue) optimizationChanges++;
                     changes.Add((netId, desired));
                     EnemySync.Owners[netId] = desired;
                     HoldUntil[netId] = Time.unscaledTime + HoldSeconds;
@@ -132,6 +183,7 @@ namespace PunkMultiverse.Core
             }
 
             if (changes.Count == 0) return;
+            NetStats.AuthFlips += changes.Count;
             Plugin.Log.LogInfo($"[Auth] {changes.Count} ownership change(s): " +
                 string.Join(", ", changes.GetRange(0, Mathf.Min(5, changes.Count)).ConvertAll(c => $"#{c.netId}->P{c.owner + 1}")) +
                 (changes.Count > 5 ? " …" : ""));

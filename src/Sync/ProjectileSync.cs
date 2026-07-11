@@ -168,6 +168,8 @@ namespace PunkMultiverse.Sync
                 TargetSlot = targetSlot,
                 Seed = _lastFireSeed,
             };
+            // Host-simulated fire never passes through Dispatch — feed the registrar here.
+            if (session.IsHost) Core.AuthorityManager.NoteAggro(owner.netId, targetSlot);
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);

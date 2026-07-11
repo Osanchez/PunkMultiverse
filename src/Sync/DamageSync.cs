@@ -154,6 +154,8 @@ namespace PunkMultiverse.Sync
                 return;
             }
             if (amount <= 0) return;
+            // Host shooting a client-simulated entity never re-enters Dispatch — mark here.
+            if (isEntity && session.IsHost) Core.AuthorityManager.NoteCombat(targetNetId);
             var msg = new DamageRequestMsg
             {
                 IsEntity = isEntity,

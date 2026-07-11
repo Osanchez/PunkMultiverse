@@ -108,6 +108,7 @@ namespace PunkMultiverse.Transport
                     Plugin.Log.LogDebug($"[Steam] send buffer full for {peer} ch{(int)channel}");
                 else if (result != EResult.k_EResultOK && result != EResult.k_EResultNoConnection)
                     Plugin.Log.LogWarning($"[Steam] send to {peer} ch{(int)channel} failed: {result}");
+                if (result == EResult.k_EResultOK) Core.NetStats.AddOut(data.Count);
                 return result == EResult.k_EResultOK;
             }
             finally { handle.Free(); }

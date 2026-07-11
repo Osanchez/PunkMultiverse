@@ -1072,6 +1072,7 @@ namespace PunkMultiverse.Core
             MsgType type;
             try { type = _reader.ReadMsgType(); }
             catch { return; }
+            NetStats.AddIn((byte)type, payload.Count);
             try
             {
                 Dispatch(peer, channel, type);
@@ -1137,6 +1138,7 @@ namespace PunkMultiverse.Core
                 case MsgType.DamageRequest:
                 {
                     var dmg = DamageRequestMsg.Read(_reader);
+                    if (IsHost && dmg.IsEntity) AuthorityManager.NoteCombat(dmg.TargetNetId);
                     byte ownerSlot = dmg.IsEntity ? Sync.EnemySync.OwnerOf(dmg.TargetNetId) : dmg.TargetSlot;
                     if (IsHost && ownerSlot != LocalSlot)
                     {
@@ -1164,6 +1166,7 @@ namespace PunkMultiverse.Core
                 case MsgType.EntityFire:
                 {
                     var efire = EntityFireMsg.Read(_reader);
+                    if (IsHost) AuthorityManager.NoteAggro(efire.NetId, efire.TargetSlot);
                     RelayToOthers(peer, channel, reliable: false);
                     Sync.ProjectileSync.ReplayEntityFire(efire);
                     break;

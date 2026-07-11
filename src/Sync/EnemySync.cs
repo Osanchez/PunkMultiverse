@@ -230,6 +230,7 @@ namespace PunkMultiverse.Sync
             if (session.IsHost) return;
             if (NextReleaseAt.TryGetValue(netId, out float at) && Time.unscaledTime < at) return;
             NextReleaseAt[netId] = Time.unscaledTime + 5f;
+            NetStats.AuthReleases++;
             Writer.Reset();
             new AuthReleaseMsg { NetId = netId }.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
@@ -241,6 +242,7 @@ namespace PunkMultiverse.Sync
         public static void ApplyAuthRelease(AuthReleaseMsg msg, NetSession session)
         {
             byte releasing = OwnerOf(msg.NetId);
+            NetStats.AuthReleases++;
             var assign = new AuthAssignMsg
             {
                 Entries = new List<(int netId, byte owner)> { (msg.NetId, session.HostSlot) },

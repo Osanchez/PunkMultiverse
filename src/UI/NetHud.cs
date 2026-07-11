@@ -14,12 +14,53 @@ namespace PunkMultiverse.UI
         private Rect _rect = new Rect(12, 12, 340, 100);
         private string _joinAddress = "";
 
+        // Telemetry sampled once a second from NetStats' cumulative counters.
+        private float _nextSampleAt;
+        private float _lastSampleAt;
+        private long _lastIn, _lastOut;
+        private int _lastFlips, _lastReleases;
+        private float _inRate, _outRate, _flipsPerMin, _releasesPerMin;
+        private readonly long[] _lastByType = new long[64];
+        private string _topTypes = "";
+
         private void Update()
         {
             // F11: F5-F9 are taken by PunkSimController/PunkDebugKey, F10 by PunkDevReload.
             var kb = Keyboard.current;
             if (kb != null && kb[Key.F11].wasPressedThisFrame)
                 _visible = !_visible;
+            if (_visible && Time.unscaledTime >= _nextSampleAt) Sample();
+        }
+
+        private void Sample()
+        {
+            float dt = _lastSampleAt > 0f ? Mathf.Max(0.001f, Time.unscaledTime - _lastSampleAt) : float.MaxValue;
+            _lastSampleAt = Time.unscaledTime;
+            _nextSampleAt = Time.unscaledTime + 1f;
+
+            _inRate = (NetStats.BytesIn - _lastIn) / dt;
+            _outRate = (NetStats.BytesOut - _lastOut) / dt;
+            _flipsPerMin = (NetStats.AuthFlips - _lastFlips) / dt * 60f;
+            _releasesPerMin = (NetStats.AuthReleases - _lastReleases) / dt * 60f;
+            _lastIn = NetStats.BytesIn;
+            _lastOut = NetStats.BytesOut;
+            _lastFlips = NetStats.AuthFlips;
+            _lastReleases = NetStats.AuthReleases;
+
+            // Top inbound message types over the window — where the bandwidth actually goes.
+            (int type, long delta) a = (0, 0), b = (0, 0), c = (0, 0);
+            for (int i = 0; i < _lastByType.Length; i++)
+            {
+                long d = NetStats.BytesInByType[i] - _lastByType[i];
+                _lastByType[i] = NetStats.BytesInByType[i];
+                if (d > a.delta) { c = b; b = a; a = (i, d); }
+                else if (d > b.delta) { c = b; b = (i, d); }
+                else if (d > c.delta) c = (i, d);
+            }
+            _topTypes = a.delta <= 0 ? "" : $"{(Protocol.MsgType)a.type} {a.delta / dt / 1024f:0.0}"
+                + (b.delta > 0 ? $", {(Protocol.MsgType)b.type} {b.delta / dt / 1024f:0.0}" : "")
+                + (c.delta > 0 ? $", {(Protocol.MsgType)c.type} {c.delta / dt / 1024f:0.0}" : "")
+                + " KB/s";
         }
 
         private void OnGUI()
@@ -66,6 +107,11 @@ namespace PunkMultiverse.UI
                     string rtt = p.IsLocal ? "local" : (p.RttMs >= 0 ? $"{p.RttMs} ms" : "…");
                     GUILayout.Label($"P{p.Slot + 1}  {p.Name}  [{rtt}]");
                 }
+                GUILayout.Label($"Net  in {_inRate / 1024f:0.0} KB/s   out {_outRate / 1024f:0.0} KB/s");
+                if (!string.IsNullOrEmpty(_topTypes))
+                    GUILayout.Label($"Top in: {_topTypes}");
+                GUILayout.Label($"Auth  flips {NetStats.AuthFlips} ({_flipsPerMin:0}/min)   " +
+                                $"releases {NetStats.AuthReleases} ({_releasesPerMin:0}/min)");
                 if (GUILayout.Button("Stop / Disconnect"))
                     session.StopSession("user request");
             }

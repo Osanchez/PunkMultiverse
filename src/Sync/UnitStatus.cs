@@ -21,6 +21,24 @@ namespace PunkMultiverse.Sync
         private static bool _warnedShield;
         private static bool _warnedBurn;
 
+        // These run per entity per state tick (20 Hz, both directions) — building a Traverse
+        // per call allocated on the hottest path. Member handles are cached instead; the
+        // per-TYPE dictionaries survive runs (game types don't change under us).
+        private static readonly System.Reflection.FieldInfo SmCurrentState =
+            AccessTools.Field(typeof(StateMachine), "currentState");
+        private static readonly System.Reflection.FieldInfo UnitShields =
+            AccessTools.Field(typeof(Unit), "shields");
+        private static readonly System.Reflection.PropertyInfo UnitData =
+            AccessTools.Property(typeof(Unit), "Data");
+        private static readonly Dictionary<System.Type, System.Reflection.PropertyInfo> ChargeProps
+            = new Dictionary<System.Type, System.Reflection.PropertyInfo>();
+        private static readonly Dictionary<System.Type, System.Reflection.FieldInfo> ShieldTankFields
+            = new Dictionary<System.Type, System.Reflection.FieldInfo>();
+        private static readonly Dictionary<System.Type, System.Reflection.PropertyInfo> TankValueProps
+            = new Dictionary<System.Type, System.Reflection.PropertyInfo>();
+        private static readonly Dictionary<System.Type, System.Reflection.PropertyInfo> BurnProps
+            = new Dictionary<System.Type, System.Reflection.PropertyInfo>();
+
         public static void Reset()
         {
             InitialShieldCharge.Clear();
@@ -181,8 +199,8 @@ namespace PunkMultiverse.Sync
             try
             {
                 var (sm, states) = StatesOf(root);
-                if (sm == null || states == null) return 255;
-                var current = Traverse.Create(sm).Field("currentState").GetValue() as State;
+                if (sm == null || states == null || SmCurrentState == null) return 255;
+                var current = SmCurrentState.GetValue(sm) as State;
                 if (current == null) return 255;
                 for (int i = 0; i < states.Length && i < 255; i++)
                     if (states[i] == current)
@@ -201,8 +219,8 @@ namespace PunkMultiverse.Sync
             try
             {
                 var (sm, states) = StatesOf(root);
-                if (sm == null || states == null || index >= states.Length) return;
-                var current = Traverse.Create(sm).Field("currentState").GetValue() as State;
+                if (sm == null || states == null || index >= states.Length || SmCurrentState == null) return;
+                var current = SmCurrentState.GetValue(sm) as State;
                 if (current == states[index]) return;
                 sm.ChangeState(states[index], false);
             }
@@ -254,18 +272,18 @@ namespace PunkMultiverse.Sync
         private static IEnumerable ShieldsOf(Component root)
         {
             var unit = root != null ? root.GetComponentInParent<Unit>() : null;
-            if (unit == null) yield break;
-            var shields = Traverse.Create(unit).Field("shields").GetValue() as IEnumerable;
+            if (unit == null || UnitShields == null) yield break;
+            var shields = UnitShields.GetValue(unit) as IEnumerable;
             if (shields == null) yield break;
             foreach (var s in shields) yield return s;
         }
 
         private static float ChargeOf(object shield)
         {
-            var t = Traverse.Create(shield);
-            var prop = t.Property("Charge");
-            if (prop != null && prop.PropertyExists()) return prop.GetValue<float>();
-            return 0f;
+            var type = shield.GetType();
+            if (!ChargeProps.TryGetValue(type, out var prop))
+                ChargeProps[type] = prop = AccessTools.Property(type, "Charge");
+            return prop != null ? (float)prop.GetValue(shield, null) : 0f;
         }
 
         public static float ReadShieldFraction(Component root)
@@ -297,10 +315,16 @@ namespace PunkMultiverse.Sync
                     float c = ChargeOf(shield);
                     if (!InitialShieldCharge.TryGetValue(sc, out float init) || c > init)
                         InitialShieldCharge[sc] = init = Mathf.Max(c, 0.001f);
-                    var tank = Traverse.Create(shield).Field("tank");
-                    var value = tank != null && tank.FieldExists() ? Traverse.Create(tank.GetValue()).Property("Value") : null;
-                    if (value != null && value.PropertyExists())
-                        value.SetValue(fraction * init);
+                    var stype = shield.GetType();
+                    if (!ShieldTankFields.TryGetValue(stype, out var tankField))
+                        ShieldTankFields[stype] = tankField = AccessTools.Field(stype, "tank");
+                    var tankObj = tankField?.GetValue(shield);
+                    if (tankObj == null) continue;
+                    if (tankObj is ResourceTank rt) { rt.Value = fraction * init; continue; }
+                    var ttype = tankObj.GetType();
+                    if (!TankValueProps.TryGetValue(ttype, out var valueProp))
+                        TankValueProps[ttype] = valueProp = AccessTools.Property(ttype, "Value");
+                    valueProp?.SetValue(tankObj, fraction * init, null);
                 }
             }
             catch (System.Exception e)
@@ -315,14 +339,24 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- burn
 
+        private static System.Reflection.PropertyInfo BurnPropOf(object data)
+        {
+            var type = data.GetType();
+            if (!BurnProps.TryGetValue(type, out var prop))
+                BurnProps[type] = prop = AccessTools.Property(type, "BurnLevel");
+            return prop;
+        }
+
         public static float ReadBurnLevel(Component root)
         {
             try
             {
                 var unit = root != null ? root.GetComponentInParent<Unit>() : null;
-                if (unit == null) return 0f;
-                var burn = Traverse.Create(unit).Property("Data")?.Property("BurnLevel");
-                return burn != null && burn.PropertyExists() ? burn.GetValue<float>() : 0f;
+                if (unit == null || UnitData == null) return 0f;
+                var data = UnitData.GetValue(unit, null);
+                if (data == null) return 0f;
+                var burn = BurnPropOf(data);
+                return burn != null ? (float)burn.GetValue(data, null) : 0f;
             }
             catch { return 0f; }
         }
@@ -332,9 +366,10 @@ namespace PunkMultiverse.Sync
             try
             {
                 var unit = root != null ? root.GetComponentInParent<Unit>() : null;
-                if (unit == null) return;
-                var burn = Traverse.Create(unit).Property("Data")?.Property("BurnLevel");
-                if (burn != null && burn.PropertyExists()) burn.SetValue(value);
+                if (unit == null || UnitData == null) return;
+                var data = UnitData.GetValue(unit, null);
+                if (data == null) return;
+                BurnPropOf(data)?.SetValue(data, value, null);
             }
             catch (System.Exception e)
             {
