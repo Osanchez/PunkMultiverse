@@ -34,6 +34,9 @@ namespace PunkMultiverse
         public static ConfigEntry<float> TransferRadius;
         public static ConfigEntry<float> InterestRadius;
 
+        public static ConfigEntry<bool> SyncDiagnostics;
+        public static ConfigEntry<float> DiagOwnershipDumpInterval;
+
         public static void Init(BepConfigFile cfg)
         {
             Transport = cfg.Bind("Transport", "Transport", "Steam",
@@ -100,6 +103,15 @@ namespace PunkMultiverse
                 "Beyond this distance authority may hand off to a closer player (25% hysteresis).");
             InterestRadius = cfg.Bind("Authority", "InterestRadius", 70f,
                 "Entities farther than this from every player go dormant. Keep <= 75 (segment streaming radius).");
+
+            SyncDiagnostics = cfg.Bind("Diag", "SyncDiagnostics", false,
+                "Verbose sync/authority diagnostics: per-entity ownership assigns, releases, deny " +
+                "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
+                "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
+                "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
+            DiagOwnershipDumpInterval = cfg.Bind("Diag", "OwnershipDumpInterval", 0f,
+                "When SyncDiagnostics is on and this is > 0, log a full ownership table every N " +
+                "seconds (0 = only on demand via the F11 overlay button).");
         }
     }
 }

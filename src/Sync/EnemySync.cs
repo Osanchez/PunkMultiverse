@@ -55,6 +55,8 @@ namespace PunkMultiverse.Sync
 
         public static List<int> KilledSnapshot() => new List<int>(KilledNetIds);
 
+        public static int KilledCount => KilledNetIds.Count;
+
         public static bool IsKilled(int netId) => KilledNetIds.Contains(netId);
 
         public static List<(int netId, byte owner)> OwnersSnapshot()
@@ -186,12 +188,20 @@ namespace PunkMultiverse.Sync
                 Plugin.Log.LogInfo($"[Auth] first assignment batch applied ({msg.Entries.Count} entries)");
             }
             var egm = TryGetEgm();
+            var session = NetSession.Instance;
             foreach (var (netId, owner) in msg.Entries)
             {
+                byte prev = OwnerOf(netId);
                 Owners[netId] = owner;
                 if (egm != null && NetIds.TryGetInstanceId(netId, out int instanceId))
                 {
                     try { ApplyOwnership(netId, instanceId); } catch { }
+                }
+                if (NetDiag.Enabled && prev != owner && session != null)
+                {
+                    string effect = owner == session.LocalSlot ? "now MINE (live)"
+                        : prev == session.LocalSlot ? "handed away (now puppet)" : "puppet owner changed";
+                    NetDiag.Log("Assign", $"{NetDiag.Describe(netId)} {NetDiag.Owner(prev)} -> {NetDiag.Owner(owner)} — {effect}");
                 }
             }
         }
@@ -264,6 +274,8 @@ namespace PunkMultiverse.Sync
             if (NextReleaseAt.TryGetValue(netId, out float at) && Time.unscaledTime < at) return;
             NextReleaseAt[netId] = Time.unscaledTime + 5f;
             NetStats.AuthReleases++;
+            if (NetDiag.Enabled)
+                NetDiag.Log("Release", $"{NetDiag.Describe(netId)} — I own it but it isn't spawned here; asking host to take it back");
             Writer.Reset();
             new AuthReleaseMsg { NetId = netId }.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
@@ -276,6 +288,8 @@ namespace PunkMultiverse.Sync
         {
             byte releasing = OwnerOf(msg.NetId);
             NetStats.AuthReleases++;
+            if (NetDiag.Enabled)
+                NetDiag.Log("Release", $"{NetDiag.Describe(msg.NetId)} released by {NetDiag.Owner(releasing)} — taking it back to host, {NetDiag.Owner(releasing)} denied for a cooldown");
             var assign = new AuthAssignMsg
             {
                 Entries = new List<(int netId, byte owner)> { (msg.NetId, session.HostSlot) },
@@ -359,15 +373,31 @@ namespace PunkMultiverse.Sync
                 Plugin.Log.LogInfo($"[Enemies] receiving entity states (first batch: {msg.Entries.Count})");
             }
             var egm = TryGetEgm();
+            var session = NetSession.Instance;
             EntityManager em = null;
             try { em = ServiceLocator.Get<EntityManager>(); } catch { }
             float localTime = Core.ClockSync.ToLocalTime(msg.Slot, msg.TimeMs);
             foreach (var e in msg.Entries)
             {
-                if (IsLocallyOwned(e.NetId)) continue; // our own echo via relay
+                if (IsLocallyOwned(e.NetId))
+                {
+                    // Normally my own relayed echo. But a state for an entity I own arriving from
+                    // a DIFFERENT slot means another machine is simulating it too — dual authority,
+                    // the source of rubber-banding and double-fire. Surface it.
+                    if (NetDiag.Enabled && session != null && msg.Slot != session.LocalSlot)
+                        NetDiag.Throttled($"dual{e.NetId}", 2f, "Dual",
+                            () => $"{NetDiag.Describe(e.NetId)} — I own it ({NetDiag.Owner((byte)session.LocalSlot)}) but {NetDiag.Owner(msg.Slot)} is ALSO streaming it (DUAL AUTHORITY)");
+                    continue;
+                }
                 if (KilledNetIds.Contains(e.NetId)) continue; // dead here — don't animate a corpse
-                if (LastEntityStateMs.TryGetValue(e.NetId, out var last)
-                    && last.slot == msg.Slot && (int)(msg.TimeMs - last.ms) <= 0) continue;
+                if (LastEntityStateMs.TryGetValue(e.NetId, out var last))
+                {
+                    // Sender changed = authority handed off. The puppet re-baselines onto the new
+                    // owner's timeline (accepted below) — a visible snap if their positions differ.
+                    if (NetDiag.Enabled && last.slot != msg.Slot)
+                        NetDiag.Log("State", $"{NetDiag.Describe(e.NetId)} authority changed {NetDiag.Owner(last.slot)} -> {NetDiag.Owner(msg.Slot)} (puppet re-baselines — expect a visual snap)");
+                    if (last.slot == msg.Slot && (int)(msg.TimeMs - last.ms) <= 0) continue;
+                }
                 LastEntityStateMs[e.NetId] = (msg.Slot, msg.TimeMs);
                 if (!NetIds.TryGetInstanceId(e.NetId, out int instanceId)) continue;
 

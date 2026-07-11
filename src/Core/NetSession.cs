@@ -354,6 +354,7 @@ namespace PunkMultiverse.Core
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
             AuthorityManager.Reset();
+            NetDiag.Reset();
             NetIds.Reset();
             NetStats.Reset();
             ClockSync.Reset();
@@ -720,6 +721,7 @@ namespace PunkMultiverse.Core
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
             AuthorityManager.Reset();
+            NetDiag.Reset();
             NetIds.Reset();
             NetStats.Reset();
             ClockSync.Reset();
@@ -828,6 +830,7 @@ namespace PunkMultiverse.Core
                 Sync.FogSync.Tick(this);
                 EconomyStash.Tick(this);
                 NetRunSave.Tick(this);
+                NetDiag.TickPeriodic();
                 if (IsHost)
                 {
                     AuthorityManager.Tick(this);
@@ -969,6 +972,7 @@ namespace PunkMultiverse.Core
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
             AuthorityManager.Reset();
+            NetDiag.Reset();
             NetIds.Reset();
             EconomyStash.Reset();
             NetRunSave.Reset();

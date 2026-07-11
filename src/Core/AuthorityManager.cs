@@ -134,24 +134,31 @@ namespace PunkMultiverse.Core
 
                 byte hostSlot = session.HostSlot;
                 byte desired = current;
+                string reason = null;
                 if (closest.dist > interest)
                 {
                     desired = hostSlot; // dormant — host fallback
+                    reason = $"dormant (nearest {closest.dist:0}u > interest {interest:0})";
                 }
                 else if (current == hostSlot)
                 {
-                    if (closest.dist <= authority && closest.slot != hostSlot) desired = closest.slot;
+                    if (closest.dist <= authority && closest.slot != hostSlot)
+                    {
+                        desired = closest.slot;
+                        reason = $"host->player (nearest {closest.dist:0}u <= authority {authority:0})";
+                    }
                 }
                 else if (ownerDist > authority * 1.15f) // release hysteresis: no flip-flop at the radius edge
                 {
-                    if (closest.dist <= authority) desired = closest.slot;
-                    else if (ownerDist > interest) desired = hostSlot; // out of everyone's range entirely
+                    if (closest.dist <= authority) { desired = closest.slot; reason = $"owner drifted {ownerDist:0}u, closer player at {closest.dist:0}u"; }
+                    else if (ownerDist > interest) { desired = hostSlot; reason = $"owner out of range ({ownerDist:0}u > interest)"; }
                     // Owner in the release..interest band with nobody clearly closer: keep them.
                     // Bouncing to the host and back every scan is worse than a stretched radius.
                 }
                 else if (ownerDist > transfer && closest.slot != current && closest.dist < ownerDist * HysteresisFactor)
                 {
                     desired = closest.slot; // handoff to a clearly-closer player
+                    reason = $"handoff: owner {ownerDist:0}u, closer player {closest.dist:0}u (25% hysteresis)";
                 }
 
                 // Aggro stickiness: an enemy that recently fired at a player belongs to that
@@ -163,7 +170,11 @@ namespace PunkMultiverse.Core
                     else foreach (var (slot, ppos) in playerPos)
                         if (slot == aggro.slot)
                         {
-                            if (Vector2.Distance(ppos, pos) <= authority) desired = aggro.slot;
+                            if (Vector2.Distance(ppos, pos) <= authority && desired != aggro.slot)
+                            {
+                                desired = aggro.slot;
+                                reason = $"aggro-stick to {NetDiag.Owner(aggro.slot)} (fired at them recently)";
+                            }
                             break;
                         }
                 }
@@ -174,7 +185,12 @@ namespace PunkMultiverse.Core
                 if (desired != current && ownerDist != float.MaxValue
                     && LastCombatAt.TryGetValue(netId, out float fought)
                     && Time.unscaledTime - fought < CombatDeferSeconds)
+                {
+                    if (NetDiag.Enabled)
+                        NetDiag.Throttled($"defer{netId}", 2f, "Auth",
+                            () => $"{NetDiag.Describe(netId)} handoff to {NetDiag.Owner(desired)} deferred (combat < {CombatDeferSeconds}s ago)");
                     desired = current;
+                }
 
                 // Respect the release deny window: whoever just gave this entity up can't
                 // receive it again until the window passes (their machine likely still hasn't
@@ -182,7 +198,13 @@ namespace PunkMultiverse.Core
                 if (desired != current && DeniedSlot.TryGetValue(netId, out var denied))
                 {
                     if (Time.unscaledTime >= denied.until) DeniedSlot.Remove(netId);
-                    else if (desired == denied.slot) desired = current;
+                    else if (desired == denied.slot)
+                    {
+                        if (NetDiag.Enabled)
+                            NetDiag.Throttled($"deny{netId}", 2f, "Auth",
+                                () => $"{NetDiag.Describe(netId)} NOT assigned to {NetDiag.Owner(denied.slot)} — denied for {denied.until - Time.unscaledTime:0.0}s more (they released it)");
+                        desired = current;
+                    }
                 }
 
                 if (desired != current)
@@ -190,11 +212,20 @@ namespace PunkMultiverse.Core
                     // Cap optimization flips per scan — each one is a component-walk on two
                     // machines, and batches spike frames. Rescues always go through.
                     bool rescue = ownerDist == float.MaxValue && current != hostSlot;
-                    if (!rescue && optimizationChanges >= MaxOptimizationChangesPerScan) continue;
+                    if (!rescue && optimizationChanges >= MaxOptimizationChangesPerScan)
+                    {
+                        if (NetDiag.Enabled)
+                            NetDiag.Throttled($"cap{netId}", 2f, "Auth",
+                                () => $"{NetDiag.Describe(netId)} handoff to {NetDiag.Owner(desired)} deferred (per-scan cap {MaxOptimizationChangesPerScan} hit)");
+                        continue;
+                    }
                     if (!rescue) optimizationChanges++;
                     changes.Add((netId, desired));
                     EnemySync.Owners[netId] = desired;
                     HoldUntil[netId] = Time.unscaledTime + HoldSeconds;
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} {NetDiag.Owner(current)} -> {NetDiag.Owner(desired)}" +
+                            (rescue ? " [RESCUE]" : "") + (reason != null ? $" — {reason}" : ""));
                 }
             }
 

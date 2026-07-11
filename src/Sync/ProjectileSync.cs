@@ -178,6 +178,10 @@ namespace PunkMultiverse.Sync
             };
             // Host-simulated fire never passes through Dispatch — feed the registrar here.
             if (session.IsHost) Core.AuthorityManager.NoteAggro(owner.netId, targetSlot);
+            if (Core.NetDiag.Enabled)
+                Core.NetDiag.Throttled($"fire{owner.netId}", 1f, "Fire",
+                    () => $"{Core.NetDiag.Describe(owner.netId)} announcing shot (I simulate it)" +
+                          (targetSlot != 255 ? $" at {Core.NetDiag.Owner(targetSlot)}" : ""));
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
@@ -217,6 +221,10 @@ namespace PunkMultiverse.Sync
                 Vector2 pos = msg.BodyPos != Vector2.zero
                     ? (Vector2)se.transform.position + (msg.Pos - msg.BodyPos)
                     : msg.Pos;
+                if (Core.NetDiag.Enabled)
+                    Core.NetDiag.Throttled($"replay{msg.NetId}", 1f, "Fire",
+                        () => $"{Core.NetDiag.Describe(msg.NetId)} replaying remote shot (puppet here)" +
+                              (msg.TargetSlot != 255 ? $", targeting {Core.NetDiag.Owner(msg.TargetSlot)}" : ""));
                 ReplaySpawned.Clear();
                 _replayDepth++;
                 try

@@ -27,6 +27,10 @@ namespace PunkMultiverse.Core
         public static int Count => NetToInstance.Count;
         public static bool ManifestComplete { get; private set; }
 
+        /// <summary>Local entities that never matched a shared identity (muted phantoms) — the
+        /// count that keeps churning authority when it drifts above zero.</summary>
+        public static int OrphanCount => OrphanInstances.Count;
+
         /// <summary>Local entity with no cross-machine identity (fingerprint never matched the
         /// host's manifest). Orphans must not run live AI — see EnemySync.MuteOrphan.</summary>
         public static bool IsOrphanInstance(int instanceId) => OrphanInstances.Contains(instanceId);
@@ -212,7 +216,12 @@ namespace PunkMultiverse.Core
                 // match what was never at the same spot): ask the host what those netIds ARE
                 // and match by entity type + nearest position instead.
                 if (unresolvedIds.Count > 0)
+                {
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Ids", $"{unresolvedIds.Count} netIds unresolved after manifest, requesting resolve: " +
+                            string.Join(", ", unresolvedIds.ConvertAll(id => "#" + id)));
                     NetSession.Instance?.RequestIdResolve(unresolvedIds);
+                }
             }
         }
 
@@ -291,6 +300,20 @@ namespace PunkMultiverse.Core
             }
             Plugin.Log.LogInfo($"[Ids] type+position resolve: {resolved} of {msg.Entries.Count} adopted, " +
                 $"{OrphanInstances.Count} orphans remain muted");
+            if (NetDiag.Enabled && OrphanInstances.Count > 0)
+            {
+                EntityManager emd = null;
+                try { emd = ServiceLocator.Get<EntityManager>(); } catch { }
+                var labels = new List<string>();
+                foreach (var inst in OrphanInstances)
+                {
+                    var d = emd?.GetEntity(inst);
+                    labels.Add(d != null && !string.IsNullOrEmpty(d.entityId) ? $"{d.entityId}@inst{inst}" : $"inst{inst}");
+                    if (labels.Count >= 20) break;
+                }
+                NetDiag.Warn("Ids", $"{OrphanInstances.Count} entities never resolved (run local AI muted, never owned): " +
+                    string.Join(", ", labels));
+            }
         }
     }
 }

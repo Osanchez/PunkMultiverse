@@ -22,6 +22,7 @@ namespace PunkMultiverse.UI
         private float _inRate, _outRate, _flipsPerMin, _releasesPerMin;
         private readonly long[] _lastByType = new long[64];
         private string _topTypes = "";
+        private string _ownSummary = "";
 
         private void Update()
         {
@@ -61,6 +62,10 @@ namespace PunkMultiverse.UI
                 + (b.delta > 0 ? $", {(Protocol.MsgType)b.type} {b.delta / dt / 1024f:0.0}" : "")
                 + (c.delta > 0 ? $", {(Protocol.MsgType)c.type} {c.delta / dt / 1024f:0.0}" : "")
                 + " KB/s";
+
+            // Sampled once a second — OwnershipSummary walks the owner table, too heavy per-frame.
+            _ownSummary = NetSession.Instance != null && NetSession.Instance.State != SessionState.Offline
+                ? NetDiag.OwnershipSummary() : "";
         }
 
         private void OnGUI()
@@ -112,6 +117,15 @@ namespace PunkMultiverse.UI
                     GUILayout.Label($"Top in: {_topTypes}");
                 GUILayout.Label($"Auth  flips {NetStats.AuthFlips} ({_flipsPerMin:0}/min)   " +
                                 $"releases {NetStats.AuthReleases} ({_releasesPerMin:0}/min)");
+                if (!string.IsNullOrEmpty(_ownSummary))
+                    GUILayout.Label($"Owns  {_ownSummary}");
+                GUILayout.BeginHorizontal();
+                bool diag = NetConfig.SyncDiagnostics.Value;
+                if (GUILayout.Button(diag ? "Diag: ON" : "Diag: OFF"))
+                    NetConfig.SyncDiagnostics.Value = !diag;
+                if (GUILayout.Button("Dump owners → log"))
+                    NetDiag.DumpOwnership();
+                GUILayout.EndHorizontal();
                 if (GUILayout.Button("Stop / Disconnect"))
                     session.StopSession("user request");
             }
