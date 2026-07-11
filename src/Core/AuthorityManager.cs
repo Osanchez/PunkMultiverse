@@ -51,6 +51,21 @@ namespace PunkMultiverse.Core
             LastAggro.Clear();
         }
 
+        /// <summary>A peer's machine is gone: drop every stability gate (hold, deny) on the
+        /// entities it owned and scan now. Those gates exist to protect a live owner's
+        /// simulation — honoring them for a vanished machine leaves enemies frozen for up to
+        /// their remaining window (3 s hold / 8 s deny).</summary>
+        public static void OnPeerLost(byte slot)
+        {
+            foreach (var kv in EnemySync.Owners)
+            {
+                if (kv.Value != slot) continue;
+                HoldUntil.Remove(kv.Key);
+                DeniedSlot.Remove(kv.Key);
+            }
+            _nextScanAt = 0; // rescue on the next Update, not up to half a second later
+        }
+
         /// <summary>An entity attacked or took damage — defer optimization handoffs briefly.</summary>
         public static void NoteCombat(int netId) => LastCombatAt[netId] = Time.unscaledTime;
 

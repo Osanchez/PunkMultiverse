@@ -1049,6 +1049,7 @@ namespace PunkMultiverse.Core
                     // and the authority scan reassigns their entities on the next pass.
                     player.Connected = false;
                     player.RttMs = -1;
+                    AuthorityManager.OnPeerLost(player.Slot); // no holds/denies for a gone machine
                     Plugin.Log.LogInfo($"[Session] {player} dropped — slot reserved for rejoin");
                 }
                 else
