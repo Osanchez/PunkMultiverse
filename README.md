@@ -130,10 +130,12 @@ mirror the authority's aim, AI state, and weapon audio. Damage applies once on t
 own machine — enemy fire hit-detects against you locally, player-vs-player routes to the
 victim's authority — always through the vanilla pipeline; weapon fire replays as visual
 projectiles that re-target homing at the authority's victim. Terrain diffs, kills, runtime
-spawns, progression events, and fog exploration replicate as idempotent reliable events,
-kept as ledgers on every machine — so a rejoiner gets the whole run replayed, and when the
-host disappears the Steam lobby's ownership migration elects a replacement who serves the
-same ledgers without anyone reloading. Terrain catch-up streams in 64×64-cell chunks,
+spawns, and progression events replicate as idempotent reliable events, kept as ledgers on
+every machine — so a rejoiner gets the whole run replayed, and when the host disappears the
+Steam lobby's ownership migration elects a replacement who serves the same ledgers without
+anyone reloading. Fog is a global gas simulation, so only the host runs it; the terrain
+cells it converts ride the same terrain-diff ledger, and clients render fog from those
+synced cell types. Terrain catch-up streams in 64×64-cell chunks,
 nearest the player first, under a per-frame byte budget with send backpressure — even a
 fully converted map syncs without a size cutoff, a local save, or a buffer overflow, with
 the area around the player correct within a couple of seconds.

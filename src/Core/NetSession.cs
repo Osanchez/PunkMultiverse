@@ -1083,6 +1083,10 @@ namespace PunkMultiverse.Core
                     p.RttMs = -1;
                 }
             _lobby.TakeOverLobby();
+            // Fog is host-authoritative: this machine now resumes the sim, but as a former client
+            // its fogLevels is stale (see FogHostAuthority). Reconcile it with current terrain
+            // before the next tick, or fog snaps back toward its gen-time layout.
+            Patches.FogHostAuthority.ReseedFromTerrain();
             UI.Toast.Show("HOST LEFT — YOU ARE NOW THE HOST", 6f);
             RosterChanged?.Invoke();
         }
