@@ -29,7 +29,8 @@ namespace PunkMultiverse.Sync
             // (pure cosmetics), and with AI states replicated it keeps puppet animations correct.
         };
 
-        private const float InterpDelay = 0.1f; // two snapshot intervals at the unified 20 Hz
+        // Two snapshot intervals of buffer at the configured rate — enough for one lost packet.
+        private static float InterpDelay => 2f / Mathf.Max(1f, NetConfig.StateHz.Value);
         private const float HardSnapDistance = 4f;
 
         public int NetId;
@@ -139,6 +140,10 @@ namespace PunkMultiverse.Sync
         public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot, Vector2 aim)
         {
             AimDirection = aim;
+            // Interpolation needs an ascending timeline; an authority handoff or clock
+            // re-anchor can step the mapped time slightly backwards — clamp, don't corrupt.
+            if (_buffer.Count > 0 && time <= _buffer[_buffer.Count - 1].Time)
+                time = _buffer[_buffer.Count - 1].Time + 0.001f;
             _buffer.Add(new Snap { Time = time, Pos = pos, Vel = vel, Rot = rot });
             if (_buffer.Count > 20) _buffer.RemoveRange(0, _buffer.Count - 20);
         }

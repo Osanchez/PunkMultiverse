@@ -33,6 +33,7 @@ namespace PunkMultiverse.Sync
         public static void Reset()
         {
             ShipsBySlot.Clear();
+            LastShipStateMs.Clear();
             LocalShip = null;
             _shipManager = null;
             _level = null;
@@ -308,6 +309,7 @@ namespace PunkMultiverse.Sync
             var msg = new ShipStateMsg
             {
                 Slot = (byte)session.LocalSlot,
+                TimeMs = (uint)(Time.unscaledTime * 1000f),
                 Pos = rb.position,
                 Vel = rb.linearVelocity,
                 RotDeg = rb.rotation,
@@ -433,13 +435,20 @@ namespace PunkMultiverse.Sync
         }
 
         /// <summary>Apply a snapshot from the wire (already relayed by the host if needed).</summary>
+        private static readonly Dictionary<byte, uint> LastShipStateMs = new Dictionary<byte, uint>();
+
         public static void ApplyShipState(ShipStateMsg msg)
         {
             if (!ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
             var puppet = ship.GetComponent<RemotePuppet>();
             if (puppet == null) return; // our own echo — ignore
 
-            puppet.PushSnapshot(Time.unscaledTime, msg.Pos, msg.Vel, msg.RotDeg, msg.Aim);
+            // The state channel is unreliable AND unordered: a late packet applied after a
+            // newer one yanks the puppet backwards. Wrap-safe sender-clock compare.
+            if (LastShipStateMs.TryGetValue(msg.Slot, out uint last) && (int)(msg.TimeMs - last) <= 0) return;
+            LastShipStateMs[msg.Slot] = msg.TimeMs;
+
+            puppet.PushSnapshot(ClockSync.ToLocalTime(msg.Slot, msg.TimeMs), msg.Pos, msg.Vel, msg.RotDeg, msg.Aim);
             puppet.SetMoveInput(msg.Move);
             puppet.SetBoosting((msg.Flags & ShipFlags.Boost) != 0);
             puppet.SetHovering((msg.Flags & ShipFlags.Hover) != 0);

@@ -356,6 +356,7 @@ namespace PunkMultiverse.Core
             AuthorityManager.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            ClockSync.Reset();
             EconomyStash.Reset();
             NetRunSave.Reset();
             Sync.HookSync.Reset();
@@ -649,6 +650,7 @@ namespace PunkMultiverse.Core
             AuthorityManager.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            ClockSync.Reset();
             EconomyStash.Reset();
             Sync.HookSync.Reset();
             if (State != SessionState.Offline)

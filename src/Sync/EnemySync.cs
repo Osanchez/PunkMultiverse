@@ -33,7 +33,10 @@ namespace PunkMultiverse.Sync
             FixedOwners.Clear();
             KilledNetIds.Clear();
             LastSentPos.Clear();
+            LastEntityStateMs.Clear();
             NextReleaseAt.Clear();
+            _nextHostScanAt = 0;
+            _hostScratch.Clear();
             UnitStatus.Reset();
             _nextSendAt = 0;
             _applyingRemote = false;
@@ -194,14 +197,20 @@ namespace PunkMultiverse.Sync
             if (session.IsHost)
             {
                 foreach (var netId in HostSpawnedUnassigned(egm))
+                {
+                    // The cached scan can be up to a refresh stale — re-check cheaply.
+                    if (Owners.ContainsKey(netId) || KilledNetIds.Contains(netId)) continue;
                     CollectEntry(egm, netId, entries);
+                }
             }
 
+            byte slot = (byte)session.LocalSlot;
+            uint timeMs = (uint)(Time.unscaledTime * 1000f);
             for (int start = 0; start < entries.Count; start += 32)
             {
                 int count = Math.Min(32, entries.Count - start);
                 Writer.Reset();
-                new EntityStateMsg { Entries = entries.GetRange(start, count) }.Write(Writer);
+                new EntityStateMsg { Slot = slot, TimeMs = timeMs, Entries = entries.GetRange(start, count) }.Write(Writer);
                 session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
             }
         }
@@ -244,9 +253,17 @@ namespace PunkMultiverse.Sync
         }
 
         private static readonly List<int> _hostScratch = new List<int>(64);
+        private static float _nextHostScanAt;
+        private const float HostScanInterval = 0.5f; // authority scan cadence — fresh enough
 
         private static List<int> HostSpawnedUnassigned(EntityGameObjectManager egm)
         {
+            // FindObjectsByType is a whole-scene walk — at the 20 Hz state rate it was the
+            // single hottest line on the host. Refresh the candidate list on the authority
+            // cadence instead; the send loop re-checks Owners/KilledNetIds per use.
+            if (Time.unscaledTime < _nextHostScanAt) return _hostScratch;
+            _nextHostScanAt = Time.unscaledTime + HostScanInterval;
+
             _hostScratch.Clear();
             // Entities near the host stream in on the host; those without an explicit owner are ours.
             foreach (var unit in UnityEngine.Object.FindObjectsByType<Unit>(FindObjectsSortMode.None))
@@ -293,6 +310,12 @@ namespace PunkMultiverse.Sync
             });
         }
 
+        // netId -> (authority, its clock) of the newest applied snapshot. The state channel is
+        // unreliable AND unordered; late packets must not yank puppets backwards. A different
+        // sender means an authority handoff — clocks aren't comparable, accept and re-baseline.
+        private static readonly Dictionary<int, (byte slot, uint ms)> LastEntityStateMs
+            = new Dictionary<int, (byte, uint)>();
+
         public static void ApplyEntityState(EntityStateMsg msg)
         {
             if (!_loggedFirstState)
@@ -303,9 +326,13 @@ namespace PunkMultiverse.Sync
             var egm = TryGetEgm();
             EntityManager em = null;
             try { em = ServiceLocator.Get<EntityManager>(); } catch { }
+            float localTime = Core.ClockSync.ToLocalTime(msg.Slot, msg.TimeMs);
             foreach (var e in msg.Entries)
             {
                 if (IsLocallyOwned(e.NetId)) continue; // our own echo via relay
+                if (LastEntityStateMs.TryGetValue(e.NetId, out var last)
+                    && last.slot == msg.Slot && (int)(msg.TimeMs - last.ms) <= 0) continue;
+                LastEntityStateMs[e.NetId] = (msg.Slot, msg.TimeMs);
                 if (!NetIds.TryGetInstanceId(e.NetId, out int instanceId)) continue;
 
                 // Keep the data-side position fresh so stream-in spawns at the right spot.
@@ -332,10 +359,10 @@ namespace PunkMultiverse.Sync
                         {
                             var prop = se.GetComponent<PropPuppet>();
                             if (prop == null) prop = se.gameObject.AddComponent<PropPuppet>();
-                            prop.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot);
+                            prop.PushSnapshot(localTime, e.Pos, e.Vel, e.Rot);
                         }
                     }
-                    puppet?.PushSnapshot(Time.unscaledTime, e.Pos, e.Vel, e.Rot, e.Aim);
+                    puppet?.PushSnapshot(localTime, e.Pos, e.Vel, e.Rot, e.Aim);
                     if (puppet != null)
                     {
                         UnitStatus.WriteState(se, e.State);

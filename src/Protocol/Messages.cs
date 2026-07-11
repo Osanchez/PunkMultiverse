@@ -223,6 +223,7 @@ namespace PunkMultiverse.Protocol
     public struct ShipStateMsg
     {
         public byte Slot;
+        public uint TimeMs; // sender's unscaled clock — ordering + jitter-free interpolation
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Vel;
         public float RotDeg;
@@ -237,6 +238,7 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteMsgType(MsgType.ShipState);
             w.WriteByte(Slot);
+            w.WriteUInt(TimeMs);
             w.WritePosition(Pos);
             w.WriteVector2Half(Vel);
             w.WriteHalf(RotDeg);
@@ -251,6 +253,7 @@ namespace PunkMultiverse.Protocol
         public static ShipStateMsg Read(NetReader r) => new ShipStateMsg
         {
             Slot = r.ReadByte(),
+            TimeMs = r.ReadUInt(),
             Pos = r.ReadPosition(),
             Vel = r.ReadVector2Half(),
             RotDeg = r.ReadHalf(),
@@ -411,11 +414,15 @@ namespace PunkMultiverse.Protocol
 
     public struct EntityStateMsg
     {
+        public byte Slot;   // authority that produced this batch
+        public uint TimeMs; // its unscaled clock — ordering + jitter-free interpolation
         public System.Collections.Generic.List<EntityStateEntry> Entries;
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.EntityState);
+            w.WriteByte(Slot);
+            w.WriteUInt(TimeMs);
             w.WriteVarUInt((uint)Entries.Count);
             foreach (var e in Entries)
             {
@@ -435,8 +442,10 @@ namespace PunkMultiverse.Protocol
 
         public static EntityStateMsg Read(NetReader r)
         {
+            byte slot = r.ReadByte();
+            uint timeMs = r.ReadUInt();
             int n = (int)r.ReadVarUInt();
-            var m = new EntityStateMsg { Entries = new System.Collections.Generic.List<EntityStateEntry>(n) };
+            var m = new EntityStateMsg { Slot = slot, TimeMs = timeMs, Entries = new System.Collections.Generic.List<EntityStateEntry>(n) };
             for (int i = 0; i < n; i++)
             {
                 m.Entries.Add(new EntityStateEntry
