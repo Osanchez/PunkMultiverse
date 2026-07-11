@@ -23,13 +23,15 @@ namespace PunkMultiverse.Sync
 
         // These run per entity per state tick (20 Hz, both directions) — building a Traverse
         // per call allocated on the hottest path. Member handles are cached instead; the
-        // per-TYPE dictionaries survive runs (game types don't change under us).
+        // per-TYPE dictionaries survive runs (game types don't change under us). "shields"
+        // and "Data" live on Unit SUBCLASSES, so they must be resolved per runtime type —
+        // looking them up on Unit itself finds nothing (the v0.1.33 regression).
         private static readonly System.Reflection.FieldInfo SmCurrentState =
             AccessTools.Field(typeof(StateMachine), "currentState");
-        private static readonly System.Reflection.FieldInfo UnitShields =
-            AccessTools.Field(typeof(Unit), "shields");
-        private static readonly System.Reflection.PropertyInfo UnitData =
-            AccessTools.Property(typeof(Unit), "Data");
+        private static readonly Dictionary<System.Type, System.Reflection.FieldInfo> ShieldsFields
+            = new Dictionary<System.Type, System.Reflection.FieldInfo>();
+        private static readonly Dictionary<System.Type, System.Reflection.PropertyInfo> DataProps
+            = new Dictionary<System.Type, System.Reflection.PropertyInfo>();
         private static readonly Dictionary<System.Type, System.Reflection.PropertyInfo> ChargeProps
             = new Dictionary<System.Type, System.Reflection.PropertyInfo>();
         private static readonly Dictionary<System.Type, System.Reflection.FieldInfo> ShieldTankFields
@@ -272,8 +274,11 @@ namespace PunkMultiverse.Sync
         private static IEnumerable ShieldsOf(Component root)
         {
             var unit = root != null ? root.GetComponentInParent<Unit>() : null;
-            if (unit == null || UnitShields == null) yield break;
-            var shields = UnitShields.GetValue(unit) as IEnumerable;
+            if (unit == null) yield break;
+            var type = unit.GetType();
+            if (!ShieldsFields.TryGetValue(type, out var field))
+                ShieldsFields[type] = field = AccessTools.Field(type, "shields");
+            var shields = field?.GetValue(unit) as IEnumerable;
             if (shields == null) yield break;
             foreach (var s in shields) yield return s;
         }
@@ -347,13 +352,21 @@ namespace PunkMultiverse.Sync
             return prop;
         }
 
+        private static object DataOf(Unit unit)
+        {
+            var type = unit.GetType();
+            if (!DataProps.TryGetValue(type, out var prop))
+                DataProps[type] = prop = AccessTools.Property(type, "Data");
+            return prop?.GetValue(unit, null);
+        }
+
         public static float ReadBurnLevel(Component root)
         {
             try
             {
                 var unit = root != null ? root.GetComponentInParent<Unit>() : null;
-                if (unit == null || UnitData == null) return 0f;
-                var data = UnitData.GetValue(unit, null);
+                if (unit == null) return 0f;
+                var data = DataOf(unit);
                 if (data == null) return 0f;
                 var burn = BurnPropOf(data);
                 return burn != null ? (float)burn.GetValue(data, null) : 0f;
@@ -366,8 +379,8 @@ namespace PunkMultiverse.Sync
             try
             {
                 var unit = root != null ? root.GetComponentInParent<Unit>() : null;
-                if (unit == null || UnitData == null) return;
-                var data = UnitData.GetValue(unit, null);
+                if (unit == null) return;
+                var data = DataOf(unit);
                 if (data == null) return;
                 BurnPropOf(data)?.SetValue(data, value, null);
             }

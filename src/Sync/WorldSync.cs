@@ -34,6 +34,7 @@ namespace PunkMultiverse.Sync
             ApplyQueue.Clear();
             Streams.Clear();
             _syncToastActive = false;
+            _warnedCellApply = false;
             _level = null;
             _setCellByIndex = null;
             _setCellByVec = null;
@@ -237,13 +238,20 @@ namespace PunkMultiverse.Sync
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning($"[World] cell apply failed: {e.Message}");
+                if (!_warnedCellApply)
+                {
+                    _warnedCellApply = true; // once per run; a repeating failure would storm the log
+                    Plugin.Log.LogWarning($"[World] cell apply failed: {e.Message} (further failures logged as debug)");
+                }
+                else Plugin.Log.LogDebug($"[World] cell apply failed: {e.Message}");
             }
             finally
             {
                 _applying = false;
             }
         }
+
+        private static bool _warnedCellApply;
 
         // ---------------------------------------------------------------- catch-up streaming
         //

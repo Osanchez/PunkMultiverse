@@ -51,5 +51,10 @@
         HookState = 55,     // grappling hook attach/detach (visual)
         TerrainSync = 56,   // host -> one client: terrain chunk stream begin/end markers
                             // (the chunks themselves travel as ordinary CellDiff messages)
+
+        // ---- Channel 0 (control): entity identity reconciliation ----
+        IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match
+        IdResolveReply = 58,   // host -> client: their entity type + position, for
+                               // type+nearest-position matching against local orphans
     }
 }

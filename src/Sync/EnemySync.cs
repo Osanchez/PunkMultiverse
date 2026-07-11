@@ -55,6 +55,8 @@ namespace PunkMultiverse.Sync
 
         public static List<int> KilledSnapshot() => new List<int>(KilledNetIds);
 
+        public static bool IsKilled(int netId) => KilledNetIds.Contains(netId);
+
         public static List<(int netId, byte owner)> OwnersSnapshot()
         {
             var list = new List<(int, byte)>(Owners.Count);
@@ -96,11 +98,42 @@ namespace PunkMultiverse.Sync
                         MuteOrphan(__0.instanceId);
                     return;
                 }
+                // A kill received while this entity was unspawned here may not have destroyed
+                // the data (game-version dependent) — streaming it back in as a live zombie is
+                // how "enemies only I can see" happens. Re-kill on arrival.
+                if (KilledNetIds.Contains(netId))
+                {
+                    KillInstance(__0.instanceId, netId);
+                    return;
+                }
                 if (session.State != SessionState.InGame) return;
                 try { ApplyOwnership(netId, __0.instanceId); } catch { }
                 try { ProgressionSync.ApplyPendingFor(netId); } catch { }
                 try { HookSync.ApplyPendingFor(netId); } catch { }
             }
+        }
+
+        /// <summary>An orphan just got adopted into a shared identity (type+position resolve):
+        /// give its muted puppet the real netId, honor any kill recorded for it, and let the
+        /// normal ownership machinery take over.</summary>
+        public static void OnResolvedOrphan(int netId, int instanceId)
+        {
+            try
+            {
+                if (KilledNetIds.Contains(netId))
+                {
+                    KillInstance(instanceId, netId);
+                    return;
+                }
+                var egm = TryGetEgm();
+                if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
+                {
+                    var puppet = se.GetComponent<RemoteEntityPuppet>();
+                    if (puppet != null) puppet.NetId = netId; // was the orphan marker (-1)
+                }
+                ApplyOwnership(netId, instanceId);
+            }
+            catch { }
         }
 
         /// <summary>A fingerprint orphan has no cross-machine identity: left alone it runs full
@@ -332,6 +365,7 @@ namespace PunkMultiverse.Sync
             foreach (var e in msg.Entries)
             {
                 if (IsLocallyOwned(e.NetId)) continue; // our own echo via relay
+                if (KilledNetIds.Contains(e.NetId)) continue; // dead here — don't animate a corpse
                 if (LastEntityStateMs.TryGetValue(e.NetId, out var last)
                     && last.slot == msg.Slot && (int)(msg.TimeMs - last.ms) <= 0) continue;
                 LastEntityStateMs[e.NetId] = (msg.Slot, msg.TimeMs);
@@ -423,6 +457,18 @@ namespace PunkMultiverse.Sync
             if (!KilledNetIds.Add(msg.NetId)) return;
             NetStats.AddKill(msg.KillerSlot);
             if (!NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
+            KillInstance(instanceId, msg.NetId);
+        }
+
+        private static bool _warnedDataDestroy;
+
+        /// <summary>Apply a recorded kill to a local instance — the spawned GameObject when it
+        /// exists, else the entity data (so a later stream-in doesn't resurrect it). Also runs
+        /// from the spawn hook: if the data destroy is unavailable in this game version, the
+        /// entity streams back in alive and gets re-killed right here instead of becoming a
+        /// zombie only one machine can see.</summary>
+        private static void KillInstance(int instanceId, int netId)
+        {
             _applyingRemote = true;
             try
             {
@@ -438,18 +484,22 @@ namespace PunkMultiverse.Sync
                         return;
                     }
                 }
-                // Not spawned here: kill the data so a later stream-in doesn't resurrect it.
                 var em = ServiceLocator.Get<EntityManager>();
                 var data = em.GetEntity(instanceId);
                 if (data != null)
                 {
                     var destroy = AccessTools.Method(data.GetType(), "Destroy");
                     if (destroy != null && destroy.GetParameters().Length == 0) destroy.Invoke(data, null);
+                    else if (!_warnedDataDestroy)
+                    {
+                        _warnedDataDestroy = true; // spawn-hook re-kill covers it, but say so once
+                        Plugin.Log.LogWarning($"[Enemies] no data-destroy on {data.GetType().Name} — killed entities despawn on stream-in instead");
+                    }
                 }
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning($"[Enemies] kill apply failed for netId {msg.NetId}: {e.Message}");
+                Plugin.Log.LogWarning($"[Enemies] kill apply failed for netId {netId}: {e.Message}");
             }
             finally
             {

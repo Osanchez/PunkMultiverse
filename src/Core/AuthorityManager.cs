@@ -116,6 +116,7 @@ namespace PunkMultiverse.Core
                 if (!NetIds.TryGetNetId(entity.instanceId, out int netId)) continue;
                 if (!seen.Add(netId)) continue; // one decision per netId per scan, even if aliased
                 if (EnemySync.FixedOwners.Contains(netId)) continue; // minions: fixed owner-authority
+                if (EnemySync.IsKilled(netId)) continue; // dead everywhere — nothing to simulate
                 // Handoff cooldown: every flip tears down and rebuilds the puppet's whole AI
                 // stack on two machines, and a kill landing mid-flip is lost. Stay put.
                 if (HoldUntil.TryGetValue(netId, out float holdUntil) && Time.unscaledTime < holdUntil) continue;

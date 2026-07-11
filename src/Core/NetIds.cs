@@ -187,6 +187,10 @@ namespace PunkMultiverse.Core
                         jitterMatched++;
                     }
                 }
+                var unresolvedIds = new List<int>();
+                foreach (var (netId, _) in _unmatched)
+                    if (!NetToInstance.ContainsKey(netId))
+                        unresolvedIds.Add(netId);
                 _unmatched.Clear();
 
                 // Whatever still has no netId must not run live AI (it would be a phantom the
@@ -203,7 +207,90 @@ namespace PunkMultiverse.Core
                     $"({jitterMatched} via jitter), {_missing} missing here, {OrphanInstances.Count} local orphans (muted)";
                 if (_missing > 0 || OrphanInstances.Count > 0) Plugin.Log.LogWarning(log);
                 else Plugin.Log.LogInfo(log);
+
+                // Residual mismatches (unseeded generation randomness — position hashes can't
+                // match what was never at the same spot): ask the host what those netIds ARE
+                // and match by entity type + nearest position instead.
+                if (unresolvedIds.Count > 0)
+                    NetSession.Instance?.RequestIdResolve(unresolvedIds);
             }
+        }
+
+        private const float ResolveMatchDistance = 12f; // world units; generous — entities drift
+
+        private static uint HashId(string s)
+        {
+            uint hash = 2166136261u;
+            foreach (char c in s) { hash ^= (byte)c; hash *= 16777619u; }
+            return hash;
+        }
+
+        /// <summary>Host: describe the requested netIds (type + current position) so the
+        /// client can adopt its orphans into shared identity.</summary>
+        public static List<Protocol.IdResolveEntry> DescribeNetIds(List<int> netIds)
+        {
+            var entries = new List<Protocol.IdResolveEntry>(netIds.Count);
+            EntityManager em;
+            try { em = ServiceLocator.Get<EntityManager>(); } catch { return entries; }
+            int cap = Mathf.Min(netIds.Count, 2048);
+            for (int i = 0; i < cap; i++)
+            {
+                if (!NetToInstance.TryGetValue(netIds[i], out int instanceId)) continue;
+                var data = em.GetEntity(instanceId);
+                if (data == null || string.IsNullOrEmpty(data.entityId)) continue;
+                entries.Add(new Protocol.IdResolveEntry
+                {
+                    NetId = netIds[i],
+                    TypeHash = HashId(data.entityId),
+                    Qx = Mathf.RoundToInt(data.position.x * 2f),
+                    Qy = Mathf.RoundToInt(data.position.y * 2f),
+                });
+            }
+            return entries;
+        }
+
+        /// <summary>Client: adopt local orphans into the host's identities by entity type and
+        /// nearest position. Whatever still doesn't match stays a muted orphan.</summary>
+        public static void ApplyResolve(Protocol.IdResolveReplyMsg msg)
+        {
+            EntityManager em;
+            try { em = ServiceLocator.Get<EntityManager>(); } catch { return; }
+
+            // Index the orphans by type hash with their current positions.
+            var byType = new Dictionary<uint, List<(int instanceId, Vector2 pos)>>();
+            foreach (var inst in OrphanInstances)
+            {
+                var data = em.GetEntity(inst);
+                if (data == null || string.IsNullOrEmpty(data.entityId)) continue;
+                uint hash = HashId(data.entityId);
+                if (!byType.TryGetValue(hash, out var list)) byType[hash] = list = new List<(int, Vector2)>();
+                list.Add((inst, (Vector2)data.position));
+            }
+
+            int resolved = 0;
+            foreach (var e in msg.Entries)
+            {
+                if (NetToInstance.ContainsKey(e.NetId)) continue;
+                if (!byType.TryGetValue(e.TypeHash, out var candidates) || candidates.Count == 0) continue;
+                var target = new Vector2(e.Qx / 2f, e.Qy / 2f);
+                int best = -1;
+                float bestDist = ResolveMatchDistance;
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    float d = Vector2.Distance(candidates[i].pos, target);
+                    if (d < bestDist) { bestDist = d; best = i; }
+                }
+                if (best < 0) continue;
+                int instanceId = candidates[best].instanceId;
+                candidates.RemoveAt(best);
+                NetToInstance[e.NetId] = instanceId;
+                InstanceToNet[instanceId] = e.NetId;
+                OrphanInstances.Remove(instanceId);
+                resolved++;
+                Sync.EnemySync.OnResolvedOrphan(e.NetId, instanceId);
+            }
+            Plugin.Log.LogInfo($"[Ids] type+position resolve: {resolved} of {msg.Entries.Count} adopted, " +
+                $"{OrphanInstances.Count} orphans remain muted");
         }
     }
 }

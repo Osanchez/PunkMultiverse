@@ -685,6 +685,68 @@ namespace PunkMultiverse.Protocol
         public static ScannerUsedMsg Read(NetReader r) => new ScannerUsedMsg { NetId = (int)r.ReadVarUInt() };
     }
 
+    public struct IdResolveRequestMsg
+    {
+        public System.Collections.Generic.List<int> NetIds;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.IdResolveRequest);
+            w.WriteVarUInt((uint)NetIds.Count);
+            foreach (var id in NetIds) w.WriteVarUInt((uint)id);
+        }
+
+        public static IdResolveRequestMsg Read(NetReader r)
+        {
+            int n = (int)r.ReadVarUInt();
+            var m = new IdResolveRequestMsg { NetIds = new System.Collections.Generic.List<int>(n) };
+            for (int i = 0; i < n; i++) m.NetIds.Add((int)r.ReadVarUInt());
+            return m;
+        }
+    }
+
+    public struct IdResolveEntry
+    {
+        public int NetId;
+        public uint TypeHash; // FNV-1a of the entityId string
+        public int Qx, Qy;    // position quantized to 0.5u (same grid as the fingerprints)
+    }
+
+    public struct IdResolveReplyMsg
+    {
+        public System.Collections.Generic.List<IdResolveEntry> Entries;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.IdResolveReply);
+            w.WriteVarUInt((uint)Entries.Count);
+            foreach (var e in Entries)
+            {
+                w.WriteVarUInt((uint)e.NetId);
+                w.WriteUInt(e.TypeHash);
+                w.WriteInt(e.Qx);
+                w.WriteInt(e.Qy);
+            }
+        }
+
+        public static IdResolveReplyMsg Read(NetReader r)
+        {
+            int n = (int)r.ReadVarUInt();
+            var m = new IdResolveReplyMsg { Entries = new System.Collections.Generic.List<IdResolveEntry>(n) };
+            for (int i = 0; i < n; i++)
+            {
+                m.Entries.Add(new IdResolveEntry
+                {
+                    NetId = (int)r.ReadVarUInt(),
+                    TypeHash = r.ReadUInt(),
+                    Qx = r.ReadInt(),
+                    Qy = r.ReadInt(),
+                });
+            }
+            return m;
+        }
+    }
+
     public struct TerrainSyncMsg
     {
         public const byte PhaseBegin = 0;

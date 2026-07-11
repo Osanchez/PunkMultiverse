@@ -1327,6 +1327,18 @@ namespace PunkMultiverse.Core
                 case MsgType.TerrainSync when !IsHost:
                     Sync.WorldSync.ApplyTerrainSync(TerrainSyncMsg.Read(_reader));
                     break;
+                case MsgType.IdResolveRequest when IsHost:
+                {
+                    var req = IdResolveRequestMsg.Read(_reader);
+                    _writer.Reset();
+                    new IdResolveReplyMsg { Entries = NetIds.DescribeNetIds(req.NetIds) }.Write(_writer);
+                    SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+                    Plugin.Log.LogInfo($"[Ids] resolve request from {peer}: described {req.NetIds.Count} netIds");
+                    break;
+                }
+                case MsgType.IdResolveReply when !IsHost:
+                    NetIds.ApplyResolve(IdResolveReplyMsg.Read(_reader));
+                    break;
                 default:
                     Plugin.Log.LogDebug($"[Session] unhandled {type} on ch{(int)channel} from {peer}");
                     break;
@@ -1497,6 +1509,16 @@ namespace PunkMultiverse.Core
             _writer.WriteMsgType(MsgType.GoLive);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} (manifest {fps.Count})");
+        }
+
+        /// <summary>Client: ask the host to describe manifest netIds we couldn't match, so
+        /// orphans can be adopted by type + position (see NetIds.ApplyResolve).</summary>
+        public void RequestIdResolve(List<int> netIds)
+        {
+            if (IsHost || netIds == null || netIds.Count == 0 || _players[HostSlot] == null) return;
+            _writer.Reset();
+            new IdResolveRequestMsg { NetIds = netIds }.Write(_writer);
+            SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
         }
 
         /// <summary>Where a joiner will appear, for chunk prioritization before their ship

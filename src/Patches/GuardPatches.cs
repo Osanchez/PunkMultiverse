@@ -83,8 +83,10 @@ namespace PunkMultiverse.Patches
         // In a net run the suspend-save is blocked (below) but the run auto-saves through
         // NetRunSave — so the pause menu's "Save & Exit" would lie in both directions. While
         // networking is live it reads just EXIT (localization stripped from that one label).
+        // The RESTART button only means anything for the host (synchronized retry) — clients
+        // don't get to see it at all.
         [HarmonyPatch(typeof(PauseScreen), "Open")]
-        internal static class NetRunExitButtonLabel
+        internal static class NetRunPauseButtons
         {
             private static string _originalLabel;
 
@@ -92,32 +94,46 @@ namespace PunkMultiverse.Patches
             {
                 try
                 {
+                    bool net = NetSession.Active;
+                    bool showRestart = !net || NetSession.Instance.IsHost;
                     foreach (var button in __instance.GetComponentsInChildren<UnityEngine.UI.Button>(true))
                     {
-                        bool isSaveQuit = false;
                         var ev = button.onClick;
                         for (int i = 0; i < ev.GetPersistentEventCount(); i++)
-                            if (ev.GetPersistentMethodName(i) == "OnSaveAndQuitButtonClicked") { isSaveQuit = true; break; }
-                        if (!isSaveQuit) continue;
-
-                        var label = button.GetComponentInChildren<TMPro.TMP_Text>(true);
-                        if (label == null) return;
-                        if (NetSession.Active)
                         {
-                            if (_originalLabel == null) _originalLabel = label.text;
-                            foreach (var comp in label.GetComponents<UnityEngine.MonoBehaviour>())
-                                if (comp != null && comp.GetType().Name.Contains("Localiz"))
-                                    UnityEngine.Object.Destroy(comp);
-                            label.text = "EXIT";
+                            var handler = ev.GetPersistentMethodName(i);
+                            if (handler == "OnSaveAndQuitButtonClicked")
+                            {
+                                RelabelSaveQuit(button, net);
+                                break;
+                            }
+                            if (handler == "OnRestartButtonClicked")
+                            {
+                                button.gameObject.SetActive(showRestart);
+                                break;
+                            }
                         }
-                        else if (_originalLabel != null)
-                        {
-                            label.text = _originalLabel;
-                        }
-                        return;
                     }
                 }
                 catch { }
+            }
+
+            private static void RelabelSaveQuit(UnityEngine.UI.Button button, bool net)
+            {
+                var label = button.GetComponentInChildren<TMPro.TMP_Text>(true);
+                if (label == null) return;
+                if (net)
+                {
+                    if (_originalLabel == null) _originalLabel = label.text;
+                    foreach (var comp in label.GetComponents<UnityEngine.MonoBehaviour>())
+                        if (comp != null && comp.GetType().Name.Contains("Localiz"))
+                            UnityEngine.Object.Destroy(comp);
+                    label.text = "EXIT";
+                }
+                else if (_originalLabel != null)
+                {
+                    label.text = _originalLabel;
+                }
             }
         }
 

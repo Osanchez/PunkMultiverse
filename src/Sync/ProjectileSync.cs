@@ -31,7 +31,14 @@ namespace PunkMultiverse.Sync
             VisualProjectiles.Clear();
             EntityWeapons.Clear();
             _replayDepth = 0;
+            _warnedEntityReplay = false;
+            _warnedShipReplay = false;
         }
+
+        // Per-shot failure paths log once as warning, then debug — a repeating failure at
+        // enemy fire rates becomes a disk-log storm that reads as an FPS bug.
+        private static bool _warnedEntityReplay;
+        private static bool _warnedShipReplay;
 
         // ---------------------------------------------------------------- capture
 
@@ -138,6 +145,7 @@ namespace PunkMultiverse.Sync
                 EntityWeapons[weapon] = owner; // caches failures as (null, 0) too
             }
             if (owner.se == null) return;
+            if (EnemySync.IsKilled(owner.netId)) return; // zombie awaiting re-kill — never announce
             // Only the entity's simulating authority announces its shots.
             bool mine = EnemySync.IsLocallyOwned(owner.netId)
                         || (session.IsHost && !EnemySync.Owners.ContainsKey(owner.netId));
@@ -193,6 +201,7 @@ namespace PunkMultiverse.Sync
         {
             var session = NetSession.Instance;
             if (session == null || session.State != SessionState.InGame) return; // stale post-run traffic
+            if (EnemySync.IsKilled(msg.NetId)) return; // dead here — nothing to anchor the replay to
             if (!Core.NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
             try
             {
@@ -236,7 +245,15 @@ namespace PunkMultiverse.Sync
             }
             catch (System.Exception e)
             {
-                Plugin.Log.LogWarning($"[Fire] entity replay failed: {e.Message}");
+                // Once as a warning, then debug: this runs per shot, and a repeating failure
+                // (a half-destroyed entity, a game update) becomes a disk-log storm that
+                // reads as an FPS bug on the receiving machine.
+                if (!_warnedEntityReplay)
+                {
+                    _warnedEntityReplay = true;
+                    Plugin.Log.LogWarning($"[Fire] entity replay failed: {e.Message} (further failures logged as debug)");
+                }
+                else Plugin.Log.LogDebug($"[Fire] entity replay failed: {e.Message}");
             }
         }
 
@@ -258,7 +275,12 @@ namespace PunkMultiverse.Sync
             }
             catch (System.Exception e)
             {
-                Plugin.Log.LogWarning($"[Fire] replay failed: {e.Message}");
+                if (!_warnedShipReplay)
+                {
+                    _warnedShipReplay = true;
+                    Plugin.Log.LogWarning($"[Fire] replay failed: {e.Message} (further failures logged as debug)");
+                }
+                else Plugin.Log.LogDebug($"[Fire] replay failed: {e.Message}");
             }
             finally
             {
