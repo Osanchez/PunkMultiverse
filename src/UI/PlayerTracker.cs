@@ -150,6 +150,17 @@ namespace PunkMultiverse.UI
         {
             var cam = Camera.main;
             if (cam == null || v.Ship == null) return;
+
+            // A dead teammate's puppet freezes at the death spot (same for a dropped player's,
+            // reserved for rejoin) — pointing an arrow at the corpse reads as "they're there".
+            if (v.Ship.IsDead || !player.Connected)
+            {
+                if (v.Arrow != null) v.Arrow.gameObject.SetActive(false);
+                if (v.Label != null && v.Label.gameObject.activeSelf) v.Label.gameObject.SetActive(false);
+                return;
+            }
+            if (v.Label != null && !v.Label.gameObject.activeSelf) v.Label.gameObject.SetActive(true);
+
             var color = PlayerColors.Get(player.ColorIndex);
 
             if (v.Label != null)

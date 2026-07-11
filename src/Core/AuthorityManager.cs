@@ -18,19 +18,33 @@ namespace PunkMultiverse.Core
         private const float ScanInterval = 0.5f;
         private const float HysteresisFactor = 0.75f; // challenger must be at least 25% closer
         private const float HoldSeconds = 3f;         // min time between handoffs per entity
+        private const float ReleaseDenySeconds = 8f;  // released-by cooldown (see OnReleased)
 
         private static float _nextScanAt;
         private static readonly Dictionary<int, float> HoldUntil = new Dictionary<int, float>();
+        // netId -> (slot that just released it, until). Assigning an entity straight back to
+        // the player who just said "I can't simulate this" (segment not streamed in on their
+        // machine — routine while flying fast) created an assign->release->assign loop every
+        // scan: puppet churn on both machines, enemies snapping between two simulations, and
+        // client frame drops. Deny that slot for a while; anyone else can still take over.
+        private static readonly Dictionary<int, (byte slot, float until)> DeniedSlot
+            = new Dictionary<int, (byte, float)>();
         private static readonly NetWriter Writer = new NetWriter(2048);
 
         public static void Reset()
         {
             _nextScanAt = 0;
             HoldUntil.Clear();
+            DeniedSlot.Clear();
         }
 
-        /// <summary>Drop the handoff cooldown for one entity (owner released it — reassign asap).</summary>
-        public static void ClearHold(int netId) => HoldUntil.Remove(netId);
+        /// <summary>An owner reported it can't simulate this entity. Keep it host-dormant for a
+        /// beat and don't hand it back to the same player until the deny window passes.</summary>
+        public static void OnReleased(int netId, byte releasingSlot)
+        {
+            HoldUntil[netId] = Time.unscaledTime + HoldSeconds;
+            DeniedSlot[netId] = (releasingSlot, Time.unscaledTime + ReleaseDenySeconds);
+        }
 
         /// <summary>Called from NetSession.Update on the host while InGame.</summary>
         public static void Tick(NetSession session)
@@ -98,6 +112,15 @@ namespace PunkMultiverse.Core
                 else if (ownerDist > transfer && closest.slot != current && closest.dist < ownerDist * HysteresisFactor)
                 {
                     desired = closest.slot; // handoff to a clearly-closer player
+                }
+
+                // Respect the release deny window: whoever just gave this entity up can't
+                // receive it again until the window passes (their machine likely still hasn't
+                // streamed the segment in). It stays with its current owner instead.
+                if (desired != current && DeniedSlot.TryGetValue(netId, out var denied))
+                {
+                    if (Time.unscaledTime >= denied.until) DeniedSlot.Remove(netId);
+                    else if (desired == denied.slot) desired = current;
                 }
 
                 if (desired != current)

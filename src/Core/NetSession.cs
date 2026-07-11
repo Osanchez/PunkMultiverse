@@ -1078,6 +1078,13 @@ namespace PunkMultiverse.Core
 
         private void Dispatch(ulong peer, NetChannel channel, MsgType type)
         {
+            // Gameplay traffic can only be applied while a world exists (Loading covers rejoin
+            // catch-up). After a run ends, in-flight kills/fire/cells from peers would land on
+            // a destroyed level — drop them. Ping/Pong keep the lobby RTT alive.
+            if (channel != NetChannel.Control && type != MsgType.Ping && type != MsgType.Pong
+                && State < SessionState.Loading)
+                return;
+
             switch (type)
             {
                 case MsgType.Hello when IsHost: HandleHello(peer); break;

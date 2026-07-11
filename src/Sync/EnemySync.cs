@@ -198,16 +198,18 @@ namespace PunkMultiverse.Sync
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
         }
 
-        /// <summary>Host: an owner can't simulate this entity — take it back (dormant) and let
-        /// the next scan give it to whoever is genuinely close, with the hold cleared.</summary>
+        /// <summary>Host: an owner can't simulate this entity — take it back (dormant). The
+        /// releasing slot is denied this entity for a while (AuthorityManager.OnReleased), or
+        /// the next scan would hand it straight back and loop forever.</summary>
         public static void ApplyAuthRelease(AuthReleaseMsg msg, NetSession session)
         {
+            byte releasing = OwnerOf(msg.NetId);
             var assign = new AuthAssignMsg
             {
                 Entries = new List<(int netId, byte owner)> { (msg.NetId, session.HostSlot) },
             };
             ApplyAuthAssign(assign);
-            AuthorityManager.ClearHold(msg.NetId);
+            AuthorityManager.OnReleased(msg.NetId, releasing);
             Writer.Reset();
             assign.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
