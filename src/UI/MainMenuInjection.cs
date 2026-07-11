@@ -120,20 +120,37 @@ namespace PunkMultiverse.UI
             if (_versionBanner == null) yield break;
             if (Core.UpdateCheck.UpdateAvailable != null)
             {
+                var latest = Core.UpdateCheck.UpdateAvailable;
+                if (!NetConfig.AutoUpdate.Value)
+                {
+                    // Manual mode: point at the releases page and stop here.
+                    _versionBanner.text =
+                        $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{latest} AVAILABLE ON GITHUB";
+                    _versionBanner.color = new Color(0.98f, 0.63f, 0.24f);
+                    yield break;
+                }
+
+                // Auto-update: available -> downloading -> downloaded, restart to apply.
                 _versionBanner.text =
-                    $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{Core.UpdateCheck.UpdateAvailable} AVAILABLE ON GITHUB";
+                    $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{latest} FOUND, DOWNLOADING…";
                 _versionBanner.color = new Color(0.98f, 0.63f, 0.24f);
-                // The auto-updater may be downloading right now — flip the banner when the
-                // new build lands on disk (a few seconds on any normal connection).
                 float deadline = Time.unscaledTime + 180f;
                 while (_versionBanner != null && Core.UpdateCheck.UpdateStaged == null
-                       && Time.unscaledTime < deadline)
+                       && !Core.UpdateCheck.StageFailed && Time.unscaledTime < deadline)
                     yield return new WaitForSecondsRealtime(0.5f);
-                if (_versionBanner != null && Core.UpdateCheck.UpdateStaged != null)
+                if (_versionBanner == null) yield break;
+                if (Core.UpdateCheck.UpdateStaged != null)
                 {
                     _versionBanner.text =
-                        $"PUNK MULTIVERSE v{Plugin.Version} — v{Core.UpdateCheck.UpdateStaged} DOWNLOADED, RESTART TO APPLY";
+                        $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{Core.UpdateCheck.UpdateStaged} DOWNLOADED, RESTART GAME TO APPLY";
                     _versionBanner.color = new Color(0.31f, 0.85f, 0.47f);
+                }
+                else
+                {
+                    // Download didn't land — hand the player the manual path.
+                    _versionBanner.text =
+                        $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{latest} AVAILABLE ON GITHUB (AUTO-DOWNLOAD FAILED)";
+                    _versionBanner.color = new Color(1f, 0.44f, 0.44f);
                 }
             }
             else

@@ -25,6 +25,8 @@ namespace PunkMultiverse.Core
         public static Version UpdateAvailable { get; private set; }
         /// <summary>Version staged on disk, waiting for a restart; else null.</summary>
         public static Version UpdateStaged { get; private set; }
+        /// <summary>True when auto-download/staging gave up — UI falls back to the manual link.</summary>
+        public static bool StageFailed { get; private set; }
         /// <summary>True once the GitHub query returned a definitive answer (up to date OR update).</summary>
         public static bool Resolved { get; private set; }
         private static bool _checked;
@@ -82,7 +84,7 @@ namespace PunkMultiverse.Core
                 if (urlMatch.Success) url = urlMatch.Groups[1].Value;
             }
             catch { }
-            if (url == null) yield break;
+            if (url == null) { StageFailed = true; yield break; }
 
             Plugin.Log.LogInfo($"[Update] downloading v{UpdateAvailable}…");
             using (var request = UnityWebRequest.Get(url))
@@ -92,6 +94,7 @@ namespace PunkMultiverse.Core
                 yield return request.SendWebRequest();
                 if (request.result != UnityWebRequest.Result.Success)
                 {
+                    StageFailed = true;
                     Plugin.Log.LogWarning($"[Update] download failed ({request.error}) — update manually: {ReleasesUrl}");
                     yield break;
                 }
@@ -124,6 +127,7 @@ namespace PunkMultiverse.Core
                 // install — a bad DLL here means the plugin never loads again.
                 if (dll == null || dll.Length < 50_000 || dll[0] != (byte)'M' || dll[1] != (byte)'Z')
                 {
+                    StageFailed = true;
                     Plugin.Log.LogWarning("[Update] release zip had no valid PunkMultiverse.dll — not staging");
                     return;
                 }
@@ -147,6 +151,7 @@ namespace PunkMultiverse.Core
             }
             catch (Exception e)
             {
+                StageFailed = true;
                 Plugin.Log.LogWarning($"[Update] auto-update failed: {e.Message} — update manually: {ReleasesUrl}");
             }
         }
