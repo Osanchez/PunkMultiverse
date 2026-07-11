@@ -130,14 +130,16 @@ namespace PunkMultiverse.UI
                     yield break;
                 }
 
-                // Auto-update: available -> downloading -> downloaded, restart to apply.
-                _versionBanner.text =
-                    $"PUNK MULTIVERSE v{Plugin.Version} — UPDATE v{latest} FOUND, DOWNLOADING…";
+                // Auto-update: available -> downloading (live %) -> downloaded, restart to apply.
                 _versionBanner.color = new Color(0.98f, 0.63f, 0.24f);
                 float deadline = Time.unscaledTime + 180f;
                 while (_versionBanner != null && Core.UpdateCheck.UpdateStaged == null
                        && !Core.UpdateCheck.StageFailed && Time.unscaledTime < deadline)
-                    yield return new WaitForSecondsRealtime(0.5f);
+                {
+                    _versionBanner.text = $"PUNK MULTIVERSE v{Plugin.Version} — " +
+                        $"UPDATE v{latest} DOWNLOADING… {Core.UpdateCheck.DownloadProgress * 100f:0}%";
+                    yield return new WaitForSecondsRealtime(0.2f);
+                }
                 if (_versionBanner == null) yield break;
                 if (Core.UpdateCheck.UpdateStaged != null)
                 {

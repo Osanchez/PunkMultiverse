@@ -27,6 +27,8 @@ namespace PunkMultiverse.Core
         public static Version UpdateStaged { get; private set; }
         /// <summary>True when auto-download/staging gave up — UI falls back to the manual link.</summary>
         public static bool StageFailed { get; private set; }
+        /// <summary>Release download progress 0..1 while the auto-update is fetching.</summary>
+        public static float DownloadProgress { get; private set; }
         /// <summary>True once the GitHub query returned a definitive answer (up to date OR update).</summary>
         public static bool Resolved { get; private set; }
         private static bool _checked;
@@ -91,7 +93,13 @@ namespace PunkMultiverse.Core
             {
                 request.timeout = 120;
                 request.SetRequestHeader("User-Agent", "PunkMultiverse");
-                yield return request.SendWebRequest();
+                var op = request.SendWebRequest();
+                while (!op.isDone)
+                {
+                    DownloadProgress = Mathf.Clamp01(request.downloadProgress);
+                    yield return null;
+                }
+                DownloadProgress = 1f;
                 if (request.result != UnityWebRequest.Result.Success)
                 {
                     StageFailed = true;
