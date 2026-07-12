@@ -467,15 +467,21 @@ namespace PunkMultiverse.Sync
 
         private static bool IsOwnerless(object projectile) => OwnerUnit(projectile) == null;
 
-        /// <summary>Diag: log an incoming hit on the local ship, naming the source enemy and
-        /// whether it was a projectile or hitscan — to pin down "ghost"/invisible damage.</summary>
+        /// <summary>Diag: log an incoming hit on the local ship, naming the source enemy, the kind
+        /// (projectile/hitscan), and how far the shooter is. A large distance means the shot came
+        /// from an off-screen enemy — which reads as a "ghost"/invisible projectile appearing from
+        /// nowhere; a tiny one means point-blank. Also flags whether the shooter is even spawned.</summary>
         private static void NoteHit(Unit owner, string kind)
         {
             if (owner == null || !Core.NetDiag.Enabled) return;
             Core.NetDiag.Throttled($"hit{owner.GetInstanceID()}", 0.5f, "Hit", () =>
             {
                 string src = EnemySync.TryGetNetId(owner, out int en) ? Core.NetDiag.Describe(en) : owner.name;
-                return $"my ship hit by {kind} from {src}";
+                var ship = ShipSync.LocalShip;
+                float dist = ship != null ? Vector2.Distance(ship.transform.position, owner.transform.position) : -1f;
+                byte ownerSlot = en != 0 ? EnemySync.OwnerOf(en) : (byte)255;
+                string sim = ownerSlot == 255 ? "" : $", simulated by {Core.NetDiag.Owner(ownerSlot)}";
+                return $"my ship hit by {kind} from {src} at {dist:0}u{sim}";
             });
         }
 

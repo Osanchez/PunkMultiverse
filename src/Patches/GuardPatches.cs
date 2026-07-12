@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using PunkMultiverse.Core;
@@ -53,8 +54,11 @@ namespace PunkMultiverse.Patches
             }
         }
 
-        // Clients don't get a retry button at all on the game-over screen — only the host's
-        // retry does anything in a net run.
+        // Restart is a synchronized full-party retry — it only makes sense after everyone has
+        // died, so it lives on the GAME-OVER screen, and even there only the host's does anything.
+        // Hidden for clients on game-over; removed for EVERYONE on the in-run pause menu. Hiding a
+        // button would leave a hole in the fixed-position button column, so the remaining buttons
+        // are compacted up into the freed slots (LayoutMenuColumn).
         [HarmonyPatch(typeof(GameOverScreen), "OnGameOver")]
         internal static class NetRunGameOverButtons
         {
@@ -62,19 +66,8 @@ namespace PunkMultiverse.Patches
             {
                 try
                 {
-                    bool show = !NetSession.Active || NetSession.Instance.IsHost;
-                    foreach (var button in __instance.GetComponentsInChildren<UnityEngine.UI.Button>(true))
-                    {
-                        var ev = button.onClick;
-                        for (int i = 0; i < ev.GetPersistentEventCount(); i++)
-                        {
-                            if (ev.GetPersistentMethodName(i) == "OnRestartButtonClicked")
-                            {
-                                button.gameObject.SetActive(show);
-                                break;
-                            }
-                        }
-                    }
+                    if (!NetSession.Active || NetSession.Instance.IsHost) return; // host/solo: default screen
+                    LayoutMenuColumn(__instance, hideRestart: true); // clients: no retry, no gap
                 }
                 catch { }
             }
@@ -82,59 +75,83 @@ namespace PunkMultiverse.Patches
 
         // In a net run the suspend-save is blocked (below) but the run auto-saves through
         // NetRunSave — so the pause menu's "Save & Exit" would lie in both directions. While
-        // networking is live it reads just EXIT (localization stripped from that one label).
-        // The RESTART button only means anything for the host (synchronized retry) — clients
-        // don't get to see it at all.
+        // networking is live it reads just EXIT (localization stripped from that one label). The
+        // RESTART button is removed entirely — retry belongs on the game-over screen.
         [HarmonyPatch(typeof(PauseScreen), "Open")]
         internal static class NetRunPauseButtons
         {
-            private static string _originalLabel;
-
             private static void Postfix(PauseScreen __instance)
             {
                 try
                 {
-                    bool net = NetSession.Active;
-                    bool showRestart = !net || NetSession.Instance.IsHost;
-                    foreach (var button in __instance.GetComponentsInChildren<UnityEngine.UI.Button>(true))
-                    {
-                        var ev = button.onClick;
-                        for (int i = 0; i < ev.GetPersistentEventCount(); i++)
-                        {
-                            var handler = ev.GetPersistentMethodName(i);
-                            if (handler == "OnSaveAndQuitButtonClicked")
-                            {
-                                RelabelSaveQuit(button, net);
-                                break;
-                            }
-                            if (handler == "OnRestartButtonClicked")
-                            {
-                                button.gameObject.SetActive(showRestart);
-                                break;
-                            }
-                        }
-                    }
+                    if (!NetSession.Active) return; // single-player pause unchanged
+                    LayoutMenuColumn(__instance, hideRestart: true, relabelSaveQuitAsExit: true);
                 }
                 catch { }
             }
+        }
 
-            private static void RelabelSaveQuit(UnityEngine.UI.Button button, bool net)
+        // ---------------------------------------------------------------- shared menu layout
+
+        private static string _savedSaveQuitLabel;
+        // Original slot positions per screen instance, captured once so repeated Opens stay stable.
+        private static readonly Dictionary<int, List<UnityEngine.Vector2>> SlotCache
+            = new Dictionary<int, List<UnityEngine.Vector2>>();
+
+        /// <summary>Hide the restart button (and optionally relabel Save&amp;Quit → EXIT), then
+        /// compact the remaining buttons up so no empty slot is left where a hidden one was. Works
+        /// whether the column is a layout group or fixed-position: each visible button is reassigned
+        /// to the next original slot from the top.</summary>
+        private static void LayoutMenuColumn(UnityEngine.Component root, bool hideRestart, bool relabelSaveQuitAsExit = false)
+        {
+            var entries = new List<(UnityEngine.UI.Button btn, UnityEngine.RectTransform rt, bool visible)>();
+            foreach (var button in root.GetComponentsInChildren<UnityEngine.UI.Button>(true))
             {
-                var label = button.GetComponentInChildren<TMPro.TMP_Text>(true);
-                if (label == null) return;
-                if (net)
-                {
-                    if (_originalLabel == null) _originalLabel = label.text;
-                    foreach (var comp in label.GetComponents<UnityEngine.MonoBehaviour>())
-                        if (comp != null && comp.GetType().Name.Contains("Localiz"))
-                            UnityEngine.Object.Destroy(comp);
-                    label.text = "EXIT";
-                }
-                else if (_originalLabel != null)
-                {
-                    label.text = _originalLabel;
-                }
+                string handler = MenuHandler(button);
+                if (handler == null) continue; // not a menu button (Resume/Restart/Quit/…)
+                if (!(button.transform is UnityEngine.RectTransform rt)) continue;
+                if (relabelSaveQuitAsExit && handler == "OnSaveAndQuitButtonClicked") RelabelSaveQuit(button);
+                bool visible = !(hideRestart && handler == "OnRestartButtonClicked");
+                entries.Add((button, rt, visible));
             }
+            if (entries.Count == 0) return;
+
+            int key = root.GetInstanceID();
+            if (!SlotCache.TryGetValue(key, out var slots))
+            {
+                slots = entries.Select(e => e.rt.anchoredPosition).OrderByDescending(p => p.y).ToList();
+                SlotCache[key] = slots;
+            }
+
+            foreach (var e in entries) e.btn.gameObject.SetActive(e.visible);
+            var visibleTopDown = entries.Where(e => e.visible)
+                .OrderByDescending(e => e.rt.anchoredPosition.y).ToList();
+            for (int i = 0; i < visibleTopDown.Count && i < slots.Count; i++)
+                visibleTopDown[i].rt.anchoredPosition = slots[i];
+        }
+
+        /// <summary>The button's first "On…ButtonClicked" persistent handler, or null if it isn't
+        /// a menu button (so we never reposition unrelated child buttons).</summary>
+        private static string MenuHandler(UnityEngine.UI.Button button)
+        {
+            var ev = button.onClick;
+            for (int i = 0; i < ev.GetPersistentEventCount(); i++)
+            {
+                var h = ev.GetPersistentMethodName(i);
+                if (!string.IsNullOrEmpty(h) && h.StartsWith("On") && h.EndsWith("ButtonClicked")) return h;
+            }
+            return null;
+        }
+
+        private static void RelabelSaveQuit(UnityEngine.UI.Button button)
+        {
+            var label = button.GetComponentInChildren<TMPro.TMP_Text>(true);
+            if (label == null) return;
+            if (_savedSaveQuitLabel == null) _savedSaveQuitLabel = label.text;
+            foreach (var comp in label.GetComponents<UnityEngine.MonoBehaviour>())
+                if (comp != null && comp.GetType().Name.Contains("Localiz"))
+                    UnityEngine.Object.Destroy(comp);
+            label.text = "EXIT";
         }
 
         // MergedCellsGenerator is the one level-generation step that rolls the UNSEEDED global
