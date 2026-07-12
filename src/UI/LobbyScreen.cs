@@ -110,6 +110,44 @@ namespace PunkMultiverse.UI
         {
             _canvasGo?.SetActive(false);
             SetMenuBlocked(false);
+            RestoreMenuSelection();
+        }
+
+        /// <summary>Select the first interactable button (or any selectable) under a panel so a
+        /// gamepad has something to navigate from. Prefers Buttons over the seed input / swatches
+        /// so focus lands somewhere sensible.</summary>
+        private static void SelectFirstIn(GameObject panel)
+        {
+            if (panel == null || !panel.activeInHierarchy) return;
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es == null) return;
+            Selectable target = null;
+            foreach (var s in panel.GetComponentsInChildren<Selectable>(false))
+            {
+                if (s == null || !s.IsInteractable() || !s.gameObject.activeInHierarchy) continue;
+                if (s is Button) { target = s; break; }
+                if (target == null) target = s; // fallback: input field / color swatch
+            }
+            if (target != null) es.SetSelectedGameObject(target.gameObject);
+        }
+
+        /// <summary>On close, hand gamepad focus back to the main menu's game-mode row (if we're
+        /// sitting over it) so the controller keeps working; otherwise clear it.</summary>
+        private static void RestoreMenuSelection()
+        {
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es == null) return;
+            var selector = GameObject.Find("GameModeSelector");
+            if (selector != null)
+            {
+                foreach (var s in selector.GetComponentsInChildren<Selectable>(false))
+                {
+                    if (s == null || !s.IsInteractable() || !s.gameObject.activeInHierarchy) continue;
+                    es.SetSelectedGameObject(s.gameObject);
+                    return;
+                }
+            }
+            es.SetSelectedGameObject(null);
         }
 
         // The dim layer swallows mouse rays, but keyboard/gamepad NAVIGATION still reaches the
@@ -475,12 +513,21 @@ namespace PunkMultiverse.UI
             if (_seedPanel != null) _seedPanel.SetActive(!inLobby && _seedSetupOpen);
             _lobbyPanel.SetActive(inLobby);
 
-            // Panel switches deactivate the selected button; if the EventSystem's selection
-            // escaped our canvas, clear it so nav input can't drive the menu behind us.
+            // Keep gamepad focus inside the active panel. Panel switches deactivate the selected
+            // button (focus falls to null → controller can't navigate, and stray nav could drive
+            // the menu behind us). If the current selection isn't a live element of the active
+            // panel, grab its first button — but never yank focus off something the user already
+            // has selected here (e.g. mid-typing in the seed field).
+            var activePanel = _lobbyPanel.activeSelf ? _lobbyPanel
+                : (_seedPanel != null && _seedPanel.activeSelf ? _seedPanel : _connectPanel);
             var es = UnityEngine.EventSystems.EventSystem.current;
-            if (es != null && es.currentSelectedGameObject != null
-                && !es.currentSelectedGameObject.transform.IsChildOf(_canvasGo.transform))
-                es.SetSelectedGameObject(null);
+            if (es != null)
+            {
+                var sel = es.currentSelectedGameObject;
+                bool selValid = sel != null && sel.activeInHierarchy && activePanel != null
+                    && sel.transform.IsChildOf(activePanel.transform);
+                if (!selValid) SelectFirstIn(activePanel);
+            }
             _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
 
             if (!inLobby) return;

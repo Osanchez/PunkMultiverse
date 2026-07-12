@@ -80,6 +80,13 @@ namespace PunkMultiverse.UI
             // with child width control, stretched) the buttons.
             SetupRowLayout((RectTransform)selector, single, coop, (RectTransform)clone.transform, wSingle, wCoop);
 
+            // Splice the button into the gamepad navigation chain — without this the controller
+            // can't reach it (mouse click bypasses navigation, which is why MKB worked).
+            WireControllerNav(
+                single != null ? single.GetComponentInChildren<Button>(true) : null,
+                coop.GetComponentInChildren<Button>(true),
+                button);
+
             Core.UpdateCheck.Kick(this);
             CreateVersionBanner(selector, menuFont);
 
@@ -195,6 +202,52 @@ namespace PunkMultiverse.UI
                 lp.x = x + widths[i] * rts[i].pivot.x;
                 rts[i].localPosition = lp;
                 x += widths[i] + gap;
+            }
+        }
+
+        // ---------------------------------------------------------------- controller navigation
+
+        /// <summary>Insert the online button into the row's gamepad navigation so a controller
+        /// can reach it. The vanilla buttons use Explicit navigation (neighbors hard-wired in the
+        /// prefab); the clone inherited Coop's links but nothing pointed AT it, so focus skipped
+        /// past. We rewire Coop→Online→(Coop's old right) and keep the row's vertical links.</summary>
+        private void WireControllerNav(Selectable single, Selectable coop, Selectable online)
+        {
+            if (coop == null || online == null) return;
+            var coopNav = coop.navigation;
+
+            // Automatic navigation already links by on-screen geometry — the clone just needs to
+            // opt into it (Instantiate may have copied an Explicit override). Nothing else to do.
+            if (coopNav.mode == Navigation.Mode.Automatic)
+            {
+                var autoNav = online.navigation;
+                autoNav.mode = Navigation.Mode.Automatic;
+                online.navigation = autoNav;
+                return;
+            }
+
+            var coopRight = coopNav.selectOnRight; // what sat right of Coop before we inserted Online
+
+            var onlineNav = online.navigation;
+            onlineNav.mode = Navigation.Mode.Explicit;
+            onlineNav.selectOnUp = coopNav.selectOnUp;     // share the row's vertical targets
+            onlineNav.selectOnDown = coopNav.selectOnDown;
+            onlineNav.selectOnLeft = coop;
+            onlineNav.selectOnRight = coopRight;
+            online.navigation = onlineNav;
+
+            coopNav.selectOnRight = online;
+            coop.navigation = coopNav;
+
+            // If Single wrapped left to Coop (old rightmost), extend the wrap to the new rightmost.
+            if (single != null)
+            {
+                var singleNav = single.navigation;
+                if (singleNav.selectOnLeft == coop)
+                {
+                    singleNav.selectOnLeft = online;
+                    single.navigation = singleNav;
+                }
             }
         }
 

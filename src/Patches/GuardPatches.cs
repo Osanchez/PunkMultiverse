@@ -104,9 +104,14 @@ namespace PunkMultiverse.Patches
         /// to the next original slot from the top.</summary>
         private static void LayoutMenuColumn(UnityEngine.Component root, bool hideRestart, bool relabelSaveQuitAsExit = false)
         {
+            // Only buttons the game is CURRENTLY showing occupy real slots. PauseScreen carries five
+            // menu buttons (Resume/Restart/Quit/SaveAndQuit/Report) but shows a subset — an inactive
+            // one's anchoredPosition is stale/overlapping, so including it would pollute the slot list
+            // and leave a visible button parked in a dead slot (the gap where Restart used to be).
             var entries = new List<(UnityEngine.UI.Button btn, UnityEngine.RectTransform rt, bool visible)>();
             foreach (var button in root.GetComponentsInChildren<UnityEngine.UI.Button>(true))
             {
+                if (!button.gameObject.activeInHierarchy) continue; // skip buttons the game hid
                 string handler = MenuHandler(button);
                 if (handler == null) continue; // not a menu button (Resume/Restart/Quit/…)
                 if (!(button.transform is UnityEngine.RectTransform rt)) continue;
