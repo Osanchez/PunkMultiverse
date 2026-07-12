@@ -53,8 +53,9 @@ namespace PunkMultiverse
             _runtime.AddComponent<Scoreboard>();
             _runtime.AddComponent<SpectatorCam>();
             _runtime.AddComponent<Toast>();
+            _runtime.AddComponent<LogUploader>();
 
-            Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F9 = net overlay, F10 = sync diagnostics, F11 = dump ownership.");
+            Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F8 = send logs, F9 = net overlay, F10 = sync diagnostics, F11 = dump ownership.");
         }
 
         // Hot-reload teardown contract: kill the runtime object (stops the session + transport via
