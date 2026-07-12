@@ -21,10 +21,19 @@ namespace PunkMultiverse.Sync
         private static bool _applyingRemote;
         internal static bool IsApplyingRemote => _applyingRemote;
 
+        // netId -> slot of the player who last damaged this entity, tracked on the machine that
+        // simulates it (the owner). At death this is the killer, so the loot goes to whoever
+        // actually earned it instead of everyone standing nearby (see Patches.LootDiag).
+        private static readonly Dictionary<int, byte> LastDamager = new Dictionary<int, byte>();
+
+        /// <summary>Slot that last damaged the entity, or 255 if unknown.</summary>
+        public static byte LastKiller(int netId) => LastDamager.TryGetValue(netId, out var s) ? s : (byte)255;
+
         public static void Reset()
         {
             _resourcesByHash = null;
             _applyingRemote = false;
+            LastDamager.Clear();
         }
 
         public static uint HashName(string name)
@@ -82,7 +91,11 @@ namespace PunkMultiverse.Sync
             private static bool Prefix(DamagableResource __instance, Damage __0)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
-                if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId)) return true;
+                if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId))
+                {
+                    NoteLocalDamage(__instance); // I simulate it and I'm hitting it → I'm the attacker
+                    return true;
+                }
                 if (ProjectileSync.FriendlyExplosionBlocked(__instance)) return false; // FF off: my AoE spares teammates
                 SendDamageRequest(isEntity, slot, netId, __0);
                 UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
@@ -96,12 +109,26 @@ namespace PunkMultiverse.Sync
             private static bool Prefix(DamagableResource __instance, IReadOnlyList<Damage> __0)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
-                if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId)) return true;
+                if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId))
+                {
+                    NoteLocalDamage(__instance);
+                    return true;
+                }
                 if (ProjectileSync.FriendlyExplosionBlocked(__instance)) return false; // FF off: my AoE spares teammates
                 foreach (var damage in __0) SendDamageRequest(isEntity, slot, netId, damage);
                 UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
                 return false;
             }
+        }
+
+        /// <summary>Real damage to an entity we simulate: only the LOCAL player's weapons deal
+        /// real local damage (teammates route theirs as DamageRequests), so the local player is
+        /// the attacker. Recorded so a death credits the killer for loot.</summary>
+        private static void NoteLocalDamage(DamagableResource dr)
+        {
+            var session = NetSession.Instance;
+            if (session == null) return;
+            if (EnemySync.TryGetNetId(dr, out int netId)) LastDamager[netId] = (byte)session.LocalSlot;
         }
 
         // World-sourced contact damage (cells, hazards, electricity, rams) fires from local physics
@@ -163,6 +190,7 @@ namespace PunkMultiverse.Sync
                 TargetNetId = targetNetId,
                 Amount = amount,
                 TypeHash = type != null ? HashName(type.name) : 0,
+                AttackerSlot = (byte)session.LocalSlot,
             };
             Writer.Reset();
             msg.Write(Writer);
@@ -180,6 +208,7 @@ namespace PunkMultiverse.Sync
                 // OwnerOf defaults unassigned entities to the current host's slot, so this
                 // single check covers both assigned and host-fallback ownership.
                 if (!EnemySync.IsLocallyOwned(msg.TargetNetId)) return;
+                LastDamager[msg.TargetNetId] = msg.AttackerSlot; // credit the teammate who fired
                 if (Core.NetIds.TryGetInstanceId(msg.TargetNetId, out int instanceId))
                 {
                     try

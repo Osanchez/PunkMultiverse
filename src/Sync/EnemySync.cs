@@ -33,6 +33,7 @@ namespace PunkMultiverse.Sync
             FixedOwners.Clear();
             KilledNetIds.Clear();
             DroppedLootNetIds.Clear();
+            RemoteKillerSlot = 255;
             LastSentPos.Clear();
             LastEntityStateMs.Clear();
             NextReleaseAt.Clear();
@@ -487,18 +488,31 @@ namespace PunkMultiverse.Sync
                 // A double announce after a race is harmless: receivers dedupe on KilledNetIds.
                 if (__instance.GetComponentInParent<RemoteEntityPuppet>() != null) return;
                 if (!KilledNetIds.Add(netId)) return;
-                NetStats.AddKill(session.LocalSlot);
+                byte killer = KillerOf(netId, session);
+                NetStats.AddKill(killer);
 
                 Writer.Reset();
-                new EntityKilledMsg { NetId = netId, KillerSlot = (byte)session.LocalSlot }.Write(Writer);
+                new EntityKilledMsg { NetId = netId, KillerSlot = killer }.Write(Writer);
                 session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             }
+        }
+
+        /// <summary>Killer slot for loot/kill credit: the last player to damage this entity
+        /// (tracked by DamageSync on the machine that simulates it), or the local simulator when
+        /// unknown. Read by the loot drop guard so resources go to who earned the kill.</summary>
+        public static byte RemoteKillerSlot = 255;
+
+        private static byte KillerOf(int netId, NetSession session)
+        {
+            byte k = DamageSync.LastKiller(netId);
+            return k != 255 ? k : (byte)session.LocalSlot;
         }
 
         public static void ApplyEntityKilled(EntityKilledMsg msg)
         {
             if (!KilledNetIds.Add(msg.NetId)) return;
             NetStats.AddKill(msg.KillerSlot);
+            RemoteKillerSlot = msg.KillerSlot; // so the DropLoot guard credits the killer
             if (!NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
             KillInstance(instanceId, msg.NetId);
         }
@@ -560,7 +574,7 @@ namespace PunkMultiverse.Sync
                 if (!TryGetNetId(__instance, out int netId)) return;
                 if (!KilledNetIds.Add(netId)) return;
                 Writer.Reset();
-                new EntityKilledMsg { NetId = netId, KillerSlot = (byte)session.LocalSlot }.Write(Writer);
+                new EntityKilledMsg { NetId = netId, KillerSlot = KillerOf(netId, session) }.Write(Writer);
                 session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             }
         }

@@ -360,7 +360,7 @@ namespace PunkMultiverse.Sync
                 var owner = OwnerUnit(__0);
                 if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
                 {
-                    if (IsLocalShip(__instance)) return true; // replayed enemy fire: victim-side
+                    if (IsLocalShip(__instance)) { NoteHit(owner, "projectile"); return true; } // replayed enemy fire: victim-side
                     UnitStatus.PlayDamageFlash(__instance);   // cosmetic — the authority owns the hit
                     return false;
                 }
@@ -467,6 +467,18 @@ namespace PunkMultiverse.Sync
 
         private static bool IsOwnerless(object projectile) => OwnerUnit(projectile) == null;
 
+        /// <summary>Diag: log an incoming hit on the local ship, naming the source enemy and
+        /// whether it was a projectile or hitscan — to pin down "ghost"/invisible damage.</summary>
+        private static void NoteHit(Unit owner, string kind)
+        {
+            if (owner == null || !Core.NetDiag.Enabled) return;
+            Core.NetDiag.Throttled($"hit{owner.GetInstanceID()}", 0.5f, "Hit", () =>
+            {
+                string src = EnemySync.TryGetNetId(owner, out int en) ? Core.NetDiag.Describe(en) : owner.name;
+                return $"my ship hit by {kind} from {src}";
+            });
+        }
+
         // Hitscan mirrors the projectile rules; the raycast happens synchronously inside the
         // replayed DoShoot, so the enemy-puppet-owner allowance must come before the blanket
         // replay suppression.
@@ -479,7 +491,7 @@ namespace PunkMultiverse.Sync
                 var owner = OwnerUnit(__0);
                 if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
                 {
-                    if (IsLocalShip(__instance)) return true; // replayed enemy beam: victim-side
+                    if (IsLocalShip(__instance)) { NoteHit(owner, "HITSCAN (beam may not render on replay)"); return true; } // replayed enemy beam: victim-side
                     UnitStatus.PlayDamageFlash(__instance);
                     return false;
                 }

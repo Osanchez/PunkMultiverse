@@ -352,6 +352,7 @@ namespace PunkMultiverse.Protocol
         public int TargetNetId;
         public float Amount;
         public uint TypeHash; // FNV-1a of Resource.name; 0 = untyped
+        public byte AttackerSlot; // who dealt this damage — travels with it so the owner credits the real killer
 
         public void Write(NetWriter w)
         {
@@ -361,6 +362,7 @@ namespace PunkMultiverse.Protocol
             w.WriteVarUInt((uint)TargetNetId);
             w.WriteFloat(Amount);
             w.WriteUInt(TypeHash);
+            w.WriteByte(AttackerSlot);
         }
 
         public static DamageRequestMsg Read(NetReader r) => new DamageRequestMsg
@@ -370,6 +372,7 @@ namespace PunkMultiverse.Protocol
             TargetNetId = (int)r.ReadVarUInt(),
             Amount = r.ReadFloat(),
             TypeHash = r.ReadUInt(),
+            AttackerSlot = r.ReadByte(),
         };
     }
 

@@ -5,21 +5,20 @@ using PunkMultiverse.Sync;
 namespace PunkMultiverse.Patches
 {
     /// <summary>
-    /// Loot / resource-drop fix + diagnostics. The game re-runs the whole death (including
-    /// <see cref="LootDropper.DropLoot"/>) every time a kill is applied, and a single entity's
-    /// kill can be applied more than once on a machine — the owner's own death, the broadcast
-    /// kill, and zombie re-kills on stream-in all funnel through Die(). That re-dropped resources
-    /// every time: the "way more gold than vanilla" inflation.
+    /// Loot / resource-drop routing + diagnostics. The game re-runs the whole death (including
+    /// <see cref="LootDropper.DropLoot"/>) every time a kill is applied, and it's applied on every
+    /// machine that sees the death, so loot dropped everywhere — anyone standing nearby collected
+    /// a free copy, and re-kills dropped it several times over. That was the "way more gold than
+    /// vanilla" inflation (and the "my wallet grew when my teammate collected nearby" report).
     ///
-    /// FIX: an entity drops loot at most ONCE per machine (<see cref="EnemySync.TryMarkLootDropped"/>).
-    /// This keeps the intended per-player economy — each nearby player still gets their own single
-    /// copy — while dropping the repeats. It deliberately does NOT suppress drops on received
-    /// kills: under the host-authoritative model the host owns/kills most enemies, so suppressing
-    /// received-kill drops would starve clients of loot for enemies killed right next to them.
+    /// FIX: loot drops only on the KILLER's machine, at most once. The killer is the last player
+    /// to damage the entity (DamageSync tracks it on the simulating machine; it travels in the
+    /// kill's <c>KillerSlot</c>). So resources go to whoever earned the kill, wherever they are —
+    /// not to bystanders, and not to the host just because it owns the sim. Per-machine de-dup
+    /// (<see cref="EnemySync.TryMarkLootDropped"/>) additionally kills re-drop from zombie re-kills.
     ///
-    /// Diagnostics (gated behind [Diag] SyncDiagnostics — F10): each drop is tagged this-client's
-    /// kill vs received-from-another-client, suppressed duplicates are logged, and every
-    /// <see cref="Vault.Add"/> is logged with the running total so the gold rate is visible.
+    /// Diagnostics (gated behind [Diag] SyncDiagnostics — F10): drops, suppressions (not-my-kill /
+    /// duplicate), and every <see cref="Vault.Add"/> with the running total.
     /// </summary>
     internal static class LootDiag
     {
@@ -28,13 +27,30 @@ namespace PunkMultiverse.Patches
         {
             private static bool Prefix(LootDropper __instance)
             {
-                if (!NetSession.Active) return true; // single-player: unchanged
+                var session = NetSession.Instance;
+                if (session == null || !NetSession.Active) return true; // single-player: unchanged
                 bool hasId = EnemySync.TryGetNetId(__instance, out int netId);
                 string who = hasId ? NetDiag.Describe(netId)
                     : (__instance != null ? __instance.gameObject.name : "?");
 
+                // No netId (unsynced orphan): each machine handles its own copy locally — allow.
+                if (!hasId) return true;
+
+                // Loot belongs to whoever landed the kill. During a received kill that's the
+                // broadcast KillerSlot; during our own local kill it's the last damager we tracked.
+                byte local = (byte)session.LocalSlot;
+                byte killer = EnemySync.SuppressLocalDeathEffects
+                    ? EnemySync.RemoteKillerSlot
+                    : DamageSync.LastKiller(netId);
+                if (killer != 255 && killer != local)
+                {
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Loot", $"{who} drop SUPPRESSED — {NetDiag.Owner(killer)} landed the kill, not me");
+                    return false;
+                }
+
                 // De-dup: only the first drop for this entity on this machine is real.
-                if (hasId && !EnemySync.TryMarkLootDropped(netId))
+                if (!EnemySync.TryMarkLootDropped(netId))
                 {
                     if (NetDiag.Enabled)
                         NetDiag.Log("Loot", $"{who} drop SUPPRESSED — already dropped here once (duplicate death)");
@@ -42,12 +58,7 @@ namespace PunkMultiverse.Patches
                 }
 
                 if (NetDiag.Enabled)
-                {
-                    bool remote = EnemySync.SuppressLocalDeathEffects || DamageSync.IsApplyingRemote;
-                    NetDiag.Log("Loot", remote
-                        ? $"{who} dropped loot — received from another client's kill"
-                        : $"{who} dropped loot — this client's own kill");
-                }
+                    NetDiag.Log("Loot", $"{who} dropped loot — I landed the kill");
                 return true;
             }
         }
