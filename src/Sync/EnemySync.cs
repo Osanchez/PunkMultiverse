@@ -32,6 +32,7 @@ namespace PunkMultiverse.Sync
             Owners.Clear();
             FixedOwners.Clear();
             KilledNetIds.Clear();
+            DroppedLootNetIds.Clear();
             LastSentPos.Clear();
             LastEntityStateMs.Clear();
             NextReleaseAt.Clear();
@@ -58,6 +59,18 @@ namespace PunkMultiverse.Sync
         public static int KilledCount => KilledNetIds.Count;
 
         public static bool IsKilled(int netId) => KilledNetIds.Contains(netId);
+
+        // An entity may drop its loot at most ONCE per machine. The game re-runs the whole death
+        // (including LootDropper.DropLoot) every time a kill is applied — and a kill can be applied
+        // more than once here: the owner's own death, a broadcast kill, and zombie re-kills on
+        // stream-in all funnel through Die(). Without this guard each of those re-drops resources,
+        // which is the "way more gold than vanilla" inflation. This does NOT suppress the legit
+        // one-copy-per-player drop (per-player economy) — only the repeats. See Patches.LootDiag.
+        private static readonly HashSet<int> DroppedLootNetIds = new HashSet<int>();
+
+        /// <summary>True the FIRST time this machine drops loot for netId (allow the drop); false
+        /// on every repeat (a re-applied/zombie kill — suppress the duplicate drop).</summary>
+        public static bool TryMarkLootDropped(int netId) => DroppedLootNetIds.Add(netId);
 
         public static List<(int netId, byte owner)> OwnersSnapshot()
         {
