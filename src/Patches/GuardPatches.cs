@@ -131,8 +131,34 @@ namespace PunkMultiverse.Patches
             foreach (var e in entries) e.btn.gameObject.SetActive(e.visible);
             var visibleTopDown = entries.Where(e => e.visible)
                 .OrderByDescending(e => e.rt.anchoredPosition.y).ToList();
+            // A one-shot reposition doesn't stick: these buttons are AnimatedScreenElements whose
+            // Animator re-drives the RectTransform when the screen's open animation plays (after
+            // this postfix), snapping every button back to its prefab slot — the gap came right
+            // back. Pin the compacted slots in LateUpdate instead, which runs after animation.
+            var pin = root.GetComponent<MenuColumnPin>();
+            if (pin == null) pin = root.gameObject.AddComponent<MenuColumnPin>();
+            pin.Pins.Clear();
             for (int i = 0; i < visibleTopDown.Count && i < slots.Count; i++)
+            {
                 visibleTopDown[i].rt.anchoredPosition = slots[i];
+                pin.Pins.Add((visibleTopDown[i].rt, slots[i]));
+            }
+        }
+
+        /// <summary>Re-asserts compacted menu-slot positions every LateUpdate — the buttons'
+        /// open/close animations write the RectTransform each frame and would otherwise undo the
+        /// compaction. Cheap (a handful of Vector2 compares) and idle once positions settle.</summary>
+        internal sealed class MenuColumnPin : UnityEngine.MonoBehaviour
+        {
+            internal readonly List<(UnityEngine.RectTransform rt, UnityEngine.Vector2 pos)> Pins
+                = new List<(UnityEngine.RectTransform, UnityEngine.Vector2)>();
+
+            private void LateUpdate()
+            {
+                foreach (var (rt, pos) in Pins)
+                    if (rt != null && rt.anchoredPosition != pos)
+                        rt.anchoredPosition = pos;
+            }
         }
 
         /// <summary>The button's first "On…ButtonClicked" persistent handler, or null if it isn't
