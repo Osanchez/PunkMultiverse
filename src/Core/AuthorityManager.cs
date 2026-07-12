@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using PunkMultiverse.Protocol;
 using PunkMultiverse.Sync;
 using PunkMultiverse.Transport;
@@ -7,38 +7,37 @@ using UnityEngine;
 namespace PunkMultiverse.Core
 {
     /// <summary>
-    /// Host-side proximity-authority registrar (NEW-style). Every 0.5s: the closest alive player
-    /// within AuthorityRadius owns an entity; ownership hands off when the owner drifts past
-    /// TransferRadius and someone else is 25% closer; entities outside everyone's InterestRadius
-    /// fall back to the host (dormant — the host only streams what's spawned near it). Clients
-    /// never self-assign; only these AUTH_ASSIGN batches change ownership.
+    /// Host-authoritative entity ownership (the model Noita Entangled Worlds proved out): the
+    /// host simulates every entity it has spawned and streams it to everyone as a muted puppet.
+    /// There is NO continuous "closest player owns it" re-optimization — that was the source of
+    /// the ownership thrash (entities flipping owners every scan, dual-simulation, teleporting
+    /// enemies, duplicated fire). A client only takes authority in the one case the host cannot
+    /// cover an entity: when the client is off exploring a region the host has not streamed in.
+    /// That grab is sticky — held until the client clearly leaves — never re-decided by small
+    /// distance deltas.
+    ///
+    /// Per entity, every ScanInterval, the host picks the owner by this ladder:
+    ///   1. A client already owns it and is still within KeepRadius → leave it (sticky grab).
+    ///   2. The host has the entity spawned → the host owns it (authoritative default).
+    ///   3. The host can't reach it and a client is within the tight ClaimRadius → that client
+    ///      grabs it; otherwise it stays host-nominal (dormant, nobody near).
+    /// Clients never self-assign; only these AUTH_ASSIGN batches change ownership.
     /// </summary>
     internal static class AuthorityManager
     {
         private const float ScanInterval = 0.5f;
-        private const float HysteresisFactor = 0.75f; // challenger must be at least 25% closer
-        private const float HoldSeconds = 3f;         // min time between handoffs per entity
-        private const float ReleaseDenySeconds = 8f;  // released-by cooldown (see OnReleased)
-        private const float CombatDeferSeconds = 2.5f; // no handoffs mid-fight (see NoteCombat)
-        private const float AggroStickSeconds = 4f;    // recent victim keeps simulation priority
-        private const int MaxOptimizationChangesPerScan = 8; // spread puppet churn across scans
+        private const float HoldSeconds = 1.5f;        // settle time after a change (anti-oscillation)
+        private const float ReleaseDenySeconds = 5f;   // released-by cooldown (see OnReleased)
+        private const float ClaimFactor = 0.5f;        // grab radius = ClaimFactor * AuthorityRadius —
+                                                       // tight, so a client is only ever given entities
+                                                       // it can definitely stream in and simulate.
+        private const int MaxGrabsPerScan = 16;        // spread a client's entry-into-a-region claim wave
 
         private static float _nextScanAt;
         private static readonly Dictionary<int, float> HoldUntil = new Dictionary<int, float>();
-        // netId -> (slot that just released it, until). Assigning an entity straight back to
-        // the player who just said "I can't simulate this" (segment not streamed in on their
-        // machine — routine while flying fast) created an assign->release->assign loop every
-        // scan: puppet churn on both machines, enemies snapping between two simulations, and
-        // client frame drops. Deny that slot for a while; anyone else can still take over.
+        // netId -> (slot that just released it, until). A client that said "I can't simulate this"
+        // must not be handed it straight back, or we recreate the assign->release->assign loop.
         private static readonly Dictionary<int, (byte slot, float until)> DeniedSlot
-            = new Dictionary<int, (byte, float)>();
-        // Host-side combat knowledge, fed by the fire/damage traffic it already sees. A handoff
-        // tears down and rebuilds the enemy's AI mid-telegraph — exactly when players are
-        // looking — so entities that fought recently keep their owner (rescues excepted).
-        private static readonly Dictionary<int, float> LastCombatAt = new Dictionary<int, float>();
-        // netId -> (player it last fired at, when). The player being chased gets the tightest
-        // simulation of the thing chasing them; small distance deltas must not steal it away.
-        private static readonly Dictionary<int, (byte slot, float at)> LastAggro
             = new Dictionary<int, (byte, float)>();
         private static readonly NetWriter Writer = new NetWriter(2048);
 
@@ -47,14 +46,10 @@ namespace PunkMultiverse.Core
             _nextScanAt = 0;
             HoldUntil.Clear();
             DeniedSlot.Clear();
-            LastCombatAt.Clear();
-            LastAggro.Clear();
         }
 
-        /// <summary>A peer's machine is gone: drop every stability gate (hold, deny) on the
-        /// entities it owned and scan now. Those gates exist to protect a live owner's
-        /// simulation — honoring them for a vanished machine leaves enemies frozen for up to
-        /// their remaining window (3 s hold / 8 s deny).</summary>
+        /// <summary>A peer's machine is gone: drop the stability gates on the entities it owned and
+        /// scan now, so its enemies are re-homed immediately instead of freezing for a window.</summary>
         public static void OnPeerLost(byte slot)
         {
             foreach (var kv in EnemySync.Owners)
@@ -63,21 +58,16 @@ namespace PunkMultiverse.Core
                 HoldUntil.Remove(kv.Key);
                 DeniedSlot.Remove(kv.Key);
             }
-            _nextScanAt = 0; // rescue on the next Update, not up to half a second later
+            _nextScanAt = 0;
         }
 
-        /// <summary>An entity attacked or took damage — defer optimization handoffs briefly.</summary>
-        public static void NoteCombat(int netId) => LastCombatAt[netId] = Time.unscaledTime;
+        // Ownership no longer follows combat/aggro (that flipped authority every time an enemy
+        // retargeted). Kept as no-ops so the fire/damage call sites don't need to change.
+        public static void NoteCombat(int netId) { }
+        public static void NoteAggro(int netId, byte targetSlot) { }
 
-        /// <summary>An entity fired at a player — that player is its preferred authority.</summary>
-        public static void NoteAggro(int netId, byte targetSlot)
-        {
-            LastCombatAt[netId] = Time.unscaledTime;
-            if (targetSlot != 255) LastAggro[netId] = (targetSlot, Time.unscaledTime);
-        }
-
-        /// <summary>An owner reported it can't simulate this entity. Keep it host-dormant for a
-        /// beat and don't hand it back to the same player until the deny window passes.</summary>
+        /// <summary>An owner reported it can't simulate this entity. Settle it and don't hand it
+        /// back to the same slot until the deny window passes.</summary>
         public static void OnReleased(int netId, byte releasingSlot)
         {
             HoldUntil[netId] = Time.unscaledTime + HoldSeconds;
@@ -92,151 +82,83 @@ namespace PunkMultiverse.Core
 
             EntityManager em;
             try { em = ServiceLocator.Get<EntityManager>(); } catch { return; }
+            EntityGameObjectManager egm;
+            try { egm = ServiceLocator.Get<EntityGameObjectManager>(); } catch { return; }
 
-            // Player positions by slot (local ship + puppets are all current via ShipState).
-            var playerPos = new List<(byte slot, Vector2 pos)>(4);
+            byte hostSlot = session.HostSlot;
+
+            // Connected CLIENT ships (host excluded — the host claims nothing by distance; it owns
+            // whatever it has spawned). A client can only hold entities it can actually simulate.
+            var clients = new List<(byte slot, Vector2 pos)>(4);
             foreach (var p in session.Players)
             {
-                if (p == null || !p.Connected) continue; // dropped players lose authority immediately
+                if (p == null || !p.Connected || p.Slot == hostSlot) continue;
                 if (!ShipSync.ShipsBySlot.TryGetValue(p.Slot, out var ship) || ship == null || ship.IsDead) continue;
-                playerPos.Add((p.Slot, ship.transform.position));
+                clients.Add((p.Slot, ship.transform.position));
             }
-            if (playerPos.Count == 0) return;
 
-            float authority = NetConfig.AuthorityRadius.Value;
-            float transfer = NetConfig.TransferRadius.Value;
-            float interest = NetConfig.InterestRadius.Value;
+            float claimRadius = NetConfig.AuthorityRadius.Value * ClaimFactor;
+            float keepRadius = NetConfig.InterestRadius.Value;
 
             var changes = new List<(int netId, byte owner)>();
             var seen = new HashSet<int>();
-            int optimizationChanges = 0;
+            int grabBudget = MaxGrabsPerScan;
+            float now = Time.unscaledTime;
+
             foreach (var entity in em.GetAllEntities())
             {
                 if (entity == null || entity.entityId == "Ship") continue;
                 if (!NetIds.TryGetNetId(entity.instanceId, out int netId)) continue;
-                if (!seen.Add(netId)) continue; // one decision per netId per scan, even if aliased
+                if (!seen.Add(netId)) continue;
                 if (EnemySync.FixedOwners.Contains(netId)) continue; // minions: fixed owner-authority
-                if (EnemySync.IsKilled(netId)) continue; // dead everywhere — nothing to simulate
-                // Handoff cooldown: every flip tears down and rebuilds the puppet's whole AI
-                // stack on two machines, and a kill landing mid-flip is lost. Stay put.
-                if (HoldUntil.TryGetValue(netId, out float holdUntil) && Time.unscaledTime < holdUntil) continue;
+                if (EnemySync.IsKilled(netId)) continue;             // dead everywhere
 
-                Vector2 pos = entity.position;
                 byte current = EnemySync.OwnerOf(netId);
-                (byte slot, float dist) closest = (0, float.MaxValue);
-                float ownerDist = float.MaxValue;
-                foreach (var (slot, ppos) in playerPos)
-                {
-                    float d = Vector2.Distance(ppos, pos);
-                    if (d < closest.dist) closest = (slot, d);
-                    if (slot == current) ownerDist = d;
-                }
+                Vector2 pos = entity.position;
+                bool hostHas = IsSpawnedOnHost(egm, netId);
 
-                byte hostSlot = session.HostSlot;
-                byte desired = current;
-                string reason = null;
-                if (closest.dist > interest)
+                byte desired;
+                string reason;
+                // 1. A client already owns it and is still close enough to keep simulating it.
+                if (current != hostSlot && !Denied(netId, current, now)
+                    && TryClientDist(clients, current, pos, out float curDist) && curDist <= keepRadius)
                 {
-                    desired = hostSlot; // dormant — host fallback
-                    reason = $"dormant (nearest {closest.dist:0}u > interest {interest:0})";
-                }
-                else if (current == hostSlot)
-                {
-                    if (closest.dist <= authority && closest.slot != hostSlot)
-                    {
-                        desired = closest.slot;
-                        reason = $"host->player (nearest {closest.dist:0}u <= authority {authority:0})";
-                    }
-                }
-                else if (ownerDist > authority * 1.15f) // release hysteresis: no flip-flop at the radius edge
-                {
-                    if (closest.dist <= authority)
-                    {
-                        desired = closest.slot;
-                        reason = ownerDist >= float.MaxValue
-                            ? $"owner has no live ship, closer player at {closest.dist:0}u"
-                            : $"owner drifted {ownerDist:0}u, closer player at {closest.dist:0}u";
-                    }
-                    else if (ownerDist > interest)
-                    {
-                        desired = hostSlot;
-                        reason = ownerDist >= float.MaxValue ? "owner has no live ship (dormant)" : $"owner out of range ({ownerDist:0}u > interest)";
-                    }
-                    // Owner in the release..interest band with nobody clearly closer: keep them.
-                    // Bouncing to the host and back every scan is worse than a stretched radius.
-                }
-                else if (ownerDist > transfer && closest.slot != current && closest.dist < ownerDist * HysteresisFactor)
-                {
-                    desired = closest.slot; // handoff to a clearly-closer player
-                    reason = $"handoff: owner {ownerDist:0}u, closer player {closest.dist:0}u (25% hysteresis)";
-                }
-
-                // Aggro stickiness: an enemy that recently fired at a player belongs to that
-                // player while they're in range — a teammate drifting 25% closer must not
-                // steal the thing chasing you.
-                if (LastAggro.TryGetValue(netId, out var aggro))
-                {
-                    if (Time.unscaledTime - aggro.at >= AggroStickSeconds) LastAggro.Remove(netId);
-                    else foreach (var (slot, ppos) in playerPos)
-                        if (slot == aggro.slot)
-                        {
-                            if (Vector2.Distance(ppos, pos) <= authority && desired != aggro.slot)
-                            {
-                                desired = aggro.slot;
-                                reason = $"aggro-stick to {NetDiag.Owner(aggro.slot)} (fired at them recently)";
-                            }
-                            break;
-                        }
-                }
-
-                // Combat deferral: stability beats optimality mid-fight — a handoff restarts
-                // telegraphs and attack state right when players are watching. Rescues are
-                // exempt: an owner with no live ship stays MaxValue-distant and moves now.
-                if (desired != current && ownerDist != float.MaxValue
-                    && LastCombatAt.TryGetValue(netId, out float fought)
-                    && Time.unscaledTime - fought < CombatDeferSeconds)
-                {
-                    if (NetDiag.Enabled)
-                        NetDiag.Throttled($"defer{netId}", 2f, "Auth",
-                            () => $"{NetDiag.Describe(netId)} handoff to {NetDiag.Owner(desired)} deferred (combat < {CombatDeferSeconds}s ago)");
                     desired = current;
+                    reason = null;
+                }
+                // 2. The host has it spawned → the host simulates it (authoritative default).
+                else if (hostHas)
+                {
+                    desired = hostSlot;
+                    reason = "host owns (has it spawned)";
+                }
+                // 3. The host can't reach it → the nearest close-enough client grabs it, else dormant.
+                else
+                {
+                    desired = NearestClient(clients, pos, claimRadius, netId, now, out float cd);
+                    reason = desired != hostSlot
+                        ? $"host can't reach it — {NetDiag.Owner(desired)} grabs ({cd:0}u)"
+                        : "host can't reach it, no client near — dormant";
                 }
 
-                // Respect the release deny window: whoever just gave this entity up can't
-                // receive it again until the window passes (their machine likely still hasn't
-                // streamed the segment in). It stays with its current owner instead.
-                if (desired != current && DeniedSlot.TryGetValue(netId, out var denied))
+                if (desired == current) continue;
+                if (HoldUntil.TryGetValue(netId, out float hu) && now < hu) continue; // settling
+
+                // A client grabbing a region claims a wave — spread it. Reverting to the host
+                // (a client left, or disconnected) is never capped: those entities would freeze.
+                bool grab = desired != hostSlot;
+                if (grab)
                 {
-                    if (Time.unscaledTime >= denied.until) DeniedSlot.Remove(netId);
-                    else if (desired == denied.slot)
-                    {
-                        if (NetDiag.Enabled)
-                            NetDiag.Throttled($"deny{netId}", 2f, "Auth",
-                                () => $"{NetDiag.Describe(netId)} NOT assigned to {NetDiag.Owner(denied.slot)} — denied for {denied.until - Time.unscaledTime:0.0}s more (they released it)");
-                        desired = current;
-                    }
+                    if (grabBudget <= 0) continue;
+                    grabBudget--;
                 }
 
-                if (desired != current)
-                {
-                    // Cap optimization flips per scan — each one is a component-walk on two
-                    // machines, and batches spike frames. Rescues always go through.
-                    bool rescue = ownerDist == float.MaxValue && current != hostSlot;
-                    if (!rescue && optimizationChanges >= MaxOptimizationChangesPerScan)
-                    {
-                        if (NetDiag.Enabled)
-                            NetDiag.Throttled($"cap{netId}", 2f, "Auth",
-                                () => $"{NetDiag.Describe(netId)} handoff to {NetDiag.Owner(desired)} deferred (per-scan cap {MaxOptimizationChangesPerScan} hit)");
-                        continue;
-                    }
-                    if (!rescue) optimizationChanges++;
-                    changes.Add((netId, desired));
-                    EnemySync.Owners[netId] = desired;
-                    HoldUntil[netId] = Time.unscaledTime + HoldSeconds;
-                    if (NetDiag.Enabled)
-                        NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} {NetDiag.Owner(current)} -> {NetDiag.Owner(desired)}" +
-                            (rescue ? " [RESCUE]" : "") + (reason != null ? $" — {reason}" : ""));
-                }
+                changes.Add((netId, desired));
+                EnemySync.Owners[netId] = desired;
+                HoldUntil[netId] = now + HoldSeconds;
+                if (NetDiag.Enabled)
+                    NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} {NetDiag.Owner(current)} -> {NetDiag.Owner(desired)}" +
+                        (reason != null ? $" — {reason}" : ""));
             }
 
             if (changes.Count == 0) return;
@@ -245,7 +167,6 @@ namespace PunkMultiverse.Core
                 string.Join(", ", changes.GetRange(0, Mathf.Min(5, changes.Count)).ConvertAll(c => $"#{c.netId}->P{c.owner + 1}")) +
                 (changes.Count > 5 ? " …" : ""));
 
-            // Apply locally (host) and broadcast in batches.
             EnemySync.ApplyAuthAssign(new AuthAssignMsg { Entries = changes });
             for (int start = 0; start < changes.Count; start += 64)
             {
@@ -254,6 +175,45 @@ namespace PunkMultiverse.Core
                 new AuthAssignMsg { Entries = changes.GetRange(start, count) }.Write(Writer);
                 session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
             }
+        }
+
+        private static bool IsSpawnedOnHost(EntityGameObjectManager egm, int netId)
+        {
+            return NetIds.TryGetInstanceId(netId, out int instanceId)
+                   && egm.TryGetSavableEntity(instanceId, out var se) && se != null;
+        }
+
+        private static bool TryClientDist(List<(byte slot, Vector2 pos)> clients, byte slot, Vector2 pos, out float dist)
+        {
+            foreach (var (s, ppos) in clients)
+                if (s == slot) { dist = Vector2.Distance(ppos, pos); return true; }
+            dist = float.MaxValue;
+            return false; // slot isn't a live connected client (disconnected / dead)
+        }
+
+        private static byte NearestClient(List<(byte slot, Vector2 pos)> clients, Vector2 pos,
+            float maxDist, int netId, float now, out float bestDist)
+        {
+            byte best = 255;
+            bestDist = maxDist;
+            foreach (var (slot, ppos) in clients)
+            {
+                if (Denied(netId, slot, now)) continue;
+                float d = Vector2.Distance(ppos, pos);
+                if (d <= bestDist) { bestDist = d; best = slot; }
+            }
+            return best == 255 ? HostSlotFallback() : best;
+        }
+
+        // The host slot for "no client took it" — read from the session so migration-promoted
+        // hosts still fall back to themselves, not a hardcoded slot 0.
+        private static byte HostSlotFallback() => NetSession.Instance != null ? NetSession.Instance.HostSlot : (byte)0;
+
+        private static bool Denied(int netId, byte slot, float now)
+        {
+            if (!DeniedSlot.TryGetValue(netId, out var d)) return false;
+            if (now >= d.until) { DeniedSlot.Remove(netId); return false; }
+            return d.slot == slot;
         }
     }
 }
