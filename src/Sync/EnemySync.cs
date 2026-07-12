@@ -560,6 +560,20 @@ namespace PunkMultiverse.Sync
 
         private static bool _warnedDataDestroy;
 
+        /// <summary>Destroy an entity's data so a later stream-in can't resurrect it.</summary>
+        private static void DestroyData(int instanceId)
+        {
+            try
+            {
+                var em = ServiceLocator.Get<EntityManager>();
+                var data = em?.GetEntity(instanceId);
+                if (data == null) return;
+                var destroy = AccessTools.Method(data.GetType(), "Destroy");
+                if (destroy != null && destroy.GetParameters().Length == 0) destroy.Invoke(data, null);
+            }
+            catch { }
+        }
+
         /// <summary>Apply a recorded kill to a local instance — the spawned GameObject when it
         /// exists, else the entity data (so a later stream-in doesn't resurrect it). Also runs
         /// from the spawn hook: if the data destroy is unavailable in this game version, the
@@ -573,6 +587,26 @@ namespace PunkMultiverse.Sync
                 var egm = TryGetEgm();
                 if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
                 {
+                    // DestroyWhenResourceDrained entities are removed by the game via Object.Destroy
+                    // plus their spawnOnDeath drop — never through Die(). Match that here: spawn OUR
+                    // OWN copy of the drop (instanced per player, like all loot) and remove the
+                    // entity, so the world stays in sync while each player gets the upgrade.
+                    var drainer = se.GetComponent<DestroyWhenResourceDrained>();
+                    if (drainer != null)
+                    {
+                        try
+                        {
+                            var prefab = AccessTools.Field(typeof(DestroyWhenResourceDrained), "spawnOnDeath")
+                                ?.GetValue(drainer) as GameObject;
+                            if (prefab != null)
+                                UnityEngine.Object.Instantiate(prefab, se.transform.position, se.transform.rotation);
+                        }
+                        catch { }
+                        UnityEngine.Object.Destroy(se.gameObject);
+                        DestroyData(instanceId);
+                        return;
+                    }
+
                     var dr = se.GetComponent<DamagableResource>();
                     if (dr != null) { dr.Die(); return; }
                     var health = se.GetComponent<Health>();
