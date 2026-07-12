@@ -20,7 +20,11 @@ namespace PunkMultiverse.Sync
         private static readonly string[] MutedTypes =
         {
             "AIAgent", "Vision", "UnitMovement", "Seeker", "Shooter", "StateMachine",
-            "PushMovement", "SwimmingMovement", "ChargerRam",
+            // SwayMovement AddForce()s a Perlin-noise force onto the body every FixedUpdate. On a
+            // puppet that force keeps accumulating velocity WHILE snapshots also drive the body —
+            // the two fight and the enemy (fireflies especially) runs away into insane, unhittable
+            // speeds. Muting it lets the authority's snapshots be the only thing moving the puppet.
+            "PushMovement", "SwimmingMovement", "SwayMovement", "ChargerRam",
             "ShootComplexAction", "ShootAction", "ActivateShooterAction", "SelfDestructAction",
             "ProjectileDispenser", "WaitForTargetAction", "MoveAwayFromTargetAction",
             "MoveToPositionAction", "PushSelfAction", "StopAction", "ApplyTorqueAction",
