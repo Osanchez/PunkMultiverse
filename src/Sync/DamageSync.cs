@@ -34,6 +34,7 @@ namespace PunkMultiverse.Sync
             _resourcesByHash = null;
             _applyingRemote = false;
             LastDamager.Clear();
+            ResetLifeWatchdog(); // fresh run starts alive and un-announced
         }
 
         public static uint HashName(string name)
@@ -299,11 +300,40 @@ namespace PunkMultiverse.Sync
             var session = NetSession.Instance;
             if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
             if (ship != ShipSync.LocalShip) return; // only our own ship's fate is ours to announce
+            _announcedDead = died;
             Writer.Reset();
             new ShipLifeMsg { Slot = (byte)session.LocalSlot }.Write(Writer, died);
             session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             if (died) NetStats.AddDeath(session.LocalSlot);
             Plugin.Log.LogInfo($"[Damage] local ship {(died ? "died" : "resurrected")} — broadcast");
+        }
+
+        // ---------------------------------------------------------------- life watchdog
+
+        private static bool _announcedDead;
+        private static float _nextLifeCheckAt;
+
+        public static void ResetLifeWatchdog() => _announcedDead = false;
+
+        /// <summary>Self-healing life-state reconciliation, called every frame from NetSession
+        /// while InGame. The event hooks (Ship.OnDeath / Resurrect) miss deaths in two ways:
+        /// a death that lands INSIDE an applied remote event (_applyingRemote swallows the
+        /// broadcast — e.g. chain-killed by a teammate-puppet's explosion) and any vanilla death
+        /// path that skips OnDeath. Observed live: the client died, no broadcast, and the host
+        /// spectated a frozen "alive" prop forever while the run couldn't end. Instead of hoping
+        /// every path is hooked, compare the ship's actual IsDead against what we last announced
+        /// and re-announce on mismatch.</summary>
+        public static void TickLifeWatchdog()
+        {
+            if (Time.unscaledTime < _nextLifeCheckAt) return;
+            _nextLifeCheckAt = Time.unscaledTime + 0.5f;
+            var ship = ShipSync.LocalShip;
+            if (ship == null) return;
+            bool dead;
+            try { dead = ship.IsDead; } catch { return; }
+            if (dead == _announcedDead) return;
+            Plugin.Log.LogInfo($"[Damage] life watchdog: IsDead={dead} but announced={_announcedDead} — re-announcing");
+            SendLifeEvent(ship, dead);
         }
 
         public static void ApplyLifeEvent(ShipLifeMsg msg, bool died)

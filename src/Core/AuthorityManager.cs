@@ -275,7 +275,12 @@ namespace PunkMultiverse.Core
                 && ShipSync.ShipsBySlot.TryGetValue(slot, out var ship) && ship != null && !ship.IsDead
                 && Vector2.Distance((Vector2)ship.transform.position, d.pos) < ReleaseDenyMoveDist)
                 return true;
-            DeniedSlot.Remove(netId);
+            // Expired: allow the retry but KEEP the entry — it holds the strike count. Removing it
+            // here erased the strikes, so every release restarted at strike 1 and the 3-strike
+            // move-gate was unreachable: assign -> release -> 5s deny -> repeat, forever
+            // (observed live: Box_Money #4069 cycling ~5s for minutes). OnReleased overwrites the
+            // entry on the next release (escalating), and a successful hold simply leaves a stale
+            // expired entry behind — harmless, and cleared on Reset/OnPeerLost.
             return false;
         }
     }

@@ -5,57 +5,63 @@ using UnityEngine;
 namespace PunkMultiverse.Core
 {
     /// <summary>
-    /// One-shot render-state dump (F11, alongside the ownership dump). Built to diagnose the
-    /// "host-owned boss / minions / projectiles deal damage but don't render on the client" bug:
-    /// the GameObjects exist and collide, so the question is purely why their renderers don't draw.
-    /// Logs, for the local ship (a known-visible baseline) and every nearby puppet, whether each
-    /// renderer is enabled/active, its sprite, alpha, sorting layer/order, and whether it's inside
-    /// the camera frustum — plus a per-sorting-layer histogram of nearby SpriteRenderers to catch a
-    /// whole-layer hide. Compare the puppets against the LOCAL SHIP line: whatever differs is the lead.
+    /// Cheap, anomaly-only render check for the "host-owned boss / minions / projectiles deal damage
+    /// but don't render on the client" bug. Runs automatically while diagnostics are on (see
+    /// <see cref="NetDiag.TickPeriodic"/>). It ONLY scans nearby puppets (not the whole scene — an
+    /// includeInactive SpriteRenderer sweep was tanking frame rate) and logs ONLY when a puppet is
+    /// inside the camera view yet nothing on it is actually drawing — the invisible-enemy signature.
+    /// Stays silent (and near-free) during normal play, so it never spams or hitches.
     /// </summary>
     internal static class RenderDiag
     {
-        public static void DumpNearby(float radius = 60f)
+        public static void DumpNearby(float radius = 70f)
         {
             try
             {
-                var ship = ShipSync.LocalShip;
-                Vector3 origin = ship != null ? ship.transform.position : Vector3.zero;
                 var cam = Camera.main;
-                Plugin.Log.LogInfo($"[Diag:Render] === nearby render dump (origin {origin.x:F0},{origin.y:F0}, r={radius}, cam={(cam != null ? cam.name : "null")}) ===");
+                if (cam == null) return;
+                var ship = ShipSync.LocalShip;
+                Vector3 origin = ship != null ? ship.transform.position : (Vector3)cam.transform.position;
 
-                if (ship != null) LogEntity("LOCAL SHIP (baseline)", ship.transform, origin, cam);
-
-                var puppets = Object.FindObjectsByType<RemoteEntityPuppet>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-                int shown = 0;
+                // Active puppets only — far cheaper than an includeInactive full-scene scan.
+                var puppets = Object.FindObjectsByType<RemoteEntityPuppet>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+                var anomalies = new List<RemoteEntityPuppet>();
+                int near = 0;
                 foreach (var p in puppets)
                 {
                     if (p == null || Vector2.Distance(origin, p.transform.position) > radius) continue;
-                    LogEntity($"puppet netId={p.NetId} '{p.name}'", p.transform, origin, cam);
-                    if (++shown >= 40) { Plugin.Log.LogInfo("[Diag:Render] …(more puppets truncated)"); break; }
+                    near++;
+                    if (IsInvisibleInView(p, cam)) anomalies.Add(p);
                 }
-                if (shown == 0) Plugin.Log.LogInfo("[Diag:Render] no puppets within radius (host-owned bodies not spawned here?)");
+                if (anomalies.Count == 0) return; // nothing wrong — stay quiet
 
-                // Per-sorting-layer histogram of nearby SpriteRenderers — a whole layer showing many
-                // 'off' (or a layer the ship isn't on) points at a layer/culling hide rather than a
-                // per-entity one. Projectiles that are sprites show up here even though they're not puppets.
-                var srs = Object.FindObjectsByType<SpriteRenderer>(FindObjectsInactive.Include, FindObjectsSortMode.None);
-                var byLayer = new Dictionary<string, int[]>(); // [on, off, alpha0]
-                foreach (var sr in srs)
+                Plugin.Log.LogInfo($"[Diag:Render] {anomalies.Count}/{near} nearby puppets are IN-VIEW but NOT drawing (origin {origin.x:F0},{origin.y:F0}):");
+                if (ship != null) LogEntity("LOCAL SHIP (baseline, visible)", ship.transform, origin, cam);
+                int shown = 0;
+                foreach (var p in anomalies)
                 {
-                    if (sr == null || Vector2.Distance(origin, sr.transform.position) > radius) continue;
-                    if (!byLayer.TryGetValue(sr.sortingLayerName, out var t)) { t = new int[3]; byLayer[sr.sortingLayerName] = t; }
-                    if (sr.enabled && sr.gameObject.activeInHierarchy) t[0]++; else t[1]++;
-                    if (sr.color.a <= 0.01f) t[2]++;
+                    LogEntity($"INVISIBLE puppet netId={p.NetId} '{p.name}'", p.transform, origin, cam);
+                    if (++shown >= 25) { Plugin.Log.LogInfo("[Diag:Render] …(more truncated)"); break; }
                 }
-                foreach (var kv in byLayer)
-                    Plugin.Log.LogInfo($"[Diag:Render] SpriteRenderer layer '{kv.Key}': {kv.Value[0]} drawing, {kv.Value[1]} off, {kv.Value[2]} alpha≈0");
-                Plugin.Log.LogInfo("[Diag:Render] === end ===");
             }
             catch (System.Exception e)
             {
-                Plugin.Log.LogWarning($"[Diag:Render] dump failed: {e}");
+                Plugin.Log.LogWarning($"[Diag:Render] check failed: {e.Message}");
             }
+        }
+
+        // In the camera frustum but every renderer on it is off / inactive / transparent = the bug.
+        private static bool IsInvisibleInView(RemoteEntityPuppet p, Camera cam)
+        {
+            var vp = cam.WorldToViewportPoint(p.transform.position);
+            if (!(vp.z > 0 && vp.x >= 0 && vp.x <= 1 && vp.y >= 0 && vp.y <= 1)) return false; // off-screen
+            foreach (var r in p.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!r.enabled || !r.gameObject.activeInHierarchy) continue;
+                if (r is SpriteRenderer sr && sr.color.a <= 0.01f) continue; // transparent doesn't count
+                return false; // something is genuinely drawing → not the anomaly
+            }
+            return true;
         }
 
         private static void LogEntity(string label, Transform root, Vector3 origin, Camera cam)
@@ -72,13 +78,9 @@ namespace PunkMultiverse.Core
                     sample = $"{r.GetType().Name} en={r.enabled} act={r.gameObject.activeInHierarchy} layer='{r.sortingLayerName}' order={r.sortingOrder}{extra}";
                 }
             }
-            string onCam = "";
-            if (cam != null)
-            {
-                var vp = cam.WorldToViewportPoint(root.position);
-                onCam = $" inView={(vp.z > 0 && vp.x >= 0 && vp.x <= 1 && vp.y >= 0 && vp.y <= 1)}";
-            }
-            Plugin.Log.LogInfo($"[Diag:Render] {label} act={root.gameObject.activeInHierarchy} drawing={on}/{renderers.Length} d={Vector2.Distance(origin, root.position):F0}{onCam}  first: {sample}");
+            var vp = cam.WorldToViewportPoint(root.position);
+            bool inView = vp.z > 0 && vp.x >= 0 && vp.x <= 1 && vp.y >= 0 && vp.y <= 1;
+            Plugin.Log.LogInfo($"[Diag:Render] {label} act={root.gameObject.activeInHierarchy} drawing={on}/{renderers.Length} d={Vector2.Distance(origin, root.position):F0} inView={inView}  first: {sample}");
         }
     }
 }

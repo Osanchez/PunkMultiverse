@@ -826,6 +826,7 @@ namespace PunkMultiverse.Core
                 Sync.WorldSync.Flush(this);
                 Sync.WorldSync.Tick(this); // paced cell application + catch-up streams
                 Sync.EnemySync.Tick(this);
+                Sync.DamageSync.TickLifeWatchdog(); // re-announce a death/resurrect any hook missed
                 Sync.ModuleGridSync.Tick(this);
                 Sync.FogSync.Tick(this);
                 EconomyStash.Tick(this);

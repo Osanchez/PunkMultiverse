@@ -1,6 +1,7 @@
 using HarmonyLib;
 using PunkMultiverse.Core;
 using PunkMultiverse.Sync;
+using UnityEngine;
 
 namespace PunkMultiverse.Patches
 {
@@ -35,18 +36,65 @@ namespace PunkMultiverse.Patches
                 // No netId (unsynced orphan): each machine handles its own copy locally — allow.
                 if (!EnemySync.TryGetNetId(__instance, out int netId)) return true;
 
-                // Per-player instanced loot: every machine drops its own copy (each player collects
-                // only their own). De-dup so a re-applied / zombie death can't drop twice HERE.
+                // Instanced, but only where a player can actually reach it. The killer always gets
+                // their copy; so does any player standing near the death. A teammate across the
+                // (loaded) map does NOT spawn a copy they'll never collect — those uncollected
+                // pickups piled up and tanked the frame rate on distant clients. Checked BEFORE the
+                // de-dup so a far death doesn't burn the one-drop-per-machine slot.
+                byte local = (byte)session.LocalSlot;
+                byte killer = EnemySync.SuppressLocalDeathEffects
+                    ? EnemySync.RemoteKillerSlot
+                    : DamageSync.LastKiller(netId);
+                if (killer != local && !NearLocalShip(__instance))
+                {
+                    // Throttled per netId: a corpse in a damage field re-runs Die() (and this
+                    // suppression) every frame — unthrottled, that's 60 log lines/sec of one entity.
+                    NetDiag.Throttled($"loot-far-{netId}", 10f, "Loot",
+                        () => $"{NetDiag.Describe(netId)} drop SUPPRESSED — too far to collect (not my kill)");
+                    NoteRepeat(netId, __instance);
+                    return false;
+                }
+
+                // De-dup so a re-applied / zombie death can't drop twice HERE.
                 if (!EnemySync.TryMarkLootDropped(netId))
                 {
-                    if (NetDiag.Enabled)
-                        NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} drop SUPPRESSED — already dropped here (duplicate death)");
+                    NetDiag.Throttled($"loot-dup-{netId}", 10f, "Loot",
+                        () => $"{NetDiag.Describe(netId)} drop SUPPRESSED — already dropped here (duplicate death)");
+                    NoteRepeat(netId, __instance);
                     return false;
                 }
 
                 if (NetDiag.Enabled)
-                    NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} dropped loot (instanced, one per player)");
+                    NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} dropped loot (instanced, one per nearby player)");
                 return true;
+            }
+
+            // A drop is worth spawning here only if the local player is close enough to collect it.
+            private const float LootReachRadius = 55f;
+
+            private static bool NearLocalShip(Component c)
+            {
+                var ship = ShipSync.LocalShip;
+                if (ship == null || c == null) return false;
+                return Vector2.Distance(ship.transform.position, c.transform.position) <= LootReachRadius;
+            }
+
+            // A single entity re-entering DropLoot dozens of times = something re-runs Die() on a
+            // corpse every frame (observed live: #3535 Unit_Grunt, 60/s, severe client frame drops
+            // — Die() re-fires the whole onDeath chain each call; vanilla has no already-dead
+            // guard). Log ONE stack trace for the first offender so the caller is identified from
+            // a normal playtest log without a debugger.
+            private static readonly System.Collections.Generic.Dictionary<int, int> RepeatCounts
+                = new System.Collections.Generic.Dictionary<int, int>();
+            private static bool _dumpedRepeatStack;
+
+            private static void NoteRepeat(int netId, Component c)
+            {
+                RepeatCounts.TryGetValue(netId, out int n);
+                RepeatCounts[netId] = ++n;
+                if (n != 30 || _dumpedRepeatStack) return;
+                _dumpedRepeatStack = true;
+                Plugin.Log.LogWarning($"[Loot] {NetDiag.Describe(netId)} hit DropLoot 30x — death loop. Caller:\n{new System.Diagnostics.StackTrace(2, false)}");
             }
         }
 
