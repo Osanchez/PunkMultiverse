@@ -360,7 +360,17 @@ namespace PunkMultiverse.Sync
                 var owner = OwnerUnit(__0);
                 if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
                 {
-                    if (IsLocalShip(__instance)) { NoteHit(owner, "projectile"); return true; } // replayed enemy fire: victim-side
+                    if (IsLocalShip(__instance))
+                    {
+                        // A puppet enemy's bullets should ONLY be the ones we replayed from the
+                        // owner's EntityFire. One that was NOT spawned during a replay means the
+                        // puppet fired it locally (muting gap / extra spawn) — a duplicate, and the
+                        // likely "ghost" shot. Flag which kind hit us.
+                        NoteHit(owner, WasReplaySpawned(__0)
+                            ? "projectile (replayed, expected)"
+                            : "projectile (RAW — puppet fired locally, DUPLICATE)");
+                        return true; // replayed enemy fire: victim-side
+                    }
                     UnitStatus.PlayDamageFlash(__instance);   // cosmetic — the authority owns the hit
                     return false;
                 }
@@ -466,6 +476,11 @@ namespace PunkMultiverse.Sync
         }
 
         private static bool IsOwnerless(object projectile) => OwnerUnit(projectile) == null;
+
+        /// <summary>Was this projectile spawned during a fire replay (marked visual)? If not, but
+        /// its owner is a puppet enemy, the puppet fired it locally — a duplicate.</summary>
+        private static bool WasReplaySpawned(object projectile) =>
+            projectile is Component c && VisualProjectiles.Contains(c.gameObject.GetInstanceID());
 
         /// <summary>Diag: log an incoming hit on the local ship, naming the source enemy, the kind
         /// (projectile/hitscan), and how far the shooter is. A large distance means the shot came
