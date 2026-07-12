@@ -508,6 +508,47 @@ namespace PunkMultiverse.Sync
             return k != 255 ? k : (byte)session.LocalSlot;
         }
 
+        /// <summary>An entity is being removed by a non-Die() path (DestroyWhenResourceDrained
+        /// Object.Destroy()s the unit directly and drops its spawnOnDeath). Announce it as a kill
+        /// so it's removed on every machine — otherwise it stays standing on clients while it's
+        /// gone on the machine that destroyed it (each ran the drain check on its own un-synced
+        /// resource). Only the owner announces; puppets mute the component and remove via this.</summary>
+        public static void SyncDestroy(Component c)
+        {
+            var session = NetSession.Instance;
+            if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
+            if (c == null || c.GetComponentInParent<RemoteEntityPuppet>() != null) return;
+            if (!TryGetNetId(c, out int netId)) return; // orphan / no shared identity — can't sync
+            if (!KilledNetIds.Add(netId)) return;
+            byte killer = KillerOf(netId, session);
+            NetStats.AddKill(killer);
+            Writer.Reset();
+            new EntityKilledMsg { NetId = netId, KillerSlot = killer }.Write(Writer);
+            session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
+        }
+
+        // DestroyWhenResourceDrained Object.Destroy()s the unit the frame its tank empties — never
+        // through Die(), so nothing else here sees the death. Announce it just before it happens.
+        [HarmonyPatch(typeof(DestroyWhenResourceDrained), "Update")]
+        internal static class SyncResourceDrainDestroy
+        {
+            private static void Prefix(DestroyWhenResourceDrained __instance)
+            {
+                if (!NetSession.Active) return;
+                try
+                {
+                    var unit = Traverse.Create(__instance).Field("unit").GetValue() as Unit;
+                    var resource = Traverse.Create(__instance).Field("resource").GetValue() as Resource;
+                    if (unit == null || resource == null) return;
+                    bool hasTank = Traverse.Create(unit).Method("HasTank", resource).GetValue<bool>();
+                    if (!hasTank) return;
+                    float amount = Traverse.Create(unit).Method("GetResource", resource).GetValue<float>();
+                    if (amount <= 0f) SyncDestroy(unit);
+                }
+                catch { }
+            }
+        }
+
         public static void ApplyEntityKilled(EntityKilledMsg msg)
         {
             if (!KilledNetIds.Add(msg.NetId)) return;

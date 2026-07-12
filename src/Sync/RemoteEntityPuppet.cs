@@ -26,6 +26,10 @@ namespace PunkMultiverse.Sync
             // speeds. Muting it lets the authority's snapshots be the only thing moving the puppet.
             "PushMovement", "SwimmingMovement", "SwayMovement", "ChargerRam",
             "ShootComplexAction", "ShootAction", "ActivateShooterAction", "SelfDestructAction",
+            // Runs a resource-drain check every frame and Object.Destroy()s the entity + spawns its
+            // drop. On a puppet it would fire off the local (un-synced) resource — destroying/looting
+            // out of step with the owner. Muted; the owner's SyncDestroy removes it here in sync.
+            "DestroyWhenResourceDrained",
             "ProjectileDispenser", "WaitForTargetAction", "MoveAwayFromTargetAction",
             "MoveToPositionAction", "PushSelfAction", "StopAction", "ApplyTorqueAction",
             "ReduceAngularVelocityAction", "RepeateChildrenAction", "ForgetTargetAction",
