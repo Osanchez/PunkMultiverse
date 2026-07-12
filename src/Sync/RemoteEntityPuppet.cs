@@ -44,6 +44,14 @@ namespace PunkMultiverse.Sync
         public int NetId;
         public Vector2 AimDirection { get; private set; }
 
+        private byte _fireState; // 0 idle, 1 warming, 2 firing — from the owner (see SetFireState)
+        private Shooter _shooter;
+        private bool _shooterChecked;
+
+        /// <summary>Owner's fire state, so a beam (hitscan) enemy's beam can be drawn here — the
+        /// muted Shooter would otherwise never render it, leaving invisible beams that still hurt.</summary>
+        public void SetFireState(byte state) => _fireState = state;
+
         private struct Snap
         {
             public float Time;
@@ -77,10 +85,44 @@ namespace PunkMultiverse.Sync
         // visible rotation. Body facing arrives separately via the rb.rotation snapshots.
         private void Update()
         {
-            if (_barrels == null || AimDirection.sqrMagnitude < 0.01f) return;
-            foreach (var barrel in _barrels)
-                if (barrel != null)
-                    barrel.Direction = AimDirection;
+            if (_barrels != null && AimDirection.sqrMagnitude >= 0.01f)
+                foreach (var barrel in _barrels)
+                    if (barrel != null)
+                        barrel.Direction = AimDirection;
+            DriveBeam();
+        }
+
+        // Hitscan (beam) enemies draw their beam in Shooter.Update via weapon.OnBarrelMoved, which
+        // is muted on a puppet — so the beam was invisible while its replayed fire still dealt
+        // damage. OnBarrelMoved only draws (the raycast finds the beam's end; damage lives in
+        // FireSingle, which we replay separately), so we can safely drive it here from the owner's
+        // fire state without double-damaging.
+        private void DriveBeam()
+        {
+            if (!_shooterChecked)
+            {
+                _shooterChecked = true;
+                try { _shooter = GetComponentInChildren<Shooter>(true); } catch { }
+            }
+            if (_shooter == null || _barrels == null || _barrels.Length == 0) return;
+            if (!(_shooter.Weapon is HitscanWeapon beam)) return;
+            var barrel = _barrels[0];
+            if (barrel == null) return;
+            try
+            {
+                if (_fireState == 2)
+                {
+                    beam.IsTriggerPulled = true;
+                    beam.Warmup(Time.deltaTime); // reach warmed state so OnBarrelMoved shows Firing
+                    beam.OnBarrelMoved(barrel.Position, barrel.Direction);
+                }
+                else if (beam.IsTriggerPulled)
+                {
+                    beam.IsTriggerPulled = false;
+                    beam.OnBarrelMoved(barrel.Position, barrel.Direction); // clears the beam visual
+                }
+            }
+            catch { }
         }
 
         private void OnEnable() => MuteNow();

@@ -11,6 +11,11 @@ namespace PunkMultiverse.Sync
     /// Rigidbody2D from a 100 ms interpolation buffer of network snapshots. The ship stays a real
     /// Ship (enemies target it, collisions work) but its simulation truth lives on its owner.
     /// </summary>
+    // Runs before default-order components so our snapshot write to ShipMovement.flyDirection lands
+    // before the VFX readers (EngineParticle/HoverParticles) sample it. Input callbacks fire before
+    // any Update, so a stray local-input write to flyDirection would otherwise leak the LOCAL
+    // player's movement onto this puppet's engine trail for a frame — this makes our write win.
+    [DefaultExecutionOrder(-50)]
     public sealed class RemotePuppet : MonoBehaviour
     {
         // Two snapshot intervals of buffer at the configured rate — enough for one lost packet.

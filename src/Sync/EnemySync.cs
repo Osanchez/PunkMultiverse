@@ -445,6 +445,7 @@ namespace PunkMultiverse.Sync
                     puppet?.PushSnapshot(localTime, e.Pos, e.Vel, e.Rot, e.Aim);
                     if (puppet != null)
                     {
+                        puppet.SetFireState(e.Fire); // drives beam-weapon visuals (muted Shooter can't)
                         UnitStatus.WriteState(se, e.State);
                         UnitStatus.WriteFireState(se, e.Fire);
                         UnitStatus.WriteShieldFraction(se, e.ShieldFraction);
