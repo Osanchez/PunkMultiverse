@@ -37,7 +37,8 @@ namespace PunkMultiverse.Sync
         private readonly List<Snap> _buffer = new List<Snap>(32);
         private Rigidbody2D _rb;
         private ShipMovement _movement;
-        private BarrelTransform[] _barrels;
+        private Aimer[] _aimers;
+        private BarrelTransform[] _barrels; // only barrels no Aimer owns — written directly
         private bool _boosting;
         private bool _frozenStale;
         private float _savedGravityScale;
@@ -54,7 +55,17 @@ namespace PunkMultiverse.Sync
         private void Start()
         {
             Neuter();
-            _barrels = GetComponentsInChildren<BarrelTransform>(true);
+            // The ship's Aimer stays enabled and rotates its barrel toward Aimer.targetPosition
+            // every frame — a direct barrel.Direction write loses to it (Aimer.Update runs after
+            // us). Feed the Aimer instead; only barrels no Aimer owns are written directly.
+            _aimers = GetComponentsInChildren<Aimer>(true);
+            var owned = new HashSet<BarrelTransform>();
+            foreach (var aimer in _aimers)
+                if (aimer != null && aimer.barrel != null) owned.Add(aimer.barrel);
+            var free = new List<BarrelTransform>();
+            foreach (var barrel in GetComponentsInChildren<BarrelTransform>(true))
+                if (!owned.Contains(barrel)) free.Add(barrel);
+            _barrels = free.ToArray();
             StartCoroutine(RemoveCameraTargets());
         }
 
@@ -124,7 +135,16 @@ namespace PunkMultiverse.Sync
         {
             if (_movement != null) _movement.flyDirection = _moveInput;
 
-            if (_barrels == null || AimDirection.sqrMagnitude < 0.01f) return;
+            if (AimDirection.sqrMagnitude < 0.01f) return;
+            // Drive the vanilla Aimer with a world target along the owner's aim — its own
+            // rotation-speed smoothing then turns the turret exactly like it does for a local
+            // player. (An un-fed Aimer keeps rotating toward a stale target, which both fought
+            // our writes and made puppet turrets wander on their own.)
+            if (_aimers != null)
+                foreach (var aimer in _aimers)
+                    if (aimer != null)
+                        aimer.AimAt((Vector2)aimer.transform.position + AimDirection.normalized * 20f);
+            if (_barrels == null) return;
             foreach (var barrel in _barrels)
                 if (barrel != null)
                     barrel.Direction = AimDirection;

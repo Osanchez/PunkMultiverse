@@ -35,6 +35,7 @@ namespace PunkMultiverse.Sync
             ShipsBySlot.Clear();
             LastShipStateMs.Clear();
             LocalShip = null;
+            _localAimer = null;
             _shipManager = null;
             _level = null;
         }
@@ -313,7 +314,7 @@ namespace PunkMultiverse.Sync
                 Pos = rb.position,
                 Vel = rb.linearVelocity,
                 RotDeg = rb.rotation,
-                Aim = input != null ? (Vector2)input.AimDirection : Vector2.right,
+                Aim = ReadLocalAim(input),
                 Move = move,
                 Flags = flags,
                 HpFraction = hp,
@@ -323,6 +324,24 @@ namespace PunkMultiverse.Sync
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+        }
+
+        private static Aimer _localAimer;
+
+        /// <summary>The local turret's actual rendered direction. ShipInput.AimDirection is only
+        /// written on the GAMEPAD path — for mouse players it stays at its initial Vector2.right
+        /// forever, so peers never saw KBM aim. The Aimer's barrel is the truth for both schemes
+        /// (and already includes the turret's rotation-speed smoothing).</summary>
+        private static Vector2 ReadLocalAim(ShipInput input)
+        {
+            if (_localAimer == null && LocalShip != null) // refetch after death/respawn (Unity null)
+                _localAimer = LocalShip.GetComponentInChildren<Aimer>(true);
+            try
+            {
+                if (_localAimer != null && _localAimer.barrel != null) return _localAimer.barrel.Direction;
+            }
+            catch { }
+            return input != null ? (Vector2)input.AimDirection : Vector2.right;
         }
 
         // Dash is an instantaneous event, not state — DashParticle (and any dash audio) hang off
