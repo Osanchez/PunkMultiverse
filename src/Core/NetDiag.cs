@@ -112,10 +112,24 @@ namespace PunkMultiverse.Core
             return $"#{netId}";
         }
 
-        /// <summary>Periodic ownership dump when configured — called each frame from NetSession.</summary>
+        private static float _nextRenderDumpAt;
+        private const float RenderDumpInterval = 8f;
+
+        /// <summary>Periodic diagnostic dumps — called each frame from NetSession while diagnostics
+        /// are on. Render-state capture is automatic here (no key press): in a live game it snapshots
+        /// nearby render state on a slow cadence so the invisible-but-damaging-entity bug is caught in
+        /// the log and auto-sent on game close. Ownership dumps stay opt-in via the config interval.</summary>
         public static void TickPeriodic()
         {
             if (!Enabled) return;
+
+            var session = NetSession.Instance;
+            if (session != null && session.State == SessionState.InGame && Time.unscaledTime >= _nextRenderDumpAt)
+            {
+                _nextRenderDumpAt = Time.unscaledTime + RenderDumpInterval;
+                try { RenderDiag.DumpNearby(); } catch { }
+            }
+
             float interval = NetConfig.DiagOwnershipDumpInterval != null ? NetConfig.DiagOwnershipDumpInterval.Value : 0f;
             if (interval <= 0f) return;
             if (Time.unscaledTime < _nextDumpAt) return;

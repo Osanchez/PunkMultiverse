@@ -36,6 +36,11 @@ namespace PunkMultiverse.Sync
         /// so the saved value is restored explicitly afterwards.</summary>
         public static void RestoreCheckpoint(int netId) => LatestStationNetId = netId;
 
+        // Discovered map locations (station/POI netIds marked permanently visible). Ledger for
+        // late-join / rejoin catch-up; also dedups our own broadcasts.
+        private static readonly HashSet<int> DiscoveredEntities = new HashSet<int>();
+        public static List<int> DiscoveredSnapshot() => new List<int>(DiscoveredEntities);
+
         // Catch-up ledgers accumulate on EVERY machine (not just the host) so that a client
         // promoted by host migration can serve full catch-up to rejoiners and late joiners.
         public static void RecordUpgrade(int netId, uint hash)
@@ -59,6 +64,7 @@ namespace PunkMultiverse.Sync
             UsedScanners.Clear();
             PendingInstruments.Clear();
             UsedInstruments.Clear();
+            DiscoveredEntities.Clear();
             _discoverablesByHash = null;
         }
 
@@ -321,6 +327,65 @@ namespace PunkMultiverse.Sync
             catch
             {
                 return false;
+            }
+        }
+
+        // ---------------------------------------------------------------- map discovery
+
+        // The instrument-discovery replay (above) marks the instrument used everywhere, but the
+        // actual "reveal on the map" (MapIconManager.SetIconToOverdrawn) only runs on a machine
+        // when its player opens the map tab (ShipMenuToggler.PlayShowEntitySequence) — so a
+        // teammate could fly to a station the host discovered and still see it undiscovered.
+        // Capture the overdraw at its source and replicate it directly, so every map marks the
+        // SAME location immediately. Message ordering (InstrumentUsed before MapDiscovered) means
+        // the receiver's replayed Discover still runs while the entity is undiscovered locally, so
+        // it never over-picks a different one.
+        [HarmonyPatch(typeof(MapIconManager), "SetIconToOverdrawn")]
+        internal static class CaptureDiscovery
+        {
+            private static void Prefix(MapIconManager __instance, EntityData __0, out bool __state)
+            {
+                __state = __0 != null && __instance.IsIconOverdrawn(__0.instanceId); // already discovered here?
+            }
+
+            private static void Postfix(EntityData __0, bool __state)
+            {
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
+                if (__0 == null || __state) return; // nothing newly discovered
+                try
+                {
+                    if (!NetIds.TryGetNetId(__0.instanceId, out int netId)) return;
+                    if (!DiscoveredEntities.Add(netId)) return; // already broadcast
+                    Writer.Reset();
+                    new MapDiscoveredMsg { NetId = netId }.Write(Writer);
+                    session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                    Plugin.Log.LogInfo($"[Progress] map discovery broadcast (netId {netId})");
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning($"[Progress] discovery capture failed: {e.Message}");
+                }
+            }
+        }
+
+        public static void ApplyMapDiscovered(MapDiscoveredMsg msg)
+        {
+            DiscoveredEntities.Add(msg.NetId);
+            if (!NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
+            try
+            {
+                var entity = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId);
+                var mim = ServiceLocator.Get<MapIconManager>();
+                if (entity == null || mim == null) return; // ledger keeps it for a later catch-up
+                _applyingRemote = true;
+                try { mim.SetIconToOverdrawn(entity); }
+                finally { _applyingRemote = false; }
+                Plugin.Log.LogInfo($"[Progress] applied remote map discovery (netId {msg.NetId})");
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Progress] discovery apply failed: {e.Message}");
             }
         }
 

@@ -52,6 +52,8 @@
         TerrainSync = 56,   // host -> one client: terrain chunk stream begin/end markers
                             // (the chunks themselves travel as ordinary CellDiff messages)
 
+        MapDiscovered = 59, // any player permanently revealed a station/POI on the map (overdrawn icon)
+
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match
         IdResolveReply = 58,   // host -> client: their entity type + position, for

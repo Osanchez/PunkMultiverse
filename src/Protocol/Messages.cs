@@ -688,6 +688,22 @@ namespace PunkMultiverse.Protocol
         public static ScannerUsedMsg Read(NetReader r) => new ScannerUsedMsg { NetId = (int)r.ReadVarUInt() };
     }
 
+    // Any player permanently revealed a station/POI on the map (MapIconManager overdrawn icon).
+    // Synced by entity so every player's map marks the SAME location discovered, immediately,
+    // without waiting for them to open their own map menu.
+    public struct MapDiscoveredMsg
+    {
+        public int NetId;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.MapDiscovered);
+            w.WriteVarUInt((uint)NetId);
+        }
+
+        public static MapDiscoveredMsg Read(NetReader r) => new MapDiscoveredMsg { NetId = (int)r.ReadVarUInt() };
+    }
+
     public struct IdResolveRequestMsg
     {
         public System.Collections.Generic.List<int> NetIds;

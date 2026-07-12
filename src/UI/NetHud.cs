@@ -27,9 +27,9 @@ namespace PunkMultiverse.UI
 
         private void Update()
         {
-            // F9 = overlay, F10 = toggle sync diagnostics, F11 = dump ownership to the log.
-            // (The shipping Punk.Main has no F9–F11 or Escape key bindings of its own — verified
-            // by decompile — so these are free; pause is an Input System action, not KeyCode.)
+            // F9 = overlay, F10 = toggle sync diagnostics. (F11/F12 are Steam screenshot keys, so
+            // avoid them.) With diagnostics on, ownership + render-state dumps happen automatically
+            // and land in the log, which auto-sends to the webhook on game close — no manual dump key.
             var kb = Keyboard.current;
             if (kb != null)
             {
@@ -40,11 +40,6 @@ namespace PunkMultiverse.UI
                     NetConfig.SyncDiagnostics.Value = on;
                     Toast.Show(on ? "SYNC DIAGNOSTICS ON" : "SYNC DIAGNOSTICS OFF", 2.5f);
                     Plugin.Log.LogInfo($"[Diag] sync diagnostics {(on ? "ON" : "OFF")} (F10)");
-                }
-                if (kb[Key.F11].wasPressedThisFrame)
-                {
-                    Toast.Show("OWNERSHIP DUMPED TO LOG", 2f);
-                    NetDiag.DumpOwnership();
                 }
             }
             if (_visible && Time.unscaledTime >= _nextSampleAt) Sample();
@@ -137,7 +132,7 @@ namespace PunkMultiverse.UI
                 if (!string.IsNullOrEmpty(_ownSummary))
                     GUILayout.Label($"Owns  {_ownSummary}");
                 GUILayout.Label($"Diag  {(NetConfig.SyncDiagnostics.Value ? "<color=#7CFC70>ON</color>" : "OFF")}" +
-                                "   [F10 toggle · F11 dump]");
+                                "   [F10 toggle · auto-dumps to log]");
                 if (GUILayout.Button("Stop / Disconnect"))
                     session.StopSession("user request");
             }

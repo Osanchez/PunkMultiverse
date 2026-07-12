@@ -93,96 +93,105 @@ namespace PunkMultiverse.Patches
 
         // ---------------------------------------------------------------- shared menu layout
 
-        private static string _savedSaveQuitLabel;
-        // Original slot positions per screen instance, captured once so repeated Opens stay stable.
-        private static readonly Dictionary<int, List<UnityEngine.Vector2>> SlotCache
-            = new Dictionary<int, List<UnityEngine.Vector2>>();
-
-        /// <summary>Hide the restart button (and optionally relabel Save&amp;Quit → EXIT), then
-        /// compact the remaining buttons up so no empty slot is left where a hidden one was. Works
-        /// whether the column is a layout group or fixed-position: each visible button is reassigned
-        /// to the next original slot from the top.</summary>
+        /// <summary>Remove the restart button from a fixed-slot menu column WITHOUT moving any
+        /// button. Each button is an AnimatedScreenElement whose Animator re-drives its RectTransform
+        /// to its own prefab slot every frame (the "Visible" open animation), so repositioning never
+        /// sticks — the gap kept coming back, and fighting it in LateUpdate was a per-frame tug-of-war.
+        /// Instead we leave every button in place and REASSIGN ROLES: the top N physical slots are
+        /// relabeled/rewired to the N buttons we keep (top-down order), and the one leftover bottom
+        /// slot is hidden. Every surviving role now lives in a slot that was always occupied, so the
+        /// visible column is contiguous and the animator can't reopen a gap. Also relabels the
+        /// Save&amp;Quit role → EXIT (its suspend-save is blocked in net runs; the run auto-saves).</summary>
         private static void LayoutMenuColumn(UnityEngine.Component root, bool hideRestart, bool relabelSaveQuitAsExit = false)
         {
-            // Only buttons the game is CURRENTLY showing occupy real slots. PauseScreen carries five
-            // menu buttons (Resume/Restart/Quit/SaveAndQuit/Report) but shows a subset — an inactive
-            // one's anchoredPosition is stale/overlapping, so including it would pollute the slot list
-            // and leave a visible button parked in a dead slot (the gap where Restart used to be).
-            var entries = new List<(UnityEngine.UI.Button btn, UnityEngine.RectTransform rt, bool visible)>();
+            // Physical slots = the menu buttons the game is CURRENTLY showing, top-down. PauseScreen
+            // carries five (Resume/Restart/Quit/SaveAndQuit/Report) but only shows a subset.
+            var slots = new List<(UnityEngine.UI.Button btn, string handler, UnityEngine.Object target)>();
             foreach (var button in root.GetComponentsInChildren<UnityEngine.UI.Button>(true))
             {
                 if (!button.gameObject.activeInHierarchy) continue; // skip buttons the game hid
-                string handler = MenuHandler(button);
+                var (handler, target) = MenuHandlerAndTarget(button);
                 if (handler == null) continue; // not a menu button (Resume/Restart/Quit/…)
-                if (!(button.transform is UnityEngine.RectTransform rt)) continue;
-                if (relabelSaveQuitAsExit && handler == "OnSaveAndQuitButtonClicked") RelabelSaveQuit(button);
-                bool visible = !(hideRestart && handler == "OnRestartButtonClicked");
-                entries.Add((button, rt, visible));
+                slots.Add((button, handler, target));
             }
-            if (entries.Count == 0) return;
+            if (slots.Count == 0) return;
+            slots.Sort((a, b) => SlotY(b.btn).CompareTo(SlotY(a.btn))); // top-down
 
-            int key = root.GetInstanceID();
-            if (!SlotCache.TryGetValue(key, out var slots))
+            // Roles to keep, same top-down order, minus restart. Snapshot each role's label and
+            // click target NOW — before any relabel/rewire mutates a button we still read below.
+            var roles = new List<(string handler, UnityEngine.Object target, string label)>();
+            foreach (var s in slots)
             {
-                slots = entries.Select(e => e.rt.anchoredPosition).OrderByDescending(p => p.y).ToList();
-                SlotCache[key] = slots;
+                if (hideRestart && s.handler == "OnRestartButtonClicked") continue;
+                string label = relabelSaveQuitAsExit && s.handler == "OnSaveAndQuitButtonClicked"
+                    ? "EXIT" : LabelOf(s.btn);
+                roles.Add((s.handler, s.target, label));
             }
 
-            foreach (var e in entries) e.btn.gameObject.SetActive(e.visible);
-            var visibleTopDown = entries.Where(e => e.visible)
-                .OrderByDescending(e => e.rt.anchoredPosition.y).ToList();
-            // A one-shot reposition doesn't stick: these buttons are AnimatedScreenElements whose
-            // Animator re-drives the RectTransform when the screen's open animation plays (after
-            // this postfix), snapping every button back to its prefab slot — the gap came right
-            // back. Pin the compacted slots in LateUpdate instead, which runs after animation.
-            var pin = root.GetComponent<MenuColumnPin>();
-            if (pin == null) pin = root.gameObject.AddComponent<MenuColumnPin>();
-            pin.Pins.Clear();
-            for (int i = 0; i < visibleTopDown.Count && i < slots.Count; i++)
+            for (int i = 0; i < slots.Count; i++)
             {
-                visibleTopDown[i].rt.anchoredPosition = slots[i];
-                pin.Pins.Add((visibleTopDown[i].rt, slots[i]));
+                var slot = slots[i];
+                if (i >= roles.Count) { slot.btn.gameObject.SetActive(false); continue; } // extra slot
+                var role = roles[i];
+                bool sameRole = slot.handler == role.handler && ReferenceEquals(slot.target, role.target);
+                if (sameRole)
+                {
+                    // Already the right button in this slot; only the label may need changing.
+                    if (relabelSaveQuitAsExit && role.handler == "OnSaveAndQuitButtonClicked")
+                        SetLabel(slot.btn, role.label);
+                    continue;
+                }
+                // Make this slot play the kept role: adopt its label and call its screen method.
+                SetLabel(slot.btn, role.label);
+                RewireClick(slot.btn, role.target, role.handler);
             }
         }
 
-        /// <summary>Re-asserts compacted menu-slot positions every LateUpdate — the buttons'
-        /// open/close animations write the RectTransform each frame and would otherwise undo the
-        /// compaction. Cheap (a handful of Vector2 compares) and idle once positions settle.</summary>
-        internal sealed class MenuColumnPin : UnityEngine.MonoBehaviour
-        {
-            internal readonly List<(UnityEngine.RectTransform rt, UnityEngine.Vector2 pos)> Pins
-                = new List<(UnityEngine.RectTransform, UnityEngine.Vector2)>();
+        private static float SlotY(UnityEngine.UI.Button b) =>
+            b.transform is UnityEngine.RectTransform rt ? rt.anchoredPosition.y : b.transform.localPosition.y;
 
-            private void LateUpdate()
-            {
-                foreach (var (rt, pos) in Pins)
-                    if (rt != null && rt.anchoredPosition != pos)
-                        rt.anchoredPosition = pos;
-            }
-        }
-
-        /// <summary>The button's first "On…ButtonClicked" persistent handler, or null if it isn't
-        /// a menu button (so we never reposition unrelated child buttons).</summary>
-        private static string MenuHandler(UnityEngine.UI.Button button)
+        /// <summary>The button's first "On…ButtonClicked" persistent handler and the object it calls,
+        /// or (null, null) if it isn't a menu button (so we never touch unrelated child buttons).</summary>
+        private static (string handler, UnityEngine.Object target) MenuHandlerAndTarget(UnityEngine.UI.Button button)
         {
             var ev = button.onClick;
             for (int i = 0; i < ev.GetPersistentEventCount(); i++)
             {
                 var h = ev.GetPersistentMethodName(i);
-                if (!string.IsNullOrEmpty(h) && h.StartsWith("On") && h.EndsWith("ButtonClicked")) return h;
+                if (!string.IsNullOrEmpty(h) && h.StartsWith("On") && h.EndsWith("ButtonClicked"))
+                    return (h, ev.GetPersistentTarget(i));
             }
-            return null;
+            return (null, null);
         }
 
-        private static void RelabelSaveQuit(UnityEngine.UI.Button button)
+        private static string LabelOf(UnityEngine.UI.Button button)
+        {
+            var t = button.GetComponentInChildren<TMPro.TMP_Text>(true);
+            return t != null ? t.text : "";
+        }
+
+        private static void SetLabel(UnityEngine.UI.Button button, string text)
         {
             var label = button.GetComponentInChildren<TMPro.TMP_Text>(true);
             if (label == null) return;
-            if (_savedSaveQuitLabel == null) _savedSaveQuitLabel = label.text;
+            // Kill any localizer that would overwrite our text on the next locale refresh.
             foreach (var comp in label.GetComponents<UnityEngine.MonoBehaviour>())
                 if (comp != null && comp.GetType().Name.Contains("Localiz"))
                     UnityEngine.Object.Destroy(comp);
-            label.text = "EXIT";
+            label.text = text;
+        }
+
+        // Rewire a slot to invoke another role's screen method directly (via reflection on the
+        // captured target), NOT by chaining to another button's onClick — a button we hand a new
+        // role to may itself be a remap target whose onClick we clear, which would break a chain.
+        private static void RewireClick(UnityEngine.UI.Button button, UnityEngine.Object target, string method)
+        {
+            button.onClick = new UnityEngine.UI.Button.ButtonClickedEvent(); // drop the old role's call
+            if (target == null) return;
+            var mi = target.GetType().GetMethod(method,
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (mi == null) return;
+            button.onClick.AddListener(() => { try { mi.Invoke(target, null); } catch { } });
         }
 
         // MergedCellsGenerator is the one level-generation step that rolls the UNSEEDED global

@@ -1303,6 +1303,13 @@ namespace PunkMultiverse.Core
                     Sync.ProgressionSync.ApplyScannerUsed(scanner);
                     break;
                 }
+                case MsgType.MapDiscovered:
+                {
+                    var disc = MapDiscoveredMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: true);
+                    Sync.ProgressionSync.ApplyMapDiscovered(disc);
+                    break;
+                }
                 case MsgType.ModuleGridState:
                 {
                     byte slot = _reader.ReadByte();
@@ -1676,6 +1683,12 @@ namespace PunkMultiverse.Core
             {
                 _writer.Reset();
                 new ScannerUsedMsg { NetId = netId }.Write(_writer);
+                _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
+            }
+            foreach (var netId in Sync.ProgressionSync.DiscoveredSnapshot())
+            {
+                _writer.Reset();
+                new MapDiscoveredMsg { NetId = netId }.Write(_writer);
                 _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
             }
         }
