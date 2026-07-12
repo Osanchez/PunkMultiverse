@@ -27,7 +27,12 @@ namespace PunkMultiverse.Core
     {
         private const float ScanInterval = 0.5f;
         private const float HoldSeconds = 1.5f;        // settle time after a change (anti-oscillation)
-        private const float ReleaseDenySeconds = 5f;   // released-by cooldown (see OnReleased)
+        private const float ReleaseDenySeconds = 5f;   // first-release cooldown (see OnReleased)
+        private const float RepeatDenySeconds = 30f;   // repeat releases: the entity keeps failing
+                                                       // to spawn for that client — back off harder
+        private const int MoveGateStrikes = 3;         // after this many releases, time alone doesn't
+                                                       // clear the deny — the client must also move
+        private const float ReleaseDenyMoveDist = 10f; // "moved" = this far from the release position
         private const float ClaimFactor = 0.5f;        // grab radius = ClaimFactor * AuthorityRadius —
                                                        // tight, so a client is only ever given entities
                                                        // it can definitely stream in and simulate.
@@ -35,10 +40,13 @@ namespace PunkMultiverse.Core
 
         private static float _nextScanAt;
         private static readonly Dictionary<int, float> HoldUntil = new Dictionary<int, float>();
-        // netId -> (slot that just released it, until). A client that said "I can't simulate this"
-        // must not be handed it straight back, or we recreate the assign->release->assign loop.
-        private static readonly Dictionary<int, (byte slot, float until)> DeniedSlot
-            = new Dictionary<int, (byte, float)>();
+        // netId -> (slot that released it, deny-until, consecutive releases, client pos at release).
+        // A client that said "I can't simulate this" must not be handed it straight back, or we
+        // recreate the assign->release->assign loop. The deny escalates per repeat release and
+        // eventually gates on movement — some entities never stream in on a given machine, and
+        // re-offering one to a parked client loops forever (observed: WheatFruit #5269).
+        private static readonly Dictionary<int, (byte slot, float until, int strikes, Vector2 pos)> DeniedSlot
+            = new Dictionary<int, (byte, float, int, Vector2)>();
         private static readonly NetWriter Writer = new NetWriter(2048);
 
         public static void Reset()
@@ -56,10 +64,17 @@ namespace PunkMultiverse.Core
             {
                 if (kv.Value != slot) continue;
                 HoldUntil.Remove(kv.Key);
-                DeniedSlot.Remove(kv.Key);
             }
+            // Denials name the releasing slot, not the owner — drop that slot's denials so a
+            // rejoining player doesn't inherit move-gates anchored to a stale position.
+            _denyScratch.Clear();
+            foreach (var kv in DeniedSlot)
+                if (kv.Value.slot == slot) _denyScratch.Add(kv.Key);
+            foreach (int netId in _denyScratch) DeniedSlot.Remove(netId);
             _nextScanAt = 0;
         }
+
+        private static readonly List<int> _denyScratch = new List<int>();
 
         // Ownership no longer follows combat/aggro (that flipped authority every time an enemy
         // retargeted). Kept as no-ops so the fire/damage call sites don't need to change.
@@ -70,8 +85,48 @@ namespace PunkMultiverse.Core
         /// back to the same slot until the deny window passes.</summary>
         public static void OnReleased(int netId, byte releasingSlot)
         {
-            HoldUntil[netId] = Time.unscaledTime + HoldSeconds;
-            DeniedSlot[netId] = (releasingSlot, Time.unscaledTime + ReleaseDenySeconds);
+            float now = Time.unscaledTime;
+            HoldUntil[netId] = now + HoldSeconds;
+            int strikes = DeniedSlot.TryGetValue(netId, out var prev) && prev.slot == releasingSlot
+                ? prev.strikes + 1 : 1;
+            Vector2 pos = ShipSync.ShipsBySlot.TryGetValue(releasingSlot, out var ship) && ship != null
+                ? (Vector2)ship.transform.position : Vector2.zero;
+            DeniedSlot[netId] = (releasingSlot, now + (strikes == 1 ? ReleaseDenySeconds : RepeatDenySeconds),
+                strikes, pos);
+            if (NetDiag.Enabled && strikes >= MoveGateStrikes)
+                NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} released {strikes}x by {NetDiag.Owner(releasingSlot)}" +
+                    $" — denied until they move {ReleaseDenyMoveDist:0}u away");
+        }
+
+        /// <summary>Host: a damage request hit an entity we own but don't have spawned (dormant —
+        /// outside the attacker's claim radius, so the scan never hands it over). The attacker
+        /// demonstrably HAS it spawned: their shot landed on it. Give it to them, or the request
+        /// is dropped on the floor forever and the entity is unbreakable on their machine.</summary>
+        public static void OnDormantHit(int netId, byte attackerSlot)
+        {
+            var session = NetSession.Instance;
+            if (session == null || !session.IsHost) return;
+            byte hostSlot = session.HostSlot;
+            if (attackerSlot == hostSlot) return;
+            if (EnemySync.OwnerOf(netId) != hostSlot) return;        // already reassigned (rapid fire)
+            if (EnemySync.FixedOwners.Contains(netId)) return;
+            if (EnemySync.IsKilled(netId)) return;
+            float now = Time.unscaledTime;
+            if (Denied(netId, attackerSlot, now)) return;            // it doesn't spawn for them either
+            if (!ShipSync.ShipsBySlot.TryGetValue(attackerSlot, out var ship) || ship == null || ship.IsDead)
+                return;
+
+            EnemySync.Owners[netId] = attackerSlot;
+            HoldUntil[netId] = now + HoldSeconds;
+            NetStats.AuthFlips++;
+            if (NetDiag.Enabled)
+                NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} {NetDiag.Owner(hostSlot)} -> {NetDiag.Owner(attackerSlot)}" +
+                    $" — dormant here but under fire by {NetDiag.Owner(attackerSlot)} — they grab it");
+            var assign = new AuthAssignMsg { Entries = new List<(int netId, byte owner)> { (netId, attackerSlot) } };
+            EnemySync.ApplyAuthAssign(assign);
+            Writer.Reset();
+            assign.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
         }
 
         /// <summary>Called from NetSession.Update on the host while InGame.</summary>
@@ -212,8 +267,16 @@ namespace PunkMultiverse.Core
         private static bool Denied(int netId, byte slot, float now)
         {
             if (!DeniedSlot.TryGetValue(netId, out var d)) return false;
-            if (now >= d.until) { DeniedSlot.Remove(netId); return false; }
-            return d.slot == slot;
+            if (d.slot != slot) return false;
+            if (now < d.until) return true;
+            // Timer done. A repeat offender stays denied until it has actually moved — time alone
+            // doesn't make an unspawnable entity spawnable for a parked client.
+            if (d.strikes >= MoveGateStrikes
+                && ShipSync.ShipsBySlot.TryGetValue(slot, out var ship) && ship != null && !ship.IsDead
+                && Vector2.Distance((Vector2)ship.transform.position, d.pos) < ReleaseDenyMoveDist)
+                return true;
+            DeniedSlot.Remove(netId);
+            return false;
         }
     }
 }

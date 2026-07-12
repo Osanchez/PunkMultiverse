@@ -209,15 +209,27 @@ namespace PunkMultiverse.Sync
                 // single check covers both assigned and host-fallback ownership.
                 if (!EnemySync.IsLocallyOwned(msg.TargetNetId)) return;
                 LastDamager[msg.TargetNetId] = msg.AttackerSlot; // credit the teammate who fired
+                bool spawnedHere = false;
                 if (Core.NetIds.TryGetInstanceId(msg.TargetNetId, out int instanceId))
                 {
                     try
                     {
                         var egm = ServiceLocator.Get<EntityGameObjectManager>();
                         if (egm.TryGetSavableEntity(instanceId, out var se) && se != null)
+                        {
+                            spawnedHere = true;
                             dr = se.GetComponent<DamagableResource>();
+                        }
                     }
                     catch { }
+                }
+                if (!spawnedHere)
+                {
+                    // Dormant: ours, but not streamed in here. Dropping the request makes the
+                    // entity unbreakable on the attacker's machine — hand it to them instead
+                    // (they have it spawned; their shot just landed on it).
+                    Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
+                    return;
                 }
             }
             else

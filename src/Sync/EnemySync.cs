@@ -632,7 +632,10 @@ namespace PunkMultiverse.Sync
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning($"[Enemies] kill apply failed for netId {netId}: {e.Message}");
+                // Reflection Invoke wraps the real error in TargetInvocationException — unwrap,
+                // and log the full exception (type + stack), not just Message.
+                var cause = e.InnerException ?? e;
+                Plugin.Log.LogWarning($"[Enemies] kill apply failed for netId {netId}: {cause}");
             }
             finally
             {
