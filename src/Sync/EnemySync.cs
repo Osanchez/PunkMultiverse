@@ -10,10 +10,10 @@ namespace PunkMultiverse.Sync
 {
     /// <summary>
     /// Entity (enemy/minion) replication under the proximity-authority model. Exactly one machine
-    /// simulates each entity (its "owner"; slot 0 / host by default), streams ENTITY_STATE at
-    /// EntityStateHz for spawned entities, and announces kills. Everyone else runs the entity as a
-    /// muted RemoteEntityPuppet. Ownership changes arrive as AUTH_ASSIGN batches from the host's
-    /// AuthorityManager and are applied idempotently here.
+    /// simulates each entity (its "owner"; the current host by default), streams coalesced,
+    /// interest-routed state bundles at StateHz, and announces kills. Everyone else runs the
+    /// entity as a muted RemoteEntityPuppet. Ownership changes arrive as segment lease commits
+    /// from the host's AuthorityManager and are applied idempotently here.
     /// </summary>
     internal static class EnemySync
     {
@@ -22,16 +22,36 @@ namespace PunkMultiverse.Sync
         /// <summary>Runtime ids exempt from proximity handoff (player minions).</summary>
         public static readonly HashSet<int> FixedOwners = new HashSet<int>();
         private static readonly HashSet<int> KilledNetIds = new HashSet<int>();
+        // netIds whose local death chain (Die() -> loot/explosion/VFX) has already run here. A
+        // killed entity can stream in again (LevelSegment rebuild re-instantiates it, or the
+        // data-destroy below is unavailable in this game version); the second time we must remove
+        // the zombie WITHOUT re-firing its death chain — see KillInstance.
+        private static readonly HashSet<int> DeathEffectsDone = new HashSet<int>();
         private static readonly Dictionary<int, Vector2> LastSentPos = new Dictionary<int, Vector2>();
         private static readonly NetWriter Writer = new NetWriter(2048);
         private static float _nextSendAt;
         private static bool _applyingRemote;
+        // The loader can overlap multiple GameObjects for one EntityData. LiveEntities contains
+        // only the current canonical lifetime; Lifetimes retains every concrete object until its
+        // OnDestroy so superseded objects can be quarantined instead of accidentally simulating.
+        private static readonly Dictionary<int, SavableEntity> LiveEntities = new Dictionary<int, SavableEntity>();
+        private static readonly Dictionary<int, List<EntityIdentityRegistration>> Lifetimes
+            = new Dictionary<int, List<EntityIdentityRegistration>>();
+        private static readonly HashSet<int> SeenLifetimeNetIds = new HashSet<int>();
+        private static readonly Dictionary<string, int> ReplacementTypes = new Dictionary<string, int>();
+        private static readonly List<DuplicateEntityInert> PendingRetirements = new List<DuplicateEntityInert>();
+        private static readonly List<EntityStateGroup> TargetGroups = new List<EntityStateGroup>(32);
+        private const float DuplicateRetireGrace = 0.75f;
+        private const float DuplicateRetireScanInterval = 0.25f;
+        private static float _nextRetirementScanAt;
+        private static int _firstLifetimes, _reenteredLifetimes, _overlappingLifetimes, _retiredLifetimes;
 
         public static void Reset()
         {
             Owners.Clear();
             FixedOwners.Clear();
             KilledNetIds.Clear();
+            DeathEffectsDone.Clear();
             DroppedLootNetIds.Clear();
             RemoteKillerSlot = 255;
             LastSentPos.Clear();
@@ -42,6 +62,14 @@ namespace PunkMultiverse.Sync
             UnitStatus.Reset();
             _nextSendAt = 0;
             _applyingRemote = false;
+            LiveEntities.Clear();
+            Lifetimes.Clear();
+            SeenLifetimeNetIds.Clear();
+            ReplacementTypes.Clear();
+            PendingRetirements.Clear();
+            TargetGroups.Clear();
+            _nextRetirementScanAt = 0;
+            _firstLifetimes = _reenteredLifetimes = _overlappingLifetimes = _retiredLifetimes = 0;
             _loggedFirstAssign = false;
             _loggedFirstState = false;
         }
@@ -50,9 +78,7 @@ namespace PunkMultiverse.Sync
         /// (which is not necessarily slot 0 after a host migration).</summary>
         public static byte OwnerOf(int netId)
         {
-            if (Owners.TryGetValue(netId, out var slot)) return slot;
-            var session = NetSession.Instance;
-            return session != null ? session.HostSlot : (byte)0;
+            return AuthorityManager.OwnerOf(netId);
         }
 
         public static List<int> KilledSnapshot() => new List<int>(KilledNetIds);
@@ -86,6 +112,240 @@ namespace PunkMultiverse.Sync
             return session != null && OwnerOf(netId) == session.LocalSlot;
         }
 
+        /// <summary>Player-owned runtime entities cannot retain a departed simulator. Every peer
+        /// applies the same deterministic fallback, so fixed ownership remains coherent while the
+        /// new host is coming online and before any catch-up exchange is possible.</summary>
+        internal static void ReassignFixedOwners(byte lostSlot, byte fallbackSlot)
+        {
+            var changed = new List<int>();
+            foreach (int netId in FixedOwners)
+                if (Owners.TryGetValue(netId, out byte owner) && owner == lostSlot)
+                    changed.Add(netId);
+            foreach (int netId in changed)
+            {
+                Owners[netId] = fallbackSlot;
+                if (NetIds.TryGetInstanceId(netId, out int instanceId))
+                    try { ApplyOwnership(netId, instanceId); } catch { }
+            }
+            if (changed.Count > 0)
+                Plugin.Log.LogInfo($"[Auth] reassigned {changed.Count} fixed entities P{lostSlot + 1}->P{fallbackSlot + 1}");
+        }
+
+        internal static int CanonicalLifetimeCount => LiveEntities.Count;
+        internal static int PendingRetirementCount => PendingRetirements.Count;
+        internal static int FirstLifetimeCount => _firstLifetimes;
+        internal static int ReenteredLifetimeCount => _reenteredLifetimes;
+        internal static int OverlappingLifetimeCount => _overlappingLifetimes;
+        internal static int RetiredLifetimeCount => _retiredLifetimes;
+        internal static float OldestQuarantineAge
+        {
+            get
+            {
+                float oldest = 0f;
+                foreach (var inert in PendingRetirements)
+                    if (inert != null) oldest = Mathf.Max(oldest, inert.Age);
+                return oldest;
+            }
+        }
+        internal static int UnsafeDuplicateLifetimeCount
+        {
+            get
+            {
+                int count = 0;
+                foreach (var all in Lifetimes.Values)
+                    foreach (var registration in all)
+                        if (registration != null && !registration.IsCanonical
+                            && registration.GetComponent<DuplicateEntityInert>() == null)
+                            count++;
+                return count;
+            }
+        }
+
+        internal static bool IsCanonical(Component component)
+        {
+            if (component == null) return false;
+            var se = component.GetComponentInParent<SavableEntity>();
+            if (se == null || se.EntityData == null) return false;
+            if (!NetIds.TryGetNetId(se.EntityData.instanceId, out int netId)) return false;
+            return LiveEntities.TryGetValue(netId, out var canonical) && canonical == se;
+        }
+
+        internal static bool CanSimulate(SavableEntity entity, int netId)
+        {
+            var session = NetSession.Instance;
+            if (session == null || entity == null) return false;
+            byte actualOwner = FixedOwners.Contains(netId)
+                ? OwnerOf(netId)
+                : AuthorityManager.OwnerOf(AuthorityManager.SegmentOf(entity.transform.position));
+            return LiveEntities.TryGetValue(netId, out var canonical) && canonical == entity
+                   && actualOwner == session.LocalSlot
+                   && entity.GetComponent<RemoteEntityPuppet>() == null
+                   && entity.GetComponent<DuplicateEntityInert>() == null;
+        }
+
+        private static EntityIdentityRegistration RegisterLive(int netId, SavableEntity current)
+        {
+            var registration = current.GetComponent<EntityIdentityRegistration>();
+            if (registration == null) registration = current.gameObject.AddComponent<EntityIdentityRegistration>();
+            registration.Initialize(netId, current);
+
+            if (!Lifetimes.TryGetValue(netId, out var all))
+                Lifetimes[netId] = all = new List<EntityIdentityRegistration>(2);
+            if (!all.Contains(registration)) all.Add(registration);
+
+            if (LiveEntities.TryGetValue(netId, out var existing) && existing == current)
+            {
+                registration.MakeCanonical();
+                return registration; // reconciliation and spawn hook observed the same lifetime
+            }
+
+            string entityType = current.EntityData?.entityId ?? "<unknown>";
+            bool firstLifetime = SeenLifetimeNetIds.Add(netId);
+            if (firstLifetime) _firstLifetimes++;
+
+            if (LiveEntities.TryGetValue(netId, out var prior) && prior != null && prior != current)
+            {
+                var priorRegistration = prior.GetComponent<EntityIdentityRegistration>();
+                priorRegistration?.MakeDuplicateInert();
+                _overlappingLifetimes++;
+                ReplacementTypes[entityType] = ReplacementTypes.TryGetValue(entityType, out int count) ? count + 1 : 1;
+                InstrumentationCounters.DuplicateEntityPrevented();
+                InstrumentationCounters.DuplicateLifetimeQuarantined();
+                if (NetDiag.Enabled) NetDiag.Throttled($"overlap{netId}", 2f, "Identity",
+                    () => $"quarantined overlap {NetDiag.Describe(netId)} old={prior.GetInstanceID()} new={current.GetInstanceID()} canonical=new");
+            }
+            else if (!firstLifetime)
+            {
+                // A prior lifetime was fully unloaded before this one appeared. This is normal
+                // segment streaming, but tracking it separately prevents it being mistaken for a
+                // genuinely new room spawn or an overlapping duplicate.
+                _reenteredLifetimes++;
+            }
+
+            LiveEntities[netId] = current;
+            registration.MakeCanonical();
+            return registration;
+        }
+
+        /// <summary>The EGM already selected a newer object before an old lifetime reaches here.
+        /// Keep the old object inert for one loader grace window, then retire it centrally. This
+        /// avoids both immediate-destroy fights with deferred stream-out and one LateUpdate scan
+        /// per quarantined object forever.</summary>
+        internal static void ScheduleDuplicateRetirement(DuplicateEntityInert inert)
+        {
+            // DuplicateEntityInert calls this only on its first Initialize, so no membership scan
+            // is required on the hot overlap path.
+            if (inert != null) PendingRetirements.Add(inert);
+        }
+
+        private static void TickDuplicateRetirements()
+        {
+            if (Time.unscaledTime < _nextRetirementScanAt) return;
+            _nextRetirementScanAt = Time.unscaledTime + DuplicateRetireScanInterval;
+            for (int i = PendingRetirements.Count - 1; i >= 0; i--)
+            {
+                var inert = PendingRetirements[i];
+                if (inert == null)
+                {
+                    PendingRetirements.RemoveAt(i);
+                    continue;
+                }
+                if (inert.Age < DuplicateRetireGrace) continue;
+
+                var old = inert.Entity;
+                bool superseded = old == null
+                    || !LiveEntities.TryGetValue(inert.NetId, out var canonical)
+                    || canonical == null || canonical != old;
+                if (!superseded) continue; // defensive: never retire the canonical object
+
+                PendingRetirements.RemoveAt(i);
+                _retiredLifetimes++;
+                InstrumentationCounters.DuplicateLifetimeRetired();
+                if (old != null) UnityEngine.Object.Destroy(old.gameObject);
+                else UnityEngine.Object.Destroy(inert.gameObject);
+            }
+        }
+
+        /// <summary>Cheap canonical population audit; iterates only the identity registry, never
+        /// the Unity scene. The dictionaries are supplied by the caller and cleared here.</summary>
+        internal static void GetPopulationAudit(out int units, out int props,
+            Dictionary<string, int> unitTypes, Dictionary<string, int> unitSegments)
+        {
+            units = 0;
+            props = 0;
+            unitTypes.Clear();
+            unitSegments.Clear();
+            foreach (var kv in LiveEntities)
+            {
+                var se = kv.Value;
+                if (se == null || se.GetComponent<DuplicateEntityInert>() != null) continue;
+                if (se.GetComponent<Unit>() == null) { props++; continue; }
+                units++;
+                string type = se.EntityData?.entityId ?? "<unknown>";
+                unitTypes[type] = unitTypes.TryGetValue(type, out int tc) ? tc + 1 : 1;
+                string segment = AuthorityManager.SegmentOf(se.transform.position).ToString();
+                unitSegments[segment] = unitSegments.TryGetValue(segment, out int sc) ? sc + 1 : 1;
+            }
+        }
+
+        internal static void GetReplacementTypes(Dictionary<string, int> target)
+        {
+            target.Clear();
+            foreach (var kv in ReplacementTypes) target[kv.Key] = kv.Value;
+        }
+
+        /// <summary>Register GameObjects that streamed in before the manifest assigned netIds.
+        /// SpawnObjectForEntity cannot register those at spawn time, and it may never run again
+        /// for an object that remains near a player. This pass is therefore a required part of
+        /// the manifest barrier, not a best-effort diagnostic scan.</summary>
+        internal static void ReconcileSpawnedIdentities(string reason)
+        {
+            if (!NetIds.ManifestComplete) return;
+            var egm = TryGetEgm();
+            if (egm == null)
+            {
+                Plugin.Log.LogWarning($"[Ids] live reconciliation {reason}: EntityGameObjectManager unavailable");
+                return;
+            }
+
+            int mapped = 0, spawned = 0, units = 0, props = 0;
+            int local = 0, puppets = 0, killed = 0, failures = 0;
+            foreach (var mapping in NetIds.MappedEntities)
+            {
+                mapped++;
+                try
+                {
+                    if (!egm.TryGetSavableEntity(mapping.Value, out var se) || se == null) continue;
+                    spawned++;
+                    RegisterLive(mapping.Key, se);
+                    if (KilledNetIds.Contains(mapping.Key))
+                    {
+                        killed++;
+                        KillInstance(mapping.Value, mapping.Key);
+                        continue;
+                    }
+
+                    bool unit = se.GetComponent<Unit>() != null;
+                    if (unit) units++; else props++;
+                    ApplyOwnership(mapping.Key, mapping.Value);
+                    if (unit)
+                    {
+                        if (se.GetComponent<RemoteEntityPuppet>() != null) puppets++;
+                        else local++;
+                    }
+                }
+                catch (Exception e)
+                {
+                    failures++;
+                    if (failures <= 3)
+                        Plugin.Log.LogWarning($"[Ids] live reconciliation failed for #{mapping.Key}: {e.Message}");
+                }
+            }
+
+            Plugin.Log.LogInfo($"[Ids] live reconciliation {reason}: mapped={mapped} spawned={spawned} " +
+                $"units={units} local={local} puppets={puppets} props={props} killed={killed} failures={failures}");
+        }
+
         /// <summary>Kill/authority helpers need the netId of an arbitrary component's entity.</summary>
         public static bool TryGetNetId(Component c, out int netId)
         {
@@ -103,6 +363,13 @@ namespace PunkMultiverse.Sync
         {
             private static void Postfix(EntityData __0)
             {
+                var profile = PatchProfiler.Enter(PatchId.EnemyOnEntitySpawned);
+                try { PostfixBody(__0); }
+                finally { PatchProfiler.Exit(PatchId.EnemyOnEntitySpawned, profile); }
+            }
+
+            private static void PostfixBody(EntityData __0)
+            {
                 var session = NetSession.Instance;
                 if (session == null || __0 == null) return;
                 if (session.State != SessionState.InGame && session.State != SessionState.Loading) return;
@@ -114,6 +381,16 @@ namespace PunkMultiverse.Sync
                         MuteOrphan(__0.instanceId);
                     return;
                 }
+                // Unity Destroy is deferred, so a normal segment stream-out/stream-in can expose
+                // two lifetimes for one ID. The newest EGM object becomes canonical; the previous
+                // object is hidden and made non-simulating without fighting the loader's destroy.
+                try
+                {
+                    var egm = TryGetEgm();
+                    if (egm != null && egm.TryGetSavableEntity(__0.instanceId, out var current) && current != null)
+                        RegisterLive(netId, current);
+                }
+                catch { }
                 // A kill received while this entity was unspawned here may not have destroyed
                 // the data (game-version dependent) — streaming it back in as a live zombie is
                 // how "enemies only I can see" happens. Re-kill on arrival.
@@ -144,6 +421,7 @@ namespace PunkMultiverse.Sync
                 var egm = TryGetEgm();
                 if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
                 {
+                    RegisterLive(netId, se);
                     var puppet = se.GetComponent<RemoteEntityPuppet>();
                     if (puppet != null) puppet.NetId = netId; // was the orphan marker (-1)
                 }
@@ -174,9 +452,10 @@ namespace PunkMultiverse.Sync
         private static void ApplyOwnership(int netId, int instanceId)
         {
             var session = NetSession.Instance;
-            var egm = ServiceLocator.Get<EntityGameObjectManager>();
-            if (!egm.TryGetSavableEntity(instanceId, out var se) || se == null) return;
+            if (session == null) return;
+            if (!LiveEntities.TryGetValue(netId, out var se) || se == null) return;
             if (se.GetComponent<Unit>() == null) return; // static prop — no authority needed
+            if (se.GetComponent<DuplicateEntityInert>() != null) return;
 
             var puppet = se.GetComponent<RemoteEntityPuppet>();
             bool mine = OwnerOf(netId) == session.LocalSlot;
@@ -187,6 +466,45 @@ namespace PunkMultiverse.Sync
                 puppet.NetId = netId;
             }
             UnitStatus.ApplyEnemyHpScale(se, instanceId, netId);
+        }
+
+        internal static void ApplySegmentOwnership(AuthorityManager.SegmentKey segment)
+        {
+            foreach (var kv in LiveEntities)
+            {
+                if (kv.Value == null || kv.Value.GetComponent<Unit>() == null) continue;
+                if (!AuthorityManager.TrySegmentOf(kv.Key, out var key) || !key.Equals(segment)) continue;
+                if (NetIds.TryGetInstanceId(kv.Key, out int instanceId)) ApplyOwnership(kv.Key, instanceId);
+            }
+        }
+
+        internal static void ApplyAllOwnership()
+        {
+            foreach (var kv in LiveEntities)
+            {
+                if (kv.Value == null || kv.Value.GetComponent<Unit>() == null) continue;
+                if (NetIds.TryGetInstanceId(kv.Key, out int instanceId)) ApplyOwnership(kv.Key, instanceId);
+            }
+        }
+
+        internal static void UnregisterLive(int netId, SavableEntity entity)
+        {
+            // Legacy call site retained for binary-local compatibility during hot reload.
+            var registration = entity != null ? entity.GetComponent<EntityIdentityRegistration>() : null;
+            if (registration != null) UnregisterLive(registration);
+        }
+
+        internal static void UnregisterLive(EntityIdentityRegistration registration)
+        {
+            if (registration == null) return;
+            int netId = registration.NetId;
+            if (Lifetimes.TryGetValue(netId, out var all))
+            {
+                all.Remove(registration);
+                if (all.Count == 0) Lifetimes.Remove(netId);
+            }
+            if (LiveEntities.TryGetValue(netId, out var current) && current == registration.Entity)
+                LiveEntities.Remove(netId);
         }
 
         // ---------------------------------------------------------------- authority messages
@@ -207,6 +525,7 @@ namespace PunkMultiverse.Sync
             {
                 byte prev = OwnerOf(netId);
                 Owners[netId] = owner;
+                if (prev == owner) continue; // retain explicit mapping, but do not re-arm components
                 if (egm != null && NetIds.TryGetInstanceId(netId, out int instanceId))
                 {
                     try { ApplyOwnership(netId, instanceId); } catch { }
@@ -230,46 +549,122 @@ namespace PunkMultiverse.Sync
         /// <summary>Called from NetSession.Update while InGame: stream entities I own.</summary>
         public static void Tick(NetSession session)
         {
+            TickDuplicateRetirements();
             if (!NetIds.ManifestComplete || Time.unscaledTime < _nextSendAt) return;
             _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.StateHz.Value);
 
             var egm = TryGetEgm();
             if (egm == null) return;
 
-            var entries = new List<EntityStateEntry>(32);
-            foreach (var kv in Owners)
+            var groups = new Dictionary<(AuthorityManager.SegmentKey key, uint epoch), List<EntityStateEntry>>();
+            foreach (var netId in SpawnedUnitCandidates())
             {
-                if (kv.Value != session.LocalSlot || KilledNetIds.Contains(kv.Key)) continue;
-                // Authority follows distance but simulation needs the GameObject — segment
-                // streaming can unload an entity we still own. Owning what we can't simulate
-                // starves everyone else's puppets (frozen, brainless enemies): hand it back.
-                if (!IsSpawnedHere(egm, kv.Key))
-                {
-                    MaybeReleaseAuthority(session, kv.Key);
-                    continue;
-                }
-                CollectEntry(egm, kv.Key, entries);
+                if (KilledNetIds.Contains(netId) || OwnerOf(netId) != session.LocalSlot) continue;
+                if (!TryCollectEntry(egm, netId, out var entry)) continue;
+                var key = AuthorityManager.SegmentOf(entry.Pos);
+                uint epoch = FixedOwners.Contains(netId) ? 0 : AuthorityManager.EpochOf(key);
+                byte owner = FixedOwners.Contains(netId) ? OwnerOf(netId) : AuthorityManager.OwnerOf(key);
+                if (owner != session.LocalSlot) continue; // crossed a lease boundary this frame
+                var groupKey = (key, epoch);
+                if (!groups.TryGetValue(groupKey, out var entries)) groups[groupKey] = entries = new List<EntityStateEntry>(32);
+                entries.Add(entry);
             }
-            // Host also owns every un-assigned entity; it only streams the spawned ones.
-            if (session.IsHost)
+
+            var stateGroups = new List<EntityStateGroup>(groups.Count);
+            foreach (var group in groups)
             {
-                foreach (var netId in HostSpawnedUnassigned(egm))
+                stateGroups.Add(new EntityStateGroup
                 {
-                    // The cached scan can be up to a refresh stale — re-check cheaply.
-                    if (Owners.ContainsKey(netId) || KilledNetIds.Contains(netId)) continue;
-                    CollectEntry(egm, netId, entries);
-                }
+                    SegmentX = group.Key.key.X,
+                    SegmentY = group.Key.key.Y,
+                    Epoch = group.Key.epoch,
+                    Entries = group.Value,
+                });
             }
+            if (stateGroups.Count == 0) return;
 
             byte slot = (byte)session.LocalSlot;
             uint timeMs = (uint)(Time.unscaledTime * 1000f);
-            for (int start = 0; start < entries.Count; start += 32)
+            if (!session.IsHost)
             {
-                int count = Math.Min(32, entries.Count - start);
-                Writer.Reset();
-                new EntityStateMsg { Slot = slot, TimeMs = timeMs, Entries = entries.GetRange(start, count) }.Write(Writer);
-                session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+                // A client has one route: send one complete tick to the host. The host needs the
+                // full state for canonical positions/authority and interest-routes it onward.
+                SendBundleToHost(session, slot, timeMs, stateGroups);
+                return;
             }
+
+            foreach (var player in session.Players)
+            {
+                if (player == null || player.IsLocal || !player.Connected) continue;
+                SelectInterestedGroups(player.Slot, stateGroups, TargetGroups, out int droppedGroups, out int droppedEntries);
+                SendBundleToPeer(session, player.PeerId, slot, timeMs, TargetGroups, droppedGroups, droppedEntries);
+            }
+        }
+
+        private static void SendBundleToHost(NetSession session, byte slot, uint timeMs,
+            List<EntityStateGroup> groups)
+        {
+            Writer.Reset();
+            new EntityStateBundleMsg { Slot = slot, TimeMs = timeMs, Groups = groups }.Write(Writer);
+            session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+            InstrumentationCounters.StateBundleSent(groups.Count, CountEntries(groups), Writer.Position, 0, 0);
+        }
+
+        private static void SendBundleToPeer(NetSession session, ulong peer, byte slot, uint timeMs,
+            List<EntityStateGroup> groups, int droppedGroups, int droppedEntries)
+        {
+            if (groups.Count == 0)
+            {
+                InstrumentationCounters.StateInterestFiltered(droppedGroups, droppedEntries);
+                return;
+            }
+            Writer.Reset();
+            new EntityStateBundleMsg { Slot = slot, TimeMs = timeMs, Groups = groups }.Write(Writer);
+            session.SendToPeer(peer, NetChannel.State, Writer.ToSegment(), reliable: false);
+            InstrumentationCounters.StateBundleSent(groups.Count, CountEntries(groups), Writer.Position,
+                droppedGroups, droppedEntries);
+        }
+
+        private static int CountEntries(List<EntityStateGroup> groups)
+        {
+            if (groups == null) return 0;
+            int count = 0;
+            foreach (var group in groups) count += group.Entries?.Count ?? 0;
+            return count;
+        }
+
+        private static void SelectInterestedGroups(byte targetSlot, List<EntityStateGroup> source,
+            List<EntityStateGroup> target, out int droppedGroups, out int droppedEntries)
+        {
+            target.Clear();
+            droppedGroups = 0;
+            droppedEntries = 0;
+            foreach (var group in source)
+            {
+                if (IsGroupInterestingTo(targetSlot, group)) target.Add(group);
+                else
+                {
+                    droppedGroups++;
+                    droppedEntries += group.Entries?.Count ?? 0;
+                }
+            }
+        }
+
+        private static bool IsGroupInterestingTo(byte targetSlot, EntityStateGroup group)
+        {
+            if (!ShipSync.ShipsBySlot.TryGetValue(targetSlot, out var ship) || ship == null)
+                return true; // missing route/ship during a transition: correctness over filtering
+            var entries = group.Entries;
+            if (entries == null || entries.Count == 0) return false;
+            Vector2 player = ship.transform.position;
+            // A segment-width guard band ensures an entity is already streaming before it can
+            // enter the camera, while still excluding rooms owned/loaded around distant players.
+            float radius = Mathf.Max(25f, NetConfig.InterestRadius.Value)
+                           + Mathf.Max(10f, Level.SegmentSize);
+            float radiusSq = radius * radius;
+            foreach (var entry in entries)
+                if ((entry.Pos - player).sqrMagnitude <= radiusSq) return true;
+            return false;
         }
 
         private static bool IsSpawnedHere(EntityGameObjectManager egm, int netId)
@@ -319,7 +714,7 @@ namespace PunkMultiverse.Sync
         private static float _nextHostScanAt;
         private const float HostScanInterval = 0.5f; // authority scan cadence — fresh enough
 
-        private static List<int> HostSpawnedUnassigned(EntityGameObjectManager egm)
+        private static List<int> SpawnedUnitCandidates()
         {
             // FindObjectsByType is a whole-scene walk — at the 20 Hz state rate it was the
             // single hottest line on the host. Refresh the candidate list on the authority
@@ -329,35 +724,38 @@ namespace PunkMultiverse.Sync
 
             _hostScratch.Clear();
             // Entities near the host stream in on the host; those without an explicit owner are ours.
-            foreach (var unit in UnityEngine.Object.FindObjectsByType<Unit>(FindObjectsSortMode.None))
+            foreach (var kv in LiveEntities)
             {
+                var unit = kv.Value != null ? kv.Value.GetComponent<Unit>() : null;
+                if (unit == null) continue;
                 if (unit.GetComponent<RemotePuppet>() != null) continue;         // player ships handled by ShipSync
                 if (unit.GetComponent<Ship>() != null) continue;
-                if (!TryGetNetId(unit, out int netId)) continue;
-                if (Owners.ContainsKey(netId) || KilledNetIds.Contains(netId)) continue;
+                int netId = kv.Key;
+                if (KilledNetIds.Contains(netId)) continue;
                 _hostScratch.Add(netId);
             }
             return _hostScratch;
         }
 
-        private static void CollectEntry(EntityGameObjectManager egm, int netId, List<EntityStateEntry> entries)
+        private static bool TryCollectEntry(EntityGameObjectManager egm, int netId, out EntityStateEntry entry)
         {
-            if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return;
-            if (!egm.TryGetSavableEntity(instanceId, out var se) || se == null) return;
-            if (se.GetComponent<RemoteEntityPuppet>() != null) return; // stale ownership — not actually ours
+            entry = default;
+            if (!LiveEntities.TryGetValue(netId, out var se) || se == null) return false;
+            if (se.GetComponent<RemoteEntityPuppet>() != null) return false; // not actually ours
+            if (se.GetComponent<DuplicateEntityInert>() != null) return false;
             var rb = se.GetComponent<Rigidbody2D>();
             var dr = se.GetComponent<DamagableResource>();
             Vector2 pos = rb != null ? rb.position : (Vector2)se.transform.position;
             // Non-Unit props (pushable rocks etc.) only stream while actually moving.
             if (se.GetComponent<Unit>() == null)
             {
-                if (rb == null) return;
-                if (LastSentPos.TryGetValue(netId, out var last) && Vector2.Distance(last, pos) < 0.05f) return;
+                if (rb == null) return false;
+                if (LastSentPos.TryGetValue(netId, out var last) && Vector2.Distance(last, pos) < 0.05f) return false;
             }
             LastSentPos[netId] = pos;
             float hp = 1f;
             try { if (dr != null && dr.MaxHealth > 0) hp = dr.CurrentHealth / dr.MaxHealth; } catch { }
-            entries.Add(new EntityStateEntry
+            entry = new EntityStateEntry
             {
                 NetId = netId,
                 Pos = pos,
@@ -370,14 +768,51 @@ namespace PunkMultiverse.Sync
                 HpFraction = hp,
                 ShieldFraction = UnitStatus.ReadShieldFraction(se),
                 BurnLevel = UnitStatus.ReadBurnLevel(se),
-            });
+            };
+            return true;
         }
 
         // netId -> (authority, its clock) of the newest applied snapshot. The state channel is
         // unreliable AND unordered; late packets must not yank puppets backwards. A different
         // sender means an authority handoff — clocks aren't comparable, accept and re-baseline.
-        private static readonly Dictionary<int, (byte slot, uint ms)> LastEntityStateMs
-            = new Dictionary<int, (byte, uint)>();
+        private static readonly Dictionary<int, (byte slot, uint epoch, uint ms)> LastEntityStateMs
+            = new Dictionary<int, (byte, uint, uint)>();
+
+        public static void ApplyEntityStateBundle(EntityStateBundleMsg bundle)
+        {
+            int entries = CountEntries(bundle.Groups);
+            InstrumentationCounters.StateBundleReceived(bundle.Groups?.Count ?? 0, entries);
+            if (bundle.Groups == null) return;
+            foreach (var group in bundle.Groups)
+            {
+                ApplyEntityState(new EntityStateMsg
+                {
+                    Slot = bundle.Slot,
+                    SegmentX = group.SegmentX,
+                    SegmentY = group.SegmentY,
+                    Epoch = group.Epoch,
+                    TimeMs = bundle.TimeMs,
+                    Entries = group.Entries,
+                });
+            }
+        }
+
+        /// <summary>Host-side router for client-authoritative state. The host consumes the full
+        /// bundle to keep canonical data positions current, then sends each other client only the
+        /// groups within that client's streaming interest.</summary>
+        public static void ForwardEntityStateBundle(NetSession session, EntityStateBundleMsg bundle,
+            ulong senderPeer)
+        {
+            if (!session.IsHost || bundle.Groups == null) return;
+            foreach (var player in session.Players)
+            {
+                if (player == null || player.IsLocal || !player.Connected || player.PeerId == senderPeer) continue;
+                SelectInterestedGroups(player.Slot, bundle.Groups, TargetGroups,
+                    out int droppedGroups, out int droppedEntries);
+                SendBundleToPeer(session, player.PeerId, bundle.Slot, bundle.TimeMs, TargetGroups,
+                    droppedGroups, droppedEntries);
+            }
+        }
 
         public static void ApplyEntityState(EntityStateMsg msg)
         {
@@ -391,16 +826,16 @@ namespace PunkMultiverse.Sync
             EntityManager em = null;
             try { em = ServiceLocator.Get<EntityManager>(); } catch { }
             float localTime = Core.ClockSync.ToLocalTime(msg.Slot, msg.TimeMs);
+            var transmittedSegment = new AuthorityManager.SegmentKey(msg.SegmentX, msg.SegmentY);
             foreach (var e in msg.Entries)
             {
-                if (IsLocallyOwned(e.NetId))
+                var positionSegment = AuthorityManager.SegmentOf(e.Pos);
+                if (!positionSegment.Equals(transmittedSegment)
+                    || !AuthorityManager.IsStateAuthority(e.NetId, transmittedSegment, msg.Slot, msg.Epoch))
                 {
-                    // Normally my own relayed echo. But a state for an entity I own arriving from
-                    // a DIFFERENT slot means another machine is simulating it too — dual authority,
-                    // the source of rubber-banding and double-fire. Surface it.
-                    if (NetDiag.Enabled && session != null && msg.Slot != session.LocalSlot)
-                        NetDiag.Throttled($"dual{e.NetId}", 2f, "Dual",
-                            () => $"{NetDiag.Describe(e.NetId)} — I own it ({NetDiag.Owner((byte)session.LocalSlot)}) but {NetDiag.Owner(msg.Slot)} is ALSO streaming it (DUAL AUTHORITY)");
+                    InstrumentationCounters.StaleEntityStateDropped();
+                    if (NetDiag.Enabled) NetDiag.Throttled($"epoch{e.NetId}", 2f, "Epoch",
+                        () => $"drop {NetDiag.Describe(e.NetId)} from P{msg.Slot + 1}/{msg.Epoch} segment={transmittedSegment}; committed P{AuthorityManager.OwnerOf(transmittedSegment) + 1}/{AuthorityManager.EpochOf(transmittedSegment)}");
                     continue;
                 }
                 if (KilledNetIds.Contains(e.NetId)) continue; // dead here — don't animate a corpse
@@ -410,20 +845,32 @@ namespace PunkMultiverse.Sync
                     // owner's timeline (accepted below) — a visible snap if their positions differ.
                     if (NetDiag.Enabled && last.slot != msg.Slot)
                         NetDiag.Log("State", $"{NetDiag.Describe(e.NetId)} authority changed {NetDiag.Owner(last.slot)} -> {NetDiag.Owner(msg.Slot)} (puppet re-baselines — expect a visual snap)");
+                    // Epoch changes with the same owner use the same clock and do not represent a
+                    // simulator handoff. Preserve ordering and interpolation instead of P2 -> P2
+                    // pseudo-transitions every time a neighboring segment lease commits.
                     if (last.slot == msg.Slot && (int)(msg.TimeMs - last.ms) <= 0) continue;
                 }
-                LastEntityStateMs[e.NetId] = (msg.Slot, msg.TimeMs);
+                LastEntityStateMs[e.NetId] = (msg.Slot, msg.Epoch, msg.TimeMs);
                 if (!NetIds.TryGetInstanceId(e.NetId, out int instanceId)) continue;
 
                 // Keep the data-side position fresh so stream-in spawns at the right spot.
                 try
                 {
                     var data = em?.GetEntity(instanceId);
-                    if (data != null) data.position = new Vector3(e.Pos.x, e.Pos.y, data.position.z);
+                    // MoveTo is not cosmetic: it updates SpatialGrid bucket membership. Directly
+                    // assigning position left the entity indexed in its old segment, so every
+                    // rebuild of that segment instantiated the same netId again on clients.
+                    if (data != null) data.MoveTo(new Vector3(e.Pos.x, e.Pos.y, data.position.z));
                 }
                 catch { }
 
-                if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
+                // Ownership is derived only after the authoritative position has been installed.
+                // This breaks the old circular failure where a stale local position selected the
+                // wrong epoch, causing the position update itself to be rejected forever.
+                if (session != null && msg.Slot == session.LocalSlot) continue; // relayed echo
+                if (egm != null) try { ApplyOwnership(e.NetId, instanceId); } catch { }
+
+                if (LiveEntities.TryGetValue(e.NetId, out var se) && se != null)
                 {
                     var puppet = se.GetComponent<RemoteEntityPuppet>();
                     if (puppet == null && se.GetComponent<Unit>() != null)
@@ -488,6 +935,7 @@ namespace PunkMultiverse.Sync
                 // machine then keeps a live copy and HP-syncs our corpse back up (zombies).
                 // A double announce after a race is harmless: receivers dedupe on KilledNetIds.
                 if (__instance.GetComponentInParent<RemoteEntityPuppet>() != null) return;
+                if (!IsCanonical(__instance)) return;
                 if (!KilledNetIds.Add(netId)) return;
                 byte killer = KillerOf(netId, session);
                 NetStats.AddKill(killer);
@@ -520,6 +968,7 @@ namespace PunkMultiverse.Sync
             if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
             if (c == null || c.GetComponentInParent<RemoteEntityPuppet>() != null) return;
             if (!TryGetNetId(c, out int netId)) return; // orphan / no shared identity — can't sync
+            if (!IsCanonical(c)) return;
             if (!KilledNetIds.Add(netId)) return;
             byte killer = KillerOf(netId, session);
             NetStats.AddKill(killer);
@@ -533,20 +982,22 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(DestroyWhenResourceDrained), "Update")]
         internal static class SyncResourceDrainDestroy
         {
-            private static void Prefix(DestroyWhenResourceDrained __instance)
+            private static bool Prefix(DestroyWhenResourceDrained __instance)
             {
-                if (!NetSession.Active) return;
+                if (!NetSession.Active) return true;
+                if (!IsCanonical(__instance)) return false;
                 try
                 {
                     var unit = Traverse.Create(__instance).Field("unit").GetValue() as Unit;
                     var resource = Traverse.Create(__instance).Field("resource").GetValue() as Resource;
-                    if (unit == null || resource == null) return;
+                    if (unit == null || resource == null) return true;
                     bool hasTank = Traverse.Create(unit).Method("HasTank", resource).GetValue<bool>();
-                    if (!hasTank) return;
+                    if (!hasTank) return true;
                     float amount = Traverse.Create(unit).Method("GetResource", resource).GetValue<float>();
                     if (amount <= 0f) SyncDestroy(unit);
                 }
                 catch { }
+                return true;
             }
         }
 
@@ -557,6 +1008,12 @@ namespace PunkMultiverse.Sync
             RemoteKillerSlot = msg.KillerSlot; // so the DropLoot guard credits the killer
             if (!NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
             KillInstance(instanceId, msg.NetId);
+        }
+
+        public static void ApplyKillLedger(KillLedgerMsg msg)
+        {
+            foreach (int netId in msg.NetIds)
+                ApplyEntityKilled(new EntityKilledMsg { NetId = netId, KillerSlot = 0 });
         }
 
         private static bool _warnedDataDestroy;
@@ -588,6 +1045,23 @@ namespace PunkMultiverse.Sync
                 var egm = TryGetEgm();
                 if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
                 {
+                    // Re-stream of an entity whose death chain already ran here: remove the zombie
+                    // quietly, no second Die(). Die() re-fires loot/explosion/VFX, and because it
+                    // does NOT clear the EntityData, a LevelSegment rebuild re-instantiated the
+                    // corpse every frame -> SpawnObjectForEntity -> re-kill -> Die() again: a 60 Hz
+                    // onDeath storm that tanked the CLIENT's FPS (it owns these) and kept running
+                    // after the player died, since streaming — not the player — drives it.
+                    // (Observed live: Box_Money #552/#306 hitting DropLoot 30x+ in seconds.) The
+                    // first kill already dropped this player's instanced loot, so re-streams owe
+                    // nothing but their own removal.
+                    if (DeathEffectsDone.Contains(netId))
+                    {
+                        UnityEngine.Object.Destroy(se.gameObject);
+                        DestroyData(instanceId);
+                        return;
+                    }
+                    DeathEffectsDone.Add(netId);
+
                     // DestroyWhenResourceDrained entities are removed by the game via Object.Destroy
                     // plus their spawnOnDeath drop — never through Die(). Match that here: spawn OUR
                     // OWN copy of the drop (instanced per player, like all loot) and remove the
@@ -608,12 +1082,16 @@ namespace PunkMultiverse.Sync
                         return;
                     }
 
+                    // Die() runs the death chain (loot/VFX) and clears the live GameObject, but it
+                    // leaves the streaming EntityData behind — which is exactly what let the segment
+                    // re-instantiate the corpse. Destroy the data too so it can't stream back in.
                     var dr = se.GetComponent<DamagableResource>();
-                    if (dr != null) { dr.Die(); return; }
+                    if (dr != null) { dr.Die(); DestroyData(instanceId); return; }
                     var health = se.GetComponent<Health>();
                     if (health != null)
                     {
                         AccessTools.Method(typeof(Health), "Die")?.Invoke(health, null);
+                        DestroyData(instanceId);
                         return;
                     }
                 }
@@ -633,9 +1111,23 @@ namespace PunkMultiverse.Sync
             catch (Exception e)
             {
                 // Reflection Invoke wraps the real error in TargetInvocationException — unwrap,
-                // and log the full exception (type + stack), not just Message.
+                // and log the full exception (type + stack), not just Message. A broken vanilla
+                // death effect must not leave the killed object standing on this peer: force the
+                // visual and data cleanup after reporting it.
                 var cause = e.InnerException ?? e;
                 Plugin.Log.LogWarning($"[Enemies] kill apply failed for netId {netId}: {cause}");
+                try
+                {
+                    var egm = TryGetEgm();
+                    if (egm != null && egm.TryGetSavableEntity(instanceId, out var failed) && failed != null)
+                        UnityEngine.Object.Destroy(failed.gameObject);
+                    DestroyData(instanceId);
+                    Plugin.Log.LogWarning($"[Enemies] forced killed-entity cleanup for netId {netId}");
+                }
+                catch (Exception cleanup)
+                {
+                    Plugin.Log.LogWarning($"[Enemies] forced cleanup also failed for netId {netId}: {cleanup.Message}");
+                }
             }
             finally
             {
@@ -651,6 +1143,7 @@ namespace PunkMultiverse.Sync
                 var session = NetSession.Instance;
                 if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
                 if (!TryGetNetId(__instance, out int netId)) return;
+                if (!IsCanonical(__instance)) return;
                 if (!KilledNetIds.Add(netId)) return;
                 Writer.Reset();
                 new EntityKilledMsg { NetId = netId, KillerSlot = KillerOf(netId, session) }.Write(Writer);

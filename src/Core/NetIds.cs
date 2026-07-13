@@ -32,6 +32,11 @@ namespace PunkMultiverse.Core
         public static int Count => NetToInstance.Count;
         public static bool ManifestComplete { get; private set; }
 
+        /// <summary>Read-only enumeration for the one-shot live-object reconciliation performed
+        /// when the manifest becomes authoritative. Callers must not retain the enumerator across
+        /// frames; runtime spawn registration may extend the mapping later.</summary>
+        internal static IEnumerable<KeyValuePair<int, int>> MappedEntities => NetToInstance;
+
         /// <summary>Local entities that never matched a shared identity (muted phantoms) — the
         /// count that keeps churning authority when it drifts above zero.</summary>
         public static int OrphanCount => OrphanInstances.Count;
@@ -126,7 +131,53 @@ namespace PunkMultiverse.Core
             ManifestComplete = true;
             LastManifest = sorted;
             Plugin.Log.LogInfo($"[Ids] manifest built: {sorted.Count} entities");
+            // Most nearby GameObjects spawned while Loading, before netIds existed, so their
+            // spawn hook could not register them. Without this barrier reconciliation the host
+            // and client each run those initial enemies locally and prop deaths cannot broadcast.
+            Sync.EnemySync.ReconcileSpawnedIdentities("host-manifest");
             return sorted;
+        }
+
+        public static List<EntityBaselineEntry> BuildBaseline()
+        {
+            var result = new List<EntityBaselineEntry>(NetToInstance.Count);
+            EntityManager em;
+            try { em = ServiceLocator.Get<EntityManager>(); } catch { return result; }
+            foreach (var kv in NetToInstance.OrderBy(kv => kv.Key))
+            {
+                int netId = kv.Key;
+                int instanceId = kv.Value;
+                var data = em.GetEntity(instanceId);
+                if (data != null) result.Add(new EntityBaselineEntry { NetId = netId, Pos = data.position });
+            }
+            return result;
+        }
+
+        public static void ApplyBaseline(EntityBaselineMsg msg)
+        {
+            EntityManager em;
+            try { em = ServiceLocator.Get<EntityManager>(); } catch { return; }
+            EntityGameObjectManager egm = null;
+            try { egm = ServiceLocator.Get<EntityGameObjectManager>(); } catch { }
+            foreach (var e in msg.Entries)
+            {
+                if (!NetToInstance.TryGetValue(e.NetId, out int instanceId)) continue;
+                var data = em.GetEntity(instanceId);
+                // Keep SpatialGrid membership aligned with the canonical position; a raw field
+                // assignment makes later segment builds respawn this identity from the old bucket.
+                if (data != null) data.MoveTo(new Vector3(e.Pos.x, e.Pos.y, data.position.z));
+                if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
+                {
+                    var rb = se.GetComponent<Rigidbody2D>();
+                    if (rb != null) rb.position = e.Pos;
+                    else se.transform.position = new Vector3(e.Pos.x, e.Pos.y, se.transform.position.z);
+                }
+            }
+            if (msg.Start + msg.Entries.Count >= msg.Total)
+            {
+                Sync.EnemySync.ApplyAllOwnership();
+                Plugin.Log.LogInfo($"[Ids] canonical entity baseline applied ({msg.Total} positions)");
+            }
         }
 
         /// <summary>Client: apply one manifest chunk; instanceIds arrive in netId order.</summary>
@@ -170,6 +221,7 @@ namespace PunkMultiverse.Core
                 ManifestComplete = true;
                 foreach (var inst in OrphanInstances)
                     Sync.EnemySync.MuteOrphan(inst);
+                Sync.EnemySync.ReconcileSpawnedIdentities("client-manifest");
 
                 var log = $"[Ids] manifest applied: {_expectedTotal} total, {_matched} matched, " +
                     $"{_missing} missing here, {OrphanInstances.Count} local orphans (muted)";

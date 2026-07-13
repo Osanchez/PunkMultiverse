@@ -26,11 +26,12 @@
         Ping = 20,
         Pong = 21,
         ShipState = 22,     // 20 Hz per-player ship snapshot
-        EntityState = 23,   // 12 Hz batched entity snapshots (authority -> all)
+        EntityState = 23,   // legacy single-segment entity snapshots
         FireEvent = 24,     // ship weapon fired (visual replay on peers)
         EntityFire = 25,    // enemy/minion/boss weapon fired (visual replay on peers)
         EntitySpawned = 26, // (ch2) generic runtime entity spawn (boss adds, spawner enemies)
         ShipDash = 27,      // ship dashed (visual/audio replay on peers)
+        EntityStateBundle = 28, // coalesced multi-segment snapshots, interest-routed by host
 
         // ---- Channel 2: reliable events ----
         DamageRequest = 40, // non-authority -> authority (routed via host)
@@ -53,6 +54,14 @@
                             // (the chunks themselves travel as ordinary CellDiff messages)
 
         MapDiscovered = 59, // any player permanently revealed a station/POI on the map (overdrawn icon)
+
+        SegmentLease = 60,     // host -> all: prepare/commit a segment simulator + epoch
+        SegmentLeaseAck = 61,  // selected simulator -> host: prepare is installed
+        KillLedger = 62,       // host -> all: periodic canonical entity-death reconciliation
+        EntityBaseline = 63,   // host -> client: canonical generation-time entity positions
+        TerrainDigest = 64,    // host -> clients: canonical terrain-ledger revision/hash
+        TerrainRepairRequest = 65,
+        TerrainRepairChunk = 66,
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

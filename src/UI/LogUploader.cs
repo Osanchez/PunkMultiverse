@@ -53,9 +53,7 @@ namespace PunkMultiverse.UI
             string logPath = Path.Combine(BepInEx.Paths.BepInExRootPath, "LogOutput.log");
             if (!File.Exists(logPath)) return;
 
-            byte[] raw;
-            using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-            using (var ms = new MemoryStream()) { fs.CopyTo(ms); raw = ms.ToArray(); }
+            byte[] raw = ReadCombinedLog(logPath);
             byte[] gz;
             using (var outMs = new MemoryStream())
             {
@@ -125,13 +123,7 @@ namespace PunkMultiverse.UI
                     yield break;
                 }
                 // The log is being written live — open shared-read and copy before compressing.
-                byte[] raw;
-                using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                using (var ms = new MemoryStream())
-                {
-                    fs.CopyTo(ms);
-                    raw = ms.ToArray();
-                }
+                byte[] raw = ReadCombinedLog(logPath);
                 using (var outMs = new MemoryStream())
                 {
                     using (var gzs = new GZipStream(outMs, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
@@ -185,6 +177,27 @@ namespace PunkMultiverse.UI
             }
             catch { }
             return Environment.UserName;
+        }
+
+        /// <summary>Copy the live BepInEx log and append the watchdog's independent fallback. The
+        /// latter is the only evidence guaranteed to advance while Unity's main thread is stuck.</summary>
+        private static byte[] ReadCombinedLog(string logPath)
+        {
+            using (var ms = new MemoryStream())
+            {
+                using (var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    fs.CopyTo(ms);
+                string hitchPath = MainThreadWatchdog.FallbackPath;
+                if (File.Exists(hitchPath))
+                {
+                    byte[] separator = Encoding.UTF8.GetBytes(
+                        "\r\n\r\n===== PunkMultiverse watchdog fallback =====\r\n");
+                    ms.Write(separator, 0, separator.Length);
+                    using (var hs = new FileStream(hitchPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        hs.CopyTo(ms);
+                }
+                return ms.ToArray();
+            }
         }
 
         private static string BuildContext(string who, int rawBytes, int gzBytes, string reason)

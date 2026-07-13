@@ -7,6 +7,17 @@ using UnityEngine;
 
 namespace PunkMultiverse.Sync
 {
+    /// <summary>Identity attached at projectile spawn. ShotId identifies the burst and Ordinal the
+    /// projectile/pellet within it, allowing impact dedupe without collapsing legitimate pellets.</summary>
+    internal sealed class NetworkProjectileIdentity : MonoBehaviour
+    {
+        internal int SourceNetId;
+        internal byte SourceSlot;
+        internal uint ShotId;
+        internal ushort Ordinal;
+        internal bool Replayed;
+    }
+
     /// <summary>
     /// Weapon-fire replication. The local player's shots are captured at WeaponBase.DoShoot (one
     /// call per actual burst tick, sync — never patch the async Fire) and replayed on peers through
@@ -16,8 +27,77 @@ namespace PunkMultiverse.Sync
     internal static class ProjectileSync
     {
         private static readonly HashSet<int> VisualProjectiles = new HashSet<int>();
+        internal static int VisualProjectileCount => VisualProjectiles.Count;
         private static int _replayDepth;
         private static readonly NetWriter Writer = new NetWriter(64);
+        private static uint _shotSequence;
+
+        internal readonly struct DamageTrace
+        {
+            internal readonly int SourceNetId;
+            internal readonly byte SourceSlot;
+            internal readonly uint ShotId;
+            internal readonly ushort ProjectileOrdinal;
+            internal readonly int ProjectileInstanceId;
+            internal readonly bool Replayed;
+            internal readonly string Kind;
+
+            internal DamageTrace(int sourceNetId, byte sourceSlot, uint shotId, ushort projectileOrdinal,
+                int projectileInstanceId, bool replayed, string kind)
+            {
+                SourceNetId = sourceNetId;
+                SourceSlot = sourceSlot;
+                ShotId = shotId;
+                ProjectileOrdinal = projectileOrdinal;
+                ProjectileInstanceId = projectileInstanceId;
+                Replayed = replayed;
+                Kind = kind;
+            }
+        }
+
+        private sealed class ShotContext
+        {
+            internal int SourceNetId;
+            internal byte SourceSlot;
+            internal uint ShotId;
+            internal bool Replayed;
+            internal ushort NextOrdinal;
+        }
+
+        private readonly struct ImpactKey : System.IEquatable<ImpactKey>
+        {
+            private readonly int _sourceNetId, _projectileInstance, _victimInstance;
+            private readonly uint _shotId;
+            private readonly ushort _ordinal;
+            internal ImpactKey(int sourceNetId, uint shotId, ushort ordinal, int projectileInstance, int victimInstance)
+            {
+                _sourceNetId = sourceNetId; _shotId = shotId; _ordinal = ordinal;
+                _projectileInstance = projectileInstance; _victimInstance = victimInstance;
+            }
+            public bool Equals(ImpactKey other) => _sourceNetId == other._sourceNetId
+                && _shotId == other._shotId && _ordinal == other._ordinal
+                && _projectileInstance == other._projectileInstance && _victimInstance == other._victimInstance;
+            public override bool Equals(object obj) => obj is ImpactKey other && Equals(other);
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int h = _sourceNetId;
+                    h = h * 397 ^ (int)_shotId;
+                    h = h * 397 ^ _ordinal;
+                    h = h * 397 ^ _projectileInstance;
+                    return h * 397 ^ _victimInstance;
+                }
+            }
+        }
+
+        private static ShotContext _currentShot;
+        private static DamageTrace? _currentDamageTrace;
+        private static readonly HashSet<ulong> SeenFireEvents = new HashSet<ulong>();
+        private static readonly Queue<ulong> SeenFireOrder = new Queue<ulong>();
+        private static readonly HashSet<ImpactKey> SeenImpacts = new HashSet<ImpactKey>();
+        private static readonly Queue<ImpactKey> SeenImpactOrder = new Queue<ImpactKey>();
+        private const int RecentIdentityLimit = 8192;
 
         // weapon -> owning net entity, for enemy/boss fire capture (enemy weapons are stable
         // per instance, unlike ship weapons which rebuild on grid refresh).
@@ -31,6 +111,13 @@ namespace PunkMultiverse.Sync
             VisualProjectiles.Clear();
             EntityWeapons.Clear();
             _replayDepth = 0;
+            _shotSequence = 0;
+            _currentShot = null;
+            _currentDamageTrace = null;
+            SeenFireEvents.Clear();
+            SeenFireOrder.Clear();
+            SeenImpacts.Clear();
+            SeenImpactOrder.Clear();
             _warnedEntityReplay = false;
             _warnedShipReplay = false;
         }
@@ -49,55 +136,125 @@ namespace PunkMultiverse.Sync
         private static int _fireSeedCounter;
         private static int _lastFireSeed;
 
+        private struct FirePatchState
+        {
+            internal bool Seeded;
+            internal UnityEngine.Random.State RandomState;
+            internal ShotContext PreviousShot;
+            internal bool InstalledShot;
+            internal bool Suppressed;
+            internal int Holder;
+            internal SavableEntity Entity;
+            internal int NetId;
+            internal uint ShotId;
+        }
+
         [HarmonyPatch(typeof(WeaponBase), "DoShoot")]
         internal static class CaptureFire
         {
-            private static void Prefix(out (bool seeded, UnityEngine.Random.State state) __state)
+            private static bool Prefix(WeaponBase __instance, out FirePatchState __state)
             {
+                var profile = PatchProfiler.Enter(PatchId.ProjectileCaptureFirePrefix);
+                try { return PrefixBody(__instance, out __state); }
+                finally { PatchProfiler.Exit(PatchId.ProjectileCaptureFirePrefix, profile); }
+            }
+
+            private static bool PrefixBody(WeaponBase weapon, out FirePatchState state)
+            {
+                state = new FirePatchState { Holder = -1, PreviousShot = _currentShot };
                 var session = NetSession.Instance;
                 if (session == null || session.State != SessionState.InGame || _replayDepth > 0)
+                    return true;
+
+                state.Holder = FindLocalHolder(weapon);
+                if (state.Holder < 0)
                 {
-                    __state = (false, default);
-                    return;
+                    if (!EntityWeapons.TryGetValue(weapon, out var owner))
+                    {
+                        owner = ResolveEntityWeapon(weapon);
+                        EntityWeapons[weapon] = owner;
+                    }
+                    state.Entity = owner.se;
+                    state.NetId = owner.netId;
+                    if (owner.se != null && !EnemySync.CanSimulate(owner.se, owner.netId))
+                    {
+                        state.Suppressed = true;
+                        InstrumentationCounters.DuplicateFireDropped();
+                        if (NetDiag.Enabled) NetDiag.Throttled($"blockedfire{owner.se.GetInstanceID()}", 1f, "Fire",
+                            () => $"blocked non-canonical/non-owner fire from {NetDiag.Describe(owner.netId)} object={owner.se.GetInstanceID()}");
+                        return false;
+                    }
                 }
-                __state = (true, UnityEngine.Random.state);
+
+                state.Seeded = true;
+                state.RandomState = UnityEngine.Random.state;
                 _fireSeedCounter = unchecked(_fireSeedCounter * 486187739 + 1);
                 _lastFireSeed = unchecked(_fireSeedCounter ^ (session.LocalSlot << 20) ^ session.CurrentRunSeed);
                 UnityEngine.Random.InitState(_lastFireSeed);
+                if (state.Holder >= 0 || state.Entity != null)
+                {
+                    state.ShotId = NextShotId((byte)session.LocalSlot);
+                    _currentShot = new ShotContext
+                    {
+                        SourceNetId = state.Entity != null ? state.NetId : -1,
+                        SourceSlot = (byte)session.LocalSlot,
+                        ShotId = state.ShotId,
+                        Replayed = false,
+                    };
+                    state.InstalledShot = true;
+                }
+                return true;
             }
 
             private static void Postfix(WeaponBase __instance, IBarrel __0,
-                (bool seeded, UnityEngine.Random.State state) __state)
+                FirePatchState __state)
             {
-                if (__state.seeded) UnityEngine.Random.state = __state.state;
+                var profile = PatchProfiler.Enter(PatchId.ProjectileCaptureFirePostfix);
+                try { PostfixBody(__instance, __0, __state); }
+                finally { PatchProfiler.Exit(PatchId.ProjectileCaptureFirePostfix, profile); }
+            }
+
+            private static void PostfixBody(WeaponBase __instance, IBarrel __0,
+                FirePatchState state)
+            {
+                if (state.Seeded) UnityEngine.Random.state = state.RandomState;
+                if (state.InstalledShot) _currentShot = state.PreviousShot;
+                if (state.Suppressed) return;
 
                 var session = NetSession.Instance;
                 if (session == null || session.State != SessionState.InGame || _replayDepth > 0) return;
                 try
                 {
-                    int holder = FindLocalHolder(__instance);
-                    if (holder >= 0)
+                    if (state.Holder >= 0)
                     {
                         var msg = new FireEventMsg
                         {
                             Slot = (byte)session.LocalSlot,
-                            Holder = (byte)holder,
+                            Holder = (byte)state.Holder,
                             Pos = __0.Position,
                             Dir = __0.Direction,
                             Seed = _lastFireSeed,
+                            ShotId = state.ShotId,
                         };
                         Writer.Reset();
                         msg.Write(Writer);
                         session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
                         return;
                     }
-                    TryCaptureEntityFire(session, __instance, __0);
+                    TryCaptureEntityFire(session, __instance, __0, state.Entity, state.NetId, state.ShotId);
                 }
                 catch (System.Exception e)
                 {
                     Plugin.Log.LogWarning($"[Fire] capture failed: {e.Message}");
                 }
             }
+        }
+
+        private static uint NextShotId(byte slot)
+        {
+            _shotSequence = (_shotSequence + 1u) & 0x00FFFFFFu;
+            if (_shotSequence == 0) _shotSequence = 1;
+            return ((uint)slot << 24) | _shotSequence;
         }
 
         /// <summary>Replay DoShoot with the shooter's RNG seed, restoring the local stream after.</summary>
@@ -137,9 +294,11 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- entity (enemy/boss) fire
 
-        private static void TryCaptureEntityFire(NetSession session, WeaponBase weapon, IBarrel barrel)
+        private static void TryCaptureEntityFire(NetSession session, WeaponBase weapon, IBarrel barrel,
+            SavableEntity resolvedEntity, int resolvedNetId, uint shotId)
         {
-            if (!EntityWeapons.TryGetValue(weapon, out var owner))
+            var owner = (se: resolvedEntity, netId: resolvedNetId);
+            if (owner.se == null && !EntityWeapons.TryGetValue(weapon, out owner))
             {
                 owner = ResolveEntityWeapon(weapon);
                 EntityWeapons[weapon] = owner; // caches failures as (null, 0) too
@@ -147,9 +306,7 @@ namespace PunkMultiverse.Sync
             if (owner.se == null) return;
             if (EnemySync.IsKilled(owner.netId)) return; // zombie awaiting re-kill — never announce
             // Only the entity's simulating authority announces its shots.
-            bool mine = EnemySync.IsLocallyOwned(owner.netId)
-                        || (session.IsHost && !EnemySync.Owners.ContainsKey(owner.netId));
-            if (!mine || owner.se.GetComponent<RemoteEntityPuppet>() != null) return;
+            if (!EnemySync.CanSimulate(owner.se, owner.netId)) return;
 
             // Homing projectiles get their target at fire time from the shooter's AIAgent —
             // muted on puppets, so peers must be told who is being shot at.
@@ -167,9 +324,15 @@ namespace PunkMultiverse.Sync
             }
             catch { }
 
+            var segment = AuthorityManager.SegmentOf(owner.se.transform.position);
             var msg = new EntityFireMsg
             {
                 NetId = owner.netId,
+                SourceSlot = (byte)session.LocalSlot,
+                SegmentX = segment.X,
+                SegmentY = segment.Y,
+                Epoch = EnemySync.FixedOwners.Contains(owner.netId) ? 0 : AuthorityManager.EpochOf(segment),
+                ShotId = shotId,
                 Pos = barrel.Position,
                 Dir = barrel.Direction,
                 BodyPos = owner.se.transform.position,
@@ -180,7 +343,7 @@ namespace PunkMultiverse.Sync
             if (session.IsHost) Core.AuthorityManager.NoteAggro(owner.netId, targetSlot);
             if (Core.NetDiag.Enabled)
                 Core.NetDiag.Throttled($"fire{owner.netId}", 1f, "Fire",
-                    () => $"{Core.NetDiag.Describe(owner.netId)} announcing shot (I simulate it)" +
+                    () => $"{Core.NetDiag.Describe(owner.netId)} announcing shot={shotId} (I simulate it)" +
                           (targetSlot != 255 ? $" at {Core.NetDiag.Owner(targetSlot)}" : ""));
             Writer.Reset();
             msg.Write(Writer);
@@ -206,6 +369,16 @@ namespace PunkMultiverse.Sync
             var session = NetSession.Instance;
             if (session == null || session.State != SessionState.InGame) return; // stale post-run traffic
             if (EnemySync.IsKilled(msg.NetId)) return; // dead here — nothing to anchor the replay to
+            var segment = new AuthorityManager.SegmentKey(msg.SegmentX, msg.SegmentY);
+            if (!AuthorityManager.SegmentOf(msg.BodyPos).Equals(segment)
+                || !AuthorityManager.IsStateAuthority(msg.NetId, segment, msg.SourceSlot, msg.Epoch))
+            {
+                InstrumentationCounters.StaleFireDropped();
+                if (NetDiag.Enabled) NetDiag.Throttled($"stalefire{msg.NetId}", 1f, "Fire",
+                    () => $"dropped stale fire {NetDiag.Describe(msg.NetId)} shot={msg.ShotId} from P{msg.SourceSlot + 1}/{msg.Epoch} segment={segment}");
+                return;
+            }
+            if (!AcceptFireIdentity(((ulong)(uint)msg.NetId << 32) | msg.ShotId)) return;
             if (!Core.NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
             try
             {
@@ -223,15 +396,27 @@ namespace PunkMultiverse.Sync
                     : msg.Pos;
                 if (Core.NetDiag.Enabled)
                     Core.NetDiag.Throttled($"replay{msg.NetId}", 1f, "Fire",
-                        () => $"{Core.NetDiag.Describe(msg.NetId)} replaying remote shot (puppet here)" +
+                        () => $"{Core.NetDiag.Describe(msg.NetId)} replaying remote shot={msg.ShotId} (puppet here)" +
                               (msg.TargetSlot != 255 ? $", targeting {Core.NetDiag.Owner(msg.TargetSlot)}" : ""));
                 ReplaySpawned.Clear();
+                var previousShot = _currentShot;
+                _currentShot = new ShotContext
+                {
+                    SourceNetId = msg.NetId,
+                    SourceSlot = msg.SourceSlot,
+                    ShotId = msg.ShotId,
+                    Replayed = true,
+                };
                 _replayDepth++;
                 try
                 {
                     InvokeSeededDoShoot(weapon, new FakeBarrel(pos, msg.Dir), msg.Seed);
                 }
-                finally { _replayDepth--; }
+                finally
+                {
+                    _replayDepth--;
+                    _currentShot = previousShot;
+                }
 
                 // Prefab-wired fire cosmetics (recoil VFX etc.) hang off Shooter.OnShoot,
                 // which the DoShoot-direct replay skips.
@@ -271,11 +456,21 @@ namespace PunkMultiverse.Sync
         {
             var session = NetSession.Instance;
             if (session == null || session.State != SessionState.InGame) return; // stale post-run traffic
+            ulong identity = 0x8000000000000000UL | ((ulong)msg.Slot << 32) | msg.ShotId;
+            if (!AcceptFireIdentity(identity)) return;
             if (!ShipSync.ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
             if (ship.GetComponent<RemotePuppet>() == null) return; // our own echo
             var weapon = GetHolderWeapon(ship, msg.Holder);
             if (weapon == null) return;
 
+            var previousShot = _currentShot;
+            _currentShot = new ShotContext
+            {
+                SourceNetId = -1,
+                SourceSlot = msg.Slot,
+                ShotId = msg.ShotId,
+                Replayed = true,
+            };
             _replayDepth++;
             try
             {
@@ -293,7 +488,21 @@ namespace PunkMultiverse.Sync
             finally
             {
                 _replayDepth--;
+                _currentShot = previousShot;
             }
+        }
+
+        private static bool AcceptFireIdentity(ulong identity)
+        {
+            if (!SeenFireEvents.Add(identity))
+            {
+                InstrumentationCounters.DuplicateFireDropped();
+                return false;
+            }
+            SeenFireOrder.Enqueue(identity);
+            if (SeenFireOrder.Count > RecentIdentityLimit)
+                SeenFireEvents.Remove(SeenFireOrder.Dequeue());
+            return true;
         }
 
         // Anything spawned while replaying is visual-only; also collected so the replay can
@@ -305,9 +514,18 @@ namespace PunkMultiverse.Sync
         {
             private static void Prefix(Projectile __instance)
             {
+                var profile = PatchProfiler.Enter(PatchId.ProjectileMarkVisual);
+                try { PrefixBody(__instance); }
+                finally { PatchProfiler.Exit(PatchId.ProjectileMarkVisual, profile); }
+            }
+
+            private static void PrefixBody(Projectile __instance)
+            {
+                StampProjectile(__instance);
                 if (_replayDepth <= 0) return;
                 VisualProjectiles.Add(__instance.gameObject.GetInstanceID());
                 ReplaySpawned.Add(__instance);
+                InstrumentationCounters.VisualProjectileSpawned();
             }
         }
 
@@ -316,10 +534,32 @@ namespace PunkMultiverse.Sync
         {
             private static void Prefix(PhysicsProjectile __instance)
             {
+                var profile = PatchProfiler.Enter(PatchId.ProjectileMarkVisualPhysics);
+                try { PrefixBody(__instance); }
+                finally { PatchProfiler.Exit(PatchId.ProjectileMarkVisualPhysics, profile); }
+            }
+
+            private static void PrefixBody(PhysicsProjectile __instance)
+            {
+                StampProjectile(__instance);
                 if (_replayDepth <= 0) return;
                 VisualProjectiles.Add(__instance.gameObject.GetInstanceID());
                 ReplaySpawned.Add(__instance);
+                InstrumentationCounters.VisualProjectileSpawned();
             }
+        }
+
+        private static void StampProjectile(Component projectile)
+        {
+            if (projectile == null || _currentShot == null) return;
+            var identity = projectile.GetComponent<NetworkProjectileIdentity>();
+            if (identity != null) return;
+            identity = projectile.gameObject.AddComponent<NetworkProjectileIdentity>();
+            identity.SourceNetId = _currentShot.SourceNetId;
+            identity.SourceSlot = _currentShot.SourceSlot;
+            identity.ShotId = _currentShot.ShotId;
+            identity.Ordinal = _currentShot.NextOrdinal++;
+            identity.Replayed = _currentShot.Replayed;
         }
 
         // ---------------------------------------------------------------- damage suppression
@@ -354,7 +594,23 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(HealthBase), "ProjectileCollided")]
         internal static class SuppressVisualProjectileDamage
         {
-            private static bool Prefix(HealthBase __instance, object __0)
+            private static bool Prefix(HealthBase __instance, object __0, out DamageTrace? __state)
+            {
+                __state = _currentDamageTrace;
+                var profile = PatchProfiler.Enter(PatchId.ProjectileSuppressDamage);
+                try
+                {
+                    if (!TryAcceptImpact(__instance, __0)) return false;
+                    bool allowed = PrefixBody(__instance, __0);
+                    if (allowed && IsLocalShip(__instance)) _currentDamageTrace = TraceOf(__0, "projectile");
+                    return allowed;
+                }
+                finally { PatchProfiler.Exit(PatchId.ProjectileSuppressDamage, profile); }
+            }
+
+            private static void Postfix(DamageTrace? __state) => _currentDamageTrace = __state;
+
+            private static bool PrefixBody(HealthBase __instance, object __0)
             {
                 if (!NetSession.Active) return true;
                 var owner = OwnerUnit(__0);
@@ -391,6 +647,53 @@ namespace PunkMultiverse.Sync
                 if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
             }
+        }
+
+        internal static bool TryGetCurrentDamageTrace(out DamageTrace trace)
+        {
+            if (_currentDamageTrace.HasValue)
+            {
+                trace = _currentDamageTrace.Value;
+                return true;
+            }
+            trace = default;
+            return false;
+        }
+
+        private static DamageTrace TraceOf(object projectile, string kind)
+        {
+            if (projectile is Component component)
+            {
+                var identity = component.GetComponent<NetworkProjectileIdentity>();
+                if (identity != null)
+                    return new DamageTrace(identity.SourceNetId, identity.SourceSlot, identity.ShotId,
+                        identity.Ordinal, component.gameObject.GetInstanceID(), identity.Replayed, kind);
+                var owner = OwnerUnit(projectile);
+                int netId = owner != null && EnemySync.TryGetNetId(owner, out int id) ? id : -2;
+                byte slot = netId >= 0 ? EnemySync.OwnerOf(netId) : (byte)255;
+                return new DamageTrace(netId, slot, 0, 0, component.gameObject.GetInstanceID(), false, kind);
+            }
+            return new DamageTrace(-2, 255, 0, 0, 0, false, kind);
+        }
+
+        private static bool TryAcceptImpact(Component victim, object projectile)
+        {
+            if (!NetSession.Active || victim == null || !(projectile is Component component)) return true;
+            var identity = component.GetComponent<NetworkProjectileIdentity>();
+            var key = identity != null
+                ? new ImpactKey(identity.SourceNetId, identity.ShotId, identity.Ordinal, 0, victim.gameObject.GetInstanceID())
+                : new ImpactKey(0, 0, 0, component.gameObject.GetInstanceID(), victim.gameObject.GetInstanceID());
+            if (!SeenImpacts.Add(key))
+            {
+                InstrumentationCounters.DuplicateImpactDropped();
+                if (NetDiag.Enabled) NetDiag.Throttled($"impact{component.gameObject.GetInstanceID()}:{victim.gameObject.GetInstanceID()}", 1f, "Damage",
+                    () => $"dropped duplicate projectile impact shot={(identity != null ? identity.ShotId : 0)} pellet={(identity != null ? identity.Ordinal : (ushort)0)} victim={victim.name}");
+                return false;
+            }
+            SeenImpactOrder.Enqueue(key);
+            if (SeenImpactOrder.Count > RecentIdentityLimit)
+                SeenImpacts.Remove(SeenImpactOrder.Dequeue());
+            return true;
         }
 
         /// <summary>My real shot against a teammate's puppet while the host disabled friendly
@@ -491,10 +794,11 @@ namespace PunkMultiverse.Sync
             if (owner == null || !Core.NetDiag.Enabled) return;
             Core.NetDiag.Throttled($"hit{owner.GetInstanceID()}", 0.5f, "Hit", () =>
             {
-                string src = EnemySync.TryGetNetId(owner, out int en) ? Core.NetDiag.Describe(en) : owner.name;
+                bool hasNetId = EnemySync.TryGetNetId(owner, out int en);
+                string src = hasNetId ? Core.NetDiag.Describe(en) : owner.name;
                 var ship = ShipSync.LocalShip;
                 float dist = ship != null ? Vector2.Distance(ship.transform.position, owner.transform.position) : -1f;
-                byte ownerSlot = en != 0 ? EnemySync.OwnerOf(en) : (byte)255;
+                byte ownerSlot = hasNetId ? EnemySync.OwnerOf(en) : (byte)255;
                 string sim = ownerSlot == 255 ? "" : $", simulated by {Core.NetDiag.Owner(ownerSlot)}";
                 return $"my ship hit by {kind} from {src} at {dist:0}u{sim}";
             });
@@ -506,7 +810,30 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(HealthBase), "OnHitByHitscanWeapon")]
         internal static class SuppressVisualHitscanDamage
         {
-            private static bool Prefix(HealthBase __instance, object __0)
+            private static bool Prefix(HealthBase __instance, object __0, out DamageTrace? __state)
+            {
+                __state = _currentDamageTrace;
+                var profile = PatchProfiler.Enter(PatchId.ProjectileSuppressHitscanDamage);
+                try
+                {
+                    if (!TryAcceptHitscan(__instance)) return false;
+                    bool allowed = PrefixBody(__instance, __0);
+                    if (allowed && IsLocalShip(__instance))
+                    {
+                        if (_currentShot != null)
+                            _currentDamageTrace = new DamageTrace(_currentShot.SourceNetId, _currentShot.SourceSlot,
+                                _currentShot.ShotId, 0, 0, _currentShot.Replayed, "hitscan");
+                        else
+                            _currentDamageTrace = TraceOf(__0, "hitscan");
+                    }
+                    return allowed;
+                }
+                finally { PatchProfiler.Exit(PatchId.ProjectileSuppressHitscanDamage, profile); }
+            }
+
+            private static void Postfix(DamageTrace? __state) => _currentDamageTrace = __state;
+
+            private static bool PrefixBody(HealthBase __instance, object __0)
             {
                 if (!NetSession.Active) return true;
                 var owner = OwnerUnit(__0);
@@ -531,6 +858,22 @@ namespace PunkMultiverse.Sync
                 if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
             }
+        }
+
+        private static bool TryAcceptHitscan(Component victim)
+        {
+            if (!NetSession.Active || victim == null || _currentShot == null) return true;
+            var key = new ImpactKey(_currentShot.SourceNetId, _currentShot.ShotId, 0, -1,
+                victim.gameObject.GetInstanceID());
+            if (!SeenImpacts.Add(key))
+            {
+                InstrumentationCounters.DuplicateImpactDropped();
+                return false;
+            }
+            SeenImpactOrder.Enqueue(key);
+            if (SeenImpactOrder.Count > RecentIdentityLimit)
+                SeenImpacts.Remove(SeenImpactOrder.Dequeue());
+            return true;
         }
 
         private static bool OwnerIsRemote(object weaponOrProjectile)

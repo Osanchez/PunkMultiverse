@@ -42,6 +42,7 @@ namespace PunkMultiverse.Sync
         private bool _boosting;
         private bool _frozenStale;
         private float _savedGravityScale;
+        private bool _instrumentationCounted;
 
         private void Awake()
         {
@@ -67,6 +68,18 @@ namespace PunkMultiverse.Sync
                 if (!owned.Contains(barrel)) free.Add(barrel);
             _barrels = free.ToArray();
             StartCoroutine(RemoveCameraTargets());
+        }
+
+        private void OnEnable()
+        {
+            if (_instrumentationCounted) return;
+            _instrumentationCounted = true;
+            Core.InstrumentationCounters.RemoteShipAdded();
+        }
+
+        private void OnDisable()
+        {
+            RemoveInstrumentationCount();
         }
 
         private int? _boostLoopHandle;
@@ -109,11 +122,19 @@ namespace PunkMultiverse.Sync
 
         private void OnDestroy()
         {
+            RemoveInstrumentationCount();
             if (_boostLoopHandle.HasValue)
             {
                 try { AudioManager.Stop(_boostLoopHandle.Value); } catch { }
                 _boostLoopHandle = null;
             }
+        }
+
+        private void RemoveInstrumentationCount()
+        {
+            if (!_instrumentationCounted) return;
+            _instrumentationCounted = false;
+            Core.InstrumentationCounters.RemoteShipRemoved();
         }
 
         private Vector2 _moveInput;

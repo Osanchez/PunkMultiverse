@@ -74,7 +74,7 @@ namespace PunkMultiverse.Sync
                 LocalShip = sm.Ships[0];
                 ShipsBySlot[session.LocalSlot] = LocalShip;
 
-                foreach (var p in session.Players.Where(p => p != null && !p.IsLocal).OrderBy(p => p.Slot))
+                foreach (var p in session.Players.Where(p => p != null && p.Connected && !p.IsLocal).OrderBy(p => p.Slot))
                     SpawnPuppet(p.Slot);
 
                 ApplyThemes(sm, session);
@@ -101,7 +101,8 @@ namespace PunkMultiverse.Sync
 
             Vector2 c = _level.graph.StartNode.center;
             Vector2[] off = { Vector2.up * 2f, Vector2.down * 2f, Vector2.left * 2f, Vector2.right * 2f };
-            var known = new HashSet<EntityData>(sm.Ships.Select(s => s.SavableEntity.EntityData));
+            var known = new HashSet<EntityData>(sm.Ships.Where(s => s != null && s.SavableEntity != null)
+                                                        .Select(s => s.SavableEntity.EntityData));
             var pos = c + off[slot % off.Length];
             placeM.Invoke(sm, new object[] { new Vector3(pos.x, pos.y, 0f), loadout });
             var entity = (getShipsM.Invoke(entityManager, null) as IEnumerable<EntityData>)
@@ -131,7 +132,7 @@ namespace PunkMultiverse.Sync
             {
                 // ContainsKey, not a null check: a destroyed-but-known ship is the
                 // death/respawn flow, which owns that slot's lifecycle.
-                if (p == null || p.IsLocal || ShipsBySlot.ContainsKey(p.Slot)) continue;
+                if (p == null || !p.Connected || p.IsLocal || ShipsBySlot.ContainsKey(p.Slot)) continue;
                 try
                 {
                     if (SpawnPuppet(p.Slot)) ApplyThemes(_shipManager, session);
@@ -140,6 +141,48 @@ namespace PunkMultiverse.Sync
                 {
                     Plugin.Log.LogError($"[Ships] late puppet spawn failed for slot {p.Slot}: {e}");
                 }
+            }
+        }
+
+        /// <summary>Remove a disconnected player's puppet completely. Keeping it frozen leaves a
+        /// targetable ship prop in the world and also prevents EnsureLatePuppets from creating a
+        /// clean replacement when that slot reattaches.</summary>
+        public static void RemoveRemoteShip(byte slot, string reason)
+        {
+            var session = NetSession.Instance;
+            if (session != null && slot == session.LocalSlot) return;
+            LastShipStateMs.Remove(slot);
+            if (!ShipsBySlot.TryGetValue(slot, out var ship)) return;
+            ShipsBySlot.Remove(slot);
+
+            try
+            {
+                if (session != null && slot < session.Players.Count && session.Players[slot] != null)
+                    session.Players[slot].Ship = null;
+                if (ship == null) return;
+                RemotePuppet.ScrubInteractions(ship);
+                try
+                {
+                    var ships = _shipManager != null
+                        ? AccessTools.Field(typeof(ShipManager), "ships")?.GetValue(_shipManager) as IList<Ship>
+                        : null;
+                    ships?.Remove(ship);
+                }
+                catch { }
+
+                var data = ship.SavableEntity != null ? ship.SavableEntity.EntityData : null;
+                UnityEngine.Object.Destroy(ship.gameObject);
+                if (data != null)
+                {
+                    var destroy = AccessTools.Method(data.GetType(), "Destroy");
+                    if (destroy != null && destroy.GetParameters().Length == 0) destroy.Invoke(data, null);
+                }
+                Plugin.Log.LogInfo($"[Ships] removed disconnected puppet P{slot + 1} ({reason})");
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Ships] disconnected puppet cleanup failed for P{slot + 1}: {e.Message}");
+                try { if (ship != null) ship.gameObject.SetActive(false); } catch { }
             }
         }
 
@@ -396,7 +439,7 @@ namespace PunkMultiverse.Sync
                 }
                 LocalShip.transform.position = pos;
                 var shipData = LocalShip.SavableEntity != null ? LocalShip.SavableEntity.EntityData : null;
-                if (shipData != null) shipData.position = new Vector3(pos.x, pos.y, shipData.position.z);
+                if (shipData != null) shipData.MoveTo(new Vector3(pos.x, pos.y, shipData.position.z));
                 try
                 {
                     var cam = Com.LuisPedroFonseca.ProCamera2D.ProCamera2D.Instance;

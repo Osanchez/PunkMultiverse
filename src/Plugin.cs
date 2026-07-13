@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using System.Threading;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
@@ -38,6 +39,7 @@ namespace PunkMultiverse
 
             var cfg = new BepConfigFile(Path.Combine(ModFolder.Dir, "config.cfg"), saveOnInit: true);
             NetConfig.Init(cfg);
+            RuntimeInstrumentation.Initialize(Thread.CurrentThread);
 
             _harmony = new Harmony(Guid);
             _harmony.PatchAll(typeof(Plugin).Assembly);
@@ -64,6 +66,7 @@ namespace PunkMultiverse
         {
             if (_runtime != null) Object.Destroy(_runtime);
             try { _harmony?.UnpatchSelf(); } catch { }
+            RuntimeInstrumentation.Shutdown();
         }
     }
 }

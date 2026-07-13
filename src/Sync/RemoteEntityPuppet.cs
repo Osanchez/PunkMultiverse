@@ -66,6 +66,13 @@ namespace PunkMultiverse.Sync
         private BarrelTransform[] _barrels;
 
         private RigidbodyInterpolation2D _savedInterpolation;
+        private bool _savedSimulated;
+        private RigidbodyType2D _savedBodyType;
+        private float _savedGravityScale;
+        private bool _savedFullKinematicContacts;
+        private bool _instrumentationCounted;
+        public bool HasSnapshot => _buffer.Count > 0;
+        public float SnapshotAge => _buffer.Count == 0 ? float.PositiveInfinity : Time.unscaledTime - _buffer[_buffer.Count - 1].Time;
 
         private void Awake()
         {
@@ -76,7 +83,19 @@ namespace PunkMultiverse.Sync
                 // Fixed-step snapshot driving needs render interpolation or the enemy stutters
                 // on high-refresh displays; restored on handoff (OnDestroy) below.
                 _savedInterpolation = _rb.interpolation;
-                _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
+                _savedSimulated = _rb.simulated;
+                _savedBodyType = _rb.bodyType;
+                _savedGravityScale = _rb.gravityScale;
+                _savedFullKinematicContacts = _rb.useFullKinematicContacts;
+                // Passive kinematic bodies remain raycast/projectile targets but do not fall,
+                // integrate forces, or generate kinematic-vs-static terrain contacts. This is
+                // intentionally true even before the first snapshot and while packets are stale.
+                _rb.linearVelocity = Vector2.zero;
+                _rb.angularVelocity = 0;
+                _rb.gravityScale = 0;
+                _rb.bodyType = RigidbodyType2D.Kinematic;
+                _rb.useFullKinematicContacts = false;
+                _rb.simulated = true;
             }
         }
 
@@ -125,7 +144,15 @@ namespace PunkMultiverse.Sync
             catch { }
         }
 
-        private void OnEnable() => MuteNow();
+        private void OnEnable()
+        {
+            if (!_instrumentationCounted)
+            {
+                _instrumentationCounted = true;
+                Core.InstrumentationCounters.RemoteEntityAdded();
+            }
+            MuteNow();
+        }
 
         /// <summary>Idempotent, and callable while the GameObject is still INACTIVE — replicas
         /// must be muted before their first activation, because prefab-active actions fire
@@ -153,15 +180,35 @@ namespace PunkMultiverse.Sync
 
         private void OnDisable()
         {
+            RemoveInstrumentationCount();
             StopWeaponSounds();
+            // A superseded lifetime is permanently quarantined. Restoring its AI/body here would
+            // undo DuplicateEntityInert at exactly the moment the puppet component is disabled.
+            if (GetComponent<DuplicateEntityInert>() != null) return;
             Unmute();
         }
 
         private void OnDestroy()
         {
+            RemoveInstrumentationCount();
             StopWeaponSounds();
+            if (GetComponent<DuplicateEntityInert>() != null) return;
             Unmute();
-            if (_rb != null) _rb.interpolation = _savedInterpolation;
+            if (_rb != null)
+            {
+                _rb.simulated = _savedSimulated;
+                _rb.bodyType = _savedBodyType;
+                _rb.gravityScale = _savedGravityScale;
+                _rb.useFullKinematicContacts = _savedFullKinematicContacts;
+                _rb.interpolation = _savedInterpolation;
+            }
+        }
+
+        private void RemoveInstrumentationCount()
+        {
+            if (!_instrumentationCounted) return;
+            _instrumentationCounted = false;
+            Core.InstrumentationCounters.RemoteEntityRemoved();
         }
 
         // Replicated warmup/continuous loops must not outlive the puppet (death mid-telegraph
@@ -200,14 +247,14 @@ namespace PunkMultiverse.Sync
 
         private void FixedUpdate()
         {
-            if (_rb == null || _buffer.Count == 0) return;
+            if (_rb == null || _buffer.Count == 0) return; // frozen at its last safe pose
             float renderTime = Time.unscaledTime - InterpDelay;
             var last = _buffer[_buffer.Count - 1];
             if (Time.unscaledTime - last.Time > 2f)
             {
-                // Stream starved (owner unloaded the GameObject, dormancy, corpse): release the
-                // body to local physics — pinning it per-frame fights gravity forever.
-                _buffer.Clear();
+                // Stream-starved replicas stay frozen and passive. Letting hundreds fall into
+                // terrain here caused the observed 60k-80k collision callbacks per second.
+                Core.InstrumentationCounters.StarvedPuppetFrame();
                 return;
             }
 
@@ -226,10 +273,8 @@ namespace PunkMultiverse.Sync
             Vector2 target = Vector2.LerpUnclamped(a.Pos, b.Pos, t);
             if (renderTime > b.Time) target = b.Pos + b.Vel * Mathf.Min(renderTime - b.Time, 0.3f);
 
-            if (Vector2.Distance(_rb.position, target) > HardSnapDistance) _rb.position = target;
-            else _rb.MovePosition(target);
-            _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);
-            _rb.MoveRotation(Mathf.LerpAngle(a.Rot, b.Rot, t));
+            _rb.position = target;
+            _rb.rotation = Mathf.LerpAngle(a.Rot, b.Rot, t);
         }
     }
 }

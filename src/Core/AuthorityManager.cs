@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using PunkMultiverse.Protocol;
 using PunkMultiverse.Sync;
@@ -7,281 +8,328 @@ using UnityEngine;
 namespace PunkMultiverse.Core
 {
     /// <summary>
-    /// Host-authoritative entity ownership (the model Noita Entangled Worlds proved out): the
-    /// host simulates every entity it has spawned and streams it to everyone as a muted puppet.
-    /// There is NO continuous "closest player owns it" re-optimization — that was the source of
-    /// the ownership thrash (entities flipping owners every scan, dual-simulation, teleporting
-    /// enemies, duplicated fire). A client only takes authority in the one case the host cannot
-    /// cover an entity: when the client is off exploring a region the host has not streamed in.
-    /// That grab is sticky — held until the client clearly leaves — never re-decided by small
-    /// distance deltas.
-    ///
-    /// Per entity, every ScanInterval, the host picks the owner by this ladder:
-    ///   1. A client already owns it and is still within KeepRadius → leave it (sticky grab).
-    ///   2. The host has the entity spawned → the host owns it (authoritative default).
-    ///   3. The host can't reach it and a client is within the tight ClaimRadius → that client
-    ///      grabs it; otherwise it stays host-nominal (dormant, nobody near).
-    /// Clients never self-assign; only these AUTH_ASSIGN batches change ownership.
+    /// Host-arbitrated, segment-scoped simulation leases. A transfer is transactional: the old
+    /// owner remains authoritative during PREPARE; the selected peer installs the lease and ACKs;
+    /// only then does the host broadcast COMMIT. Every commit increments the segment epoch, so
+    /// delayed state from a prior simulator is harmless.
     /// </summary>
     internal static class AuthorityManager
     {
-        private const float ScanInterval = 0.5f;
-        private const float HoldSeconds = 1.5f;        // settle time after a change (anti-oscillation)
-        private const float ReleaseDenySeconds = 5f;   // first-release cooldown (see OnReleased)
-        private const float RepeatDenySeconds = 30f;   // repeat releases: the entity keeps failing
-                                                       // to spawn for that client — back off harder
-        private const int MoveGateStrikes = 3;         // after this many releases, time alone doesn't
-                                                       // clear the deny — the client must also move
-        private const float ReleaseDenyMoveDist = 10f; // "moved" = this far from the release position
-        private const float ClaimFactor = 0.5f;        // grab radius = ClaimFactor * AuthorityRadius —
-                                                       // tight, so a client is only ever given entities
-                                                       // it can definitely stream in and simulate.
-        private const int MaxGrabsPerScan = 16;        // spread a client's entry-into-a-region claim wave
+        internal readonly struct SegmentKey : IEquatable<SegmentKey>
+        {
+            internal readonly int X, Y;
+            internal SegmentKey(int x, int y) { X = x; Y = y; }
+            public bool Equals(SegmentKey o) => X == o.X && Y == o.Y;
+            public override bool Equals(object o) => o is SegmentKey k && Equals(k);
+            public override int GetHashCode() => unchecked((X * 397) ^ Y);
+            public override string ToString() => $"({X},{Y})";
+        }
 
+        private sealed class Lease
+        {
+            internal byte Owner;
+            internal uint Epoch;
+            internal bool Pending;
+            internal byte PendingOwner;
+            internal uint PendingEpoch;
+            internal float PreparedAt;
+        }
+
+        private const float ScanInterval = 0.5f;
+        private const float PrepareRetry = 2f;
+        private const int AcquireRadiusSegments = 3;
+        private const int KeepRadiusSegments = 4;
+        private const int MaxPreparesPerScan = 8;
+        private static readonly Dictionary<SegmentKey, Lease> Leases = new Dictionary<SegmentKey, Lease>();
+        private static readonly Dictionary<int, SegmentKey> EntitySegments = new Dictionary<int, SegmentKey>();
+        private static readonly HashSet<SegmentKey> Interested = new HashSet<SegmentKey>();
+        private static readonly HashSet<SegmentKey> Retained = new HashSet<SegmentKey>();
+        private static readonly Dictionary<SegmentKey, (byte owner, float until)> ForcedOwners = new Dictionary<SegmentKey, (byte, float)>();
+        private static readonly NetWriter Writer = new NetWriter(256);
         private static float _nextScanAt;
-        private static readonly Dictionary<int, float> HoldUntil = new Dictionary<int, float>();
-        // netId -> (slot that released it, deny-until, consecutive releases, client pos at release).
-        // A client that said "I can't simulate this" must not be handed it straight back, or we
-        // recreate the assign->release->assign loop. The deny escalates per repeat release and
-        // eventually gates on movement — some entities never stream in on a given machine, and
-        // re-offering one to a parked client loops forever (observed: WheatFruit #5269).
-        private static readonly Dictionary<int, (byte slot, float until, int strikes, Vector2 pos)> DeniedSlot
-            = new Dictionary<int, (byte, float, int, Vector2)>();
-        private static readonly NetWriter Writer = new NetWriter(2048);
+        private static uint _nextEpoch = 1;
+        private static float _nextLedgerAt;
+        private static int _ledgerCursor;
+
+        internal static int CommittedLeaseCount => Leases.Count;
+        internal static int PendingLeaseCount { get { int n = 0; foreach (var l in Leases.Values) if (l.Pending) n++; return n; } }
 
         public static void Reset()
         {
+            Leases.Clear();
+            EntitySegments.Clear();
+            Interested.Clear();
+            Retained.Clear();
+            ForcedOwners.Clear();
             _nextScanAt = 0;
-            HoldUntil.Clear();
-            DeniedSlot.Clear();
+            _nextEpoch = 1;
+            _nextLedgerAt = 0;
+            _ledgerCursor = 0;
         }
 
-        /// <summary>A peer's machine is gone: drop the stability gates on the entities it owned and
-        /// scan now, so its enemies are re-homed immediately instead of freezing for a window.</summary>
-        public static void OnPeerLost(byte slot)
+        internal static SegmentKey SegmentOf(Vector2 p)
         {
-            foreach (var kv in EnemySync.Owners)
-            {
-                if (kv.Value != slot) continue;
-                HoldUntil.Remove(kv.Key);
-            }
-            // Denials name the releasing slot, not the owner — drop that slot's denials so a
-            // rejoining player doesn't inherit move-gates anchored to a stale position.
-            _denyScratch.Clear();
-            foreach (var kv in DeniedSlot)
-                if (kv.Value.slot == slot) _denyScratch.Add(kv.Key);
-            foreach (int netId in _denyScratch) DeniedSlot.Remove(netId);
-            _nextScanAt = 0;
+            float size = Level.SegmentSize > 0 ? Level.SegmentSize : 25f;
+            return new SegmentKey(Mathf.FloorToInt(p.x / size), Mathf.FloorToInt(p.y / size));
         }
 
-        private static readonly List<int> _denyScratch = new List<int>();
+        internal static bool TrySegmentOf(int netId, out SegmentKey key)
+        {
+            if (NetIds.TryGetInstanceId(netId, out int instanceId))
+            {
+                try
+                {
+                    var data = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId);
+                    if (data != null)
+                    {
+                        key = SegmentOf(data.position);
+                        EntitySegments[netId] = key;
+                        return true;
+                    }
+                }
+                catch { }
+            }
+            return EntitySegments.TryGetValue(netId, out key);
+        }
 
-        // Ownership no longer follows combat/aggro (that flipped authority every time an enemy
-        // retargeted). Kept as no-ops so the fire/damage call sites don't need to change.
+        internal static byte OwnerOf(int netId)
+        {
+            if (EnemySync.FixedOwners.Contains(netId) && EnemySync.Owners.TryGetValue(netId, out byte fixedOwner))
+                return fixedOwner;
+            if (TrySegmentOf(netId, out var key) && Leases.TryGetValue(key, out var lease)) return lease.Owner;
+            var s = NetSession.Instance;
+            return s != null ? s.HostSlot : (byte)0;
+        }
+
+        internal static uint EpochOf(int netId)
+        {
+            if (EnemySync.FixedOwners.Contains(netId)) return 0;
+            return TrySegmentOf(netId, out var key) && Leases.TryGetValue(key, out var lease) ? lease.Epoch : 0;
+        }
+
+        internal static byte OwnerOf(SegmentKey key)
+        {
+            if (Leases.TryGetValue(key, out var lease)) return lease.Owner;
+            var s = NetSession.Instance;
+            return s != null ? s.HostSlot : (byte)0;
+        }
+
+        internal static uint EpochOf(SegmentKey key) => Leases.TryGetValue(key, out var lease) ? lease.Epoch : 0;
+
+        internal static bool IsStateAuthority(int netId, SegmentKey key, byte owner, uint epoch)
+        {
+            if (EnemySync.FixedOwners.Contains(netId))
+                return epoch == 0 && EnemySync.Owners.TryGetValue(netId, out byte fixedOwner) && fixedOwner == owner;
+            if (Leases.TryGetValue(key, out var lease)) return lease.Owner == owner && lease.Epoch == epoch;
+            var s = NetSession.Instance;
+            return epoch == 0 && owner == (s != null ? s.HostSlot : (byte)0);
+        }
+
         public static void NoteCombat(int netId) { }
         public static void NoteAggro(int netId, byte targetSlot) { }
-
-        /// <summary>An owner reported it can't simulate this entity. Settle it and don't hand it
-        /// back to the same slot until the deny window passes.</summary>
-        public static void OnReleased(int netId, byte releasingSlot)
-        {
-            float now = Time.unscaledTime;
-            HoldUntil[netId] = now + HoldSeconds;
-            int strikes = DeniedSlot.TryGetValue(netId, out var prev) && prev.slot == releasingSlot
-                ? prev.strikes + 1 : 1;
-            Vector2 pos = ShipSync.ShipsBySlot.TryGetValue(releasingSlot, out var ship) && ship != null
-                ? (Vector2)ship.transform.position : Vector2.zero;
-            DeniedSlot[netId] = (releasingSlot, now + (strikes == 1 ? ReleaseDenySeconds : RepeatDenySeconds),
-                strikes, pos);
-            if (NetDiag.Enabled && strikes >= MoveGateStrikes)
-                NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} released {strikes}x by {NetDiag.Owner(releasingSlot)}" +
-                    $" — denied until they move {ReleaseDenyMoveDist:0}u away");
-        }
-
-        /// <summary>Host: a damage request hit an entity we own but don't have spawned (dormant —
-        /// outside the attacker's claim radius, so the scan never hands it over). The attacker
-        /// demonstrably HAS it spawned: their shot landed on it. Give it to them, or the request
-        /// is dropped on the floor forever and the entity is unbreakable on their machine.</summary>
+        public static void OnReleased(int netId, byte releasingSlot) { }
         public static void OnDormantHit(int netId, byte attackerSlot)
         {
             var session = NetSession.Instance;
-            if (session == null || !session.IsHost) return;
-            byte hostSlot = session.HostSlot;
-            if (attackerSlot == hostSlot) return;
-            if (EnemySync.OwnerOf(netId) != hostSlot) return;        // already reassigned (rapid fire)
-            if (EnemySync.FixedOwners.Contains(netId)) return;
-            if (EnemySync.IsKilled(netId)) return;
-            float now = Time.unscaledTime;
-            if (Denied(netId, attackerSlot, now)) return;            // it doesn't spawn for them either
-            if (!ShipSync.ShipsBySlot.TryGetValue(attackerSlot, out var ship) || ship == null || ship.IsDead)
-                return;
-
-            EnemySync.Owners[netId] = attackerSlot;
-            HoldUntil[netId] = now + HoldSeconds;
-            NetStats.AuthFlips++;
-            if (NetDiag.Enabled)
-                NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} {NetDiag.Owner(hostSlot)} -> {NetDiag.Owner(attackerSlot)}" +
-                    $" — dormant here but under fire by {NetDiag.Owner(attackerSlot)} — they grab it");
-            var assign = new AuthAssignMsg { Entries = new List<(int netId, byte owner)> { (netId, attackerSlot) } };
-            EnemySync.ApplyAuthAssign(assign);
-            Writer.Reset();
-            assign.Write(Writer);
-            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            if (session == null || !session.IsHost || EnemySync.IsKilled(netId)) return;
+            if (!TrySegmentOf(netId, out var key)) return;
+            ForcedOwners[key] = (attackerSlot, Time.unscaledTime + 5f);
+            if (!Leases.TryGetValue(key, out var lease))
+                Leases[key] = lease = new Lease { Owner = session.HostSlot, Epoch = 0 };
+            if (lease.Owner != attackerSlot && (!lease.Pending || lease.PendingOwner != attackerSlot))
+                Prepare(session, key, lease, attackerSlot);
+            else if (lease.Owner == attackerSlot)
+                DamageSync.OnSegmentAuthorityCommitted(key, attackerSlot);
         }
 
-        /// <summary>Called from NetSession.Update on the host while InGame.</summary>
+        public static void OnPeerLost(byte slot)
+        {
+            foreach (var l in Leases.Values)
+            {
+                if (l.Owner == slot || (l.Pending && l.PendingOwner == slot))
+                {
+                    l.Pending = false;
+                    l.PreparedAt = 0;
+                }
+            }
+            _nextScanAt = 0;
+        }
+
         public static void Tick(NetSession session)
         {
             if (!session.IsHost || !NetIds.ManifestComplete || Time.unscaledTime < _nextScanAt) return;
             _nextScanAt = Time.unscaledTime + ScanInterval;
 
-            EntityManager em;
-            try { em = ServiceLocator.Get<EntityManager>(); } catch { return; }
-            EntityGameObjectManager egm;
-            try { egm = ServiceLocator.Get<EntityGameObjectManager>(); } catch { return; }
+            if (Time.unscaledTime >= _nextLedgerAt)
+            {
+                _nextLedgerAt = Time.unscaledTime + 5f;
+                var kills = EnemySync.KilledSnapshot();
+                if (kills.Count > 0)
+                {
+                    if (_ledgerCursor >= kills.Count) _ledgerCursor = 0;
+                    int count = Math.Min(128, kills.Count);
+                    var chunk = new List<int>(count);
+                    for (int i = 0; i < count; i++) chunk.Add(kills[(_ledgerCursor + i) % kills.Count]);
+                    _ledgerCursor = (_ledgerCursor + count) % kills.Count;
+                    Writer.Reset();
+                    new KillLedgerMsg { NetIds = chunk }.Write(Writer);
+                    session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                    InstrumentationCounters.KillLedgerSent(chunk.Count);
+                }
+            }
 
-            byte hostSlot = session.HostSlot;
-
-            // Connected CLIENT ships (host excluded — the host claims nothing by distance; it owns
-            // whatever it has spawned). A client can only hold entities it can actually simulate.
-            var clients = new List<(byte slot, Vector2 pos)>(4);
+            var simulators = new List<(byte slot, SegmentKey segment)>(4);
             foreach (var p in session.Players)
             {
-                if (p == null || !p.Connected || p.Slot == hostSlot) continue;
+                if (p == null || !p.Connected) continue;
                 if (!ShipSync.ShipsBySlot.TryGetValue(p.Slot, out var ship) || ship == null || ship.IsDead) continue;
-                clients.Add((p.Slot, ship.transform.position));
+                simulators.Add((p.Slot, SegmentOf(ship.transform.position)));
             }
+            // During the first few frames ShipSync may not yet expose the local ship.
+            if (simulators.Count == 0 && ShipSync.LocalShip != null)
+                simulators.Add(((byte)session.LocalSlot, SegmentOf(ShipSync.LocalShip.transform.position)));
 
-            float claimRadius = NetConfig.AuthorityRadius.Value * ClaimFactor;
-            float keepRadius = NetConfig.InterestRadius.Value;
-
-            var changes = new List<(int netId, byte owner)>();
-            var seen = new HashSet<int>();
-            int grabBudget = MaxGrabsPerScan;
-            float now = Time.unscaledTime;
-
-            foreach (var entity in em.GetAllEntities())
+            Interested.Clear();
+            Retained.Clear();
+            foreach (var sim in simulators)
             {
-                if (entity == null || entity.entityId == "Ship") continue;
-                if (!NetIds.TryGetNetId(entity.instanceId, out int netId)) continue;
-                if (!seen.Add(netId)) continue;
-                if (EnemySync.FixedOwners.Contains(netId)) continue; // minions: fixed owner-authority
-                if (EnemySync.IsKilled(netId)) continue;             // dead everywhere
-
-                byte current = EnemySync.OwnerOf(netId);
-                Vector2 pos = entity.position;
-                bool hostHas = IsSpawnedOnHost(egm, netId);
-
-                byte desired;
-                string reason;
-                // 1. A client already owns it and is still close enough to keep simulating it.
-                if (current != hostSlot && !Denied(netId, current, now)
-                    && TryClientDist(clients, current, pos, out float curDist) && curDist <= keepRadius)
-                {
-                    desired = current;
-                    reason = null;
-                }
-                // 2. The host has it spawned → the host simulates it (authoritative default).
-                else if (hostHas)
-                {
-                    desired = hostSlot;
-                    reason = "host owns (has it spawned)";
-                }
-                // 3. The host can't reach it → the nearest close-enough client grabs it, else dormant.
-                else
-                {
-                    desired = NearestClient(clients, pos, claimRadius, netId, now, out float cd);
-                    reason = desired != hostSlot
-                        ? $"host can't reach it — {NetDiag.Owner(desired)} grabs ({cd:0}u)"
-                        : "host can't reach it, no client near — dormant";
-                }
-
-                if (desired == current) continue;
-                if (HoldUntil.TryGetValue(netId, out float hu) && now < hu) continue; // settling
-
-                // A client grabbing a region claims a wave — spread it. Reverting to the host
-                // (a client left, or disconnected) is never capped: those entities would freeze.
-                bool grab = desired != hostSlot;
-                if (grab)
-                {
-                    if (grabBudget <= 0) continue;
-                    grabBudget--;
-                }
-
-                changes.Add((netId, desired));
-                EnemySync.Owners[netId] = desired;
-                HoldUntil[netId] = now + HoldSeconds;
-                if (NetDiag.Enabled)
-                    NetDiag.Log("Auth", $"{NetDiag.Describe(netId)} {NetDiag.Owner(current)} -> {NetDiag.Owner(desired)}" +
-                        (reason != null ? $" — {reason}" : ""));
+                for (int x = sim.segment.X - AcquireRadiusSegments; x <= sim.segment.X + AcquireRadiusSegments; x++)
+                    for (int y = sim.segment.Y - AcquireRadiusSegments; y <= sim.segment.Y + AcquireRadiusSegments; y++)
+                        Interested.Add(new SegmentKey(x, y));
+                for (int x = sim.segment.X - KeepRadiusSegments; x <= sim.segment.X + KeepRadiusSegments; x++)
+                    for (int y = sim.segment.Y - KeepRadiusSegments; y <= sim.segment.Y + KeepRadiusSegments; y++)
+                        Retained.Add(new SegmentKey(x, y));
             }
 
-            if (changes.Count == 0) return;
-            NetStats.AuthFlips += changes.Count;
-            Plugin.Log.LogInfo($"[Auth] {changes.Count} ownership change(s): " +
-                string.Join(", ", changes.GetRange(0, Mathf.Min(5, changes.Count)).ConvertAll(c => $"#{c.netId}->P{c.owner + 1}")) +
-                (changes.Count > 5 ? " …" : ""));
-
-            EnemySync.ApplyAuthAssign(new AuthAssignMsg { Entries = changes });
-            for (int start = 0; start < changes.Count; start += 64)
+            int budget = MaxPreparesPerScan;
+            foreach (var key in Interested)
             {
-                int count = Mathf.Min(64, changes.Count - start);
-                Writer.Reset();
-                new AuthAssignMsg { Entries = changes.GetRange(start, count) }.Write(Writer);
-                session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                byte desired = SelectOwner(key, simulators, session.HostSlot);
+                if (!Leases.TryGetValue(key, out var lease))
+                {
+                    lease = new Lease { Owner = session.HostSlot, Epoch = 0 };
+                    Leases[key] = lease;
+                }
+                if (lease.Owner == desired) { lease.Pending = false; continue; }
+                if (lease.Pending && lease.PendingOwner == desired && Time.unscaledTime - lease.PreparedAt < PrepareRetry) continue;
+                if (budget-- <= 0) break;
+                Prepare(session, key, lease, desired);
             }
-        }
 
-        private static bool IsSpawnedOnHost(EntityGameObjectManager egm, int netId)
-        {
-            return NetIds.TryGetInstanceId(netId, out int instanceId)
-                   && egm.TryGetSavableEntity(instanceId, out var se) && se != null;
-        }
-
-        private static bool TryClientDist(List<(byte slot, Vector2 pos)> clients, byte slot, Vector2 pos, out float dist)
-        {
-            foreach (var (s, ppos) in clients)
-                if (s == slot) { dist = Vector2.Distance(ppos, pos); return true; }
-            dist = float.MaxValue;
-            return false; // slot isn't a live connected client (disconnected / dead)
-        }
-
-        private static byte NearestClient(List<(byte slot, Vector2 pos)> clients, Vector2 pos,
-            float maxDist, int netId, float now, out float bestDist)
-        {
-            byte best = 255;
-            bestDist = maxDist;
-            foreach (var (slot, ppos) in clients)
+            // Segments no player streams no longer need a client simulator. Return them to the
+            // host nominally; their entities remain dormant until somebody streams the segment.
+            _scratch.Clear();
+            foreach (var kv in Leases)
+                if (!Retained.Contains(kv.Key) && kv.Value.Owner != session.HostSlot) _scratch.Add(kv.Key);
+            foreach (var key in _scratch)
             {
-                if (Denied(netId, slot, now)) continue;
-                float d = Vector2.Distance(ppos, pos);
-                if (d <= bestDist) { bestDist = d; best = slot; }
+                if (budget-- <= 0) break;
+                Prepare(session, key, Leases[key], session.HostSlot);
             }
-            return best == 255 ? HostSlotFallback() : best;
         }
 
-        // The host slot for "no client took it" — read from the session so migration-promoted
-        // hosts still fall back to themselves, not a hardcoded slot 0.
-        private static byte HostSlotFallback() => NetSession.Instance != null ? NetSession.Instance.HostSlot : (byte)0;
+        private static readonly List<SegmentKey> _scratch = new List<SegmentKey>();
 
-        private static bool Denied(int netId, byte slot, float now)
+        private static byte SelectOwner(SegmentKey key, List<(byte slot, SegmentKey segment)> sims, byte fallback)
         {
-            if (!DeniedSlot.TryGetValue(netId, out var d)) return false;
-            if (d.slot != slot) return false;
-            if (now < d.until) return true;
-            // Timer done. A repeat offender stays denied until it has actually moved — time alone
-            // doesn't make an unspawnable entity spawnable for a parked client.
-            if (d.strikes >= MoveGateStrikes
-                && ShipSync.ShipsBySlot.TryGetValue(slot, out var ship) && ship != null && !ship.IsDead
-                && Vector2.Distance((Vector2)ship.transform.position, d.pos) < ReleaseDenyMoveDist)
-                return true;
-            // Expired: allow the retry but KEEP the entry — it holds the strike count. Removing it
-            // here erased the strikes, so every release restarted at strike 1 and the 3-strike
-            // move-gate was unreachable: assign -> release -> 5s deny -> repeat, forever
-            // (observed live: Box_Money #4069 cycling ~5s for minutes). OnReleased overwrites the
-            // entry on the next release (escalating), and a successful hold simply leaves a stale
-            // expired entry behind — harmless, and cleared on Reset/OnPeerLost.
-            return false;
+            if (ForcedOwners.TryGetValue(key, out var forced))
+            {
+                if (Time.unscaledTime < forced.until) return forced.owner;
+                ForcedOwners.Remove(key);
+            }
+            // Sticky while the current owner still streams this segment; otherwise closest wins.
+            if (Leases.TryGetValue(key, out var current))
+                foreach (var s in sims)
+                    if (s.slot == current.Owner && Chebyshev(key, s.segment) <= KeepRadiusSegments) return current.Owner;
+            byte best = fallback;
+            int bestDistance = int.MaxValue;
+            foreach (var s in sims)
+            {
+                int d = Chebyshev(key, s.segment);
+                if (d > AcquireRadiusSegments) continue;
+                if (d < bestDistance || (d == bestDistance && s.slot < best)) { bestDistance = d; best = s.slot; }
+            }
+            return best;
+        }
+
+        private static int Chebyshev(SegmentKey a, SegmentKey b) => Math.Max(Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
+
+        private static void Prepare(NetSession session, SegmentKey key, Lease lease, byte owner)
+        {
+            lease.Pending = true;
+            lease.PendingOwner = owner;
+            lease.PendingEpoch = _nextEpoch++;
+            lease.PreparedAt = Time.unscaledTime;
+            NetStats.AuthFlips++;
+            SendLease(session, key, owner, lease.PendingEpoch, 0);
+            if (NetDiag.Enabled) NetDiag.Log("Lease", $"segment {key} prepare P{owner + 1} epoch={lease.PendingEpoch} (current P{lease.Owner + 1}/{lease.Epoch})");
+            if (owner == session.LocalSlot) Commit(session, key, lease);
+        }
+
+        private static void Commit(NetSession session, SegmentKey key, Lease lease)
+        {
+            byte old = lease.Owner;
+            lease.Owner = lease.PendingOwner;
+            lease.Epoch = lease.PendingEpoch;
+            lease.Pending = false;
+            SendLease(session, key, lease.Owner, lease.Epoch, 1);
+            EnemySync.ApplySegmentOwnership(key);
+            DamageSync.OnSegmentAuthorityCommitted(key, lease.Owner);
+            InstrumentationCounters.LeaseCommitted();
+            Plugin.Log.LogInfo($"[Lease] segment {key} P{old + 1}->P{lease.Owner + 1} epoch={lease.Epoch}");
+        }
+
+        private static void SendLease(NetSession session, SegmentKey key, byte owner, uint epoch, byte phase)
+        {
+            Writer.Reset();
+            new SegmentLeaseMsg { X = key.X, Y = key.Y, Owner = owner, Epoch = epoch, Phase = phase }.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+        }
+
+        internal static void ApplyLease(SegmentLeaseMsg msg, NetSession session)
+        {
+            var key = new SegmentKey(msg.X, msg.Y);
+            bool existed = Leases.TryGetValue(key, out var lease);
+            if (!existed)
+            {
+                lease = new Lease { Owner = session.HostSlot, Epoch = 0 };
+                Leases[key] = lease;
+            }
+            if (msg.Phase == 0)
+            {
+                if (msg.Epoch < lease.Epoch) return;
+                lease.Pending = true; lease.PendingOwner = msg.Owner; lease.PendingEpoch = msg.Epoch;
+                if (msg.Owner == session.LocalSlot && !session.IsHost)
+                {
+                    Writer.Reset();
+                    new SegmentLeaseAckMsg { X = msg.X, Y = msg.Y, Owner = msg.Owner, Epoch = msg.Epoch }.Write(Writer);
+                    session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                    InstrumentationCounters.LeaseAcked();
+                }
+                return;
+            }
+            if (msg.Epoch < lease.Epoch) return;
+            if (existed && msg.Epoch == lease.Epoch && msg.Owner == lease.Owner && !lease.Pending)
+                return; // reliable replay/catch-up duplicate; ownership components are already correct
+            lease.Owner = msg.Owner; lease.Epoch = msg.Epoch; lease.Pending = false;
+            EnemySync.ApplySegmentOwnership(key);
+        }
+
+        internal static void ApplyAck(SegmentLeaseAckMsg msg, NetSession session)
+        {
+            if (!session.IsHost) return;
+            var key = new SegmentKey(msg.X, msg.Y);
+            if (!Leases.TryGetValue(key, out var lease) || !lease.Pending) return;
+            if (lease.PendingOwner != msg.Owner || lease.PendingEpoch != msg.Epoch) return;
+            Commit(session, key, lease);
+        }
+
+        internal static List<SegmentLeaseMsg> Snapshot()
+        {
+            var result = new List<SegmentLeaseMsg>(Leases.Count);
+            foreach (var kv in Leases)
+                result.Add(new SegmentLeaseMsg { X = kv.Key.X, Y = kv.Key.Y, Owner = kv.Value.Owner, Epoch = kv.Value.Epoch, Phase = 1 });
+            return result;
         }
     }
 }

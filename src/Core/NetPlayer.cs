@@ -1,10 +1,11 @@
 ﻿namespace PunkMultiverse.Core
 {
-    /// <summary>One occupied lobby slot. Slot 0 is always the host.</summary>
+    /// <summary>One occupied lobby slot. The host slot may change during migration.</summary>
     public sealed class NetPlayer
     {
         public byte Slot;
-        public ulong PeerId;       // SteamID64 on Steam, small int on loopback; the local player's own id for IsLocal
+        public ulong PeerId;       // current transport route; changes whenever a peer reattaches
+        public ulong IdentityId;   // stable SteamID/install identity; survives transport migration
         public string Name;
         public byte ColorIndex;
         public bool Ready;
@@ -16,6 +17,6 @@
         /// <summary>Set once in-game: the Ship this player controls (local) or their puppet (remote).</summary>
         public Ship Ship;
 
-        public override string ToString() => $"P{Slot + 1} '{Name}' peer={PeerId}{(IsLocal ? " (local)" : "")}";
+        public override string ToString() => $"P{Slot + 1} '{Name}' peer={PeerId} identity={IdentityId:X}{(IsLocal ? " (local)" : "")}";
     }
 }

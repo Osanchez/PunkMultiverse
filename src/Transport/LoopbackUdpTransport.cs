@@ -8,9 +8,9 @@ namespace PunkMultiverse.Transport
 {
     /// <summary>
     /// Dev-only UDP transport for testing two game instances on one machine without Steam
-    /// (copy the game folder, launch Punk.exe directly). No reliability layer — on localhost
-    /// loss/reorder is effectively nil, which is all this needs to be. Never use over a real
-    /// network; the Steam transport is the shipping path.
+    /// (copy the game folder, launch Punk.exe directly). Reliable-marked traffic is paced in send
+    /// order so manifest/baseline bursts cannot overflow the localhost receive buffer. The run
+    /// barrier also retries at the session layer; Steam remains the shipping reliable transport.
     /// Frames: [1]=connect  [2]=connectAck+peerId  [3]=disconnect  [4]=data+channel+payload  [5]=keepalive
     /// </summary>
     public sealed class LoopbackUdpTransport : ITransport
@@ -37,6 +37,15 @@ namespace PunkMultiverse.Transport
         private readonly Dictionary<ulong, Peer> _peers = new Dictionary<ulong, Peer>();
         private readonly Dictionary<long, Peer> _peersByEndpoint = new Dictionary<long, Peer>(); // key = addr hash
         private ulong _nextPeerId = 2;
+
+        private sealed class PendingSend
+        {
+            public IPEndPoint EndPoint;
+            public byte[] Frame;
+        }
+
+        private readonly Queue<PendingSend> _pacedReliable = new Queue<PendingSend>();
+        private const int ReliableDatagramsPerPoll = 8;
 
         private IPEndPoint _hostEndPoint;   // client mode
         private bool _connectedToHost;
@@ -90,12 +99,22 @@ namespace PunkMultiverse.Transport
         public bool Send(ulong peer, NetChannel channel, ArraySegment<byte> data, bool reliable)
         {
             if (!IsRunning) return false;
-            // reliable flag ignored: localhost is lossless in practice (dev transport only)
+            var ep = ResolveEndpoint(peer);
+            if (ep == null) return false;
+            if (reliable)
+            {
+                if (_pacedReliable.Count >= 8192) return false;
+                var frame = new byte[data.Count + 2];
+                frame[0] = FrameData;
+                frame[1] = (byte)channel;
+                Buffer.BlockCopy(data.Array, data.Offset, frame, 2, data.Count);
+                _pacedReliable.Enqueue(new PendingSend { EndPoint = ep, Frame = frame });
+                Core.NetStats.AddOut(data.Count);
+                return true;
+            }
             _sendBuf[0] = FrameData;
             _sendBuf[1] = (byte)channel;
             Buffer.BlockCopy(data.Array, data.Offset, _sendBuf, 2, data.Count);
-            var ep = ResolveEndpoint(peer);
-            if (ep == null) return false;
             SendRaw(ep, _sendBuf, data.Count + 2);
             Core.NetStats.AddOut(data.Count);
             return true;
@@ -117,6 +136,7 @@ namespace PunkMultiverse.Transport
         {
             if (!IsRunning) return;
             ReceiveAll();
+            DrainPacedReliable();
             float now = Time.unscaledTime;
 
             if (IsHost)
@@ -146,6 +166,16 @@ namespace PunkMultiverse.Transport
                     if (now - host.LastHeard > PeerTimeout) { DropPeer(HostPeerId, "timeout"); _connectedToHost = false; }
                     else if (now - host.LastSent > KeepaliveInterval) SendFrame(host.EndPoint, FrameKeepalive, ref host.LastSent, now);
                 }
+            }
+        }
+
+        private void DrainPacedReliable()
+        {
+            int budget = ReliableDatagramsPerPoll;
+            while (budget-- > 0 && _pacedReliable.Count > 0)
+            {
+                var pending = _pacedReliable.Dequeue();
+                SendRaw(pending.EndPoint, pending.Frame, pending.Frame.Length);
             }
         }
 
@@ -265,6 +295,7 @@ namespace PunkMultiverse.Transport
             _socket = null;
             _peers.Clear();
             _peersByEndpoint.Clear();
+            _pacedReliable.Clear();
             _nextPeerId = 2;
             _connectedToHost = false;
             IsRunning = false;

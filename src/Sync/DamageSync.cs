@@ -25,6 +25,25 @@ namespace PunkMultiverse.Sync
         // simulates it (the owner). At death this is the killer, so the loot goes to whoever
         // actually earned it instead of everyone standing nearby (see Patches.LootDiag).
         private static readonly Dictionary<int, byte> LastDamager = new Dictionary<int, byte>();
+        private static readonly List<DamageRequestMsg> PendingDormantDamage = new List<DamageRequestMsg>();
+        private static readonly HashSet<ulong> SeenDamageRequests = new HashSet<ulong>();
+        private static readonly Queue<ulong> SeenDamageRequestOrder = new Queue<ulong>();
+        private static uint _requestSequence;
+        private static int _takeDamageListDepth;
+        private const int RecentDamageRequestLimit = 8192;
+
+        private struct DamageAuditState
+        {
+            internal bool Track;
+            internal bool Applied;
+            internal float HpBefore;
+            internal float ShieldBefore;
+            internal float Amount;
+            internal string Type;
+            internal ProjectileSync.DamageTrace Trace;
+            internal bool HasTrace;
+            internal bool EnteredList;
+        }
 
         /// <summary>Slot that last damaged the entity, or 255 if unknown.</summary>
         public static byte LastKiller(int netId) => LastDamager.TryGetValue(netId, out var s) ? s : (byte)255;
@@ -34,6 +53,11 @@ namespace PunkMultiverse.Sync
             _resourcesByHash = null;
             _applyingRemote = false;
             LastDamager.Clear();
+            PendingDormantDamage.Clear();
+            SeenDamageRequests.Clear();
+            SeenDamageRequestOrder.Clear();
+            _requestSequence = 0;
+            _takeDamageListDepth = 0;
             ResetLifeWatchdog(); // fresh run starts alive and un-announced
         }
 
@@ -89,7 +113,23 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(DamagableResource), "TakeDamage", typeof(Damage))]
         internal static class RouteTakeDamage
         {
-            private static bool Prefix(DamagableResource __instance, Damage __0)
+            private static bool Prefix(DamagableResource __instance, Damage __0, out DamageAuditState __state)
+            {
+                __state = CaptureAudit(__instance, __0);
+                var profile = PatchProfiler.Enter(PatchId.DamageRouteSingle);
+                try
+                {
+                    bool result = PrefixBody(__instance, __0);
+                    __state.Applied = result;
+                    return result;
+                }
+                finally { PatchProfiler.Exit(PatchId.DamageRouteSingle, profile); }
+            }
+
+            private static void Postfix(DamagableResource __instance, DamageAuditState __state)
+                => CompleteAudit(__instance, __state);
+
+            private static bool PrefixBody(DamagableResource __instance, Damage __0)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId))
@@ -107,7 +147,32 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(DamagableResource), "TakeDamage", typeof(IReadOnlyList<Damage>))]
         internal static class RouteTakeDamageList
         {
-            private static bool Prefix(DamagableResource __instance, IReadOnlyList<Damage> __0)
+            private static bool Prefix(DamagableResource __instance, IReadOnlyList<Damage> __0,
+                out DamageAuditState __state)
+            {
+                __state = CaptureAudit(__instance, __0);
+                var profile = PatchProfiler.Enter(PatchId.DamageRouteList);
+                try
+                {
+                    bool result = PrefixBody(__instance, __0);
+                    __state.Applied = result;
+                    if (result)
+                    {
+                        _takeDamageListDepth++;
+                        __state.EnteredList = true;
+                    }
+                    return result;
+                }
+                finally { PatchProfiler.Exit(PatchId.DamageRouteList, profile); }
+            }
+
+            private static void Postfix(DamagableResource __instance, DamageAuditState __state)
+            {
+                if (__state.EnteredList && _takeDamageListDepth > 0) _takeDamageListDepth--;
+                CompleteAudit(__instance, __state);
+            }
+
+            private static bool PrefixBody(DamagableResource __instance, IReadOnlyList<Damage> __0)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId))
@@ -120,6 +185,73 @@ namespace PunkMultiverse.Sync
                 UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
                 return false;
             }
+        }
+
+        private static DamageAuditState CaptureAudit(DamagableResource dr, Damage damage)
+        {
+            var state = CaptureAuditBase(dr);
+            if (!state.Track) return state;
+            ReadDamage(damage, out state.Amount, out state.Type);
+            return state;
+        }
+
+        private static DamageAuditState CaptureAudit(DamagableResource dr, IReadOnlyList<Damage> damages)
+        {
+            var state = CaptureAuditBase(dr);
+            if (!state.Track || damages == null) return state;
+            var names = new List<string>(damages.Count);
+            foreach (var damage in damages)
+            {
+                ReadDamage(damage, out float amount, out string type);
+                state.Amount += amount;
+                if (!string.IsNullOrEmpty(type) && !names.Contains(type)) names.Add(type);
+            }
+            state.Type = names.Count == 0 ? "untyped" : string.Join("+", names);
+            return state;
+        }
+
+        private static DamageAuditState CaptureAuditBase(DamagableResource dr)
+        {
+            if (_applyingRemote || _takeDamageListDepth > 0) return default;
+            var local = ShipSync.LocalShip;
+            if (local == null || dr == null || dr.GetComponentInParent<Ship>() != local) return default;
+            var state = new DamageAuditState
+            {
+                Track = true,
+                HpBefore = dr.CurrentHealth,
+                ShieldBefore = UnitStatus.ReadShieldFraction(local),
+                Type = "untyped",
+            };
+            state.HasTrace = ProjectileSync.TryGetCurrentDamageTrace(out state.Trace);
+            return state;
+        }
+
+        private static void ReadDamage(Damage damage, out float amount, out string typeName)
+        {
+            amount = 0f;
+            typeName = "untyped";
+            try
+            {
+                amount = Traverse.Create(damage).Field("amount").GetValue<float>();
+                var type = Traverse.Create(damage).Field("damageType").GetValue() as Resource;
+                if (type != null) typeName = type.name;
+            }
+            catch { }
+        }
+
+        private static void CompleteAudit(DamagableResource dr, DamageAuditState state)
+        {
+            if (!state.Track) return;
+            float hpAfter = dr != null ? dr.CurrentHealth : -1f;
+            float shieldAfter = ShipSync.LocalShip != null ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
+            string source = state.HasTrace
+                ? (state.Trace.SourceNetId >= 0 ? $"entity#{state.Trace.SourceNetId}"
+                    : state.Trace.SourceNetId == -1 ? $"player=P{state.Trace.SourceSlot + 1}" : "source=unknown")
+                : "source=unknown";
+            string identity = state.HasTrace
+                ? $"shot={state.Trace.ShotId} pellet={state.Trace.ProjectileOrdinal} projectile={state.Trace.ProjectileInstanceId} kind={state.Trace.Kind} replayed={state.Trace.Replayed}"
+                : "shot=unknown";
+            Plugin.Log.LogInfo($"[CombatHit] {source} {identity} amount={state.Amount:0.###} type={state.Type} applied={state.Applied} hp={state.HpBefore:0.###}->{hpAfter:0.###} shield={state.ShieldBefore:0.###}->{shieldAfter:0.###}");
         }
 
         /// <summary>Real damage to an entity we simulate: only the LOCAL player's weapons deal
@@ -148,6 +280,13 @@ namespace PunkMultiverse.Sync
             }
 
             private static bool Prefix(HealthBase __instance)
+            {
+                var profile = PatchProfiler.Enter(PatchId.DamageDropWorldRemote);
+                try { return PrefixBody(__instance); }
+                finally { PatchProfiler.Exit(PatchId.DamageDropWorldRemote, profile); }
+            }
+
+            private static bool PrefixBody(HealthBase __instance)
             {
                 if (!NetSession.Active) return true;
                 return __instance.GetComponent<RemotePuppet>() == null
@@ -184,6 +323,7 @@ namespace PunkMultiverse.Sync
             if (amount <= 0) return;
             // Host shooting a client-simulated entity never re-enters Dispatch — mark here.
             if (isEntity && session.IsHost) Core.AuthorityManager.NoteCombat(targetNetId);
+            bool hasTrace = ProjectileSync.TryGetCurrentDamageTrace(out var trace);
             var msg = new DamageRequestMsg
             {
                 IsEntity = isEntity,
@@ -192,17 +332,31 @@ namespace PunkMultiverse.Sync
                 Amount = amount,
                 TypeHash = type != null ? HashName(type.name) : 0,
                 AttackerSlot = (byte)session.LocalSlot,
+                RequestId = NextDamageRequestId((byte)session.LocalSlot),
+                ShotId = hasTrace ? trace.ShotId : 0,
+                ProjectileOrdinal = hasTrace ? trace.ProjectileOrdinal : (ushort)0,
             };
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
         }
 
+        private static uint NextDamageRequestId(byte slot)
+        {
+            _requestSequence = (_requestSequence + 1u) & 0x00FFFFFFu;
+            if (_requestSequence == 0) _requestSequence = 1;
+            return ((uint)slot << 24) | _requestSequence;
+        }
+
         // ---------------------------------------------------------------- application (on owner)
 
         public static void ApplyDamageRequest(DamageRequestMsg msg)
+            => ApplyDamageRequest(msg, false);
+
+        private static void ApplyDamageRequest(DamageRequestMsg msg, bool pendingReplay)
         {
             var session = NetSession.Instance;
+            if (!pendingReplay && !AcceptDamageRequest(msg)) return;
             DamagableResource dr = null;
             if (msg.IsEntity)
             {
@@ -229,7 +383,12 @@ namespace PunkMultiverse.Sync
                     // Dormant: ours, but not streamed in here. Dropping the request makes the
                     // entity unbreakable on the attacker's machine — hand it to them instead
                     // (they have it spawned; their shot just landed on it).
-                    Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
+                    if (session.IsHost)
+                    {
+                        PendingDormantDamage.Add(msg);
+                        Core.InstrumentationCounters.DormantDamageQueued();
+                        Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
+                    }
                     return;
                 }
             }
@@ -241,6 +400,9 @@ namespace PunkMultiverse.Sync
             if (dr == null) return;
 
             _applyingRemote = true;
+            float hpBefore = dr.CurrentHealth;
+            float shieldBefore = !msg.IsEntity && ShipSync.LocalShip != null
+                ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
             try
             {
                 var type = ResolveType(msg.TypeHash);
@@ -256,6 +418,49 @@ namespace PunkMultiverse.Sync
             finally
             {
                 _applyingRemote = false;
+                if (!msg.IsEntity)
+                {
+                    float shieldAfter = ShipSync.LocalShip != null ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
+                    Plugin.Log.LogInfo($"[CombatHit] remote-request={msg.RequestId} attacker=P{msg.AttackerSlot + 1} shot={msg.ShotId} pellet={msg.ProjectileOrdinal} amount={msg.Amount:0.###} typeHash={msg.TypeHash:X8} applied=True hp={hpBefore:0.###}->{dr.CurrentHealth:0.###} shield={shieldBefore:0.###}->{shieldAfter:0.###}");
+                }
+            }
+        }
+
+        private static bool AcceptDamageRequest(DamageRequestMsg msg)
+        {
+            ulong key = ((ulong)msg.AttackerSlot << 56) | msg.RequestId;
+            if (!SeenDamageRequests.Add(key))
+            {
+                InstrumentationCounters.DamageRequestDeduped();
+                if (NetDiag.Enabled) NetDiag.Throttled($"damagereq{key}", 1f, "Damage",
+                    () => $"dropped duplicate damage request {msg.RequestId} from P{msg.AttackerSlot + 1}");
+                return false;
+            }
+            SeenDamageRequestOrder.Enqueue(key);
+            if (SeenDamageRequestOrder.Count > RecentDamageRequestLimit)
+                SeenDamageRequests.Remove(SeenDamageRequestOrder.Dequeue());
+            return true;
+        }
+
+        internal static void OnSegmentAuthorityCommitted(AuthorityManager.SegmentKey segment, byte owner)
+        {
+            var session = NetSession.Instance;
+            if (session == null || !session.IsHost || PendingDormantDamage.Count == 0) return;
+            ulong peer = 0;
+            foreach (var p in session.Players)
+                if (p != null && p.Connected && p.Slot == owner) { peer = p.PeerId; break; }
+            for (int i = 0; i < PendingDormantDamage.Count;)
+            {
+                var msg = PendingDormantDamage[i];
+                if (!AuthorityManager.TrySegmentOf(msg.TargetNetId, out var key) || !key.Equals(segment)) { i++; continue; }
+                PendingDormantDamage.RemoveAt(i);
+                if (owner == session.LocalSlot) ApplyDamageRequest(msg, true);
+                else if (peer != 0)
+                {
+                    Writer.Reset(); msg.Write(Writer);
+                    session.SendToPeer(peer, NetChannel.Combat, Writer.ToSegment(), reliable: true);
+                }
+                Core.InstrumentationCounters.DormantDamageReplayed();
             }
         }
 

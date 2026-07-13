@@ -10,7 +10,7 @@ namespace PunkMultiverse.Protocol
         public int ProtocolVersion;
         public string ModVersion;
         public string GameVersion;
-        public ulong SteamId;      // 0 on loopback
+        public ulong SteamId;      // stable identity: SteamID64 or loopback install identity
         public string Name;
         public bool Resuming;      // host-migration reattach: already in-world, skip the regen
         public string Mods;        // canonical BepInEx plugin manifest (ModManifest.Local)
@@ -43,6 +43,7 @@ namespace PunkMultiverse.Protocol
     {
         public byte Slot;
         public ulong PeerId;
+        public ulong IdentityId;
         public string Name;
         public byte ColorIndex;
         public bool Ready;
@@ -53,6 +54,7 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteByte(Slot);
             w.WriteULong(PeerId);
+            w.WriteULong(IdentityId);
             w.WriteString(Name);
             w.WriteByte(ColorIndex);
             w.WriteBool(Ready);
@@ -64,6 +66,7 @@ namespace PunkMultiverse.Protocol
         {
             Slot = r.ReadByte(),
             PeerId = r.ReadULong(),
+            IdentityId = r.ReadULong(),
             Name = r.ReadString(),
             ColorIndex = r.ReadByte(),
             Ready = r.ReadBool(),
@@ -324,6 +327,7 @@ namespace PunkMultiverse.Protocol
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Dir;
         public int Seed;    // RNG seed the shooter used for this burst tick — replays match exactly
+        public uint ShotId; // origin-slot-prefixed, monotonic burst identity
 
         public void Write(NetWriter w)
         {
@@ -333,6 +337,7 @@ namespace PunkMultiverse.Protocol
             w.WritePosition(Pos);
             w.WriteVector2Half(Dir);
             w.WriteInt(Seed);
+            w.WriteUInt(ShotId);
         }
 
         public static FireEventMsg Read(NetReader r) => new FireEventMsg
@@ -342,6 +347,7 @@ namespace PunkMultiverse.Protocol
             Pos = r.ReadPosition(),
             Dir = r.ReadVector2Half(),
             Seed = r.ReadInt(),
+            ShotId = r.ReadUInt(),
         };
     }
 
@@ -353,6 +359,9 @@ namespace PunkMultiverse.Protocol
         public float Amount;
         public uint TypeHash; // FNV-1a of Resource.name; 0 = untyped
         public byte AttackerSlot; // who dealt this damage — travels with it so the owner credits the real killer
+        public uint RequestId; // unique per attacker; protects reliable routing/reconnect replay
+        public uint ShotId;
+        public ushort ProjectileOrdinal;
 
         public void Write(NetWriter w)
         {
@@ -363,6 +372,9 @@ namespace PunkMultiverse.Protocol
             w.WriteFloat(Amount);
             w.WriteUInt(TypeHash);
             w.WriteByte(AttackerSlot);
+            w.WriteUInt(RequestId);
+            w.WriteUInt(ShotId);
+            w.WriteUShort(ProjectileOrdinal);
         }
 
         public static DamageRequestMsg Read(NetReader r) => new DamageRequestMsg
@@ -373,6 +385,9 @@ namespace PunkMultiverse.Protocol
             Amount = r.ReadFloat(),
             TypeHash = r.ReadUInt(),
             AttackerSlot = r.ReadByte(),
+            RequestId = r.ReadUInt(),
+            ShotId = r.ReadUInt(),
+            ProjectileOrdinal = r.ReadUShort(),
         };
     }
 
@@ -413,11 +428,43 @@ namespace PunkMultiverse.Protocol
         public float HpFraction;
         public float ShieldFraction;
         public float BurnLevel;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteVarUInt((uint)NetId);
+            w.WritePosition(Pos);
+            w.WriteVector2Half(Vel);
+            w.WriteHalf(Rot);
+            w.WriteVector2Half(Aim);
+            w.WriteByte(State);
+            w.WriteByte(Fire);
+            w.WriteByte(Ammo);
+            w.WriteHalf(HpFraction);
+            w.WriteHalf(ShieldFraction);
+            w.WriteHalf(BurnLevel);
+        }
+
+        public static EntityStateEntry Read(NetReader r) => new EntityStateEntry
+        {
+            NetId = (int)r.ReadVarUInt(),
+            Pos = r.ReadPosition(),
+            Vel = r.ReadVector2Half(),
+            Rot = r.ReadHalf(),
+            Aim = r.ReadVector2Half(),
+            State = r.ReadByte(),
+            Fire = r.ReadByte(),
+            Ammo = r.ReadByte(),
+            HpFraction = r.ReadHalf(),
+            ShieldFraction = r.ReadHalf(),
+            BurnLevel = r.ReadHalf(),
+        };
     }
 
     public struct EntityStateMsg
     {
         public byte Slot;   // authority that produced this batch
+        public int SegmentX, SegmentY;
+        public uint Epoch;  // segment lease epoch; zero is the host fallback lease
         public uint TimeMs; // its unscaled clock — ordering + jitter-free interpolation
         public System.Collections.Generic.List<EntityStateEntry> Entries;
 
@@ -425,47 +472,205 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteMsgType(MsgType.EntityState);
             w.WriteByte(Slot);
+            w.WriteInt(SegmentX);
+            w.WriteInt(SegmentY);
+            w.WriteUInt(Epoch);
             w.WriteUInt(TimeMs);
             w.WriteVarUInt((uint)Entries.Count);
-            foreach (var e in Entries)
-            {
-                w.WriteVarUInt((uint)e.NetId);
-                w.WritePosition(e.Pos);
-                w.WriteVector2Half(e.Vel);
-                w.WriteHalf(e.Rot);
-                w.WriteVector2Half(e.Aim);
-                w.WriteByte(e.State);
-                w.WriteByte(e.Fire);
-                w.WriteByte(e.Ammo);
-                w.WriteHalf(e.HpFraction);
-                w.WriteHalf(e.ShieldFraction);
-                w.WriteHalf(e.BurnLevel);
-            }
+            foreach (var e in Entries) e.Write(w);
         }
 
         public static EntityStateMsg Read(NetReader r)
         {
             byte slot = r.ReadByte();
+            int segmentX = r.ReadInt();
+            int segmentY = r.ReadInt();
+            uint epoch = r.ReadUInt();
             uint timeMs = r.ReadUInt();
             int n = (int)r.ReadVarUInt();
-            var m = new EntityStateMsg { Slot = slot, TimeMs = timeMs, Entries = new System.Collections.Generic.List<EntityStateEntry>(n) };
-            for (int i = 0; i < n; i++)
+            var m = new EntityStateMsg { Slot = slot, SegmentX = segmentX, SegmentY = segmentY, Epoch = epoch, TimeMs = timeMs, Entries = new System.Collections.Generic.List<EntityStateEntry>(n) };
+            for (int i = 0; i < n; i++) m.Entries.Add(EntityStateEntry.Read(r));
+            return m;
+        }
+    }
+
+    /// <summary>One lease/epoch-scoped group inside a coalesced state datagram.</summary>
+    public struct EntityStateGroup
+    {
+        public int SegmentX, SegmentY;
+        public uint Epoch;
+        public System.Collections.Generic.List<EntityStateEntry> Entries;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteInt(SegmentX);
+            w.WriteInt(SegmentY);
+            w.WriteUInt(Epoch);
+            w.WriteVarUInt((uint)Entries.Count);
+            foreach (var e in Entries) e.Write(w);
+        }
+
+        public static EntityStateGroup Read(NetReader r)
+        {
+            var group = new EntityStateGroup
             {
-                m.Entries.Add(new EntityStateEntry
-                {
-                    NetId = (int)r.ReadVarUInt(),
-                    Pos = r.ReadPosition(),
-                    Vel = r.ReadVector2Half(),
-                    Rot = r.ReadHalf(),
-                    Aim = r.ReadVector2Half(),
-                    State = r.ReadByte(),
-                    Fire = r.ReadByte(),
-                    Ammo = r.ReadByte(),
-                    HpFraction = r.ReadHalf(),
-                    ShieldFraction = r.ReadHalf(),
-                    BurnLevel = r.ReadHalf(),
-                });
-            }
+                SegmentX = r.ReadInt(),
+                SegmentY = r.ReadInt(),
+                Epoch = r.ReadUInt(),
+            };
+            int count = (int)r.ReadVarUInt();
+            group.Entries = new System.Collections.Generic.List<EntityStateEntry>(count);
+            for (int i = 0; i < count; i++) group.Entries.Add(EntityStateEntry.Read(r));
+            return group;
+        }
+    }
+
+    /// <summary>A sender's complete state tick. Segment groups retain their individual epochs,
+    /// while one datagram amortizes transport dispatch and receive parsing overhead.</summary>
+    public struct EntityStateBundleMsg
+    {
+        public byte Slot;
+        public uint TimeMs;
+        public System.Collections.Generic.List<EntityStateGroup> Groups;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntityStateBundle);
+            w.WriteByte(Slot);
+            w.WriteUInt(TimeMs);
+            w.WriteVarUInt((uint)Groups.Count);
+            foreach (var group in Groups) group.Write(w);
+        }
+
+        public static EntityStateBundleMsg Read(NetReader r)
+        {
+            var msg = new EntityStateBundleMsg { Slot = r.ReadByte(), TimeMs = r.ReadUInt() };
+            int count = (int)r.ReadVarUInt();
+            msg.Groups = new System.Collections.Generic.List<EntityStateGroup>(count);
+            for (int i = 0; i < count; i++) msg.Groups.Add(EntityStateGroup.Read(r));
+            return msg;
+        }
+    }
+
+    public struct EntityBaselineEntry
+    {
+        public int NetId;
+        public UnityEngine.Vector2 Pos;
+    }
+
+    public struct EntityBaselineMsg
+    {
+        public ushort Start, Total;
+        public System.Collections.Generic.List<EntityBaselineEntry> Entries;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntityBaseline);
+            w.WriteUShort(Start); w.WriteUShort(Total); w.WriteVarUInt((uint)Entries.Count);
+            foreach (var e in Entries) { w.WriteVarUInt((uint)e.NetId); w.WritePosition(e.Pos); }
+        }
+
+        public static EntityBaselineMsg Read(NetReader r)
+        {
+            var m = new EntityBaselineMsg { Start = r.ReadUShort(), Total = r.ReadUShort() };
+            int n = (int)r.ReadVarUInt();
+            m.Entries = new System.Collections.Generic.List<EntityBaselineEntry>(n);
+            for (int i = 0; i < n; i++) m.Entries.Add(new EntityBaselineEntry { NetId = (int)r.ReadVarUInt(), Pos = r.ReadPosition() });
+            return m;
+        }
+    }
+
+    public struct TerrainDigestMsg
+    {
+        public uint Revision;
+        public ulong Hash;
+        public int Count;
+        public void Write(NetWriter w) { w.WriteMsgType(MsgType.TerrainDigest); w.WriteUInt(Revision); w.WriteULong(Hash); w.WriteInt(Count); }
+        public static TerrainDigestMsg Read(NetReader r) => new TerrainDigestMsg { Revision = r.ReadUInt(), Hash = r.ReadULong(), Count = r.ReadInt() };
+    }
+
+    public struct TerrainRepairRequestMsg
+    {
+        public uint Revision;
+        public ulong Hash;
+        public void Write(NetWriter w) { w.WriteMsgType(MsgType.TerrainRepairRequest); w.WriteUInt(Revision); w.WriteULong(Hash); }
+        public static TerrainRepairRequestMsg Read(NetReader r) => new TerrainRepairRequestMsg { Revision = r.ReadUInt(), Hash = r.ReadULong() };
+    }
+
+    public struct TerrainRepairChunkMsg
+    {
+        public uint Revision;
+        public ulong Hash;
+        public int Start, Total;
+        public System.Collections.Generic.List<(int index, byte type)> Cells;
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.TerrainRepairChunk); w.WriteUInt(Revision); w.WriteULong(Hash);
+            w.WriteInt(Start); w.WriteInt(Total); w.WriteVarUInt((uint)Cells.Count);
+            foreach (var c in Cells) { w.WriteInt(c.index); w.WriteByte(c.type); }
+        }
+        public static TerrainRepairChunkMsg Read(NetReader r)
+        {
+            var m = new TerrainRepairChunkMsg { Revision = r.ReadUInt(), Hash = r.ReadULong(), Start = r.ReadInt(), Total = r.ReadInt() };
+            int n = (int)r.ReadVarUInt(); m.Cells = new System.Collections.Generic.List<(int, byte)>(n);
+            for (int i = 0; i < n; i++) m.Cells.Add((r.ReadInt(), r.ReadByte()));
+            return m;
+        }
+    }
+
+    public struct SegmentLeaseMsg
+    {
+        public int X, Y;
+        public byte Owner;
+        public uint Epoch;
+        public byte Phase; // 0 prepare, 1 commit
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SegmentLease);
+            w.WriteInt(X); w.WriteInt(Y); w.WriteByte(Owner); w.WriteUInt(Epoch); w.WriteByte(Phase);
+        }
+
+        public static SegmentLeaseMsg Read(NetReader r) => new SegmentLeaseMsg
+        {
+            X = r.ReadInt(), Y = r.ReadInt(), Owner = r.ReadByte(), Epoch = r.ReadUInt(), Phase = r.ReadByte(),
+        };
+    }
+
+    public struct SegmentLeaseAckMsg
+    {
+        public int X, Y;
+        public byte Owner;
+        public uint Epoch;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SegmentLeaseAck);
+            w.WriteInt(X); w.WriteInt(Y); w.WriteByte(Owner); w.WriteUInt(Epoch);
+        }
+
+        public static SegmentLeaseAckMsg Read(NetReader r) => new SegmentLeaseAckMsg
+        {
+            X = r.ReadInt(), Y = r.ReadInt(), Owner = r.ReadByte(), Epoch = r.ReadUInt(),
+        };
+    }
+
+    public struct KillLedgerMsg
+    {
+        public System.Collections.Generic.List<int> NetIds;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.KillLedger);
+            w.WriteVarUInt((uint)NetIds.Count);
+            foreach (int id in NetIds) w.WriteVarUInt((uint)id);
+        }
+
+        public static KillLedgerMsg Read(NetReader r)
+        {
+            int n = (int)r.ReadVarUInt();
+            var m = new KillLedgerMsg { NetIds = new System.Collections.Generic.List<int>(n) };
+            for (int i = 0; i < n; i++) m.NetIds.Add((int)r.ReadVarUInt());
             return m;
         }
     }
@@ -504,11 +709,13 @@ namespace PunkMultiverse.Protocol
 
     public struct CellDiffMsg
     {
+        public uint Revision; // zero = client proposal or catch-up chunk; host live order starts at 1
         public System.Collections.Generic.List<(int index, byte type)> Cells;
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.CellDiff);
+            w.WriteUInt(Revision);
             w.WriteVarUInt((uint)Cells.Count);
             int prev = 0;
             foreach (var (index, type) in Cells)
@@ -521,6 +728,7 @@ namespace PunkMultiverse.Protocol
 
         public static CellDiffMsg Read(NetReader r)
         {
+            uint revision = r.ReadUInt();
             int count = (int)r.ReadVarUInt();
             var cells = new System.Collections.Generic.List<(int, byte)>(count);
             int prev = 0;
@@ -529,13 +737,17 @@ namespace PunkMultiverse.Protocol
                 prev += (int)r.ReadVarUInt();
                 cells.Add((prev, r.ReadByte()));
             }
-            return new CellDiffMsg { Cells = cells };
+            return new CellDiffMsg { Revision = revision, Cells = cells };
         }
     }
 
     public struct EntityFireMsg
     {
         public int NetId;
+        public byte SourceSlot;               // simulator that originated this burst
+        public int SegmentX, SegmentY;        // lease containing BodyPos at fire time
+        public uint Epoch;                    // committed lease epoch at fire time
+        public uint ShotId;                   // origin-slot-prefixed, monotonic burst identity
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Dir;
         public UnityEngine.Vector2 BodyPos; // shooter's body position at fire time — lets the
@@ -547,6 +759,11 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteMsgType(MsgType.EntityFire);
             w.WriteVarUInt((uint)NetId);
+            w.WriteByte(SourceSlot);
+            w.WriteInt(SegmentX);
+            w.WriteInt(SegmentY);
+            w.WriteUInt(Epoch);
+            w.WriteUInt(ShotId);
             w.WritePosition(Pos);
             w.WriteVector2Half(Dir);
             w.WritePosition(BodyPos);
@@ -557,6 +774,11 @@ namespace PunkMultiverse.Protocol
         public static EntityFireMsg Read(NetReader r) => new EntityFireMsg
         {
             NetId = (int)r.ReadVarUInt(),
+            SourceSlot = r.ReadByte(),
+            SegmentX = r.ReadInt(),
+            SegmentY = r.ReadInt(),
+            Epoch = r.ReadUInt(),
+            ShotId = r.ReadUInt(),
             Pos = r.ReadPosition(),
             Dir = r.ReadVector2Half(),
             BodyPos = r.ReadPosition(),

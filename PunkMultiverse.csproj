@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>PunkMultiverse</AssemblyName>
     <RootNamespace>PunkMultiverse</RootNamespace>
-    <Version>0.1.60</Version>
+    <Version>0.1.73</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -39,6 +39,7 @@
     <Reference Include="UnityEngine.IMGUIModule">    <HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>     <Private>false</Private></Reference>
     <Reference Include="UnityEngine.UnityWebRequestModule"><HintPath>$(ManagedDir)\UnityEngine.UnityWebRequestModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.ParticleSystemModule"><HintPath>$(ManagedDir)\UnityEngine.ParticleSystemModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AudioModule">   <HintPath>$(ManagedDir)\UnityEngine.AudioModule.dll</HintPath>    <Private>false</Private></Reference>
     <Reference Include="UnityEngine.Physics2DModule"><HintPath>$(ManagedDir)\UnityEngine.Physics2DModule.dll</HintPath> <Private>false</Private></Reference>
     <Reference Include="ProCamera2D.Runtime">       <HintPath>$(ManagedDir)\ProCamera2D.Runtime.dll</HintPath>          <Private>false</Private></Reference>
   </ItemGroup>

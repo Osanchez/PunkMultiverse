@@ -6,6 +6,7 @@ using HarmonyLib;
 using PunkMultiverse.Core;
 using PunkMultiverse.Protocol;
 using PunkMultiverse.Transport;
+using UnityEngine;
 
 namespace PunkMultiverse.Sync
 {
@@ -26,6 +27,13 @@ namespace PunkMultiverse.Sync
         private static MethodInfo _setCellByVec;     // SetCell(Vector2Int, byte, int)
         private static int _width = -1;
         private static bool _applying;
+        private static byte[] _baseline;
+        private static uint _revision;
+        private static ulong _ledgerHash;
+        private static float _nextDigestAt;
+        private static bool _repairInProgress;
+
+        internal static int PendingCount => Pending.Count;
 
         public static void Reset()
         {
@@ -40,6 +48,29 @@ namespace PunkMultiverse.Sync
             _setCellByVec = null;
             _width = -1;
             _applying = false;
+            _baseline = null;
+            _revision = 0;
+            _ledgerHash = 0;
+            _nextDigestAt = 0;
+            _repairInProgress = false;
+        }
+
+        internal static uint Revision => _revision;
+        internal static ulong LedgerHash => _ledgerHash;
+        internal static int LedgerCount => Ledger.Count;
+
+        public static void CaptureBaseline(Level level)
+        {
+            try
+            {
+                var cells = Traverse.Create(level).Field("cellTypes").GetValue();
+                if (cells is Unity.Collections.NativeArray<byte> native && native.IsCreated)
+                {
+                    _baseline = native.ToArray();
+                    Plugin.Log.LogInfo($"[World] terrain baseline captured ({_baseline.Length} cells)");
+                }
+            }
+            catch (Exception e) { Plugin.Log.LogWarning($"[World] baseline capture failed: {e.Message}"); }
         }
 
         private static bool ParamsMatch(MethodInfo m, params Type[] types)
@@ -105,11 +136,12 @@ namespace PunkMultiverse.Sync
 
             private static void Postfix(Level __instance, MethodBase __originalMethod, object[] __args)
             {
-                if (!NetSession.Active || _applying) return;
-                var session = NetSession.Instance;
-                if (session.State != SessionState.InGame) return;
+                var profile = PatchProfiler.Enter(PatchId.WorldCaptureCellChanges);
                 try
                 {
+                    if (!NetSession.Active || _applying) return;
+                    var session = NetSession.Instance;
+                    if (session.State != SessionState.InGame) return;
                     var ps = __originalMethod.GetParameters();
                     // Trailing int parameter is the changeSource on both methods when present.
                     if (ps.Length >= 3 && ps[ps.Length - 1].ParameterType == typeof(int)
@@ -128,6 +160,7 @@ namespace PunkMultiverse.Sync
                         }
                         else return;
                         Pending[index] = (byte)__args[1];
+                        InstrumentationCounters.CellCaptured();
                     }
                     else // DestroyCell(x, y, ...)
                     {
@@ -135,9 +168,54 @@ namespace PunkMultiverse.Sync
                         if (_width <= 0 || ps.Length < 2 || ps[0].ParameterType != typeof(int) || ps[1].ParameterType != typeof(int)) return;
                         index = (int)__args[1] * _width + (int)__args[0];
                         Pending[index] = ReadCellType(__instance, index);
+                        InstrumentationCounters.CellCaptured();
                     }
                 }
                 catch { }
+                finally { PatchProfiler.Exit(PatchId.WorldCaptureCellChanges, profile); }
+            }
+        }
+
+        // Neighbour-cascade cell systems (AutoPopper chain-pops, CellRegrower regrows) seed from
+        // Level.CellChanged and skip the game's OWN cascade sources (auto-pop 1324, burn 15324) so
+        // cascades don't re-trigger each other. Replicated changes carry ChangeSourceNet, which
+        // those systems DON'T skip — so on the receiver every replicated auto-pop looked like a
+        // fresh player pop, re-scanned its neighbours, re-cascaded, and fed the new destructions
+        // back to the sender: an expanding host<->client pop storm that froze the client (the
+        // originator, which ran its own correct local cascade on top). The originator already
+        // simulates the whole cascade and replicates every destroyed cell, so a receiver's copy
+        // must stay inert. This is the double-cascade suppression the class summary always claimed
+        // but never actually had — extend the vanilla skip-list to include ChangeSourceNet.
+        [HarmonyPatch]
+        internal static class SuppressNetCellCascade
+        {
+            private static IEnumerable<MethodBase> TargetMethods()
+            {
+                foreach (var typeName in new[] { "AutoPopper", "CellRegrower" })
+                {
+                    var t = AccessTools.TypeByName(typeName);
+                    var m = t != null ? AccessTools.Method(t, "OnCellChanged") : null;
+                    if (m != null) yield return m;
+                }
+            }
+
+            private static FieldInfo _changeSourceField;
+
+            // __0 is a Level.CellChange struct (boxed here); read its changeSource and bail on ours.
+            private static bool Prefix(object __0)
+            {
+                var profile = PatchProfiler.Enter(PatchId.WorldSuppressNetCellCascade);
+                try
+                {
+                    if (!NetSession.Active || __0 == null) return true;
+                    if (_changeSourceField == null)
+                        _changeSourceField = AccessTools.Field(__0.GetType(), "changeSource");
+                    if (_changeSourceField != null && (int)_changeSourceField.GetValue(__0) == ChangeSourceNet)
+                        return false; // replicated change — do not seed a local cascade
+                }
+                catch { }
+                finally { PatchProfiler.Exit(PatchId.WorldSuppressNetCellCascade, profile); }
+                return true;
             }
         }
 
@@ -194,10 +272,15 @@ namespace PunkMultiverse.Sync
             foreach (var (index, _) in cells)
                 Pending.Remove(index);
             cells.Sort(ByIndex); // CellDiff delta encoding needs ascending indexes
-            foreach (var (index, type) in cells)
-                Ledger[index] = type;
+            uint revision = 0;
+            if (session.IsHost)
+            {
+                revision = ++_revision;
+                foreach (var (index, type) in cells) RecordLedger(index, type);
+                InstrumentationCounters.TerrainRevisionCommitted();
+            }
             Writer.Reset();
-            new CellDiffMsg { Cells = cells }.Write(Writer);
+            new CellDiffMsg { Revision = revision, Cells = cells }.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
         }
 
@@ -205,9 +288,48 @@ namespace PunkMultiverse.Sync
         {
             foreach (var (index, type) in msg.Cells)
             {
-                Ledger[index] = type;
+                RecordLedger(index, type);
                 ApplyQueue.Enqueue((index, type));
             }
+        }
+
+        public static CellDiffMsg AcceptProposal(CellDiffMsg proposal)
+        {
+            proposal.Revision = ++_revision;
+            Apply(proposal);
+            InstrumentationCounters.TerrainRevisionCommitted();
+            return proposal;
+        }
+
+        public static void ApplyCanonical(CellDiffMsg msg)
+        {
+            if (msg.Revision == 0) { Apply(msg); return; }
+            if (msg.Revision <= _revision) return;
+            if (msg.Revision != _revision + 1)
+                Plugin.Log.LogWarning($"[World] terrain revision gap {_revision}->{msg.Revision}; reliable ordering should prevent this");
+            Apply(msg);
+            _revision = msg.Revision;
+        }
+
+        private static void RecordLedger(int index, byte type)
+        {
+            if (Ledger.TryGetValue(index, out byte old)) _ledgerHash ^= CellToken(index, old);
+            if (_baseline != null && index >= 0 && index < _baseline.Length && _baseline[index] == type)
+            {
+                Ledger.Remove(index);
+                return;
+            }
+            Ledger[index] = type;
+            _ledgerHash ^= CellToken(index, type);
+        }
+
+        private static ulong CellToken(int index, byte type)
+        {
+            ulong z = ((ulong)(uint)index << 8) | type;
+            z += 0x9E3779B97F4A7C15UL;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+            return z ^ (z >> 31);
         }
 
         /// <summary>Called once per frame from NetSession.Update while InGame: applies queued
@@ -216,6 +338,66 @@ namespace PunkMultiverse.Sync
         {
             DrainApplyQueue();
             TickStreams(session);
+            if (session.IsHost && Time.unscaledTime >= _nextDigestAt)
+            {
+                _nextDigestAt = Time.unscaledTime + 10f;
+                Writer.Reset();
+                new TerrainDigestMsg { Revision = _revision, Hash = _ledgerHash, Count = Ledger.Count }.Write(Writer);
+                session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                InstrumentationCounters.TerrainDigestSent();
+            }
+        }
+
+        public static void ApplyDigest(TerrainDigestMsg msg, NetSession session)
+        {
+            if (session.IsHost || _repairInProgress || msg.Revision > _revision) return; // ordered event lane will catch up first
+            if (msg.Revision == _revision && msg.Hash == _ledgerHash && msg.Count == Ledger.Count) return;
+            InstrumentationCounters.TerrainMismatch();
+            Plugin.Log.LogWarning($"[World] TERRAIN LEDGER MISMATCH local={_revision}/{_ledgerHash:X16}/{Ledger.Count} host={msg.Revision}/{msg.Hash:X16}/{msg.Count}; requesting repair");
+            _repairInProgress = true;
+            Writer.Reset();
+            new TerrainRepairRequestMsg { Revision = _revision, Hash = _ledgerHash }.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+        }
+
+        public static void SendRepair(NetSession session, ulong peer, TerrainRepairRequestMsg request)
+        {
+            if (!session.IsHost) return;
+            var cells = LedgerSnapshot();
+            cells.Sort(ByIndex);
+            const int chunkSize = 500;
+            for (int start = 0; start < cells.Count || start == 0; start += chunkSize)
+            {
+                int count = Math.Min(chunkSize, cells.Count - start);
+                Writer.Reset();
+                new TerrainRepairChunkMsg { Revision = _revision, Hash = _ledgerHash, Start = start,
+                    Total = cells.Count, Cells = count > 0 ? cells.GetRange(start, count) : new List<(int, byte)>() }.Write(Writer);
+                session.SendToPeer(peer, NetChannel.Events, Writer.ToSegment(), reliable: true);
+                if (cells.Count == 0) break;
+            }
+            InstrumentationCounters.TerrainRepairSent();
+            Plugin.Log.LogWarning($"[World] terrain repair sent to peer={peer}: {cells.Count} canonical cells at revision {_revision}");
+        }
+
+        public static void ApplyRepair(TerrainRepairChunkMsg msg)
+        {
+            if (msg.Start == 0)
+            {
+                if (_baseline != null)
+                    foreach (var kv in Ledger)
+                        if (kv.Key >= 0 && kv.Key < _baseline.Length) ApplyQueue.Enqueue((kv.Key, _baseline[kv.Key]));
+                Ledger.Clear(); _ledgerHash = 0;
+            }
+            foreach (var cell in msg.Cells) { RecordLedger(cell.index, cell.type); ApplyQueue.Enqueue(cell); }
+            if (msg.Start + msg.Cells.Count >= msg.Total)
+            {
+                _revision = msg.Revision;
+                if (_ledgerHash != msg.Hash)
+                    Plugin.Log.LogError($"[World] terrain repair hash failed {_ledgerHash:X16}!={msg.Hash:X16}");
+                else Plugin.Log.LogInfo($"[World] terrain repair applied ({msg.Total} cells, revision {_revision})");
+                _repairInProgress = false;
+                InstrumentationCounters.TerrainRepairApplied();
+            }
         }
 
         private static void DrainApplyQueue()

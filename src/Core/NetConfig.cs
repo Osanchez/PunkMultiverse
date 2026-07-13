@@ -35,6 +35,13 @@ namespace PunkMultiverse
         public static ConfigEntry<float> InterestRadius;
 
         public static ConfigEntry<bool> SyncDiagnostics;
+        public static ConfigEntry<bool> ProfileFrames;
+        public static ConfigEntry<bool> HitchWatchdog;
+        public static ConfigEntry<int> HitchThresholdMs;
+        public static ConfigEntry<int> HitchRepeatMs;
+        public static ConfigEntry<float> ProfileReportInterval;
+        public static ConfigEntry<float> ProfileObjectScanInterval;
+        public static ConfigEntry<bool> CaptureHitchStack;
         public static ConfigEntry<float> DiagOwnershipDumpInterval;
         public static ConfigEntry<string> LogWebhookUrl;
 
@@ -92,8 +99,8 @@ namespace PunkMultiverse
 
             StateHz = cfg.Bind("Sync", "StateHz", 20f,
                 "Snapshot send rate for entities (enemies, props). 20 Hz = a fresh state every " +
-                "50 ms, and puppets buffer two intervals — raising this lowers their visual delay " +
-                "at a bandwidth cost proportional to nearby entity count.");
+                "50 ms, and puppets buffer two intervals. State is coalesced and interest-filtered " +
+                "per peer; raising this still increases apply cost proportional to nearby entities.");
             ShipStateHz = cfg.Bind("Sync", "ShipStateHz", 40f,
                 "Snapshot send rate for player ships — the thing you watch most, and one tiny " +
                 "message per player, so it runs hotter than entities. 40 Hz halves teammate " +
@@ -110,6 +117,30 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
+            ProfileFrames = cfg.Bind("Diag", "ProfileFrames", true,
+                "Per-frame profiler: times each of our subsystem ticks (ShipSync, WorldSync, " +
+                "EnemySync, Authority, …) and every ~3s logs [Profile] avg/max ms per section plus " +
+                "network + ownership-churn rates. Also fires a [Profile] SPIKE line naming the " +
+                "dominant section on any frame our work exceeds ~20 ms. Cheap (a Stopwatch per " +
+                "section); independent of SyncDiagnostics so you can profile without the chatty logs.");
+            HitchWatchdog = cfg.Bind("Diag", "HitchWatchdog", true,
+                "Watch the Unity main-thread heartbeat from a background thread and log stalls " +
+                "even while the main thread cannot advance the normal frame loop.");
+            HitchThresholdMs = cfg.Bind("Diag", "HitchThresholdMs", 250,
+                new ConfigDescription("Main-thread heartbeat age that begins a hitch incident (ms).",
+                    new AcceptableValueRange<int>(100, 5000)));
+            HitchRepeatMs = cfg.Bind("Diag", "HitchRepeatMs", 2000,
+                new ConfigDescription("Repeat-warning interval during one continuous stall (ms).",
+                    new AcceptableValueRange<int>(500, 30000)));
+            ProfileReportInterval = cfg.Bind("Diag", "ProfileReportInterval", 3f,
+                new ConfigDescription("Seconds between aggregate frame, patch, GC, and count reports.",
+                    new AcceptableValueRange<float>(1f, 30f)));
+            ProfileObjectScanInterval = cfg.Bind("Diag", "ProfileObjectScanInterval", 15f,
+                "Seconds between intrusive live-projectile/GameObject scans (0 disables them). " +
+                "A scan over 20 ms disables further scans for that run.");
+            CaptureHitchStack = cfg.Bind("Diag", "CaptureHitchStack", true,
+                "Attempt a managed main-thread stack on a hitch when this Unity Mono runtime " +
+                "supports cross-thread StackTrace capture; otherwise retain the phase marker.");
             DiagOwnershipDumpInterval = cfg.Bind("Diag", "OwnershipDumpInterval", 0f,
                 "When SyncDiagnostics is on and this is > 0, log a full ownership table every N " +
                 "seconds (0 = only on demand via the F11 overlay button).");

@@ -22,7 +22,7 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 1;
+        public const int ProtocolVersion = 6;
         public const int MaxPlayers = 4;
         private const float PingInterval = 1f;
         private const float ConnectTimeout = 15f;
@@ -76,6 +76,7 @@ namespace PunkMultiverse.Core
         private readonly NetReader _reader = new NetReader();
         private float _nextPingAt;
         private float _connectDeadline;
+        private ulong _localIdentityId;
 
         public event Action RosterChanged;
         public event Action<SessionState> StateChanged;
@@ -83,6 +84,7 @@ namespace PunkMultiverse.Core
         private void Awake()
         {
             Instance = this;
+            _localIdentityId = ComputeLoopbackIdentity();
             GameController.LevelGenerated += OnLevelGenerated;
         }
 
@@ -276,6 +278,14 @@ namespace PunkMultiverse.Core
         // ------------------------------------------------ run start / level barrier / go-live
 
         private readonly Dictionary<int, ulong> _levelChecksums = new Dictionary<int, ulong>();
+        // LEVEL_READY is used both by the initial start barrier and by peers that regenerate
+        // the world for a late join/rejoin.  Track the latter explicitly: once a catch-up has
+        // started, duplicate readiness packets must never enqueue another map-sized replay.
+        private readonly HashSet<ulong> _peersAwaitingRejoinState = new HashSet<ulong>();
+        private readonly Dictionary<ulong, float> _nextGoLiveRecoveryAt = new Dictionary<ulong, float>();
+        private bool _hasLocalLevelChecksum;
+        private ulong _localLevelChecksum;
+        private float _nextLevelReadyRetryAt;
 
         /// <summary>Host's chosen world seed (picked on the GAME SETTINGS screen);
         /// 0 = roll a random one at start. Visible to all in lobby.</summary>
@@ -333,6 +343,7 @@ namespace PunkMultiverse.Core
         private bool _reattaching;        // reconnecting to the migrated host mid-run
         private float _reattachDeadline;
         private ulong _joinTargetPeerId;  // SteamID64 we connected to (0 on loopback)
+        private byte _joinTargetHostSlot;
         private bool _autoPicked;
         private float _autoPickAt;
 
@@ -343,6 +354,11 @@ namespace PunkMultiverse.Core
         {
             CurrentRunSeed = seed;
             _levelChecksums.Clear();
+            _peersAwaitingRejoinState.Clear();
+            _nextGoLiveRecoveryAt.Clear();
+            _hasLocalLevelChecksum = false;
+            _localLevelChecksum = 0;
+            _nextLevelReadyRetryAt = 0f;
             Sync.ShipSync.ResetStartGate();
             Sync.ShipSync.Reset();
             Sync.ProjectileSync.Reset();
@@ -357,6 +373,8 @@ namespace PunkMultiverse.Core
             NetDiag.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            NetProfiler.Reset();
+            RuntimeInstrumentation.ResetRun();
             ClockSync.Reset();
             EconomyStash.Reset();
             NetRunSave.Reset();
@@ -370,6 +388,7 @@ namespace PunkMultiverse.Core
         private void OnLevelGenerated(Level level)
         {
             if (!Active || State != SessionState.Loading) return;
+            Sync.WorldSync.CaptureBaseline(level);
             ulong checksum = RunStarter.ChecksumLevel(level);
             Plugin.Log.LogInfo($"[Run] level generated, checksum {checksum:X16}");
             if (IsHost)
@@ -384,10 +403,19 @@ namespace PunkMultiverse.Core
             else if (_players[HostSlot] != null)
             {
                 NetIds.PrepareLocal(); // ready before the host's manifest chunks arrive
-                _writer.Reset();
-                new LevelReadyMsg { Checksum = checksum }.Write(_writer);
-                _transport.Send(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
+                _hasLocalLevelChecksum = true;
+                _localLevelChecksum = checksum;
+                SendLevelReady();
             }
+        }
+
+        private void SendLevelReady()
+        {
+            if (IsHost || !_hasLocalLevelChecksum || _players[HostSlot] == null) return;
+            _writer.Reset();
+            new LevelReadyMsg { Checksum = _localLevelChecksum }.Write(_writer);
+            SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
+            _nextLevelReadyRetryAt = Time.unscaledTime + 1f;
         }
 
         private void HandleLevelReady(ulong peer)
@@ -398,18 +426,40 @@ namespace PunkMultiverse.Core
 
             if (State == SessionState.InGame)
             {
-                // Rejoiner finished regenerating the level. A cell-checksum mismatch here is the
-                // known MergedCellsGenerator cosmetic divergence (unseeded UnityEngine.Random) —
-                // the entity manifest matches by fingerprint regardless and terrain edits replay
-                // from the ledger, so proceed with a warning rather than refusing the rejoin.
-                if (_levelChecksums.TryGetValue(0, out var hostChecksum) && msg.Checksum != hostChecksum)
-                    Plugin.Log.LogWarning($"[Run] rejoiner cell checksum differs ({msg.Checksum:X16} vs {hostChecksum:X16}) — merged-cell cosmetic divergence, continuing");
-                SendRejoinState(peer);
+                if (_peersAwaitingRejoinState.Remove(peer))
+                {
+                    // Rejoiner finished regenerating the level. A cell-checksum mismatch here is
+                    // the known MergedCellsGenerator cosmetic divergence (unseeded
+                    // UnityEngine.Random) — entity identity and terrain replay still converge it.
+                    if (_levelChecksums.TryGetValue(0, out var hostChecksum) && msg.Checksum != hostChecksum)
+                        Plugin.Log.LogWarning($"[Run] rejoiner cell checksum differs ({msg.Checksum:X16} vs {hostChecksum:X16}) — merged-cell cosmetic divergence, continuing");
+                    Plugin.Log.LogInfo($"[Run] LEVEL_READY from rejoining P{player.Slot + 1} — sending one full catch-up");
+                    SendRejoinState(peer);
+                }
+                else
+                {
+                    // The client retries LEVEL_READY until GO_LIVE arrives.  On an initial start,
+                    // a retry can already be queued when the host crosses the barrier.  It is only
+                    // recovery for a lost GO_LIVE, not evidence of a rejoin.
+                    SendGoLiveRecovery(peer, player.Slot);
+                }
                 return;
             }
 
             _levelChecksums[player.Slot] = msg.Checksum;
             CheckGoLive();
+        }
+
+        private void SendGoLiveRecovery(ulong peer, byte slot)
+        {
+            float now = Time.unscaledTime;
+            if (_nextGoLiveRecoveryAt.TryGetValue(peer, out var next) && now < next) return;
+            _nextGoLiveRecoveryAt[peer] = now + 1f;
+
+            _writer.Reset();
+            _writer.WriteMsgType(MsgType.GoLive);
+            SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogInfo($"[Run] repeated LEVEL_READY from active P{slot + 1} — GO_LIVE-only recovery sent");
         }
 
         private void CheckGoLive()
@@ -425,7 +475,7 @@ namespace PunkMultiverse.Core
                 Plugin.Log.LogError($"[Run] LEVEL CHECKSUM MISMATCH — aborting net run ({detail})");
                 _writer.Reset();
                 new RejectMsg { Reason = "Level generation diverged between players (checksum mismatch)." }.Write(_writer);
-                ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+                ForEachRemotePeer(peer => SendReliable(peer, NetChannel.Control, _writer.ToSegment()));
                 StopSession("checksum mismatch");
                 return;
             }
@@ -438,13 +488,15 @@ namespace PunkMultiverse.Core
                 var chunk = fps.Skip(start).Take(chunkSize).ToArray();
                 _writer.Reset();
                 new ManifestMsg { StartIndex = (ushort)start, Total = (ushort)fps.Count, Fps = chunk }.Write(_writer);
-                ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+                ForEachRemotePeer(peer => SendReliable(peer, NetChannel.Control, _writer.ToSegment()));
                 if (fps.Count == 0) break;
             }
 
+            SendEntityBaseline(0);
+
             _writer.Reset();
             _writer.WriteMsgType(MsgType.GoLive);
-            ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+            ForEachRemotePeer(peer => SendReliable(peer, NetChannel.Control, _writer.ToSegment()));
             DoGoLive();
         }
 
@@ -626,6 +678,7 @@ namespace PunkMultiverse.Core
             {
                 Slot = 0,
                 PeerId = _transport.LocalPeerId,
+                IdentityId = LocalIdentityId(),
                 Name = LocalName(),
                 IsLocal = true,
             };
@@ -645,6 +698,7 @@ namespace PunkMultiverse.Core
         {
             if (State != SessionState.Offline) StopSession("rejoining");
             HostSlot = 0;
+            _joinTargetHostSlot = 0;
             ulong.TryParse(address, out _joinTargetPeerId); // SteamID64; loopback "ip:port" -> 0
             try
             {
@@ -704,12 +758,16 @@ namespace PunkMultiverse.Core
             HostSlot = 0;
             _migrating = false;
             _reattaching = false;
+            _joinTargetPeerId = 0;
+            _joinTargetHostSlot = 0;
             ChosenSeed = 0;
             FriendlyFire = false;
             HpScaling = false;
             EnemyHpMult = 1f;
             _pendingResume = null;
             _levelChecksums.Clear();
+            _peersAwaitingRejoinState.Clear();
+            _nextGoLiveRecoveryAt.Clear();
             Sync.ShipSync.Reset();
             Sync.ShipSync.ResetStartGate();
             Sync.ProjectileSync.Reset();
@@ -724,6 +782,8 @@ namespace PunkMultiverse.Core
             NetDiag.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            NetProfiler.Reset();
+            RuntimeInstrumentation.ResetRun();
             ClockSync.Reset();
             EconomyStash.Reset();
             Sync.HookSync.Reset();
@@ -798,68 +858,134 @@ namespace PunkMultiverse.Core
             return Environment.UserName;
         }
 
+        private ulong LocalIdentityId()
+        {
+            // Steam's transport address is already a durable account identity. Loopback peer IDs
+            // are reassigned by every new host, so use a stable hash of this game installation;
+            // the host and OD test copy have distinct paths and retain their slots after restart.
+            if (UsingSteam && _transport != null && _transport.LocalPeerId != 0)
+                return _transport.LocalPeerId;
+            return _localIdentityId;
+        }
+
+        private static ulong ComputeLoopbackIdentity()
+        {
+            const ulong offset = 14695981039346656037UL;
+            const ulong prime = 1099511628211UL;
+            ulong hash = offset;
+            string key = (Application.dataPath ?? Environment.CurrentDirectory).ToLowerInvariant();
+            foreach (char c in key)
+            {
+                hash ^= (byte)c;
+                hash *= prime;
+                hash ^= (byte)(c >> 8);
+                hash *= prime;
+            }
+            // Keep 0 reserved for old/fallback peers and avoid the loopback route IDs 1..4.
+            hash |= 0x8000000000000000UL;
+            return hash <= MaxPlayers ? hash + 0x100UL : hash;
+        }
+
         // ---------------------------------------------------------------- update loop
 
         private void Update()
         {
-            SteamBootstrap.Pump();
-            if (_transport == null || !_transport.IsRunning) return;
-            _transport.Poll();
-            DrainOutbox();
+            RuntimeInstrumentation.UpdateStart(State);
+            bool profiling = false;
+            try
+            {
+                RuntimeInstrumentation.SetPhase(PerfPhase.SteamPump);
+                SteamBootstrap.Pump();
+                if (_transport == null || !_transport.IsRunning) return;
+                profiling = State == SessionState.InGame;
+                if (profiling) NetProfiler.FrameStart();
 
-            if (State == SessionState.Connecting && Time.unscaledTime >= _connectDeadline)
-            {
-                Fail("Could not reach host — no response for 15 seconds.");
-                return;
-            }
-            if (_reattaching && Time.unscaledTime >= _reattachDeadline)
-            {
-                _reattaching = false;
-                Fail("Could not reach the new host.");
-                return;
-            }
+                RuntimeInstrumentation.SetPhase(PerfPhase.TransportPoll);
+                _transport.Poll();                          // processes all inbound msgs (Dispatch)
+                if (profiling) NetProfiler.Mark("Transport.Poll(recv)");
+                RuntimeInstrumentation.SetPhase(PerfPhase.TransportDrain);
+                DrainOutbox();
+                if (profiling) NetProfiler.Mark("Transport.Drain");
 
-            if (State == SessionState.InGame)
-            {
-                TickAutoFly();
-                Sync.ShipSync.Tick(this);
-                Sync.WorldSync.Flush(this);
-                Sync.WorldSync.Tick(this); // paced cell application + catch-up streams
-                Sync.EnemySync.Tick(this);
-                Sync.DamageSync.TickLifeWatchdog(); // re-announce a death/resurrect any hook missed
-                Sync.ModuleGridSync.Tick(this);
-                Sync.FogSync.Tick(this);
-                EconomyStash.Tick(this);
-                NetRunSave.Tick(this);
-                NetDiag.TickPeriodic();
-                if (IsHost)
+                if (State == SessionState.Connecting && Time.unscaledTime >= _connectDeadline)
                 {
-                    AuthorityManager.Tick(this);
-                    CheckPartyWipe();
+                    Fail("Could not reach host — no response for 15 seconds.");
+                    return;
+                }
+                if (_reattaching && Time.unscaledTime >= _reattachDeadline)
+                {
+                    _reattaching = false;
+                    Fail("Could not reach the new host.");
+                    return;
+                }
+
+                if (State == SessionState.InGame)
+                {
+                    RuntimeInstrumentation.SetPhase(PerfPhase.AutoFly);
+                    TickAutoFly();                              NetProfiler.Mark("AutoFly");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.ShipSync);
+                    Sync.ShipSync.Tick(this);                   NetProfiler.Mark("ShipSync");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.WorldFlush);
+                    Sync.WorldSync.Flush(this);                 NetProfiler.Mark("WorldSync.Flush");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.WorldTick);
+                    Sync.WorldSync.Tick(this);                  NetProfiler.Mark("WorldSync.Tick");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.EnemySync);
+                    Sync.EnemySync.Tick(this);                  NetProfiler.Mark("EnemySync");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.DamageWatchdog);
+                    Sync.DamageSync.TickLifeWatchdog();         NetProfiler.Mark("DamageWatchdog");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.ModuleGrid);
+                    Sync.ModuleGridSync.Tick(this);             NetProfiler.Mark("ModuleGrid");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.Fog);
+                    Sync.FogSync.Tick(this);                    NetProfiler.Mark("Fog");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.Economy);
+                    EconomyStash.Tick(this);                    NetProfiler.Mark("Economy");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.RunSave);
+                    NetRunSave.Tick(this);                      NetProfiler.Mark("RunSave");
+                    RuntimeInstrumentation.SetPhase(PerfPhase.Diagnostics);
+                    NetDiag.TickPeriodic();                     NetProfiler.Mark("Diag");
+                    if (IsHost)
+                    {
+                        RuntimeInstrumentation.SetPhase(PerfPhase.Authority);
+                        AuthorityManager.Tick(this);            NetProfiler.Mark("Authority");
+                        RuntimeInstrumentation.SetPhase(PerfPhase.PartyWipe);
+                        CheckPartyWipe();                       NetProfiler.Mark("PartyWipe");
+                    }
+                }
+
+                // DEV autostart: clickless loadout pick while loading.
+                if (State == SessionState.Loading && NetConfig.AutoReady.Value && !_autoPicked
+                    && Time.unscaledTime >= _autoPickAt)
+                {
+                    if (RunStarter.TryAutoPickLoadout()) _autoPicked = true;
+                    else _autoPickAt = Time.unscaledTime + 1f;
+                }
+
+                // LEVEL_READY is also the client's run-barrier retry. If the final GO_LIVE was
+                // lost (notably on the dev UDP transport), the now-InGame host answers with one
+                // tiny GO_LIVE recovery instead of rebuilding the world catch-up.
+                if (State == SessionState.Loading && !IsHost && _hasLocalLevelChecksum
+                    && Time.unscaledTime >= _nextLevelReadyRetryAt)
+                    SendLevelReady();
+
+                // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
+                if (State == SessionState.Lobby && NetConfig.AutoReady.Value && LocalPlayer != null && !LocalPlayer.Ready)
+                    SetLocalPrefs(LocalPlayer.ColorIndex != 0 ? LocalPlayer.ColorIndex : (byte)LocalSlot, true);
+                if (State == SessionState.Lobby && NetConfig.AutoLaunchRun.Value && IsHost && AllReady)
+                    StartRun();
+
+                if (State >= SessionState.Lobby && Time.unscaledTime >= _nextPingAt)
+                {
+                    _nextPingAt = Time.unscaledTime + PingInterval;
+                    var ping = new PingMsg { TimeMs = (uint)(Time.unscaledTime * 1000f) };
+                    _writer.Reset();
+                    ping.Write(_writer, pong: false);
+                    ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.State, _writer.ToSegment(), reliable: false));
                 }
             }
-
-            // DEV autostart: clickless loadout pick while loading.
-            if (State == SessionState.Loading && NetConfig.AutoReady.Value && !_autoPicked
-                && Time.unscaledTime >= _autoPickAt)
+            finally
             {
-                if (RunStarter.TryAutoPickLoadout()) _autoPicked = true;
-                else _autoPickAt = Time.unscaledTime + 1f;
-            }
-
-            // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
-            if (State == SessionState.Lobby && NetConfig.AutoReady.Value && LocalPlayer != null && !LocalPlayer.Ready)
-                SetLocalPrefs(LocalPlayer.ColorIndex != 0 ? LocalPlayer.ColorIndex : (byte)LocalSlot, true);
-            if (State == SessionState.Lobby && NetConfig.AutoLaunchRun.Value && IsHost && AllReady)
-                StartRun();
-
-            if (State >= SessionState.Lobby && Time.unscaledTime >= _nextPingAt)
-            {
-                _nextPingAt = Time.unscaledTime + PingInterval;
-                var ping = new PingMsg { TimeMs = (uint)(Time.unscaledTime * 1000f) };
-                _writer.Reset();
-                ping.Write(_writer, pong: false);
-                ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.State, _writer.ToSegment(), reliable: false));
+                if (profiling) NetProfiler.FrameEnd();
+                RuntimeInstrumentation.UpdateEnd(State);
             }
         }
 
@@ -962,6 +1088,8 @@ namespace PunkMultiverse.Core
         {
             _allDeadSince = -1f;
             _levelChecksums.Clear();
+            _peersAwaitingRejoinState.Clear();
+            _nextGoLiveRecoveryAt.Clear();
             Sync.ShipSync.Reset();
             Sync.ShipSync.ResetStartGate();
             Sync.ProjectileSync.Reset();
@@ -975,6 +1103,8 @@ namespace PunkMultiverse.Core
             AuthorityManager.Reset();
             NetDiag.Reset();
             NetIds.Reset();
+            NetProfiler.Reset();
+            RuntimeInstrumentation.ResetRun();
             EconomyStash.Reset();
             NetRunSave.Reset();
             NetRunSave.Delete();
@@ -1001,14 +1131,14 @@ namespace PunkMultiverse.Core
                     ProtocolVersion = ProtocolVersion,
                     ModVersion = Plugin.Version,
                     GameVersion = Application.version,
-                    SteamId = _transport is SteamMessagesTransport ? _transport.LocalPeerId : 0,
+                    SteamId = LocalIdentityId(),
                     Name = LocalName(),
                     Resuming = _reattaching,
                     Mods = ModManifest.Local,
                 };
                 _writer.Reset();
                 hello.Write(_writer);
-                _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
                 Plugin.Log.LogInfo(_reattaching ? "[Session] sent HELLO (resume)" : "[Session] sent HELLO");
             }
             // Host side: wait for the HELLO before creating a player.
@@ -1016,12 +1146,24 @@ namespace PunkMultiverse.Core
 
         // ---------------------------------------------------------------- host migration
 
-        /// <summary>The host is gone. Mid-run on Steam we migrate instead of dying: Steam has
-        /// already re-assigned lobby ownership to a remaining member — that member promotes
-        /// itself, everyone else reattaches, and the old host's slot is reserved for rejoin.</summary>
+        /// <summary>The host is gone. Steam follows lobby ownership; loopback deterministically
+        /// elects the lowest connected slot and reconnects through the fixed dev port.</summary>
         private void OnHostLost(string reason)
         {
-            if (State == SessionState.InGame && UsingSteam && _lobby != null && _lobby.InLobby && !_migrating)
+            // SessionEnded and the transport disconnect commonly arrive back-to-back. The second
+            // signal used to call Fail() and tear down a migration that was already in progress.
+            if (_migrating)
+            {
+                Plugin.Log.LogInfo($"[Session] duplicate host-loss signal ignored during migration ({reason})");
+                return;
+            }
+            if (State == SessionState.InGame && !UsingSteam)
+            {
+                _migrating = true;
+                StartCoroutine(MigrateLoopbackHost(reason));
+                return;
+            }
+            if (State == SessionState.InGame && UsingSteam && _lobby != null && _lobby.InLobby)
             {
                 _migrating = true;
                 StartCoroutine(MigrateHost(reason));
@@ -1034,10 +1176,14 @@ namespace PunkMultiverse.Core
         {
             Plugin.Log.LogInfo($"[Session] {reason} — electing a new host…");
             var oldHost = _players[HostSlot];
+            ulong oldHostId = oldHost?.PeerId ?? 0;
             if (oldHost != null)
             {
                 oldHost.Connected = false;
                 oldHost.RttMs = -1;
+                oldHost.PeerId = 0;
+                Sync.ShipSync.RemoveRemoteShip(oldHost.Slot, "host departed");
+                AuthorityManager.OnPeerLost(oldHost.Slot);
             }
             RosterChanged?.Invoke();
 
@@ -1050,7 +1196,7 @@ namespace PunkMultiverse.Core
                 ulong owner = 0;
                 try { owner = Steamworks.SteamMatchmaking.GetLobbyOwner(_lobby.CurrentLobby).m_SteamID; }
                 catch { }
-                if (owner != 0 && (oldHost == null || owner != oldHost.PeerId)
+                if (owner != 0 && owner != oldHostId
                     && _players.Any(p => p != null && p.PeerId == owner))
                 {
                     newHostId = owner;
@@ -1065,8 +1211,45 @@ namespace PunkMultiverse.Core
                 yield break;
             }
 
+            var electedPlayer = _players.FirstOrDefault(p => p != null && p.PeerId == newHostId);
+            if (electedPlayer != null)
+                Sync.EnemySync.ReassignFixedOwners(oldHost?.Slot ?? (byte)0, electedPlayer.Slot);
             if (newHostId == _transport.LocalPeerId) BecomeHost();
             else ReattachTo(newHostId);
+            _migrating = false;
+        }
+
+        private System.Collections.IEnumerator MigrateLoopbackHost(string reason)
+        {
+            byte oldHostSlot = HostSlot;
+            Plugin.Log.LogInfo($"[Session] {reason} — loopback host election starting (old=P{oldHostSlot + 1})");
+            var oldHost = _players[oldHostSlot];
+            if (oldHost != null)
+            {
+                oldHost.Connected = false;
+                oldHost.RttMs = -1;
+                oldHost.PeerId = 0;
+                Sync.ShipSync.RemoveRemoteShip(oldHostSlot, "host departed");
+                AuthorityManager.OnPeerLost(oldHostSlot);
+            }
+            RosterChanged?.Invoke();
+
+            var elected = _players.Where(p => p != null && p.Connected && p.Slot != oldHostSlot)
+                                  .OrderBy(p => p.Slot).FirstOrDefault();
+            if (elected == null)
+            {
+                _migrating = false;
+                Fail("Host left and no migration candidate remains.");
+                yield break;
+            }
+
+            HostSlot = elected.Slot;
+            Sync.EnemySync.ReassignFixedOwners(oldHostSlot, elected.Slot);
+            Plugin.Log.LogInfo($"[Session] loopback elected P{elected.Slot + 1} identity={elected.IdentityId:X}");
+            // Do not replace a transport from inside its PeerDisconnected callback.
+            yield return null;
+            if (elected.IsLocal) BecomeHost();
+            else ReattachLoopback(elected);
             _migrating = false;
         }
 
@@ -1075,10 +1258,26 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo("[Session] promoted to host (migration)");
             _transport.Stop();
             _transport.Dispose();
-            _transport = new SteamMessagesTransport();
-            WireTransport();
-            _transport.StartHost();
+            try
+            {
+                _transport = CreateTransport();
+                WireTransport();
+                _transport.StartHost();
+            }
+            catch (Exception e)
+            {
+                Fail($"Host migration takeover failed: {e.Message}");
+                return;
+            }
             HostSlot = (byte)LocalSlot;
+            var local = _players[LocalSlot];
+            if (local != null)
+            {
+                local.PeerId = _transport.LocalPeerId;
+                local.IdentityId = LocalIdentityId();
+                local.Connected = true;
+                local.RttMs = 0;
+            }
             // Everyone else is disconnected from ME right now — reserve their slots; their
             // resume-HELLOs (or full rejoins) bring them back.
             foreach (var p in _players)
@@ -1086,8 +1285,13 @@ namespace PunkMultiverse.Core
                 {
                     p.Connected = false;
                     p.RttMs = -1;
+                    p.PeerId = 0;
+                    AuthorityManager.OnPeerLost(p.Slot);
                 }
-            _lobby.TakeOverLobby();
+            if (UsingSteam) _lobby?.TakeOverLobby();
+            // Registrar fallback ownership changed immediately. Re-arm local/puppet components
+            // before the next state tick; explicit segment leases converge on the next scan.
+            Sync.EnemySync.ApplyAllOwnership();
             // Fog is host-authoritative: this machine now resumes the sim, but as a former client
             // its fogLevels is stale (see FogHostAuthority). Reconcile it with current terrain
             // before the next tick, or fog snaps back toward its gen-time layout.
@@ -1104,17 +1308,28 @@ namespace PunkMultiverse.Core
                 Fail("Lost connection to host");
                 return;
             }
+            BeginReattach(hostPlayer, newHostId.ToString(), newHostId);
+        }
+
+        private void ReattachLoopback(NetPlayer hostPlayer)
+        {
+            BeginReattach(hostPlayer, $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}", 0);
+        }
+
+        private void BeginReattach(NetPlayer hostPlayer, string address, ulong targetPeerId)
+        {
             Plugin.Log.LogInfo($"[Session] reattaching to new host {hostPlayer}");
             HostSlot = hostPlayer.Slot;
+            _joinTargetHostSlot = hostPlayer.Slot;
             UI.Toast.Show($"HOST LEFT — {hostPlayer.Name} IS NOW HOST", 6f);
             _transport.Stop();
             _transport.Dispose();
-            _transport = new SteamMessagesTransport();
+            _transport = CreateTransport();
             WireTransport();
             _reattaching = true;
             _reattachDeadline = Time.unscaledTime + 20f;
-            _joinTargetPeerId = newHostId;
-            _transport.StartClient(newHostId.ToString());
+            _joinTargetPeerId = targetPeerId;
+            _transport.StartClient(address);
             // PeerConnected (first Poll) sends the resume-HELLO; Welcome completes reattach.
         }
 
@@ -1122,18 +1337,23 @@ namespace PunkMultiverse.Core
         {
             Sync.WorldSync.CancelStream(peer); // a rejoin restarts it from scratch
             ClearOutboxFor(peer);              // rejoin catch-up re-serves everything anyway
+            _peersAwaitingRejoinState.Remove(peer);
+            _nextGoLiveRecoveryAt.Remove(peer);
             if (IsHost)
             {
                 var player = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
                 if (player == null) return;
                 if (State == SessionState.Loading || State == SessionState.InGame)
                 {
-                    // Mid-run: reserve the slot so they can rejoin; their puppet freezes in place
-                    // and the authority scan reassigns their entities on the next pass.
+                    // Mid-run: reserve the identity/slot for rejoin, remove its ship puppet, and
+                    // let the authority scan reassign its world simulation on the next pass.
+                    Plugin.Log.LogInfo($"[Session] {player} dropped — slot reserved for rejoin");
                     player.Connected = false;
                     player.RttMs = -1;
+                    player.PeerId = 0; // transport routes are not durable reconnect identities
+                    Sync.ShipSync.RemoveRemoteShip(player.Slot, "peer disconnected");
                     AuthorityManager.OnPeerLost(player.Slot); // no holds/denies for a gone machine
-                    Plugin.Log.LogInfo($"[Session] {player} dropped — slot reserved for rejoin");
+                    Sync.EnemySync.ReassignFixedOwners(player.Slot, HostSlot);
                 }
                 else
                 {
@@ -1208,6 +1428,11 @@ namespace PunkMultiverse.Core
                 case MsgType.FireEvent:
                 {
                     var fire = FireEventMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+                        if (sender == null || sender.Slot != fire.Slot) break;
+                    }
                     RelayToOthers(peer, channel, reliable: false);
                     Sync.ProjectileSync.ReplayFire(fire);
                     break;
@@ -1222,6 +1447,11 @@ namespace PunkMultiverse.Core
                 case MsgType.DamageRequest:
                 {
                     var dmg = DamageRequestMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+                        if (sender == null || sender.Slot != dmg.AttackerSlot) break;
+                    }
                     if (IsHost && dmg.IsEntity) AuthorityManager.NoteCombat(dmg.TargetNetId);
                     byte ownerSlot = dmg.IsEntity ? Sync.EnemySync.OwnerOf(dmg.TargetNetId) : dmg.TargetSlot;
                     if (IsHost && ownerSlot != LocalSlot)
@@ -1240,6 +1470,18 @@ namespace PunkMultiverse.Core
                 case MsgType.AuthAssign when !IsHost:
                     Sync.EnemySync.ApplyAuthAssign(AuthAssignMsg.Read(_reader));
                     break;
+                case MsgType.SegmentLease when !IsHost:
+                    AuthorityManager.ApplyLease(SegmentLeaseMsg.Read(_reader), this);
+                    break;
+                case MsgType.SegmentLeaseAck when IsHost:
+                    AuthorityManager.ApplyAck(SegmentLeaseAckMsg.Read(_reader), this);
+                    break;
+                case MsgType.KillLedger when !IsHost:
+                    Sync.EnemySync.ApplyKillLedger(KillLedgerMsg.Read(_reader));
+                    break;
+                case MsgType.EntityBaseline when !IsHost:
+                    NetIds.ApplyBaseline(EntityBaselineMsg.Read(_reader));
+                    break;
                 case MsgType.EntityState:
                 {
                     var state = EntityStateMsg.Read(_reader);
@@ -1247,9 +1489,30 @@ namespace PunkMultiverse.Core
                     Sync.EnemySync.ApplyEntityState(state);
                     break;
                 }
+                case MsgType.EntityStateBundle:
+                {
+                    var bundle = EntityStateBundleMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+                        if (sender == null || sender.Slot != bundle.Slot) break;
+                    }
+                    Sync.EnemySync.ApplyEntityStateBundle(bundle);
+                    if (IsHost) Sync.EnemySync.ForwardEntityStateBundle(this, bundle, peer);
+                    break;
+                }
                 case MsgType.EntityFire:
                 {
                     var efire = EntityFireMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+                        if (sender == null || sender.Slot != efire.SourceSlot)
+                        {
+                            InstrumentationCounters.StaleFireDropped();
+                            break;
+                        }
+                    }
                     if (IsHost) AuthorityManager.NoteAggro(efire.NetId, efire.TargetSlot);
                     RelayToOthers(peer, channel, reliable: false);
                     Sync.ProjectileSync.ReplayEntityFire(efire);
@@ -1336,10 +1599,25 @@ namespace PunkMultiverse.Core
                 case MsgType.CellDiff:
                 {
                     var diff = CellDiffMsg.Read(_reader);
-                    RelayToOthers(peer, channel, reliable: true);
-                    Sync.WorldSync.Apply(diff);
+                    if (IsHost && diff.Revision == 0)
+                    {
+                        var canonical = Sync.WorldSync.AcceptProposal(diff);
+                        _writer.Reset(); canonical.Write(_writer);
+                        SendToAll(NetChannel.Events, _writer.ToSegment(), reliable: true); // includes proposer
+                    }
+                    else if (!IsHost)
+                        Sync.WorldSync.ApplyCanonical(diff);
                     break;
                 }
+                case MsgType.TerrainDigest when !IsHost:
+                    Sync.WorldSync.ApplyDigest(TerrainDigestMsg.Read(_reader), this);
+                    break;
+                case MsgType.TerrainRepairRequest when IsHost:
+                    Sync.WorldSync.SendRepair(this, peer, TerrainRepairRequestMsg.Read(_reader));
+                    break;
+                case MsgType.TerrainRepairChunk when !IsHost:
+                    Sync.WorldSync.ApplyRepair(TerrainRepairChunkMsg.Read(_reader));
+                    break;
                 case MsgType.TerrainSync when !IsHost:
                     Sync.WorldSync.ApplyTerrainSync(TerrainSyncMsg.Read(_reader));
                     break;
@@ -1392,7 +1670,7 @@ namespace PunkMultiverse.Core
                 // Mid-run: a reserved slot matching (SteamID, else name) is a rejoin; anyone
                 // else is a late joiner and takes a free slot below.
                 var reserved = _players.FirstOrDefault(p => p != null && !p.Connected
-                    && ((hello.SteamId != 0 && p.PeerId == hello.SteamId) || p.Name == hello.Name));
+                    && (hello.SteamId != 0 ? p.IdentityId == hello.SteamId : p.Name == hello.Name));
                 if (reserved != null)
                 {
                     reserved.ModsMismatch = modsMismatch;
@@ -1414,7 +1692,7 @@ namespace PunkMultiverse.Core
             {
                 _writer.Reset();
                 new RejectMsg { Reason = reject }.Write(_writer);
-                _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
                 Plugin.Log.LogWarning($"[Session] rejected {peer}: {reject}");
                 return;
             }
@@ -1423,6 +1701,7 @@ namespace PunkMultiverse.Core
             {
                 Slot = (byte)slot,
                 PeerId = peer,
+                IdentityId = hello.SteamId,
                 Name = hello.Name,
                 ModsMismatch = modsMismatch,
             };
@@ -1431,7 +1710,7 @@ namespace PunkMultiverse.Core
 
             _writer.Reset();
             new WelcomeMsg { Slot = (byte)slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
-            _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+            SendReliable(peer, NetChannel.Control, _writer.ToSegment());
             BroadcastLobbyState();
             RosterChanged?.Invoke();
 
@@ -1448,6 +1727,11 @@ namespace PunkMultiverse.Core
                     EnemyHpMult = EnemyHpMult,
                 }.Write(_writer);
                 _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+                if (State == SessionState.InGame)
+                {
+                    _peersAwaitingRejoinState.Add(peer);
+                    _nextGoLiveRecoveryAt.Remove(peer);
+                }
             }
         }
 
@@ -1457,6 +1741,7 @@ namespace PunkMultiverse.Core
         private void HandleResume(ulong peer, HelloMsg hello, NetPlayer reserved)
         {
             reserved.PeerId = peer;
+            if (hello.SteamId != 0) reserved.IdentityId = hello.SteamId;
             reserved.Connected = true;
             reserved.Name = hello.Name;
             Plugin.Log.LogInfo($"[Session] {reserved} reattached after host migration");
@@ -1475,6 +1760,7 @@ namespace PunkMultiverse.Core
         private void HandleRejoin(ulong peer, HelloMsg hello, NetPlayer reserved)
         {
             reserved.PeerId = peer;
+            if (hello.SteamId != 0) reserved.IdentityId = hello.SteamId;
             reserved.Connected = true;
             reserved.Name = hello.Name;
             Plugin.Log.LogInfo($"[Session] {reserved} REJOINED — replaying run seed {CurrentRunSeed}");
@@ -1494,6 +1780,11 @@ namespace PunkMultiverse.Core
                 EnemyHpMult = EnemyHpMult,
             }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+            if (State == SessionState.InGame)
+            {
+                _peersAwaitingRejoinState.Add(peer);
+                _nextGoLiveRecoveryAt.Remove(peer);
+            }
             // Their LEVEL_READY (handled below while we're InGame) triggers the catch-up stream.
         }
 
@@ -1507,9 +1798,11 @@ namespace PunkMultiverse.Core
                 var chunk = fps.Skip(start).Take(chunkSize).ToArray();
                 _writer.Reset();
                 new ManifestMsg { StartIndex = (ushort)start, Total = (ushort)fps.Count, Fps = chunk }.Write(_writer);
-                _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
                 if (fps.Count == 0) break;
             }
+
+            SendEntityBaseline(peer);
 
             // 2) Terrain changes since generation stream in vicinity-first chunks around the
             // rejoiner — the whole ledger regardless of size, budgeted per frame so the
@@ -1523,8 +1816,29 @@ namespace PunkMultiverse.Core
             // 4) Go.
             _writer.Reset();
             _writer.WriteMsgType(MsgType.GoLive);
-            _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
+            SendReliable(peer, NetChannel.Control, _writer.ToSegment());
             Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} (manifest {fps.Count})");
+        }
+
+        private void SendEntityBaseline(ulong onlyPeer)
+        {
+            var baseline = NetIds.BuildBaseline();
+            const int chunk = 120;
+            for (int start = 0; start < baseline.Count || start == 0; start += chunk)
+            {
+                int count = Math.Min(chunk, baseline.Count - start);
+                _writer.Reset();
+                new EntityBaselineMsg
+                {
+                    Start = (ushort)start,
+                    Total = (ushort)baseline.Count,
+                    Entries = count > 0 ? baseline.GetRange(start, count) : new List<EntityBaselineEntry>(),
+                }.Write(_writer);
+                if (onlyPeer != 0) SendReliable(onlyPeer, NetChannel.Control, _writer.ToSegment());
+                else ForEachRemotePeer(p => SendReliable(p, NetChannel.Control, _writer.ToSegment()));
+                if (baseline.Count == 0) break;
+            }
+            Plugin.Log.LogInfo($"[Ids] canonical entity baseline sent ({baseline.Count} positions)");
         }
 
         /// <summary>Client: ask the host to describe manifest netIds we couldn't match, so
@@ -1668,6 +1982,12 @@ namespace PunkMultiverse.Core
                 new AuthAssignMsg { Entries = owners.GetRange(start, Math.Min(64, owners.Count - start)) }.Write(_writer);
                 _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
             }
+            foreach (var lease in AuthorityManager.Snapshot())
+            {
+                _writer.Reset();
+                lease.Write(_writer);
+                _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
+            }
             foreach (var (netId, hash) in Sync.ProgressionSync.UpgradeSnapshot())
             {
                 _writer.Reset();
@@ -1703,6 +2023,7 @@ namespace PunkMultiverse.Core
                     {
                         Slot = p.Slot,
                         PeerId = p.PeerId,
+                        IdentityId = p.IdentityId,
                         Name = p.Name,
                         ColorIndex = p.ColorIndex,
                         Ready = p.Ready,
@@ -1724,13 +2045,18 @@ namespace PunkMultiverse.Core
         private void HandleWelcome()
         {
             var welcome = WelcomeMsg.Read(_reader);
+            bool wasReattaching = _reattaching;
             ApplyRoster(welcome.Roster);
             LocalSlot = welcome.Slot;
-            if (_players[LocalSlot] != null) _players[LocalSlot].IsLocal = true;
+            if (_players[LocalSlot] != null)
+            {
+                _players[LocalSlot].IsLocal = true;
+                _players[LocalSlot].IdentityId = LocalIdentityId();
+            }
             // The host is whoever we connected to — after a migration that isn't slot 0.
             var hostPlayer = _players.FirstOrDefault(p => p != null && _joinTargetPeerId != 0 && p.PeerId == _joinTargetPeerId);
-            HostSlot = hostPlayer != null ? hostPlayer.Slot : (byte)0;
-            if (_reattaching)
+            HostSlot = wasReattaching ? _joinTargetHostSlot : hostPlayer != null ? hostPlayer.Slot : (byte)0;
+            if (wasReattaching)
             {
                 _reattaching = false;
                 Plugin.Log.LogInfo($"[Session] reattached to new host (slot {welcome.Slot}, host slot {HostSlot})");
@@ -1763,7 +2089,18 @@ namespace PunkMultiverse.Core
 
         private void ApplyRoster(List<RosterEntry> roster)
         {
-            var oldRtt = _players.Where(p => p != null).ToDictionary(p => p.PeerId, p => p.RttMs);
+            // Clients are not directly connected to one another, so only the host sees a remote
+            // transport disconnect. The roster transition is every other peer's cleanup signal.
+            var incoming = roster.ToDictionary(e => e.Slot, e => e);
+            foreach (var old in _players)
+                if (old != null && old.Connected
+                    && (!incoming.TryGetValue(old.Slot, out var next) || !next.Connected))
+                {
+                    Sync.ShipSync.RemoveRemoteShip(old.Slot, "roster disconnected");
+                    Sync.EnemySync.ReassignFixedOwners(old.Slot, HostSlot);
+                }
+
+            var oldRtt = _players.Where(p => p != null).ToDictionary(p => p.IdentityId, p => p.RttMs);
             for (int i = 0; i < MaxPlayers; i++) _players[i] = null;
             foreach (var e in roster)
             {
@@ -1771,12 +2108,13 @@ namespace PunkMultiverse.Core
                 {
                     Slot = e.Slot,
                     PeerId = e.PeerId,
+                    IdentityId = e.IdentityId,
                     Name = e.Name,
                     ColorIndex = e.ColorIndex,
                     Ready = e.Ready,
                     Connected = e.Connected,
                     ModsMismatch = e.ModsMismatch,
-                    RttMs = oldRtt.TryGetValue(e.PeerId, out var rtt) ? rtt : -1,
+                    RttMs = oldRtt.TryGetValue(e.IdentityId, out var rtt) ? rtt : -1,
                 };
             }
         }
