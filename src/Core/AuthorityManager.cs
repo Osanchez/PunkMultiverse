@@ -46,11 +46,14 @@ namespace PunkMultiverse.Core
 
         private const float ScanInterval = 0.5f;
         private const float PrepareRetry = 2f;
-        // 8 was calibrated for the old radius-scan churn; residency-driven transitions arrive in
-        // bursts during fast flight (several segments/second × grants + dormancy), and a backlog
-        // here is a visible frozen-entity window on the receiving peer. Each prepare is one
-        // small reliable round-trip — 16 per 0.5 s is still modest.
-        private const int MaxPreparesPerScan = 16;
+        // Transitions arrive in bursts (go-live activation storm; several segments/second during
+        // fast flight), and each PREPARE builds a baseline roster inline when the host is the
+        // source — a fixed count of 16 produced 200 ms Authority frames. Budget by TIME instead:
+        // spend at most this many ms preparing per scan (minimum 2 so progress is guaranteed);
+        // the scan re-runs every 0.5 s or immediately on residency events, so a burst amortizes
+        // over a few frames instead of stalling one.
+        private const double PrepareBudgetMs = 3.0;
+        private const int MinPreparesPerScan = 2;
         // How long the host waits for an owner's SegmentDormancyCommit after learning (via a
         // residency report) that the owner unloaded a segment, before falling back to its own
         // state cache. Commits and reports ride the same reliable channel, so in practice the
@@ -361,7 +364,8 @@ namespace PunkMultiverse.Core
             foreach (var kv in Leases)
                 if (kv.Value.Owner != DormantOwner || kv.Value.Pending) Interested.Add(kv.Key);
 
-            int budget = MaxPreparesPerScan;
+            int prepares = 0;
+            var budget = System.Diagnostics.Stopwatch.StartNew();
             foreach (var key in Interested)
             {
                 Leases.TryGetValue(key, out var lease);
@@ -399,7 +403,12 @@ namespace PunkMultiverse.Core
                     Leases[key] = lease;
                 }
                 if (lease.Pending && lease.PendingOwner == desired && Time.unscaledTime - lease.PreparedAt < PrepareRetry) continue;
-                if (budget-- <= 0) break;
+                if (prepares >= MinPreparesPerScan && budget.Elapsed.TotalMilliseconds > PrepareBudgetMs)
+                {
+                    _nextScanAt = 0; // burst not drained — continue next frame, not in 0.5 s
+                    break;
+                }
+                prepares++;
                 PendingDormancy.Remove(key);
                 Prepare(session, key, lease, desired);
             }

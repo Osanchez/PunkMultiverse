@@ -36,6 +36,7 @@ namespace PunkMultiverse.Sync
             _counter = 0;
             _applyingRemote = false;
             _prefabsById = null; // prefab assets can unload between runs
+            _egmPrefabDictionary = null; // the EGM (and its dictionary) is scene-scoped
         }
 
         private static int AllocateNetId(NetSession session) => RuntimeIdBase * (session.LocalSlot + 1) + _counter++;
@@ -299,18 +300,27 @@ namespace PunkMultiverse.Sync
         }
 
         private static Dictionary<string, SavableEntity> _prefabsById;
+        private static Dictionary<string, SavableEntity> _egmPrefabDictionary;
+
+        public static void ResetPrefabCache() => _egmPrefabDictionary = null;
 
         internal static SavableEntity FindPrefab(string entityId)
         {
             // The game's own stream-in resolver: EntityGameObjectManager.entityPrefabDictionary
             // (entityId -> prefab, built at boot from SavablesCollection.savableObjectInfos).
             // This is what SpawnObjectForEntity uses, so it covers every spawnable entity.
+            // Cache the dictionary REFERENCE: baseline roster builds call this per entity, and
+            // a Traverse reflection walk per call showed up in the frame profiler.
             try
             {
-                var egm = ServiceLocator.Get<EntityGameObjectManager>();
-                var dict = Traverse.Create(egm).Field("entityPrefabDictionary").GetValue()
-                    as Dictionary<string, SavableEntity>;
-                if (dict != null && dict.TryGetValue(entityId, out var prefab) && prefab != null)
+                if (_egmPrefabDictionary == null)
+                {
+                    var egm = ServiceLocator.Get<EntityGameObjectManager>();
+                    _egmPrefabDictionary = Traverse.Create(egm).Field("entityPrefabDictionary").GetValue()
+                        as Dictionary<string, SavableEntity>;
+                }
+                if (_egmPrefabDictionary != null
+                    && _egmPrefabDictionary.TryGetValue(entityId, out var prefab) && prefab != null)
                     return prefab;
             }
             catch { }

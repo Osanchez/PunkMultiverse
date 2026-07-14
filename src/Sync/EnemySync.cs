@@ -124,6 +124,9 @@ namespace PunkMultiverse.Sync
         private const float StarvedCandidateResidence = 2f;
         private const float StarvedCandidateRecheck = 1f;
         private const float StarvedRequestRetry = 2f;
+        // Starvation is judged in seconds; scanning every LiveEntities entry with GetComponent
+        // calls at the 30 Hz state rate was a steady frame tax for zero extra detection value.
+        private const float StarvedScanInterval = 0.5f;
         private const float StarvedPromotionCooldown = 5f;
         // Beyond this many seconds of total owner silence (never-snapshotted, or stale after the
         // owner stopped) a concrete local replica may be promoted despite lacking a fresh
@@ -164,6 +167,7 @@ namespace PunkMultiverse.Sync
             LastStarvedPromotionAt.Clear();
             PendingPromotions.Clear();
             _availabilityRecoveryReadyAt = 0;
+            _nextStarvedScanAt = 0;
             _nextHostScanAt = 0;
             _hostScratch.Clear();
             UnitStatus.Reset();
@@ -1900,6 +1904,8 @@ namespace PunkMultiverse.Sync
                 route.LastDirectPulse = Time.unscaledTime;
         }
 
+        private static float _nextStarvedScanAt;
+
         private static void DetectStarvedPuppets(NetSession session)
         {
             float now = Time.unscaledTime;
@@ -1909,7 +1915,8 @@ namespace PunkMultiverse.Sync
                 Plugin.Log.LogInfo($"[Availability] recovery gate opens in {AvailabilityStartupGrace:0.0}s; " +
                     "waiting for initial entity snapshots");
             }
-            if (now < _availabilityRecoveryReadyAt) return;
+            if (now < _availabilityRecoveryReadyAt || now < _nextStarvedScanAt) return;
+            _nextStarvedScanAt = now + StarvedScanInterval;
 
             foreach (var kv in LiveEntities)
             {
