@@ -85,9 +85,16 @@ namespace PunkMultiverse.Sync
         // Play*/Stop* methods are idempotent (handle-guarded) and update loop positions when
         // called repeatedly, so applying per snapshot is exactly right.
 
-        private static Shooter ShooterOf(Component root)
+        // The state tick resolves the Unit once per entity and passes it down — the per-read
+        // GetComponentInParent walks added up to real milliseconds with a fight's worth of
+        // entities at 30 Hz. The Component overloads stay for every other call site.
+        private static Unit UnitOf(Component root)
+            => root != null ? root.GetComponentInParent<Unit>() : null;
+
+        private static Shooter ShooterOf(Component root) => ShooterOf(UnitOf(root));
+
+        private static Shooter ShooterOf(Unit unit)
         {
-            var unit = root != null ? root.GetComponentInParent<Unit>() : null;
             if (unit == null) return null;
             if (!ShooterCache.TryGetValue(unit, out var shooter))
                 ShooterCache[unit] = shooter = unit.GetComponentInChildren<Shooter>(true);
@@ -95,11 +102,13 @@ namespace PunkMultiverse.Sync
         }
 
         /// <summary>0 = idle, 1 = warming up, 2 = warmed/firing (continuous loop).</summary>
-        public static byte ReadFireState(Component root)
+        public static byte ReadFireState(Component root) => ReadFireState(UnitOf(root));
+
+        public static byte ReadFireState(Unit unit)
         {
             try
             {
-                var shooter = ShooterOf(root);
+                var shooter = ShooterOf(unit);
                 var weapon = shooter != null ? shooter.Weapon : null;
                 if (weapon == null || !weapon.IsTriggerPulled) return 0;
                 return weapon.IsWarmedUp ? (byte)2 : (byte)1;
@@ -113,12 +122,13 @@ namespace PunkMultiverse.Sync
         // Minions SHARE their owner's tank — writing a shared tank would clobber another
         // player's resource copy, so shared tanks report/apply nothing (255).
 
-        private static ResourceTank WeaponTankOf(Component root)
+        private static ResourceTank WeaponTankOf(Component root) => WeaponTankOf(UnitOf(root));
+
+        private static ResourceTank WeaponTankOf(Unit unit)
         {
-            var shooter = ShooterOf(root);
+            var shooter = ShooterOf(unit);
             var weapon = shooter != null ? shooter.Weapon : null;
             var res = weapon != null ? weapon.ResourceUsed : null;
-            var unit = root != null ? root.GetComponentInParent<Unit>() : null;
             if (res == null || unit == null || !unit.HasTank(res)) return null;
             var tank = unit.GetTank(res);
             if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return null;
@@ -126,11 +136,13 @@ namespace PunkMultiverse.Sync
         }
 
         /// <summary>Weapon tank fraction quantized to 0..254; 255 = no own tank.</summary>
-        public static byte ReadAmmoFraction(Component root)
+        public static byte ReadAmmoFraction(Component root) => ReadAmmoFraction(UnitOf(root));
+
+        public static byte ReadAmmoFraction(Unit unit)
         {
             try
             {
-                var tank = WeaponTankOf(root);
+                var tank = WeaponTankOf(unit);
                 if (tank == null) return 255;
                 return (byte)Mathf.Clamp(Mathf.RoundToInt(tank.Value / tank.Capacity * 254f), 0, 254);
             }
@@ -181,9 +193,10 @@ namespace PunkMultiverse.Sync
         // puppets, so without replication a puppet stays frozen in its spawn-time state
         // (no attack poses, telegraph VFX, or animator changes).
 
-        private static (StateMachine sm, State[] states) StatesOf(Component root)
+        private static (StateMachine sm, State[] states) StatesOf(Component root) => StatesOf(UnitOf(root));
+
+        private static (StateMachine sm, State[] states) StatesOf(Unit unit)
         {
-            var unit = root != null ? root.GetComponentInParent<Unit>() : null;
             if (unit == null) return (null, null);
             if (!StateCache.TryGetValue(unit, out var entry))
             {
@@ -196,11 +209,13 @@ namespace PunkMultiverse.Sync
 
         /// <summary>Index of the unit's current AI state (prefab child order — identical on
         /// every client); 255 = no state machine / unknown.</summary>
-        public static byte ReadState(Component root)
+        public static byte ReadState(Component root) => ReadState(UnitOf(root));
+
+        public static byte ReadState(Unit unit)
         {
             try
             {
-                var (sm, states) = StatesOf(root);
+                var (sm, states) = StatesOf(unit);
                 if (sm == null || states == null || SmCurrentState == null) return 255;
                 var current = SmCurrentState.GetValue(sm) as State;
                 if (current == null) return 255;
@@ -234,11 +249,12 @@ namespace PunkMultiverse.Sync
         /// <summary>The direction this unit visibly aims — BarrelTransform.Direction is the
         /// game's single source of truth for aim (body facing is rb.rotation, synced separately;
         /// the game has no sprite flips). Zero = no barrel; receivers skip zero aims.</summary>
-        public static Vector2 ReadAim(Component root)
+        public static Vector2 ReadAim(Component root) => ReadAim(UnitOf(root));
+
+        public static Vector2 ReadAim(Unit unit)
         {
             try
             {
-                var unit = root != null ? root.GetComponentInParent<Unit>() : null;
                 if (unit == null) return Vector2.zero;
                 if (!BarrelCache.TryGetValue(unit, out var barrel))
                     BarrelCache[unit] = barrel = unit.GetComponentInChildren<BarrelTransform>(true);
@@ -271,9 +287,10 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- shields
 
-        private static IEnumerable ShieldsOf(Component root)
+        private static IEnumerable ShieldsOf(Component root) => ShieldsOf(UnitOf(root));
+
+        private static IEnumerable ShieldsOf(Unit unit)
         {
-            var unit = root != null ? root.GetComponentInParent<Unit>() : null;
             if (unit == null) yield break;
             var type = unit.GetType();
             if (!ShieldsFields.TryGetValue(type, out var field))
@@ -291,12 +308,14 @@ namespace PunkMultiverse.Sync
             return prop != null ? (float)prop.GetValue(shield, null) : 0f;
         }
 
-        public static float ReadShieldFraction(Component root)
+        public static float ReadShieldFraction(Component root) => ReadShieldFraction(UnitOf(root));
+
+        public static float ReadShieldFraction(Unit unit)
         {
             try
             {
                 float charge = 0f, initial = 0f;
-                foreach (var shield in ShieldsOf(root))
+                foreach (var shield in ShieldsOf(unit))
                 {
                     if (!(shield is Component sc)) continue;
                     float c = ChargeOf(shield);
@@ -360,11 +379,12 @@ namespace PunkMultiverse.Sync
             return prop?.GetValue(unit, null);
         }
 
-        public static float ReadBurnLevel(Component root)
+        public static float ReadBurnLevel(Component root) => ReadBurnLevel(UnitOf(root));
+
+        public static float ReadBurnLevel(Unit unit)
         {
             try
             {
-                var unit = root != null ? root.GetComponentInParent<Unit>() : null;
                 if (unit == null) return 0f;
                 var data = DataOf(unit);
                 if (data == null) return 0f;

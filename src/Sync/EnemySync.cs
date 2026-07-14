@@ -65,6 +65,14 @@ namespace PunkMultiverse.Sync
         private static readonly List<DuplicateEntityInert> PendingRetirements = new List<DuplicateEntityInert>();
         private static readonly List<EntityStateGroup> TargetGroups = new List<EntityStateGroup>(32);
         private static readonly List<List<EntityStateGroup>> ChunkScratch = new List<List<EntityStateGroup>>(8);
+        // Send-path scratch + pools: the state tick used to allocate a dictionary, a list per
+        // group, and a list per chunk 20-30 times a second — steady Boehm GC pressure for buffers
+        // that die within the same call. Entries are structs, so a cleared list holds nothing alive.
+        private static readonly Dictionary<(AuthorityManager.SegmentKey key, uint epoch), List<EntityStateEntry>> GroupScratch
+            = new Dictionary<(AuthorityManager.SegmentKey key, uint epoch), List<EntityStateEntry>>(16);
+        private static readonly List<EntityStateGroup> StateGroupScratch = new List<EntityStateGroup>(16);
+        private static readonly Stack<List<EntityStateEntry>> EntryListPool = new Stack<List<EntityStateEntry>>();
+        private static readonly Stack<List<EntityStateGroup>> GroupListPool = new Stack<List<EntityStateGroup>>();
         private sealed class InterestRoute
         {
             internal byte Owner;
@@ -180,6 +188,8 @@ namespace PunkMultiverse.Sync
             PendingRetirements.Clear();
             TargetGroups.Clear();
             ChunkScratch.Clear();
+            RecycleTickScratch();
+            DirtyOwnershipSegments.Clear();
             InterestRoutes.Clear();
             PendingBaselines.Clear();
             DirectSendRoutes.Clear();
@@ -700,6 +710,37 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // Lease waves used to run one full LiveEntities pass PER committed segment — a 7-segment
+        // claim wave meant 7 passes with per-entity GetComponents, the dominant "Authority"
+        // frame spikes. Commits now mark their segment dirty and one flush applies the whole
+        // wave in a single pass (NetSession.Update after the transport drain, and the end of the
+        // host's authority scan).
+        private static readonly HashSet<AuthorityManager.SegmentKey> DirtyOwnershipSegments
+            = new HashSet<AuthorityManager.SegmentKey>();
+
+        internal static void MarkSegmentOwnershipDirty(AuthorityManager.SegmentKey segment)
+            => DirtyOwnershipSegments.Add(segment);
+
+        internal static void FlushSegmentOwnership()
+        {
+            if (DirtyOwnershipSegments.Count == 0) return;
+            var session = NetSession.Instance;
+            int woke = 0;
+            foreach (var kv in LiveEntities)
+            {
+                if (kv.Value == null) continue;
+                if (!AuthorityManager.TrySegmentOf(kv.Key, out var key) || !DirtyOwnershipSegments.Contains(key)) continue;
+                if (!NetIds.TryGetInstanceId(kv.Key, out int instanceId)) continue;
+                bool wasPuppet = kv.Value.GetComponent<RemoteEntityPuppet>() != null;
+                ApplyOwnership(kv.Key, instanceId);
+                if (wasPuppet && session != null && OwnerOf(kv.Key) == session.LocalSlot) woke++;
+            }
+            if (woke > 0)
+                Plugin.Log.LogInfo($"[Availability] lease flush woke {woke} local " +
+                    $"entit{(woke == 1 ? "y" : "ies")} across {DirtyOwnershipSegments.Count} segment(s)");
+            DirtyOwnershipSegments.Clear();
+        }
+
         internal static void ApplyAllOwnership()
         {
             foreach (var kv in LiveEntities)
@@ -973,16 +1014,19 @@ namespace PunkMultiverse.Sync
             if (!NetIds.ManifestComplete || Time.unscaledTime < _nextSendAt) return;
             _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f,
                 Mathf.Max(NetConfig.StateHz.Value, NetConfig.CombatStateHz.Value));
+            RecycleTickScratch(); // last tick's group lists are dead by now — reclaim them
 
             AuthorityManager.TickResidency(session);
+            NetProfiler.Mark("EnemySync.Residency");
             DetectStarvedPuppets(session);
             SweepFirstSnapshotDeadlines(session);
             if (session.IsHost) PruneInterestRoutes(session);
+            NetProfiler.Mark("EnemySync.Watchdogs");
 
             var egm = TryGetEgm();
             if (egm == null) return;
 
-            var groups = new Dictionary<(AuthorityManager.SegmentKey key, uint epoch), List<EntityStateEntry>>();
+            var groups = GroupScratch;
             foreach (var netId in SpawnedUnitCandidates())
             {
                 if (KilledNetIds.Contains(netId)) continue;
@@ -991,12 +1035,14 @@ namespace PunkMultiverse.Sync
                 AuthorityManager.SegmentKey sourceSegment = default;
                 if (!currentlyMine)
                 {
+                    // Cheap dictionary checks first — the two GetComponent calls are the
+                    // expensive tail of this filter and most candidates fail earlier.
                     if (FixedOwners.Contains(netId)
+                        || !SimulationSegments.TryGetValue(netId, out sourceSegment)
+                        || AuthorityManager.OwnerOf(sourceSegment) != session.LocalSlot
                         || !LiveEntities.TryGetValue(netId, out var live) || live == null
                         || live.GetComponent<Unit>() == null
-                        || live.GetComponent<RemoteEntityPuppet>() != null
-                        || !SimulationSegments.TryGetValue(netId, out sourceSegment)
-                        || AuthorityManager.OwnerOf(sourceSegment) != session.LocalSlot) continue;
+                        || live.GetComponent<RemoteEntityPuppet>() != null) continue;
                     boundaryHandoff = true;
                 }
                 if (!TryCollectEntry(egm, netId, out var entry, forceFull: boundaryHandoff)) continue;
@@ -1017,11 +1063,12 @@ namespace PunkMultiverse.Sync
                 if (owner != session.LocalSlot) continue; // crossed a lease boundary this frame
                 if (!FixedOwners.Contains(netId)) SimulationSegments[netId] = key;
                 var groupKey = (key, epoch);
-                if (!groups.TryGetValue(groupKey, out var entries)) groups[groupKey] = entries = new List<EntityStateEntry>(32);
+                if (!groups.TryGetValue(groupKey, out var entries)) groups[groupKey] = entries = RentEntryList();
                 entries.Add(entry);
             }
+            NetProfiler.Mark("EnemySync.Collect");
 
-            var stateGroups = new List<EntityStateGroup>(groups.Count);
+            var stateGroups = StateGroupScratch;
             foreach (var group in groups)
             {
                 stateGroups.Add(new EntityStateGroup
@@ -1043,6 +1090,7 @@ namespace PunkMultiverse.Sync
                 // full state for canonical positions/authority and interest-routes it onward.
                 SendBundleToHost(session, slot, timeMs, tick, stateGroups);
                 SendDirectBundles(session, slot, timeMs, tick, stateGroups);
+                NetProfiler.Mark("EnemySync.Send");
                 return;
             }
 
@@ -1052,6 +1100,38 @@ namespace PunkMultiverse.Sync
                 SelectInterestedGroups(player.Slot, slot, stateGroups, TargetGroups, out int droppedGroups, out int droppedEntries);
                 SendBundleToPeer(session, player.PeerId, slot, timeMs, tick, TargetGroups, droppedGroups, droppedEntries);
             }
+            NetProfiler.Mark("EnemySync.Send");
+        }
+
+        /// <summary>Return the previous tick's group lists to the pool. Deferred to the start of
+        /// the next send tick: the lists are only read between sends (chunking copies the entry
+        /// structs out), so nothing holds them by then.</summary>
+        private static void RecycleTickScratch()
+        {
+            if (GroupScratch.Count > 0)
+            {
+                foreach (var kv in GroupScratch) ReturnEntryList(kv.Value);
+                GroupScratch.Clear();
+            }
+            StateGroupScratch.Clear();
+        }
+
+        private static List<EntityStateEntry> RentEntryList()
+            => EntryListPool.Count > 0 ? EntryListPool.Pop() : new List<EntityStateEntry>(32);
+
+        private static void ReturnEntryList(List<EntityStateEntry> list)
+        {
+            list.Clear();
+            if (EntryListPool.Count < 64) EntryListPool.Push(list);
+        }
+
+        private static List<EntityStateGroup> RentGroupList()
+            => GroupListPool.Count > 0 ? GroupListPool.Pop() : new List<EntityStateGroup>(8);
+
+        private static void ReturnGroupList(List<EntityStateGroup> list)
+        {
+            list.Clear();
+            if (GroupListPool.Count < 32) GroupListPool.Push(list);
         }
 
         private static void SendBundleToHost(NetSession session, byte slot, uint timeMs, uint tick,
@@ -1091,6 +1171,14 @@ namespace PunkMultiverse.Sync
                     i == 0 ? droppedGroups : 0, i == 0 ? droppedEntries : 0);
                 InstrumentationCounters.SnapshotChunkSent(Writer.Position, chunkCount);
             }
+            // Everything above is fully serialized into the writer — recycle the chunk lists.
+            for (int c = 0; c < ChunkScratch.Count; c++)
+            {
+                var chunk = ChunkScratch[c];
+                for (int g = 0; g < chunk.Count; g++) ReturnEntryList(chunk[g].Entries);
+                ReturnGroupList(chunk);
+            }
+            ChunkScratch.Clear();
         }
 
         private static void BuildChunks(List<EntityStateGroup> groups, List<List<EntityStateGroup>> target)
@@ -1108,7 +1196,7 @@ namespace PunkMultiverse.Sync
                     int addition = entryBytes + (needGroup ? 13 : 0);
                     if (chunk == null || (bytes + addition > MaxStateDatagramBytes && bytes > 18))
                     {
-                        chunk = new List<EntityStateGroup>(8);
+                        chunk = RentGroupList();
                         target.Add(chunk);
                         bytes = 18;
                         output = default;
@@ -1120,7 +1208,7 @@ namespace PunkMultiverse.Sync
                         output = new EntityStateGroup
                         {
                             SegmentX = group.SegmentX, SegmentY = group.SegmentY,
-                            Epoch = group.Epoch, Entries = new List<EntityStateEntry>(16),
+                            Epoch = group.Epoch, Entries = RentEntryList(),
                         };
                         chunk.Add(output);
                     }
@@ -2280,6 +2368,24 @@ namespace PunkMultiverse.Sync
             return _hostScratch;
         }
 
+        // Ship positions for the rate-class distance check, refreshed once per frame — the
+        // per-candidate loop was reading every ship's transform for every entity at 30 Hz.
+        private static readonly List<Vector2> ShipPosScratch = new List<Vector2>(4);
+        private static int _shipPosFrame = -1;
+
+        private static List<Vector2> ShipPositions()
+        {
+            int frame = Time.frameCount;
+            if (_shipPosFrame != frame)
+            {
+                _shipPosFrame = frame;
+                ShipPosScratch.Clear();
+                foreach (var ship in ShipSync.ShipsBySlot.Values)
+                    if (ship != null) ShipPosScratch.Add(ship.transform.position);
+            }
+            return ShipPosScratch;
+        }
+
         private static bool TryCollectEntry(EntityGameObjectManager egm, int netId, out EntityStateEntry entry,
             bool forceFull = false)
         {
@@ -2288,10 +2394,10 @@ namespace PunkMultiverse.Sync
             if (se.GetComponent<RemoteEntityPuppet>() != null) return false; // not actually ours
             if (se.GetComponent<DuplicateEntityInert>() != null) return false;
             var rb = se.GetComponent<Rigidbody2D>();
-            var dr = se.GetComponent<DamagableResource>();
             var unit = se.GetComponent<Unit>();
             Vector2 pos = rb != null ? rb.position : (Vector2)se.transform.position;
             float now = Time.unscaledTime;
+            byte fire = 0;
             // Non-Unit props (pushable rocks etc.) stream on movement plus a low-rate keyframe.
             if (unit == null)
             {
@@ -2306,10 +2412,10 @@ namespace PunkMultiverse.Sync
             else
             {
                 float nearestSq = float.PositiveInfinity;
-                foreach (var ship in ShipSync.ShipsBySlot.Values)
-                    if (ship != null) nearestSq = Mathf.Min(nearestSq,
-                        ((Vector2)ship.transform.position - pos).sqrMagnitude);
-                byte fire = UnitStatus.ReadFireState(se);
+                var ships = ShipPositions();
+                for (int i = 0; i < ships.Count; i++)
+                    nearestSq = Mathf.Min(nearestSq, (ships[i] - pos).sqrMagnitude);
+                fire = UnitStatus.ReadFireState(unit);
                 float hz = fire != 0 || nearestSq <= 35f * 35f
                     ? NetConfig.CombatStateHz.Value
                     : nearestSq <= NetConfig.InterestRadius.Value * NetConfig.InterestRadius.Value
@@ -2319,6 +2425,8 @@ namespace PunkMultiverse.Sync
             }
             LastSentPos[netId] = pos;
             LastSentAt[netId] = now;
+            // Fetched after the rate gates on purpose — the gated-out majority never needs it.
+            var dr = se.GetComponent<DamagableResource>();
             float hp = 1f;
             try { if (dr != null && dr.MaxHealth > 0) hp = dr.CurrentHealth / dr.MaxHealth; } catch { }
             entry = new EntityStateEntry
@@ -2329,13 +2437,13 @@ namespace PunkMultiverse.Sync
                 Pos = pos,
                 Vel = rb != null ? rb.linearVelocity : Vector2.zero,
                 Rot = rb != null ? rb.rotation : se.transform.eulerAngles.z,
-                Aim = UnitStatus.ReadAim(se),
-                State = UnitStatus.ReadState(se),
-                Fire = UnitStatus.ReadFireState(se),
-                Ammo = UnitStatus.ReadAmmoFraction(se),
+                Aim = UnitStatus.ReadAim(unit),
+                State = UnitStatus.ReadState(unit),
+                Fire = fire,
+                Ammo = UnitStatus.ReadAmmoFraction(unit),
                 HpFraction = hp,
-                ShieldFraction = UnitStatus.ReadShieldFraction(se),
-                BurnLevel = UnitStatus.ReadBurnLevel(se),
+                ShieldFraction = UnitStatus.ReadShieldFraction(unit),
+                BurnLevel = UnitStatus.ReadBurnLevel(unit),
             };
             var full = entry;
             bool keyframe = !LastSentState.TryGetValue(netId, out var prior)

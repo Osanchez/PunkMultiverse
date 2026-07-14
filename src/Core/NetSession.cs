@@ -970,6 +970,9 @@ namespace PunkMultiverse.Core
                 RuntimeInstrumentation.SetPhase(PerfPhase.TransportDrain);
                 DrainOutbox();
                 if (profiling) NetProfiler.Mark("Transport.Drain");
+                // Lease commits applied during the dispatch above (client lease waves, host
+                // handoff completions) flip their entities in one batched pass, same frame.
+                Sync.EnemySync.FlushSegmentOwnership();
 
                 // LevelGenerated subscribers finish in engine-defined order. Finalizing here
                 // guarantees UnityTilemapRenderer has populated the sprite-variant table.

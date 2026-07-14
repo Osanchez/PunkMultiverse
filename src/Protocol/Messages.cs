@@ -1443,7 +1443,7 @@ namespace PunkMultiverse.Protocol
     public struct StationUpgradeMsg
     {
         public int StationNetId;
-        public uint UpgradeHash; // FNV-1a of the StationUpgrade asset name
+        public uint UpgradeHash; // FNV-1a of StationUpgrade.id (a plain class, not an asset — it has no name)
 
         public void Write(NetWriter w)
         {

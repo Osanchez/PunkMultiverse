@@ -81,29 +81,77 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- station upgrades
 
-        [HarmonyPatch(typeof(Station), "TryInstallUpgrade")]
+        // A station's very first upgrade IS its unlock (Data.IsUnlocked == installedUpgrades.Count
+        // > 0), and every purchase path funnels through Data.Install — Station.TryInstallUpgrade
+        // and the string overload both end here. The previous capture patched TryInstallUpgrade
+        // and resolved the netId through GetComponentInParent, which could bail SILENTLY — an
+        // unlock then stayed machine-local: closed station + no respawn for everyone else.
+        [HarmonyPatch(typeof(Station.Data), nameof(Station.Data.Install), typeof(StationUpgrade))]
         internal static class CaptureUpgrade
         {
-            private static void Postfix(Station __instance, bool __result, object __0)
+            private static void Postfix(Station.Data __instance, StationUpgrade __0)
             {
                 var session = NetSession.Instance;
-                if (session == null || session.State != SessionState.InGame || _applyingRemote || !__result) return;
+                if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
                 try
                 {
-                    if (!EnemySync.TryGetNetId(__instance, out int netId)) return;
-                    var upgradeName = (__0 as UnityEngine.Object)?.name;
-                    if (string.IsNullOrEmpty(upgradeName)) return;
-                    uint hash = DamageSync.HashName(upgradeName);
-                    RecordUpgrade(netId, hash);
+                    // StationUpgrade is a plain [Serializable] class, NOT a UnityEngine.Object.
+                    // The old capture cast it to UnityEngine.Object for .name — always null, so
+                    // every unlock bailed silently. The game's own identity for an upgrade is its
+                    // string id (Data.Install(string) and RegisterStationUpgradePurchase use it).
+                    if (__0 == null || string.IsNullOrEmpty(__0.id))
+                    {
+                        Plugin.Log.LogWarning("[Progress] station upgrade NOT synced — upgrade has no id");
+                        return;
+                    }
+                    var entity = __instance?.entity;
+                    if (entity == null || !NetIds.TryGetNetId(entity.instanceId, out int netId))
+                    {
+                        Plugin.Log.LogWarning($"[Progress] station upgrade '{__0.id}' NOT synced — " +
+                            $"no netId for station entity (instanceId {(entity != null ? entity.instanceId.ToString() : "null")})");
+                        return;
+                    }
+                    uint hash = DamageSync.HashName(__0.id);
+                    if (!RecordUpgrade(netId, hash)) return; // echo of a replayed install — already broadcast
                     Writer.Reset();
                     new StationUpgradeMsg { StationNetId = netId, UpgradeHash = hash }.Write(Writer);
                     session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
-                    Plugin.Log.LogInfo($"[Progress] station upgrade '{upgradeName}' broadcast (netId {netId})");
+                    Plugin.Log.LogInfo($"[Progress] station upgrade '{__0.id}' broadcast (netId {netId})");
                 }
                 catch (Exception e)
                 {
-                    Plugin.Log.LogWarning($"[Progress] upgrade capture failed: {e.Message}");
+                    Plugin.Log.LogWarning($"[Progress] upgrade capture failed: {e}");
                 }
+            }
+        }
+
+        // Vanilla station-unlock respawn revives the FIRST dead ship in ShipManager.ships — but in
+        // a net run that list also holds remote puppets (ShipSync spawns them through ShipManager),
+        // and puppet resurrection is gated to the owner's life event (DamageSync.GatePuppetResurrect).
+        // A dead puppet ahead of the dead local ship would eat the revive: vanilla teleports the
+        // puppet, the gate blocks its Resurrect, and nobody respawns. Route the cascade to the
+        // LOCAL ship only — each machine revives its own, and the life-event broadcast replicates.
+        [HarmonyPatch(typeof(ShipManager), "OnUpgradeInstalled")]
+        internal static class RouteStationRespawn
+        {
+            private static bool Prefix(Station.Data station)
+            {
+                if (!NetSession.Active) return true; // single player: vanilla behavior
+                try
+                {
+                    var ship = ShipSync.LocalShip;
+                    if (ship == null || !ship.IsDead || station == null || station.entity == null) return false;
+                    ship.Unit.ComponentData.entity.MoveTo(station.entity.position);
+                    ship.transform.position = station.entity.position;
+                    ship.Resurrect(); // broadcasts via DamageSync.BroadcastResurrect; spectator cam disengages on IsDead=false
+                    InstrumentationCounters.StationRespawnAssigned();
+                    Plugin.Log.LogInfo("[Progress] station unlock — respawned local ship at the new station");
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning($"[Progress] station respawn failed: {e.Message}");
+                }
+                return false;
             }
         }
 
@@ -124,38 +172,38 @@ namespace PunkMultiverse.Sync
             if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return false;
             try
             {
-                var egm = ServiceLocator.Get<EntityGameObjectManager>();
-                if (!egm.TryGetSavableEntity(instanceId, out var se) || se == null) return false;
-                var station = se.GetComponent<Station>();
-                if (station == null) return false;
+                // Install on the entity DATA, not the streamed GameObject. A dead spectator or a
+                // far-away teammate hasn't streamed the station in, and the old component lookup
+                // queued the upgrade until stream-in — for them the station stayed closed and the
+                // respawn cascade never ran unless they happened to fly there. Every subscriber
+                // that matters binds to the Data at run start (ShipManager respawn, lights, map
+                // icon, music), and Station.Bind restores the open visual state on stream-in.
+                var entity = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId);
+                if (entity == null || !entity.TryGetComponent<Station.Data>(out var data) || data == null) return false;
 
-                var upgrade = ResolveUpgrade(upgradeHash);
+                // StationUpgrade is a plain class, not an asset — the station's own allUpgrades
+                // list (identical on every machine: copied from the prefab at deterministic gen)
+                // is the only registry. Match by the same id hash the sender used.
+                var upgrade = ResolveUpgrade(data, upgradeHash);
                 if (upgrade == null)
                 {
-                    Plugin.Log.LogWarning($"[Progress] unknown upgrade hash {upgradeHash:X8}");
+                    Plugin.Log.LogWarning($"[Progress] unknown upgrade hash {upgradeHash:X8} for station netId {netId}");
                     return true; // don't queue forever
                 }
+                for (int i = 0; i < data.installedUpgrades.Count; i++)
+                    if (data.installedUpgrades[i] == upgrade) return true; // catch-up replay echo
                 _applyingRemote = true;
                 try
                 {
-                    // Same effect as a successful purchase, minus the cost: Data.Install drives
-                    // lights, map icon, shop unlock and the local respawn cascade.
-                    var data = Traverse.Create(station).Property("Data").GetValue()
-                               ?? Traverse.Create(station).Field("data").GetValue();
-                    var install = data != null ? AccessTools.Method(data.GetType(), "Install") : null;
-                    if (install != null)
-                    {
-                        install.Invoke(data, new[] { (object)upgrade });
-                        Plugin.Log.LogInfo($"[Progress] applied remote station upgrade '{upgrade.name}'");
-                        return true;
-                    }
-                    Plugin.Log.LogWarning("[Progress] Station.Data.Install not found");
-                    return true;
+                    // Same effect as a successful purchase, minus the cost.
+                    data.Install(upgrade);
                 }
                 finally
                 {
                     _applyingRemote = false;
                 }
+                Plugin.Log.LogInfo($"[Progress] applied remote station upgrade '{upgrade.id}' (netId {netId})");
+                return true;
             }
             catch (Exception e)
             {
@@ -164,19 +212,16 @@ namespace PunkMultiverse.Sync
             }
         }
 
-        private static Dictionary<uint, UnityEngine.Object> _upgradesByHash;
-
-        private static UnityEngine.Object ResolveUpgrade(uint hash)
+        private static StationUpgrade ResolveUpgrade(Station.Data data, uint hash)
         {
-            if (_upgradesByHash == null)
+            var all = data.allUpgrades;
+            if (all == null) return null;
+            for (int i = 0; i < all.Count; i++)
             {
-                _upgradesByHash = new Dictionary<uint, UnityEngine.Object>();
-                var type = AccessTools.TypeByName("StationUpgrade");
-                if (type != null)
-                    foreach (var asset in Resources.FindObjectsOfTypeAll(type))
-                        _upgradesByHash[DamageSync.HashName(asset.name)] = asset;
+                var u = all[i];
+                if (u != null && !string.IsNullOrEmpty(u.id) && DamageSync.HashName(u.id) == hash) return u;
             }
-            return _upgradesByHash.TryGetValue(hash, out var upgrade) ? upgrade : null;
+            return null;
         }
 
         // ---------------------------------------------------------------- scanners

@@ -54,6 +54,7 @@ namespace PunkMultiverse.Core
         // over a few frames instead of stalling one.
         private const double PrepareBudgetMs = 3.0;
         private const int MinPreparesPerScan = 2;
+        private const int MinDormantClaimsPerScan = 16;
         // How long the host waits for an owner's SegmentDormancyCommit after learning (via a
         // residency report) that the owner unloaded a segment, before falling back to its own
         // state cache. Commits and reports ride the same reliable channel, so in practice the
@@ -364,8 +365,7 @@ namespace PunkMultiverse.Core
             foreach (var kv in Leases)
                 if (kv.Value.Owner != DormantOwner || kv.Value.Pending) Interested.Add(kv.Key);
 
-            int prepares = 0;
-            var budget = System.Diagnostics.Stopwatch.StartNew();
+            _claims.Clear();
             foreach (var key in Interested)
             {
                 Leases.TryGetValue(key, out var lease);
@@ -397,18 +397,50 @@ namespace PunkMultiverse.Core
                     if (Time.unscaledTime < until) continue;
                     UnreadyUntil.Remove(readinessKey);
                 }
+                if (lease != null && lease.Pending && lease.PendingOwner == desired
+                    && Time.unscaledTime - lease.PreparedAt < PrepareRetry) continue;
+                // Distance from the segment to its would-be owner's ship: the segment the player
+                // is standing in (and fighting in) must claim FIRST. HashSet iteration order made
+                // that random — a boss segment could be last in its wave.
+                int distance = int.MaxValue;
+                foreach (var s in simulators)
+                    if (s.slot == desired) distance = Math.Min(distance, Chebyshev(key, s.segment));
+                _claims.Add((key, lease, desired, distance));
+            }
+
+            _claims.Sort((a, b) => a.distance.CompareTo(b.distance));
+            int preparesHandoff = 0, preparesDormant = 0;
+            var budget = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var claim in _claims)
+            {
+                var (key, lease, desired, _) = claim;
+                // Dormant activations get a far bigger allowance than live P2P handoffs: waking
+                // generation entities is local bookkeeping (commits batch into one flush now),
+                // while a real handoff moves baselines between peers and stays throttled.
+                bool dormantClaim = lease == null || lease.Owner == DormantOwner;
+                if (dormantClaim)
+                {
+                    if (preparesDormant >= MinDormantClaimsPerScan && budget.Elapsed.TotalMilliseconds > PrepareBudgetMs)
+                    {
+                        _nextScanAt = 0; // burst not drained — continue next frame, not in 0.5 s
+                        break;
+                    }
+                    preparesDormant++;
+                }
+                else
+                {
+                    if (preparesHandoff >= MinPreparesPerScan && budget.Elapsed.TotalMilliseconds > PrepareBudgetMs)
+                    {
+                        _nextScanAt = 0;
+                        break;
+                    }
+                    preparesHandoff++;
+                }
                 if (lease == null)
                 {
                     lease = new Lease { Owner = DormantOwner, Epoch = 0 };
                     Leases[key] = lease;
                 }
-                if (lease.Pending && lease.PendingOwner == desired && Time.unscaledTime - lease.PreparedAt < PrepareRetry) continue;
-                if (prepares >= MinPreparesPerScan && budget.Elapsed.TotalMilliseconds > PrepareBudgetMs)
-                {
-                    _nextScanAt = 0; // burst not drained — continue next frame, not in 0.5 s
-                    break;
-                }
-                prepares++;
                 PendingDormancy.Remove(key);
                 Prepare(session, key, lease, desired);
             }
@@ -425,9 +457,14 @@ namespace PunkMultiverse.Core
                 if (IsResident(lease.Owner, key)) continue; // owner came back — keep the lease
                 CommitDormant(session, key, lease, fromCache: true);
             }
+
+            // Everything this scan committed flips in one entity pass.
+            EnemySync.FlushSegmentOwnership();
         }
 
         private static readonly List<SegmentKey> _scratch = new List<SegmentKey>();
+        private static readonly List<(SegmentKey key, Lease lease, byte desired, int distance)> _claims
+            = new List<(SegmentKey, Lease, byte, int)>();
 
         private static byte SelectOwner(SegmentKey key, List<(byte slot, SegmentKey segment)> sims, Lease current)
         {
@@ -482,7 +519,7 @@ namespace PunkMultiverse.Core
             lease.Pending = false;
             SendLease(session, key, lease.Owner, lease.Epoch, 1);
             EnemySync.FinalizeHandoffFreeze(key, lease.Epoch);
-            EnemySync.ApplySegmentOwnership(key);
+            EnemySync.MarkSegmentOwnershipDirty(key); // batched: one entity pass per wave, not per segment
             EnemySync.NoteLeaseCommitted(key, lease.Epoch, lease.Owner);
             DamageSync.OnSegmentAuthorityCommitted(key, lease.Owner);
             InstrumentationCounters.LeaseCommitted();
@@ -507,7 +544,7 @@ namespace PunkMultiverse.Core
             lease.Epoch = _nextEpoch++;
             lease.PreparedAt = 0f;
             SendLease(session, key, DormantOwner, lease.Epoch, 1);
-            EnemySync.ApplySegmentOwnership(key);
+            EnemySync.MarkSegmentOwnershipDirty(key);
             InstrumentationCounters.DormantTransition(fromCache);
             Plugin.Log.LogInfo($"[Lease] segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch}" +
                 (fromCache ? " (coordinator-cache fallback — no dormancy commit received)" : ""));
@@ -563,7 +600,7 @@ namespace PunkMultiverse.Core
                 return; // reliable replay/catch-up duplicate; ownership components are already correct
             lease.Owner = msg.Owner; lease.Epoch = msg.Epoch; lease.Pending = false;
             EnemySync.FinalizeHandoffFreeze(key, msg.Epoch);
-            EnemySync.ApplySegmentOwnership(key);
+            EnemySync.MarkSegmentOwnershipDirty(key);
             EnemySync.NoteLeaseCommitted(key, msg.Epoch, msg.Owner);
         }
 

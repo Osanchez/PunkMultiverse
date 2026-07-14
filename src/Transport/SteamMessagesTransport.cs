@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Steamworks;
@@ -13,14 +13,25 @@ namespace PunkMultiverse.Transport
     /// (wired to lobby membership by SteamLobbyController in M1).
     /// Relies on the game's own SteamManager for SteamAPI init + RunCallbacks pumping;
     /// NetConfig.PumpSteamCallbacks adds our own pump if that ever proves wrong.
+    ///
+    /// Receive runs through the shared <see cref="ReceivePump"/> when NetConfig.ThreadedReceive
+    /// is on: a background thread copies each datagram into a pooled buffer and Poll() dispatches
+    /// on the main thread within the frame budget. ISteamNetworkingMessages is thread-safe, so
+    /// receiving overlaps main-thread sends. All events still fire from Poll — handler threading
+    /// is unchanged.
     /// </summary>
     public sealed class SteamMessagesTransport : ITransport
     {
         private const int MaxMessagesPerPoll = 64;
 
-        private readonly IntPtr[] _msgPtrs = new IntPtr[MaxMessagesPerPoll];
-        private byte[] _recvBuf = new byte[64 * 1024];
+        private readonly IntPtr[] _msgPtrs = new IntPtr[MaxMessagesPerPoll];       // inline path
+        private readonly IntPtr[] _threadMsgPtrs = new IntPtr[MaxMessagesPerPoll]; // pump thread
+        private byte[] _recvBuf = new byte[64 * 1024]; // inline path only
         private readonly HashSet<ulong> _knownPeers = new HashSet<ulong>();
+
+        // _knownPeers stays main-thread-only: the pump thread never touches it, it only reads
+        // from Steam and feeds the queue.
+        private ReceivePump _pump;
 
         private Callback<SteamNetworkingMessagesSessionRequest_t> _sessionRequest;
         private Callback<SteamNetworkingMessagesSessionFailed_t> _sessionFailed;
@@ -56,7 +67,13 @@ namespace PunkMultiverse.Transport
             _sessionRequest = Callback<SteamNetworkingMessagesSessionRequest_t>.Create(OnSessionRequest);
             _sessionFailed = Callback<SteamNetworkingMessagesSessionFailed_t>.Create(OnSessionFailed);
             IsRunning = true;
-            Plugin.Log.LogInfo($"[Steam] transport up as {(host ? "host" : "client")}, local id {LocalPeerId}");
+            if (NetConfig.ThreadedReceive.Value)
+            {
+                _pump = new ReceivePump();
+                _pump.Start("PunkMultiverse.SteamRecv", ReceiveIntoPump);
+            }
+            Plugin.Log.LogInfo($"[Steam] transport up as {(host ? "host" : "client")}, local id {LocalPeerId}" +
+                (_pump != null ? " (threaded receive)" : ""));
             if (!host)
             {
                 // Optimistic connect: sessions are implicit, so treat the host as connected now.
@@ -128,6 +145,12 @@ namespace PunkMultiverse.Transport
                 _announceHostOnPoll = false;
                 PeerConnected?.Invoke(_hostSteamId);
             }
+            if (_pump != null)
+            {
+                _pump.Drain(DispatchItem);
+                return;
+            }
+            // Inline path (ThreadedReceive off): receive + dispatch everything this frame.
             // Callback pumping is centralized in SteamBootstrap.Pump (NetSession.Update).
             for (int channel = 0; channel <= (int)NetChannel.Combat; channel++)
             {
@@ -156,9 +179,58 @@ namespace PunkMultiverse.Transport
             }
         }
 
+        private void DispatchItem(in ReceivePump.Item item)
+        {
+            if (_knownPeers.Add(item.Peer)) PeerConnected?.Invoke(item.Peer);
+            if (item.Len > 0)
+                DataReceived?.Invoke(item.Peer, (NetChannel)item.Channel, new ArraySegment<byte>(item.Buf, 0, item.Len));
+        }
+
+        /// <summary>Pump thread: pull datagrams from Steam into the queue. Per-channel order is
+        /// preserved end-to-end (Steam delivers in order per channel, the queue is FIFO, the
+        /// drain runs on one thread). Cross-channel interleaving was never guaranteed — messages
+        /// already straddled frame boundaries on the inline path.</summary>
+        private int ReceiveIntoPump()
+        {
+            int total = 0;
+            for (int channel = 0; channel <= (int)NetChannel.Combat; channel++)
+            {
+                int count;
+                do
+                {
+                    count = SteamNetworkingMessages.ReceiveMessagesOnChannel(channel, _threadMsgPtrs, MaxMessagesPerPoll);
+                    for (int i = 0; i < count; i++)
+                    {
+                        var msg = Marshal.PtrToStructure<SteamNetworkingMessage_t>(_threadMsgPtrs[i]);
+                        try
+                        {
+                            var item = new ReceivePump.Item
+                            {
+                                Peer = msg.m_identityPeer.GetSteamID().m_SteamID,
+                                Channel = (byte)channel,
+                                Len = msg.m_cbSize,
+                            };
+                            if (item.Len > 0)
+                            {
+                                item.Buf = _pump.Rent(item.Len);
+                                Marshal.Copy(msg.m_pData, item.Buf, 0, item.Len);
+                            }
+                            _pump.Enqueue(in item);
+                        }
+                        finally { SteamNetworkingMessage_t.Release(_threadMsgPtrs[i]); }
+                    }
+                    total += count;
+                } while (count == MaxMessagesPerPoll);
+            }
+            return total;
+        }
+
         public void Stop()
         {
             if (!IsRunning) return;
+            // Stop the pump before closing sessions so its thread never reads a dying session.
+            _pump?.Stop();
+            _pump = null;
             foreach (var peer in _knownPeers)
             {
                 var identity = new SteamNetworkingIdentity();

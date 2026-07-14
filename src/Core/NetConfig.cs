@@ -13,6 +13,8 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> PumpSteamCallbacks;
         public static ConfigEntry<int> SteamAppId;
         public static ConfigEntry<bool> AcceptAnySteamSession;
+        public static ConfigEntry<bool> ThreadedReceive;
+        public static ConfigEntry<float> ReceiveBudgetMs;
 
         public static ConfigEntry<string> ModManifestPolicy;
         public static ConfigEntry<float> EnemyHealthScalePerPlayer;
@@ -61,6 +63,14 @@ namespace PunkMultiverse
                 "DEV ONLY: accept P2P sessions from anyone, not just lobby members.");
             SteamAppId = cfg.Bind("Transport", "SteamAppId", 2850470,
                 "Playtest appid, used only when the game didn't init Steam itself (direct Punk.exe launch).");
+            ThreadedReceive = cfg.Bind("Transport", "ThreadedReceive", true,
+                "Receive datagrams on a background thread (Steam AND loopback transports); the " +
+                "main thread dispatches them within ReceiveBudgetMs per frame. Keeps inbound " +
+                "bursts from spiking a single frame. Off = receive inline on the main thread " +
+                "(pre-0.1.84 behavior).");
+            ReceiveBudgetMs = cfg.Bind("Transport", "ReceiveBudgetMs", 8f,
+                "Max milliseconds per frame spent dispatching received messages when " +
+                "ThreadedReceive is on; the rest of the queue carries into the next frame. 0 = unlimited.");
 
             AutoUpdate = cfg.Bind("Update", "AutoUpdate", true,
                 "Download new releases from GitHub at startup and stage them in place; the " +

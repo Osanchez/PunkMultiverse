@@ -26,6 +26,13 @@ namespace PunkMultiverse.Transport
         private byte[] _sendBuf = new byte[64 * 1024];
         private EndPoint _recvFrom = new IPEndPoint(IPAddress.Any, 0);
 
+        // Shared threaded-receive mechanism (same as the Steam transport — loopback is the local
+        // test bed for shipping behavior, so the mechanisms must match). The pump thread only
+        // reads the socket and feeds the queue; ALL frame handling (peers, events, keepalives)
+        // stays on the main thread via Poll's budgeted drain.
+        private ReceivePump _pump;
+        private readonly byte[] _threadRecvBuf = new byte[64 * 1024];
+
         private sealed class Peer
         {
             public ulong Id;
@@ -72,7 +79,9 @@ namespace PunkMultiverse.Transport
             IsHost = true;
             LocalPeerId = HostPeerId;
             IsRunning = true;
-            Plugin.Log.LogInfo($"[Loopback] Hosting on 127.0.0.1:{_port}");
+            StartPumpIfConfigured();
+            Plugin.Log.LogInfo($"[Loopback] Hosting on 127.0.0.1:{_port}" +
+                (_pump != null ? " (threaded receive)" : ""));
         }
 
         public void StartClient(string address)
@@ -87,8 +96,43 @@ namespace PunkMultiverse.Transport
             IsRunning = true;
             _connectedToHost = false;
             _lastConnectAttempt = -99f;
-            Plugin.Log.LogInfo($"[Loopback] Connecting to {_hostEndPoint}");
+            StartPumpIfConfigured();
+            Plugin.Log.LogInfo($"[Loopback] Connecting to {_hostEndPoint}" +
+                (_pump != null ? " (threaded receive)" : ""));
         }
+
+        private void StartPumpIfConfigured()
+        {
+            if (!NetConfig.ThreadedReceive.Value) return;
+            _pump = new ReceivePump();
+            _pump.Start("PunkMultiverse.LoopbackRecv", ReceiveIntoPump);
+        }
+
+        /// <summary>Pump thread: copy every available datagram into the queue. The frame is kept
+        /// whole (frame byte + payload) so the main-thread drain runs the exact same HandleFrame
+        /// logic as the inline path.</summary>
+        private int ReceiveIntoPump()
+        {
+            int moved = 0;
+            var socket = _socket;
+            while (socket != null && socket.Available > 0)
+            {
+                int len;
+                EndPoint from = new IPEndPoint(IPAddress.Any, 0);
+                try { len = socket.ReceiveFrom(_threadRecvBuf, ref from); }
+                catch (SocketException) { break; }
+                catch (ObjectDisposedException) { break; }
+                if (len < 1) continue;
+                var item = new ReceivePump.Item { Len = len, Buf = _pump.Rent(len), Tag = from };
+                Buffer.BlockCopy(_threadRecvBuf, 0, item.Buf, 0, len);
+                _pump.Enqueue(in item);
+                moved++;
+            }
+            return moved;
+        }
+
+        private void DispatchItem(in ReceivePump.Item item)
+            => HandleFrame((IPEndPoint)item.Tag, item.Buf, item.Len);
 
         private static Socket CreateSocket()
         {
@@ -135,7 +179,8 @@ namespace PunkMultiverse.Transport
         public void Poll()
         {
             if (!IsRunning) return;
-            ReceiveAll();
+            if (_pump != null) _pump.Drain(DispatchItem);
+            else ReceiveAll();
             DrainPacedReliable();
             float now = Time.unscaledTime;
 
@@ -198,16 +243,16 @@ namespace PunkMultiverse.Transport
                 }
                 catch (SocketException) { return; }
                 if (len < 1) continue;
-                HandleFrame((IPEndPoint)_recvFrom, len);
+                HandleFrame((IPEndPoint)_recvFrom, _recvBuf, len);
             }
         }
 
         private static long EndpointKey(IPEndPoint ep) => ((long)ep.Port << 32) | (uint)ep.Address.GetHashCode();
 
-        private void HandleFrame(IPEndPoint from, int len)
+        private void HandleFrame(IPEndPoint from, byte[] buf, int len)
         {
             float now = Time.unscaledTime;
-            byte frame = _recvBuf[0];
+            byte frame = buf[0];
             switch (frame)
             {
                 case FrameConnect when IsHost:
@@ -231,7 +276,7 @@ namespace PunkMultiverse.Transport
                 {
                     if (_connectedToHost) { Touch(from, now); break; }
                     ulong assigned = 0;
-                    for (int i = 0; i < 8; i++) assigned |= (ulong)_recvBuf[1 + i] << (i * 8);
+                    for (int i = 0; i < 8; i++) assigned |= (ulong)buf[1 + i] << (i * 8);
                     LocalPeerId = assigned;
                     _connectedToHost = true;
                     var host = new Peer { Id = HostPeerId, EndPoint = _hostEndPoint, LastHeard = now };
@@ -244,8 +289,8 @@ namespace PunkMultiverse.Transport
                 {
                     var peer = Touch(from, now);
                     if (peer == null || len < 2) break;
-                    var channel = (NetChannel)_recvBuf[1];
-                    DataReceived?.Invoke(peer.Id, channel, new ArraySegment<byte>(_recvBuf, 2, len - 2));
+                    var channel = (NetChannel)buf[1];
+                    DataReceived?.Invoke(peer.Id, channel, new ArraySegment<byte>(buf, 2, len - 2));
                     break;
                 }
                 case FrameKeepalive:
@@ -282,6 +327,9 @@ namespace PunkMultiverse.Transport
         public void Stop()
         {
             if (!IsRunning) return;
+            // Stop the pump before touching the socket so its thread never reads a dying socket.
+            _pump?.Stop();
+            _pump = null;
             try
             {
                 _sendBuf[0] = FrameDisconnect;
