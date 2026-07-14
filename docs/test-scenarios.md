@@ -36,13 +36,18 @@ Does a teammate-owned shooter engage a player it only knows as a puppet?
   | yes | no | no | fire-STATE sync gap |
   | yes | yes | no | fire-EVENT capture/replay gap for that weapon |
   | yes | yes | yes | working |
-- RESOLVED (2026-07-14): spawned enemies are PASSIVE-UNTIL-ATTACKED, not inert — `poke`
-  aggros them (verified: poked grunt went fire=2 and its owner/puppet FireAudit pair
-  replicated end-to-end). SCRIPT REQUIREMENT: after the client claims its area, WAIT for
-  its `[Lease] ... ->P2` commit on the spawn segment BEFORE the host moves in — authority
-  follows proximity, and if the host arrives before the client's lease commits, the
-  nearest-resident rule gives the host ownership and the puppet-target geometry is lost
-  (sticky leases only protect a COMMITTED owner).
+- **VERDICT (reproduced 2026-07-14, row 1): enemy AI does NOT acquire puppet ships as
+  targets.** Controlled pair: a poked client-owned Enemy_Fly_Laser sat 1.2u from the
+  host's PUPPET ship for 25s with zero owned-fire lines (fire=0 throughout), while the
+  identical poke on an enemy near a REAL local ship produced fire=2 within seconds.
+  This is the user's original "silent mini boss". Fix hunt: Vision/AIAgent target
+  acquisition vs whatever differs on ship puppets (faction? muted component? layer?).
+- Working script (verified): client `tp` to fresh area → poll `owner` until `= P2`
+  (lease must COMMIT before the host arrives — nearest-resident wins otherwise; sticky
+  only protects committed owners) → `spawn` → `entities` for the netId → client retreats
+  ~60u (stays resident) → host `tp` to standoff 8-12u from the enemy (NOT point-blank —
+  projectiles spawn past the muzzle) → client `poke <netId>` to aggro → 25s window →
+  grade FireAudit pair + MarkVisual + host ship hp.
 
 ## 3. debug-spawn-activation — RESOLVED
 

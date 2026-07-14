@@ -42,6 +42,9 @@ namespace PunkMultiverse.Core
         private static float _fireUntil;
         private static Shooter _fireShooter;
         private static WeaponBase _fireWeapon;
+        private static int _fireTargetNetId;   // aim: track this entity while firing
+        private static Vector2 _fireDir;       // aim: fixed direction (zero = don't steer)
+        private static BarrelTransform[] _fireBarrels;
 
         private static void TickFire()
         {
@@ -53,6 +56,7 @@ namespace PunkMultiverse.Core
                     if (_fireShooter != null) _fireShooter.SetShooting(false);
                     if (_fireWeapon != null) _fireWeapon.IsTriggerPulled = false;
                     _fireShooter = null; _fireWeapon = null; _fireUntil = 0f;
+                    _fireTargetNetId = 0; _fireDir = Vector2.zero; _fireBarrels = null;
                     Out("fire: stopped");
                     return;
                 }
@@ -62,8 +66,24 @@ namespace PunkMultiverse.Core
                     _fireWeapon.IsTriggerPulled = true;
                     _fireWeapon.Warmup(Time.deltaTime);
                 }
+                // Steer the barrels the same way puppet aim mirroring does: BarrelTransform.
+                // Direction is the game's single source of truth for aim, and in a harness run
+                // the window is unfocused so the crosshair isn't fighting us for it.
+                Vector2 dir = Vector2.zero;
+                var ship = ShipSync.LocalShip;
+                if (_fireTargetNetId != 0 && ship != null
+                    && NetIds.TryGetInstanceId(_fireTargetNetId, out int inst))
+                {
+                    var egm = ServiceLocator.Get<EntityGameObjectManager>();
+                    if (egm != null && egm.TryGetSavableEntity(inst, out var target) && target != null)
+                        dir = ((Vector2)target.transform.position - (Vector2)ship.transform.position).normalized;
+                }
+                else if (_fireDir != Vector2.zero) dir = _fireDir;
+                if (dir != Vector2.zero && _fireBarrels != null)
+                    foreach (var b in _fireBarrels)
+                        if (b != null) b.Direction = dir;
             }
-            catch { _fireShooter = null; _fireWeapon = null; _fireUntil = 0f; }
+            catch { _fireShooter = null; _fireWeapon = null; _fireUntil = 0f; _fireBarrels = null; }
         }
 
         public static void Tick(NetSession session)
@@ -190,11 +210,30 @@ namespace PunkMultiverse.Core
                     if (parts.Length >= 2)
                         float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out fireSecs);
                     if (fireSecs <= 0f) { _fireUntil = Time.unscaledTime; TickFire(); return; } // fire 0 = stop
+                    _fireTargetNetId = 0; _fireDir = Vector2.zero;
+                    if (parts.Length >= 4 && parts[2].Equals("at", StringComparison.OrdinalIgnoreCase))
+                        int.TryParse(parts[3], out _fireTargetNetId);
+                    else if (parts.Length >= 5 && parts[2].Equals("dir", StringComparison.OrdinalIgnoreCase)
+                        && float.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out float dx)
+                        && float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float dy))
+                        _fireDir = new Vector2(dx, dy).normalized;
                     _fireShooter = ship.GetComponentInChildren<Shooter>(true);
                     _fireWeapon = _fireShooter == null ? ship.PrimaryWeapon : null;
                     if (_fireShooter == null && _fireWeapon == null) { Out("fire: no shooter/weapon on ship"); return; }
+                    _fireBarrels = ship.GetComponentsInChildren<BarrelTransform>(true);
                     _fireUntil = Time.unscaledTime + fireSecs;
-                    Out($"fire: {fireSecs:0.0}s via {(_fireShooter != null ? "Shooter" : "PrimaryWeapon")}");
+                    Out($"fire: {fireSecs:0.0}s via {(_fireShooter != null ? "Shooter" : "PrimaryWeapon")}" +
+                        (_fireTargetNetId != 0 ? $" at #{_fireTargetNetId}" : _fireDir != Vector2.zero ? $" dir {_fireDir.x:0.00},{_fireDir.y:0.00}" : ""));
+                    return;
+                }
+                case "owner":
+                {
+                    var ship = ShipSync.LocalShip;
+                    Vector2 origin = ship != null ? (Vector2)ship.transform.position : Vector2.zero;
+                    TryParsePos(parts, 1, origin, out var pos); // no args = ship position
+                    var key = AuthorityManager.SegmentOf(pos);
+                    byte o = AuthorityManager.OwnerOf(key);
+                    Out($"owner ({key.X},{key.Y}) = {(o == AuthorityManager.DormantOwner ? "dormant" : "P" + (o + 1))}");
                     return;
                 }
                 case "poke":

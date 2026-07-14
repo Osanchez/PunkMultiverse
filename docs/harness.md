@@ -37,8 +37,11 @@ entities [radius=60]        # structured dump of nearby units -> devout.txt:
                             # netId, type, pos, dist, owner/puppet, hp, fire state
 status                      # session state, slot, host?, ship position -> devout.txt
 fire <seconds>              # hold the local ship's trigger (Shooter.SetShooting — the
-                            # game's own API); fire 0 stops early. Aim = current barrel
-                            # direction (no aim control yet)
+                            # game's own API); fire 0 stops early
+fire <seconds> at <netId>   # ...steering the barrels at that entity every frame
+fire <seconds> dir <dx dy>  # ...or in a fixed direction. Stand off 8-12u from targets
+owner [x y | rel dx dy]     # segment + current lease owner at a position (default: ship)
+                            # -> poll until "= P2" to wait for a lease commit
 autofly <seconds>           # re-arm scripted flight mid-run
 say <marker text>           # timestamped marker in the log — bracket your scenarios
 # lines starting with # are ignored

@@ -52,8 +52,10 @@ Delete stale `devcmd.txt` files before launching.
    (`say scenario:<name> begin` first; the mod polls at 2 Hz and empties the file).
    Command results append to `devout.txt` in the same folder (read it, then truncate) and
    mirror to the log as `[Dev] ...`. Commands: spawn, tp, poke (routed damage — wakes
-   dormant targets, exercises the request pipeline), fire <secs> (hold the local ship's
-   trigger — no aim control, barrel points wherever it points), entities (structured
+   dormant targets, exercises the request pipeline), fire <secs> [at <netId> | dir dx dy]
+   (hold the local ship's trigger, optionally steering the barrels — stand off 8-12u),
+   owner [pos] (segment lease owner — poll until '= P2' to await a lease commit before
+   moving the other ship in), entities (structured
    nearby-unit dump: netId/type/pos/owner/puppet/hp/fire; ships labeled Px(local/puppet)),
    status, autofly, say.
    Use `entities` to discover netIds for poke and to assert world state directly instead
