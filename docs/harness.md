@@ -31,10 +31,22 @@ spawn <EntityId> [x y]      # world position; default = 3 units right of the loc
 spawn <EntityId> rel dx dy  # relative to the local ship
 tp <x> <y>                  # teleport local ship (children carried, velocity zeroed)
 tp rel <dx> <dy>
+poke <netId> [amount=5]     # ROUTED damage: puppets forward to owner, dormant queues a
+                            # wake-on-hit claim — a projectile hit minus the projectile
+entities [radius=60]        # structured dump of nearby units -> devout.txt:
+                            # netId, type, pos, dist, owner/puppet, hp, fire state
+status                      # session state, slot, host?, ship position -> devout.txt
+fire <seconds>              # hold the local ship's trigger (Shooter.SetShooting — the
+                            # game's own API); fire 0 stops early. Aim = current barrel
+                            # direction (no aim control yet)
 autofly <seconds>           # re-arm scripted flight mid-run
 say <marker text>           # timestamped marker in the log — bracket your scenarios
 # lines starting with # are ignored
 ```
+
+**Response channel**: every command's result is appended to `devout.txt` next to the
+command file (`[<mono>] <result>` lines) AND mirrored to the log as `[Dev] ...`. The
+driving harness reads devout.txt and truncates it — no log parsing needed for queries.
 
 EntityIds are the prefab ids ([enemies.md](enemies.md) roster: `Unit_Fly`, `Enemy_Turret_Worm`,
 `Crate2`, `Box_Money`, ...). Each instance has its OWN command file — drive host and client

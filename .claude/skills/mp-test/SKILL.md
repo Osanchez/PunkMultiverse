@@ -50,8 +50,14 @@ Delete stale `devcmd.txt` files before launching.
    then wait 10 more seconds for settling. Verify identical `level generated, checksum`.
 4. Drive the scenario: write command lines to the correct instance's `devcmd.txt`
    (`say scenario:<name> begin` first; the mod polls at 2 Hz and empties the file).
-   Confirm each command echoed as `[Dev] ...` in that instance's log before the next step.
-   Positions: parse world coords from `[Dev] spawned <id> at X,Y` lines.
+   Command results append to `devout.txt` in the same folder (read it, then truncate) and
+   mirror to the log as `[Dev] ...`. Commands: spawn, tp, poke (routed damage — wakes
+   dormant targets, exercises the request pipeline), fire <secs> (hold the local ship's
+   trigger — no aim control, barrel points wherever it points), entities (structured
+   nearby-unit dump: netId/type/pos/owner/puppet/hp/fire; ships labeled Px(local/puppet)),
+   status, autofly, say.
+   Use `entities` to discover netIds for poke and to assert world state directly instead
+   of inferring from telemetry. Positions: parse `spawned <id> at X,Y` results.
 5. Wait the scenario's combat/soak window (30-60s) via a background until-loop.
 6. Collect assertions per the scenario's PASS list. Core marker vocabulary:
    - `[Dev]` command echoes ·· `[Spawns] runtime spawn` (sender) / `replica '<id>'`
@@ -70,8 +76,9 @@ Delete stale `devcmd.txt` files before launching.
 
 ## Known quirks (context that saves you an hour)
 
-- Harness-spawned enemies are currently INERT toward everyone (open finding — see
-  test-scenarios.md #3); don't interpret their silence as the puppet-targeting bug.
+- Spawned enemies are PASSIVE until damaged — `poke` them to aggro before grading fire
+  behavior. For client-owned-vs-host-puppet geometry, wait for the client's `[Lease] ->P2`
+  commit on the spawn segment BEFORE moving the host in, or ownership flips to the host.
 - Minion prefabs have no map icon — they mask EntityMapItem-class replica bugs; always
   smoke-test with a regular enemy AND a crate.
 - The `[FireAudit]`/`[Dev]`/`[Spawns]` markers are per-entity rate-limited or one-shot;

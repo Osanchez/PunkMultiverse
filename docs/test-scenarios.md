@@ -36,16 +36,19 @@ Does a teammate-owned shooter engage a player it only knows as a puppet?
   | yes | no | no | fire-STATE sync gap |
   | yes | yes | no | fire-EVENT capture/replay gap for that weapon |
   | yes | yes | yes | working |
-- KNOWN BLOCKER: harness-spawned enemies are currently inert toward everyone (see #3).
-  Until resolved, gather this evidence from natural encounters — instrumentation is live.
+- RESOLVED (2026-07-14): spawned enemies are PASSIVE-UNTIL-ATTACKED, not inert — `poke`
+  aggros them (verified: poked grunt went fire=2 and its owner/puppet FireAudit pair
+  replicated end-to-end). SCRIPT REQUIREMENT: after the client claims its area, WAIT for
+  its `[Lease] ... ->P2` commit on the spawn segment BEFORE the host moves in — authority
+  follows proximity, and if the host arrives before the client's lease commits, the
+  nearest-resident rule gives the host ownership and the puppet-target geometry is lost
+  (sticky leases only protect a COMMITTED owner).
 
-## 3. debug-spawn-activation (single-player control)
+## 3. debug-spawn-activation — RESOLVED
 
-Isolate whether spawned-enemy inertness is vanilla or mod-caused. Run the MAIN install in
-SINGLE PLAYER (no net session), F1 → spawn an enemy next to the ship.
-- If it attacks in SP but not in net runs → mod-side activation gap for runtime spawns.
-- If it's inert in SP too → vanilla debug spawns need something (aggro event/room state);
-  the harness needs a `poke` (damage) command or different spawn plumbing.
+Spawned enemies are passive until provoked (vanilla aggro behavior); `poke <netId>` (routed
+damage) aggros them reliably. Poked enemies move, enter fire=2, and their fire state
+replicates (owner `[FireAudit] owned` + viewer `puppet` pair verified live 2026-07-14).
 
 ## 4. dormant-wake-on-hit
 
