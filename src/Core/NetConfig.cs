@@ -1,4 +1,4 @@
-﻿using BepInEx.Configuration;
+using BepInEx.Configuration;
 // The game ships its own global-namespace ConfigFile type which shadows BepInEx's.
 using BepConfigFile = BepInEx.Configuration.ConfigFile;
 
@@ -24,6 +24,8 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> AutoReady;
         public static ConfigEntry<bool> AutoLaunchRun;
         public static ConfigEntry<float> AutoFly;
+        public static ConfigEntry<bool> DebugMenuKey;
+        public static ConfigEntry<string> CommandFile;
 
         public static ConfigEntry<bool> TrackerNames;
         public static ConfigEntry<bool> TrackerArrows;
@@ -99,6 +101,12 @@ namespace PunkMultiverse
                 "DEV ONLY: host auto-starts the run once everyone is ready.");
             AutoFly = cfg.Bind("Debug", "AutoFlySeconds", 0f,
                 "DEV ONLY: after go-live, drive the local ship up-right for this many seconds (scripted tests).");
+            DebugMenuKey = cfg.Bind("Debug", "DebugMenuKey", false,
+                "DEV ONLY: F1 opens the game's built-in developer debug menu (spawn lists, noclip, " +
+                "loadouts). Menu spawns replicate to every peer like any runtime spawn.");
+            CommandFile = cfg.Bind("Debug", "CommandFile", "",
+                "DEV ONLY: name of a command file in the plugin folder polled twice a second for " +
+                "scripted test scenarios (spawn/tp/autofly/say). Empty = off. See docs/harness.md.");
 
             TrackerNames = cfg.Bind("Tracker", "Names", true,
                 "Name label in the player's color above remote players' ships.");

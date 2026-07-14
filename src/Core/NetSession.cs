@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using PunkMultiverse.Protocol;
@@ -590,6 +590,10 @@ namespace PunkMultiverse.Core
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
         }
 
+        /// <summary>DEV: re-arm the scripted flight mid-run (DevTools 'autofly' command).</summary>
+        internal void RearmAutoFly(float seconds)
+            => _autoFlyUntil = seconds > 0f ? Time.unscaledTime + seconds : 0f;
+
         // DEV: scripted flight so two-instance tests can separate ships without input injection.
         // Drives ShipMovement.flyDirection — the same field player input writes — so takeoff,
         // legs, and physics behave exactly as for a real player.
@@ -973,6 +977,7 @@ namespace PunkMultiverse.Core
                 // Lease commits applied during the dispatch above (client lease waves, host
                 // handoff completions) flip their entities in one batched pass, same frame.
                 Sync.EnemySync.FlushSegmentOwnership();
+                DevTools.Tick(this);
 
                 // LevelGenerated subscribers finish in engine-defined order. Finalizing here
                 // guarantees UnityTilemapRenderer has populated the sprite-variant table.

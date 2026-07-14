@@ -501,6 +501,10 @@ namespace PunkMultiverse.Sync
             }
             PendingDormantDamage.Add((msg, UnityEngine.Time.unscaledTime));
             Core.InstrumentationCounters.DormantDamageQueued();
+            // Loud on purpose: dormantDamage has read 0/0 across sessions where players report
+            // fighting frozen "mannequins" — this line proves whether hits on dormant entities
+            // actually reach the claim path (and OnDormantHit wakes them for the attacker).
+            Plugin.Log.LogInfo($"[Damage] dormant hit on #{msg.TargetNetId} — claiming its segment for P{msg.AttackerSlot + 1}");
             Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
         }
 

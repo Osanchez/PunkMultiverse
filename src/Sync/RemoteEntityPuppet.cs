@@ -46,10 +46,23 @@ namespace PunkMultiverse.Sync
         private byte _fireState; // 0 idle, 1 warming, 2 firing — from the owner (see SetFireState)
         private Shooter _shooter;
         private bool _shooterChecked;
+        private float _nextFireAuditAt;
 
         /// <summary>Owner's fire state, so a beam (hitscan) enemy's beam can be drawn here — the
         /// muted Shooter would otherwise never render it, leaving invisible beams that still hurt.</summary>
-        public void SetFireState(byte state) => _fireState = state;
+        public void SetFireState(byte state)
+        {
+            // Viewer half of the fire audit: the owner logs "[FireAudit] owned ..." when its
+            // AI pulls the trigger; this logs when that state REACHES a viewer. An owned line
+            // with no puppet line = state sync gap; both lines but no projectiles on screen =
+            // fire-EVENT capture/replay gap for this weapon; neither = the AI never fired.
+            if (state != 0 && _fireState == 0 && Time.unscaledTime >= _nextFireAuditAt)
+            {
+                _nextFireAuditAt = Time.unscaledTime + 5f; // per-entity limit; transitions are rare
+                Plugin.Log.LogInfo($"[FireAudit] puppet #{NetId} entered fire={state}");
+            }
+            _fireState = state;
+        }
 
         private struct Snap
         {
@@ -114,6 +127,50 @@ namespace PunkMultiverse.Sync
                     if (barrel != null)
                         barrel.Direction = AimDirection;
             DriveBeam();
+            TickDormantAnimatorFreeze();
+        }
+
+        // A dormant puppet has NO simulator anywhere, but its Animator isn't muted (owned
+        // puppets need it for replicated states) — so a mannequin frozen mid-attack loops its
+        // attack animation forever and reads as "shooting without projectiles". Freeze the
+        // animators while the entity is dormant-owned; the claim/wake (or first snapshot)
+        // restores them.
+        private Animator[] _animators;
+        private float[] _animatorSpeeds;
+        private bool _animatorsFrozen;
+        private float _nextDormantCheckAt;
+
+        private void TickDormantAnimatorFreeze()
+        {
+            if (NetId < 0) return; // orphans keep vanilla visuals
+            float now = Time.unscaledTime;
+            if (now < _nextDormantCheckAt) return;
+            _nextDormantCheckAt = now + 1f;
+            bool dormant = EnemySync.OwnerOf(NetId) == Core.AuthorityManager.DormantOwner
+                && SnapshotAge > 2f; // fed puppets are alive regardless of the lease table
+            if (dormant != _animatorsFrozen) SetAnimatorsFrozen(dormant);
+        }
+
+        private void SetAnimatorsFrozen(bool frozen)
+        {
+            _animators ??= GetComponentsInChildren<Animator>(true);
+            if (frozen)
+            {
+                _animatorSpeeds = new float[_animators.Length];
+                for (int i = 0; i < _animators.Length; i++)
+                {
+                    if (_animators[i] == null) continue;
+                    _animatorSpeeds[i] = _animators[i].speed;
+                    _animators[i].speed = 0f;
+                }
+            }
+            else if (_animatorSpeeds != null)
+            {
+                for (int i = 0; i < _animators.Length; i++)
+                    if (_animators[i] != null) _animators[i].speed = _animatorSpeeds[i];
+                _animatorSpeeds = null;
+            }
+            _animatorsFrozen = frozen;
         }
 
         // Hitscan (beam) enemies draw their beam in Shooter.Update via weapon.OnBarrelMoved, which
@@ -192,6 +249,7 @@ namespace PunkMultiverse.Sync
             // A superseded lifetime is permanently quarantined. Restoring its AI/body here would
             // undo DuplicateEntityInert at exactly the moment the puppet component is disabled.
             if (GetComponent<DuplicateEntityInert>() != null) return;
+            if (_animatorsFrozen) SetAnimatorsFrozen(false);
             Unmute();
         }
 
@@ -200,6 +258,8 @@ namespace PunkMultiverse.Sync
             RemoveInstrumentationCount();
             StopWeaponSounds();
             if (GetComponent<DuplicateEntityInert>() != null) return;
+            // The Animators outlive this component — a woken entity must not stay speed-0.
+            if (_animatorsFrozen) SetAnimatorsFrozen(false);
             Unmute();
             if (_rb != null)
             {

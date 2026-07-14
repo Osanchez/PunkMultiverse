@@ -53,6 +53,7 @@ namespace PunkMultiverse.Sync
         private const int MaxStateDatagramBytes = 1100;
         private static readonly NetWriter Writer = new NetWriter(2048);
         private static float _nextSendAt;
+        private static readonly Dictionary<int, float> NextFireAuditAt = new Dictionary<int, float>();
         private static bool _applyingRemote;
         // The loader can overlap multiple GameObjects for one EntityData. LiveEntities contains
         // only the current canonical lifetime; Lifetimes retains every concrete object until its
@@ -190,6 +191,7 @@ namespace PunkMultiverse.Sync
             ChunkScratch.Clear();
             RecycleTickScratch();
             DirtyOwnershipSegments.Clear();
+            NextFireAuditAt.Clear();
             InterestRoutes.Clear();
             PendingBaselines.Clear();
             DirectSendRoutes.Clear();
@@ -2446,7 +2448,19 @@ namespace PunkMultiverse.Sync
                 BurnLevel = UnitStatus.ReadBurnLevel(unit),
             };
             var full = entry;
-            bool keyframe = !LastSentState.TryGetValue(netId, out var prior)
+            bool hadPrior = LastSentState.TryGetValue(netId, out var prior);
+            // Owner-side fire audit: "enemy animates its attack but never shoots" reports need
+            // to know whether the OWNER's simulation ever pulled the trigger. If these lines
+            // appear for the entity while viewers saw no projectiles, the fire-event capture has
+            // a gap for that weapon type; if they never appear, the enemy's AI never actually
+            // fired (targeting/line-of-sight against a puppet ship — possibly vanilla-correct).
+            if (fire != 0 && (!hadPrior || prior.Fire == 0) && unit != null
+                && (!NextFireAuditAt.TryGetValue(netId, out float auditAt) || now >= auditAt))
+            {
+                NextFireAuditAt[netId] = now + 5f; // per-entity, so a busy fight can't mask one enemy
+                Plugin.Log.LogInfo($"[FireAudit] owned #{netId} entered fire={fire}");
+            }
+            bool keyframe = !hadPrior
                 || prior.Lifetime != entry.Lifetime
                 || !LastKeyframeAt.TryGetValue(netId, out float keyframeAt)
                 || now - keyframeAt >= StateKeyframeInterval;
