@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
@@ -470,7 +470,7 @@ namespace PunkMultiverse.Sync
                 var rb = LocalShip.GetComponent<Rigidbody2D>();
                 if (rb != null)
                 {
-                    rb.position = pos;
+                    RemoteEntityPuppet.TeleportWithChildren(rb, pos);
                     rb.linearVelocity = Vector2.zero;
                 }
                 LocalShip.transform.position = pos;

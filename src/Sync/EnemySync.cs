@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
@@ -866,7 +866,7 @@ namespace PunkMultiverse.Sync
                     && origin != BaselineEntryOrigin.Generation)
                 {
                     var rb = se.GetComponent<Rigidbody2D>();
-                    if (rb != null) rb.position = entry.Pos;
+                    if (rb != null) RemoteEntityPuppet.TeleportWithChildren(rb, entry.Pos);
                     var puppet = se.GetComponent<RemoteEntityPuppet>();
                     puppet?.PushSnapshot(now, entry.Pos, Vector2.zero, entry.Rot, entry.Aim);
                 }
@@ -1729,7 +1729,7 @@ namespace PunkMultiverse.Sync
                 if (origin == BaselineEntryOrigin.Live) FullStateOrigins.Remove(entry.NetId);
                 else FullStateOrigins[entry.NetId] = origin;
                 var rb = se.GetComponent<Rigidbody2D>();
-                if (rb != null) rb.position = entry.Pos;
+                if (rb != null) RemoteEntityPuppet.TeleportWithChildren(rb, entry.Pos);
                 if (isProp) continue; // canonical pose applied; props carry no AI/vitals state
                 if (origin == BaselineEntryOrigin.Generation)
                 {
@@ -1938,7 +1938,7 @@ namespace PunkMultiverse.Sync
             if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
             {
                 var rb = se.GetComponent<Rigidbody2D>();
-                if (rb != null) rb.position = entry.Pos;
+                if (rb != null) RemoteEntityPuppet.TeleportWithChildren(rb, entry.Pos);
                 var puppet = se.GetComponent<RemoteEntityPuppet>();
                 puppet?.ResetSnapshots();
                 puppet?.PushSnapshot(Time.unscaledTime, entry.Pos, Vector2.zero, entry.Rot, entry.Aim);
@@ -2854,7 +2854,7 @@ namespace PunkMultiverse.Sync
                 if (correction > 0.25f)
                 {
                     var rb = se.GetComponent<Rigidbody2D>();
-                    if (rb != null) rb.position = position;
+                    if (rb != null) RemoteEntityPuppet.TeleportWithChildren(rb, position);
                     else se.transform.position = new Vector3(position.x, position.y, se.transform.position.z);
                     InstrumentationCounters.DeathPositionRepaired(correction);
                     if (NetDiag.Enabled)

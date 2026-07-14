@@ -114,7 +114,7 @@ namespace PunkMultiverse.Sync
                 target = b.Pos + b.Vel * Mathf.Min(renderTime - b.Time, 0.25f);
             }
 
-            if (Vector2.Distance(_rb.position, target) > HardSnapDistance) _rb.position = target;
+            if (Vector2.Distance(_rb.position, target) > HardSnapDistance) RemoteEntityPuppet.TeleportWithChildren(_rb, target);
             else _rb.MovePosition(target);
             _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);
             _rb.MoveRotation(Mathf.LerpAngle(a.Rot, b.Rot, t));

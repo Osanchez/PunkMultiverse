@@ -299,7 +299,7 @@ namespace PunkMultiverse.Sync
             float correction = Vector2.Distance(_rb.position, target);
             if (correction > HardSnapDistance)
             {
-                _rb.position = target;
+                TeleportWithChildren(_rb, target);
                 Core.InstrumentationCounters.EntityHardSnap();
             }
             else
@@ -310,6 +310,21 @@ namespace PunkMultiverse.Sync
             }
             _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);
             _rb.MoveRotation(Mathf.LerpAngle(a.Rot, b.Rot, t));
+        }
+
+        /// <summary>Hard-move a root body AND its articulated child bodies by the same delta.
+        /// Multi-part enemies (a swimmer's jointed tail) have child Rigidbody2Ds that only local
+        /// physics moves — a root-only teleport strands them at their old world position and the
+        /// joint stretches across the gap (seen live: a fish reclaimed after a dormancy commit,
+        /// body at the committed pose, tail still at its pre-commit spot). Carrying the children
+        /// by the root's delta preserves their relative pose, exactly like a fresh spawn.</summary>
+        internal static void TeleportWithChildren(Rigidbody2D root, Vector2 target)
+        {
+            Vector2 delta = target - root.position;
+            root.position = target;
+            if (delta.sqrMagnitude < 0.0001f) return;
+            foreach (var child in root.GetComponentsInChildren<Rigidbody2D>(true))
+                if (child != null && child != root) child.position += delta;
         }
     }
 }

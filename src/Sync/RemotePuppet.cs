@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
@@ -310,7 +310,7 @@ namespace PunkMultiverse.Sync
             }
 
             if (Vector2.Distance(_rb.position, targetPos) > HardSnapDistance)
-                _rb.position = targetPos;
+                RemoteEntityPuppet.TeleportWithChildren(_rb, targetPos);
             else
                 _rb.MovePosition(targetPos);
             _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);

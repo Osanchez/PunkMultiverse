@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using PunkMultiverse.Protocol;
 using UnityEngine;
@@ -188,7 +188,7 @@ namespace PunkMultiverse.Core
                 if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
                 {
                     var rb = se.GetComponent<Rigidbody2D>();
-                    if (rb != null) rb.position = e.Pos;
+                    if (rb != null) Sync.RemoteEntityPuppet.TeleportWithChildren(rb, e.Pos);
                     else se.transform.position = new Vector3(e.Pos.x, e.Pos.y, se.transform.position.z);
                 }
             }
