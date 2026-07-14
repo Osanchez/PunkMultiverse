@@ -32,5 +32,14 @@ namespace PunkMultiverse.Core
             Offset[senderSlot] = offset;
             return (float)(sender + offset);
         }
+
+        /// <summary>Map an event without letting its one-off network jitter perturb snapshot clock calibration.</summary>
+        public static float MapToLocalTime(byte senderSlot, uint senderMs)
+        {
+            double sender = senderMs / 1000.0;
+            return Offset.TryGetValue(senderSlot, out double offset)
+                ? (float)(sender + offset)
+                : Time.unscaledTime;
+        }
     }
 }

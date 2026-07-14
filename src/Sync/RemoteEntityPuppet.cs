@@ -38,7 +38,6 @@ namespace PunkMultiverse.Sync
         };
 
         // Two snapshot intervals of buffer at the configured rate — enough for one lost packet.
-        private static float InterpDelay => 2f / Mathf.Max(1f, NetConfig.StateHz.Value);
         private const float HardSnapDistance = 4f;
 
         public int NetId;
@@ -61,6 +60,7 @@ namespace PunkMultiverse.Sync
         }
 
         private readonly List<Snap> _buffer = new List<Snap>(16);
+        private readonly AdaptiveSnapshotTiming _timing = new AdaptiveSnapshotTiming(0.045f, 0.18f, 0.05f);
         private readonly List<Behaviour> _muted = new List<Behaviour>();
         private Rigidbody2D _rb;
         private BarrelTransform[] _barrels;
@@ -72,7 +72,12 @@ namespace PunkMultiverse.Sync
         private bool _savedFullKinematicContacts;
         private bool _instrumentationCounted;
         public bool HasSnapshot => _buffer.Count > 0;
-        public float SnapshotAge => _buffer.Count == 0 ? float.PositiveInfinity : Time.unscaledTime - _buffer[_buffer.Count - 1].Time;
+        private float _enabledAt;
+        private float _lastSnapshotReceivedAt;
+        public float PuppetAge => Time.unscaledTime - _enabledAt;
+        public float SnapshotAge => _buffer.Count == 0
+            ? float.PositiveInfinity
+            : Time.unscaledTime - _lastSnapshotReceivedAt;
 
         private void Awake()
         {
@@ -146,6 +151,8 @@ namespace PunkMultiverse.Sync
 
         private void OnEnable()
         {
+            _enabledAt = Time.unscaledTime;
+            _lastSnapshotReceivedAt = 0f;
             if (!_instrumentationCounted)
             {
                 _instrumentationCounted = true;
@@ -236,7 +243,11 @@ namespace PunkMultiverse.Sync
 
         public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot, Vector2 aim)
         {
+            _lastSnapshotReceivedAt = Time.unscaledTime;
+            _timing.Observe(time);
             AimDirection = aim;
+            if (_rb != null)
+                Core.InstrumentationCounters.EntitySnapshotCorrection(Vector2.Distance(_rb.position, pos));
             // Interpolation needs an ascending timeline; an authority handoff or clock
             // re-anchor can step the mapped time slightly backwards — clamp, don't corrupt.
             if (_buffer.Count > 0 && time <= _buffer[_buffer.Count - 1].Time)
@@ -245,12 +256,20 @@ namespace PunkMultiverse.Sync
             if (_buffer.Count > 20) _buffer.RemoveRange(0, _buffer.Count - 20);
         }
 
+        /// <summary>Clocks and trajectories from different simulators are not interpolatable.
+        /// Drop the old owner's tail before accepting the first snapshot after a handoff.</summary>
+        public void ResetSnapshots()
+        {
+            _buffer.Clear();
+            _timing.Reset();
+        }
+
         private void FixedUpdate()
         {
             if (_rb == null || _buffer.Count == 0) return; // frozen at its last safe pose
-            float renderTime = Time.unscaledTime - InterpDelay;
+            float renderTime = Time.unscaledTime - _timing.Delay;
             var last = _buffer[_buffer.Count - 1];
-            if (Time.unscaledTime - last.Time > 2f)
+            if (SnapshotAge > 2f)
             {
                 // Stream-starved replicas stay frozen and passive. Letting hundreds fall into
                 // terrain here caused the observed 60k-80k collision callbacks per second.
@@ -271,10 +290,26 @@ namespace PunkMultiverse.Sync
             float span = Mathf.Max(0.0001f, b.Time - a.Time);
             float t = Mathf.Clamp01((renderTime - a.Time) / span);
             Vector2 target = Vector2.LerpUnclamped(a.Pos, b.Pos, t);
-            if (renderTime > b.Time) target = b.Pos + b.Vel * Mathf.Min(renderTime - b.Time, 0.3f);
+            if (renderTime > b.Time)
+            {
+                _timing.NoteUnderrun();
+                target = b.Pos + b.Vel * Mathf.Min(renderTime - b.Time, 0.3f);
+            }
 
-            _rb.position = target;
-            _rb.rotation = Mathf.LerpAngle(a.Rot, b.Rot, t);
+            float correction = Vector2.Distance(_rb.position, target);
+            if (correction > HardSnapDistance)
+            {
+                _rb.position = target;
+                Core.InstrumentationCounters.EntityHardSnap();
+            }
+            else
+            {
+                // Direct rb.position writes bypass Rigidbody2D's render interpolation and show
+                // every fixed-step edge. MovePosition/MoveRotation preserve smooth presentation.
+                _rb.MovePosition(target);
+            }
+            _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);
+            _rb.MoveRotation(Mathf.LerpAngle(a.Rot, b.Rot, t));
         }
     }
 }

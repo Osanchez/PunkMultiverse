@@ -25,7 +25,14 @@ namespace PunkMultiverse.Sync
         // simulates it (the owner). At death this is the killer, so the loot goes to whoever
         // actually earned it instead of everyone standing nearby (see Patches.LootDiag).
         private static readonly Dictionary<int, byte> LastDamager = new Dictionary<int, byte>();
-        private static readonly List<DamageRequestMsg> PendingDormantDamage = new List<DamageRequestMsg>();
+        // Host-side dormant claims: damage whose owner has no live object yet. Drained when the
+        // segment's authority commits (usually to the attacker via OnDormantHit); pruned after
+        // DormantClaimTtl so unownable races (attacker unloaded/disconnected mid-claim) cannot
+        // accumulate forever. Deliberately NOT applied "in absentia" — a claim without any
+        // possible simulator is a sub-second race, not a state worth a parallel HP ledger.
+        private static readonly List<(DamageRequestMsg msg, float queuedAt)> PendingDormantDamage
+            = new List<(DamageRequestMsg, float)>();
+        private const float DormantClaimTtl = 15f;
         private static readonly HashSet<ulong> SeenDamageRequests = new HashSet<ulong>();
         private static readonly Queue<ulong> SeenDamageRequestOrder = new Queue<ulong>();
         private static uint _requestSequence;
@@ -104,6 +111,14 @@ namespace PunkMultiverse.Sync
                 if (entityPuppet.NetId < 0) return false; // muted orphan — damage applies locally
                 isEntity = true;
                 netId = entityPuppet.NetId;
+                return true;
+            }
+            // Held physics prop: its HP truth lives on the simulator like any entity's. Local
+            // application here was the old per-machine crate-HP divergence.
+            var hold = dr.GetComponent<PropPuppet>();
+            if (hold != null && hold.Hold && EnemySync.TryGetNetId(dr, out netId))
+            {
+                isEntity = true;
                 return true;
             }
             return false;
@@ -289,8 +304,10 @@ namespace PunkMultiverse.Sync
             private static bool PrefixBody(HealthBase __instance)
             {
                 if (!NetSession.Active) return true;
-                return __instance.GetComponent<RemotePuppet>() == null
-                       && __instance.GetComponent<RemoteEntityPuppet>() == null;
+                if (__instance.GetComponent<RemotePuppet>() != null
+                    || __instance.GetComponent<RemoteEntityPuppet>() != null) return false;
+                var hold = __instance.GetComponent<PropPuppet>();
+                return hold == null || !hold.Hold;
             }
         }
 
@@ -301,8 +318,10 @@ namespace PunkMultiverse.Sync
             private static bool Prefix(DamagableResource __instance)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
-                return __instance.GetComponent<RemotePuppet>() == null
-                    && __instance.GetComponent<RemoteEntityPuppet>() == null;
+                if (__instance.GetComponent<RemotePuppet>() != null
+                    || __instance.GetComponent<RemoteEntityPuppet>() != null) return false;
+                var hold = __instance.GetComponent<PropPuppet>();
+                return hold == null || !hold.Hold;
             }
         }
 
@@ -329,6 +348,7 @@ namespace PunkMultiverse.Sync
                 IsEntity = isEntity,
                 TargetSlot = targetSlot,
                 TargetNetId = targetNetId,
+                TargetLifetime = isEntity ? Core.NetIds.LifetimeOf(targetNetId) : 0,
                 Amount = amount,
                 TypeHash = type != null ? HashName(type.name) : 0,
                 AttackerSlot = (byte)session.LocalSlot,
@@ -339,6 +359,11 @@ namespace PunkMultiverse.Sync
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
+            // The host never routes its own broadcast back to itself — a host attacker hitting
+            // a dormant entity must queue the claim locally or it evaporates.
+            if (session.IsHost && isEntity
+                && Core.AuthorityManager.OwnerOf(targetNetId) == Core.AuthorityManager.DormantOwner)
+                QueueDormantClaim(msg);
         }
 
         private static uint NextDamageRequestId(byte slot)
@@ -356,10 +381,18 @@ namespace PunkMultiverse.Sync
         private static void ApplyDamageRequest(DamageRequestMsg msg, bool pendingReplay)
         {
             var session = NetSession.Instance;
-            if (!pendingReplay && !AcceptDamageRequest(msg)) return;
+            // Replayed claims were already recorded as "seen" on every peer when the original
+            // broadcast passed through — running them through the dedup again would drop every
+            // dormant-claim replay to a remote owner on arrival.
+            if (!pendingReplay && !msg.Replay && !AcceptDamageRequest(msg)) return;
             DamagableResource dr = null;
             if (msg.IsEntity)
             {
+                if (!Core.NetIds.LifetimeMatches(msg.TargetNetId, msg.TargetLifetime))
+                {
+                    InstrumentationCounters.StaleLifetimeDropped();
+                    return;
+                }
                 // OwnerOf defaults unassigned entities to the current host's slot, so this
                 // single check covers both assigned and host-fallback ownership.
                 if (!EnemySync.IsLocallyOwned(msg.TargetNetId)) return;
@@ -385,9 +418,21 @@ namespace PunkMultiverse.Sync
                     // (they have it spawned; their shot just landed on it).
                     if (session.IsHost)
                     {
-                        PendingDormantDamage.Add(msg);
+                        PendingDormantDamage.Add((msg, UnityEngine.Time.unscaledTime));
                         Core.InstrumentationCounters.DormantDamageQueued();
                         Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
+                    }
+                    else
+                    {
+                        // A client owner used to silently discard these — the attacker's target
+                        // became unbreakable for the whole session (the split-brain symptom).
+                        // Bounce the full claim to the host, which queues it and forces the
+                        // segment lease toward the attacker exactly as it does for its own
+                        // dormant entities.
+                        Writer.Reset();
+                        msg.Write(Writer, MsgType.DamageUnservable);
+                        session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
+                        Core.InstrumentationCounters.DormantDamageForwarded();
                     }
                     return;
                 }
@@ -442,6 +487,54 @@ namespace PunkMultiverse.Sync
             return true;
         }
 
+        /// <summary>Host: a damage claim targets an entity nobody currently simulates (dormant
+        /// owner, or an owner that reported it unservable). Queue it and force the segment
+        /// toward the attacker — the claim replays to whichever simulator the commit lands on.</summary>
+        public static void QueueDormantClaim(DamageRequestMsg msg)
+        {
+            var session = NetSession.Instance;
+            if (session == null || !session.IsHost || !msg.IsEntity) return;
+            if (!Core.NetIds.LifetimeMatches(msg.TargetNetId, msg.TargetLifetime))
+            {
+                Core.InstrumentationCounters.StaleLifetimeDropped();
+                return;
+            }
+            PendingDormantDamage.Add((msg, UnityEngine.Time.unscaledTime));
+            Core.InstrumentationCounters.DormantDamageQueued();
+            Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
+        }
+
+        /// <summary>Host: an owner reported it cannot serve a damage claim (no live object).
+        /// Queue it like host-side dormant damage and force the segment toward the attacker —
+        /// the claim replays to whichever simulator the commit lands on.</summary>
+        public static void ApplyDamageUnservable(DamageRequestMsg msg, byte senderSlot, NetSession session)
+        {
+            if (!session.IsHost || !msg.IsEntity) return;
+            if (!Core.NetIds.LifetimeMatches(msg.TargetNetId, msg.TargetLifetime))
+            {
+                Core.InstrumentationCounters.StaleLifetimeDropped();
+                return;
+            }
+            byte owner = EnemySync.OwnerOf(msg.TargetNetId);
+            if (owner == session.LocalSlot)
+            {
+                // Ownership already moved to the host while the bounce was in flight.
+                msg.Replay = true;
+                ApplyDamageRequest(msg, true);
+                return;
+            }
+            if (owner == Core.AuthorityManager.DormantOwner || owner == senderSlot)
+            {
+                QueueDormantClaim(msg);
+                return;
+            }
+            // Moved to a third peer mid-flight — re-route the claim to the current owner.
+            msg.Replay = true;
+            Writer.Reset(); msg.Write(Writer);
+            session.SendReliableToSlot(owner, NetChannel.Combat, Writer.ToSegment());
+            Core.InstrumentationCounters.DormantDamageReplayed();
+        }
+
         internal static void OnSegmentAuthorityCommitted(AuthorityManager.SegmentKey segment, byte owner)
         {
             var session = NetSession.Instance;
@@ -451,16 +544,32 @@ namespace PunkMultiverse.Sync
                 if (p != null && p.Connected && p.Slot == owner) { peer = p.PeerId; break; }
             for (int i = 0; i < PendingDormantDamage.Count;)
             {
-                var msg = PendingDormantDamage[i];
+                var msg = PendingDormantDamage[i].msg;
                 if (!AuthorityManager.TrySegmentOf(msg.TargetNetId, out var key) || !key.Equals(segment)) { i++; continue; }
                 PendingDormantDamage.RemoveAt(i);
                 if (owner == session.LocalSlot) ApplyDamageRequest(msg, true);
                 else if (peer != 0)
                 {
+                    msg.Replay = true; // every peer already saw the original RequestId (see Replay)
                     Writer.Reset(); msg.Write(Writer);
                     session.SendToPeer(peer, NetChannel.Combat, Writer.ToSegment(), reliable: true);
                 }
                 Core.InstrumentationCounters.DormantDamageReplayed();
+            }
+        }
+
+        private static void PruneDormantClaims()
+        {
+            float now = UnityEngine.Time.unscaledTime;
+            for (int i = PendingDormantDamage.Count - 1; i >= 0; i--)
+            {
+                if (now - PendingDormantDamage[i].queuedAt <= DormantClaimTtl) continue;
+                var expired = PendingDormantDamage[i].msg;
+                PendingDormantDamage.RemoveAt(i);
+                Core.InstrumentationCounters.DormantClaimDropped();
+                if (Core.NetDiag.Enabled)
+                    Core.NetDiag.Log("Damage", $"dropped dormant claim for {Core.NetDiag.Describe(expired.TargetNetId)} " +
+                        $"from P{expired.AttackerSlot + 1} — no simulator materialized within {DormantClaimTtl:0}s");
             }
         }
 
@@ -532,6 +641,7 @@ namespace PunkMultiverse.Sync
         {
             if (Time.unscaledTime < _nextLifeCheckAt) return;
             _nextLifeCheckAt = Time.unscaledTime + 0.5f;
+            if (PendingDormantDamage.Count > 0) PruneDormantClaims();
             var ship = ShipSync.LocalShip;
             if (ship == null) return;
             bool dead;

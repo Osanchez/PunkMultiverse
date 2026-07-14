@@ -323,7 +323,7 @@ namespace PunkMultiverse.Core
             _lastCellChanges = cells;
             _lastVisualSpawns = visualSpawns;
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
-                "[Counts] mono={0:0.000}s remoteShips={1} remoteEntities={2} visualIds={3} owners={4} fixed={5} killed={6} pendingCells={7} cells={8:0.#}/s visualSpawns={9:0.#}/s leases={10} pendingLeases={11} commits={12} acks={13} staleStateDrops={14} identityOverlaps={15} activeQuarantines={16} duplicateFireDrops={17} duplicateImpactDrops={18} staleFireDrops={19} damageRequestDedupes={20} starvedPuppetFrames={21} killLedgerIds={22} dormantDamage={23}/{24} terrain={25}/{26:X16}/{27} terrainMismatch={28} repairs={29}/{30}",
+                "[Counts] mono={0:0.000}s remoteShips={1} remoteEntities={2} visualIds={3} owners={4} fixed={5} killed={6} pendingCells={7} cells={8:0.#}/s visualSpawns={9:0.#}/s leases={10} pendingLeases={11} commits={12} acks={13} staleStateDrops={14} positionSegmentDrops={31} authorityDrops={32} authorityRebaselines={35} identityOverlaps={15} activeQuarantines={16} duplicateFireDrops={17} duplicateImpactDrops={18} staleFireDrops={19} damageRequestDedupes={20} starvedPuppetFrames={21} starvedRequests={36} availabilityPromotions={37} availabilityDeferrals={38} localAuthorityRepairs={39} killLedgerIds={22} dormantDamage={23}/{24} terrain={25}/{26:X16}/{27} terrainMismatch={28} repairs={29}/{30} disconnectDespawns={33} stationRespawns={34}",
                 mono, InstrumentationCounters.RemoteShips, InstrumentationCounters.RemoteEntities,
                 ProjectileSync.VisualProjectileCount, EnemySync.Owners.Count, EnemySync.FixedOwners.Count,
                 EnemySync.KilledCount, WorldSync.PendingCount, cellDelta / elapsed,
@@ -336,7 +336,82 @@ namespace PunkMultiverse.Core
                 InstrumentationCounters.KillLedgerIds, InstrumentationCounters.DormantDamageQueuedCount,
                 InstrumentationCounters.DormantDamageReplayedCount, WorldSync.Revision, WorldSync.LedgerHash,
                 WorldSync.LedgerCount, InstrumentationCounters.TerrainMismatches,
-                InstrumentationCounters.TerrainRepairsSent, InstrumentationCounters.TerrainRepairsApplied));
+                InstrumentationCounters.TerrainRepairsSent, InstrumentationCounters.TerrainRepairsApplied,
+                InstrumentationCounters.PositionSegmentDrops, InstrumentationCounters.AuthorityStateDrops,
+                InstrumentationCounters.DisconnectShipDespawns, InstrumentationCounters.StationRespawnsAssigned,
+                InstrumentationCounters.AuthoritySnapshotRebaselines,
+                InstrumentationCounters.StarvedOwnershipRequests,
+                InstrumentationCounters.StarvedOwnershipPromotions,
+                InstrumentationCounters.AvailabilityCandidateDeferrals,
+                InstrumentationCounters.LocalAuthorityComponentRepairs));
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[Residency] mono={0:0.000}s ownerNoSimSegments={1} fixedOwnedNotLive={2} " +
+                "baselineOrigins=live{3}/last{4}/gen{5}/cache{6} dmgForwarded={7} claimsDropped={8} " +
+                "firstSnap=ok{9}/miss{10}/max{11:0}ms handoffRejects={12} handoffMax={13:0}ms " +
+                "dormantLeases={14} dormancyCommits=tx{15}/rx{16} dormantTransitions={17}(cache{18}) " +
+                "residencyReports=tx{19}/rx{20}",
+                mono,
+                AuthorityManager.CountOwnedSegmentsNotResident(NetSession.Instance),
+                EnemySync.CountFixedOwnedNotLive(NetSession.Instance),
+                InstrumentationCounters.BaselineEntriesLive,
+                InstrumentationCounters.BaselineEntriesLastKnown,
+                InstrumentationCounters.BaselineEntriesGeneration,
+                InstrumentationCounters.BaselineEntriesCache,
+                InstrumentationCounters.DormantDamageForwardedCount,
+                InstrumentationCounters.DormantClaimsDroppedCount,
+                InstrumentationCounters.FirstSnapshotsObserved,
+                InstrumentationCounters.FirstSnapshotDeadlineMisses,
+                InstrumentationCounters.FirstSnapshotMaxMs,
+                InstrumentationCounters.HandoffRejects,
+                InstrumentationCounters.HandoffDurationMaxMs,
+                AuthorityManager.DormantLeaseCount,
+                InstrumentationCounters.DormancyCommitsSent,
+                InstrumentationCounters.DormancyCommitsApplied,
+                InstrumentationCounters.DormantTransitions,
+                InstrumentationCounters.DormantTransitionsFromCache,
+                InstrumentationCounters.ResidencyReportsSent,
+                InstrumentationCounters.ResidencyReportsApplied));
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[ProjectileTimeline] mono={0:0.000}s pending={1} queued={2} late={3} muzzleCorrectionAvg={4:0.000} max={5:0.000}",
+                mono, ProjectileSync.PendingShipFireCount, ProjectileSync.ShipFireQueued,
+                ProjectileSync.ShipFireLate, ProjectileSync.MuzzleCorrectionAverage,
+                ProjectileSync.MuzzleCorrectionMax));
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[PlantLedger] mono={0:0.000}s killedFruits={1} announced={2} applied={3} missingLiveChild={4}",
+                mono, EnemySync.PlantFruitKilledCount, EnemySync.PlantFruitAnnouncedCount,
+                EnemySync.PlantFruitAppliedCount, EnemySync.PlantFruitMissingCount));
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[EntityMotion] mono={0:0.000}s corrections={1} avg={2:0.000} p95={9:0.000} max={3:0.000} hardSnaps={4} clockSamplesCoalesced={5} propHeartbeats={6} deathRepairs={7} deathRepairMax={8:0.000}",
+                mono, InstrumentationCounters.EntityCorrectionCount,
+                InstrumentationCounters.EntityCorrectionAverage,
+                InstrumentationCounters.EntityCorrectionMax,
+                InstrumentationCounters.EntityHardSnaps,
+                InstrumentationCounters.EntityClockSamplesCoalescedCount,
+                InstrumentationCounters.StationaryPropHeartbeats,
+                InstrumentationCounters.DeathPositionRepairs,
+                InstrumentationCounters.DeathPositionRepairMax,
+                InstrumentationCounters.EntityCorrectionP95));
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[SnapshotLatency] mono={0:0.000}s chunks={1}/{2} missing={3} maxBytes={4} keyframes={5} omittedFields={6} deltaNoBaseline={7} baselines=req{8}/apply{9}/ack{10}/handoff{11}/cache{12} roster=materialized{28}/missing{29}/incomplete{30} direct=tx{13}/rx{14}/relayBypassEntries{15} boundary={26}/{27} adaptiveDelayAvg={16:0.0}ms jitterAvg={17:0.0}ms underruns={18} relayAvg={19:0.00}ms relayMax={20:0.00}ms staleLifetime={21} durable={22} staleMutation={23} mutationGaps={24} unauthorized={25} visualMismatch={31}",
+                mono, InstrumentationCounters.SnapshotChunksSent, InstrumentationCounters.SnapshotChunksReceived,
+                InstrumentationCounters.SnapshotChunksMissingCount, InstrumentationCounters.SnapshotMaxBytes,
+                InstrumentationCounters.SnapshotKeyframes, InstrumentationCounters.SnapshotDeltaFieldsOmittedCount,
+                InstrumentationCounters.SnapshotDeltasWithoutBaseline, InstrumentationCounters.RuntimeBaselinesRequested,
+                InstrumentationCounters.RuntimeBaselinesApplied, InstrumentationCounters.RuntimeBaselinesAcked,
+                InstrumentationCounters.RuntimeHandoffBaselines, InstrumentationCounters.RuntimeBaselineCacheFallbacks,
+                InstrumentationCounters.DirectSnapshotsSent, InstrumentationCounters.DirectSnapshotsReceived,
+                InstrumentationCounters.DirectRelayBypassedEntries, InstrumentationCounters.AdaptiveDelayAverageMs,
+                InstrumentationCounters.AdaptiveJitterAverageMs, InstrumentationCounters.InterpolationUnderruns,
+                InstrumentationCounters.HostRelayAverageMs, InstrumentationCounters.HostRelayMaxMs,
+                InstrumentationCounters.StaleLifetimesDropped, InstrumentationCounters.DurableMutationsApplied,
+                InstrumentationCounters.StaleMutationsDropped, InstrumentationCounters.MutationRevisionGaps,
+                InstrumentationCounters.UnauthorizedMutationsDropped,
+                InstrumentationCounters.EntityBoundaryHandoffsSent,
+                InstrumentationCounters.EntityBoundaryHandoffsApplied,
+                InstrumentationCounters.RuntimeBaselineEntitiesMaterialized,
+                InstrumentationCounters.RuntimeBaselineEntitiesMissing,
+                InstrumentationCounters.RuntimeBaselineIncompleteCount,
+                InstrumentationCounters.VisualGenerationMismatches));
         }
 
         private static void ReportStateFlow(double mono, double elapsed)
@@ -413,6 +488,8 @@ namespace PunkMultiverse.Core
             var puppets = UnityEngine.Object.FindObjectsByType<RemoteEntityPuppet>(FindObjectsSortMode.None);
             var inertLifetimes = UnityEngine.Object.FindObjectsByType<DuplicateEntityInert>(FindObjectsSortMode.None);
             int never = 0, stale = 0, duplicateIds = 0, inertDuplicates = 0;
+            int starvedDetails = 0;
+            var starvedIdentities = new StringBuilder();
             var ids = new System.Collections.Generic.HashSet<int>();
             var types = new System.Collections.Generic.Dictionary<string, int>();
             var segments = new System.Collections.Generic.Dictionary<string, int>();
@@ -421,19 +498,32 @@ namespace PunkMultiverse.Core
                 if (puppet == null) continue;
                 if (puppet.GetComponent<DuplicateEntityInert>() != null) inertDuplicates++;
                 if (!ids.Add(puppet.NetId)) duplicateIds++;
-                if (!puppet.HasSnapshot) never++; else if (puppet.SnapshotAge > 2f) stale++;
+                bool neverReceived = !puppet.HasSnapshot;
+                bool isStale = !neverReceived && puppet.SnapshotAge > 2f;
+                if (neverReceived) never++; else if (isStale) stale++;
                 var se = puppet.GetComponent<SavableEntity>();
                 string type = se?.EntityData?.entityId ?? "<unknown>";
                 types[type] = types.TryGetValue(type, out int tc) ? tc + 1 : 1;
                 var pos = (Vector2)puppet.transform.position;
                 var key = AuthorityManager.SegmentOf(pos).ToString();
                 segments[key] = segments.TryGetValue(key, out int sc) ? sc + 1 : 1;
+                if ((neverReceived || isStale) && starvedDetails++ < 8)
+                {
+                    if (starvedIdentities.Length > 0) starvedIdentities.Append(',');
+                    starvedIdentities.Append('#').Append(puppet.NetId).Append('/').Append(type)
+                        .Append('@').Append(key).Append(" owner=P").Append(EnemySync.OwnerOf(puppet.NetId) + 1)
+                        .Append(" age=").Append(neverReceived ? "never" : puppet.SnapshotAge.ToString("0.0", CultureInfo.InvariantCulture));
+                    EnemySync.IsStableAvailabilityCandidate(se, puppet, out float distance, out string gate);
+                    starvedIdentities.Append(" dist=")
+                        .Append(float.IsPositiveInfinity(distance) ? "inf" : distance.ToString("0.0", CultureInfo.InvariantCulture))
+                        .Append(" gate=").Append(gate);
+                }
             }
             sw.Stop();
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
                 "[Counts] mono={0:0.000}s scan projectiles={1} physicsProjectiles={2} gameObjects={3} scanMs={4:0.0}",
                 mono, projectiles, physics, gameObjects, sw.Elapsed.TotalMilliseconds));
-            Plugin.Log.LogInfo($"[EntityAudit] mono={mono:0.000}s puppets={puppets.Length} uniqueNetIds={ids.Count} duplicateNetIds={duplicateIds} inertDuplicates={inertDuplicates} canonicalLifetimes={EnemySync.CanonicalLifetimeCount} activeDuplicateLifetimes={InstrumentationCounters.ActiveDuplicateLifetimes} unsafeDuplicateLifetimes={EnemySync.UnsafeDuplicateLifetimeCount} neverSnapshot={never} staleSnapshot={stale} types={Top(types, 8)} segments={Top(segments, 8)}");
+            Plugin.Log.LogInfo($"[EntityAudit] mono={mono:0.000}s puppets={puppets.Length} uniqueNetIds={ids.Count} duplicateNetIds={duplicateIds} inertDuplicates={inertDuplicates} canonicalLifetimes={EnemySync.CanonicalLifetimeCount} activeDuplicateLifetimes={InstrumentationCounters.ActiveDuplicateLifetimes} unsafeDuplicateLifetimes={EnemySync.UnsafeDuplicateLifetimeCount} neverSnapshot={never} staleSnapshot={stale} starved={starvedIdentities} types={Top(types, 8)} segments={Top(segments, 8)}");
             if (inertLifetimes.Length > 0)
             {
                 var duplicateTypes = new System.Collections.Generic.Dictionary<string, int>();
@@ -496,6 +586,11 @@ namespace PunkMultiverse.Core
         private static long _cellChanges;
         private static long _visualSpawns;
         private static long _leaseCommits, _leaseAcks, _staleStateDrops, _duplicatesPrevented;
+        private static long _positionSegmentDrops, _authorityStateDrops;
+        private static long _disconnectShipDespawns, _stationRespawnsAssigned;
+        private static long _authoritySnapshotRebaselines;
+        private static long _starvedOwnershipRequests, _starvedOwnershipPromotions;
+        private static long _availabilityCandidateDeferrals, _localAuthorityComponentRepairs;
         private static int _activeDuplicateLifetimes;
         private static long _duplicateLifetimesQuarantined, _duplicateFireDrops, _duplicateImpactDrops;
         private static long _staleFireDrops, _damageRequestDedupes;
@@ -506,6 +601,31 @@ namespace PunkMultiverse.Core
         private static long _stateBundlesSent, _stateGroupsSent, _stateEntriesSent, _stateBytesSent;
         private static long _stateBundlesReceived, _stateGroupsReceived, _stateEntriesReceived;
         private static long _stateGroupsFiltered, _stateEntriesFiltered;
+        private static long _entityCorrectionCount, _entityCorrectionMillimeters, _entityCorrectionMaxMillimeters;
+        private static readonly long[] EntityCorrectionBuckets = new long[9];
+        private static readonly long[] EntityCorrectionBucketLimitsMm = { 10, 25, 50, 100, 250, 500, 1000, 4000, long.MaxValue };
+        private static long _entityHardSnaps, _entityClockSamplesCoalesced, _stationaryPropHeartbeats;
+        private static long _deathPositionRepairs, _deathPositionRepairMaxMillimeters;
+        private static long _snapshotChunksSent, _snapshotChunksReceived, _snapshotChunksMissing, _snapshotMaxBytes;
+        private static long _snapshotKeyframes, _snapshotDeltaFieldsOmitted, _snapshotDeltaWithoutBaseline;
+        private static long _runtimeBaselinesRequested, _runtimeBaselinesApplied, _runtimeBaselinesAcked;
+        private static long _runtimeHandoffBaselines, _runtimeBaselineCacheFallbacks;
+        private static long _runtimeBaselineEntitiesMaterialized, _runtimeBaselineEntitiesMissing;
+        private static long _runtimeBaselineIncomplete, _visualGenerationMismatches;
+        private static long _directSnapshotsSent, _directSnapshotsReceived, _directRelayBypassedEntries;
+        private static long _adaptiveSamples, _adaptiveDelayMicros, _adaptiveJitterMicros, _interpolationUnderruns;
+        private static long _hostRelaySamples, _hostRelayMicros, _hostRelayMaxMicros;
+        private static long _staleLifetimesDropped, _durableMutationsApplied, _staleMutationsDropped;
+        private static long _mutationRevisionGaps, _unauthorizedMutationsDropped;
+        private static long _entityBoundaryHandoffsSent, _entityBoundaryHandoffsApplied;
+        private static long _baselineEntriesLive, _baselineEntriesLastKnown;
+        private static long _baselineEntriesGeneration, _baselineEntriesCache;
+        private static long _dormantDamageForwarded, _dormantClaimsDropped;
+        private static long _firstSnapshotsObserved, _firstSnapshotDeadlineMisses, _firstSnapshotMaxMicros;
+        private static long _handoffDurationMaxMicros, _handoffRejects;
+        private static long _residencyReportsSent, _residencyReportsApplied;
+        private static long _dormancyCommitsSent, _dormancyCommitsApplied;
+        private static long _dormantTransitions, _dormantTransitionsFromCache;
 
         internal static int RemoteShips => Math.Max(0, Volatile.Read(ref _remoteShips));
         internal static int RemoteEntities => Math.Max(0, Volatile.Read(ref _remoteEntities));
@@ -514,6 +634,15 @@ namespace PunkMultiverse.Core
         internal static long LeaseCommits => Interlocked.Read(ref _leaseCommits);
         internal static long LeaseAcks => Interlocked.Read(ref _leaseAcks);
         internal static long StaleStateDrops => Interlocked.Read(ref _staleStateDrops);
+        internal static long PositionSegmentDrops => Interlocked.Read(ref _positionSegmentDrops);
+        internal static long AuthorityStateDrops => Interlocked.Read(ref _authorityStateDrops);
+        internal static long DisconnectShipDespawns => Interlocked.Read(ref _disconnectShipDespawns);
+        internal static long StationRespawnsAssigned => Interlocked.Read(ref _stationRespawnsAssigned);
+        internal static long AuthoritySnapshotRebaselines => Interlocked.Read(ref _authoritySnapshotRebaselines);
+        internal static long StarvedOwnershipRequests => Interlocked.Read(ref _starvedOwnershipRequests);
+        internal static long StarvedOwnershipPromotions => Interlocked.Read(ref _starvedOwnershipPromotions);
+        internal static long AvailabilityCandidateDeferrals => Interlocked.Read(ref _availabilityCandidateDeferrals);
+        internal static long LocalAuthorityComponentRepairs => Interlocked.Read(ref _localAuthorityComponentRepairs);
         internal static long DuplicatesPrevented => Interlocked.Read(ref _duplicatesPrevented);
         internal static int ActiveDuplicateLifetimes => Math.Max(0, Volatile.Read(ref _activeDuplicateLifetimes));
         internal static long DuplicateLifetimesQuarantined => Interlocked.Read(ref _duplicateLifetimesQuarantined);
@@ -538,6 +667,67 @@ namespace PunkMultiverse.Core
         internal static long StateEntriesReceived => Interlocked.Read(ref _stateEntriesReceived);
         internal static long StateGroupsFiltered => Interlocked.Read(ref _stateGroupsFiltered);
         internal static long StateEntriesFiltered => Interlocked.Read(ref _stateEntriesFiltered);
+        internal static long EntityCorrectionCount => Interlocked.Read(ref _entityCorrectionCount);
+        internal static double EntityCorrectionAverage => EntityCorrectionCount > 0
+            ? Interlocked.Read(ref _entityCorrectionMillimeters) / 1000.0 / EntityCorrectionCount : 0.0;
+        internal static double EntityCorrectionMax => Interlocked.Read(ref _entityCorrectionMaxMillimeters) / 1000.0;
+        internal static double EntityCorrectionP95
+        {
+            get
+            {
+                long total = EntityCorrectionCount;
+                if (total <= 0) return 0;
+                long target = (long)Math.Ceiling(total * 0.95);
+                long cumulative = 0;
+                for (int i = 0; i < EntityCorrectionBuckets.Length; i++)
+                {
+                    cumulative += Interlocked.Read(ref EntityCorrectionBuckets[i]);
+                    if (cumulative >= target)
+                        return EntityCorrectionBucketLimitsMm[i] == long.MaxValue
+                            ? EntityCorrectionMax : EntityCorrectionBucketLimitsMm[i] / 1000.0;
+                }
+                return EntityCorrectionMax;
+            }
+        }
+        internal static long EntityHardSnaps => Interlocked.Read(ref _entityHardSnaps);
+        internal static long EntityClockSamplesCoalescedCount => Interlocked.Read(ref _entityClockSamplesCoalesced);
+        internal static long StationaryPropHeartbeats => Interlocked.Read(ref _stationaryPropHeartbeats);
+        internal static long DeathPositionRepairs => Interlocked.Read(ref _deathPositionRepairs);
+        internal static double DeathPositionRepairMax => Interlocked.Read(ref _deathPositionRepairMaxMillimeters) / 1000.0;
+        internal static long SnapshotChunksSent => Interlocked.Read(ref _snapshotChunksSent);
+        internal static long SnapshotChunksReceived => Interlocked.Read(ref _snapshotChunksReceived);
+        internal static long SnapshotChunksMissingCount => Interlocked.Read(ref _snapshotChunksMissing);
+        internal static long SnapshotMaxBytes => Interlocked.Read(ref _snapshotMaxBytes);
+        internal static long SnapshotKeyframes => Interlocked.Read(ref _snapshotKeyframes);
+        internal static long SnapshotDeltaFieldsOmittedCount => Interlocked.Read(ref _snapshotDeltaFieldsOmitted);
+        internal static long SnapshotDeltasWithoutBaseline => Interlocked.Read(ref _snapshotDeltaWithoutBaseline);
+        internal static long RuntimeBaselinesRequested => Interlocked.Read(ref _runtimeBaselinesRequested);
+        internal static long RuntimeBaselinesApplied => Interlocked.Read(ref _runtimeBaselinesApplied);
+        internal static long RuntimeBaselinesAcked => Interlocked.Read(ref _runtimeBaselinesAcked);
+        internal static long RuntimeHandoffBaselines => Interlocked.Read(ref _runtimeHandoffBaselines);
+        internal static long RuntimeBaselineCacheFallbacks => Interlocked.Read(ref _runtimeBaselineCacheFallbacks);
+        internal static long RuntimeBaselineEntitiesMaterialized => Interlocked.Read(ref _runtimeBaselineEntitiesMaterialized);
+        internal static long RuntimeBaselineEntitiesMissing => Interlocked.Read(ref _runtimeBaselineEntitiesMissing);
+        internal static long RuntimeBaselineIncompleteCount => Interlocked.Read(ref _runtimeBaselineIncomplete);
+        internal static long VisualGenerationMismatches => Interlocked.Read(ref _visualGenerationMismatches);
+        internal static long DirectSnapshotsSent => Interlocked.Read(ref _directSnapshotsSent);
+        internal static long DirectSnapshotsReceived => Interlocked.Read(ref _directSnapshotsReceived);
+        internal static long DirectRelayBypassedEntries => Interlocked.Read(ref _directRelayBypassedEntries);
+        internal static long InterpolationUnderruns => Interlocked.Read(ref _interpolationUnderruns);
+        internal static double AdaptiveDelayAverageMs => Interlocked.Read(ref _adaptiveSamples) > 0
+            ? Interlocked.Read(ref _adaptiveDelayMicros) / 1000.0 / Interlocked.Read(ref _adaptiveSamples) : 0;
+        internal static double AdaptiveJitterAverageMs => Interlocked.Read(ref _adaptiveSamples) > 0
+            ? Interlocked.Read(ref _adaptiveJitterMicros) / 1000.0 / Interlocked.Read(ref _adaptiveSamples) : 0;
+        internal static double HostRelayAverageMs => Interlocked.Read(ref _hostRelaySamples) > 0
+            ? Interlocked.Read(ref _hostRelayMicros) / 1000.0 / Interlocked.Read(ref _hostRelaySamples) : 0;
+        internal static double HostRelayMaxMs => Interlocked.Read(ref _hostRelayMaxMicros) / 1000.0;
+        internal static long StaleLifetimesDropped => Interlocked.Read(ref _staleLifetimesDropped);
+        internal static long DurableMutationsApplied => Interlocked.Read(ref _durableMutationsApplied);
+        internal static long StaleMutationsDropped => Interlocked.Read(ref _staleMutationsDropped);
+        internal static long MutationRevisionGaps => Interlocked.Read(ref _mutationRevisionGaps);
+        internal static long UnauthorizedMutationsDropped => Interlocked.Read(ref _unauthorizedMutationsDropped);
+        internal static long EntityBoundaryHandoffsSent => Interlocked.Read(ref _entityBoundaryHandoffsSent);
+        internal static long EntityBoundaryHandoffsApplied => Interlocked.Read(ref _entityBoundaryHandoffsApplied);
         internal static void RemoteShipAdded() => Interlocked.Increment(ref _remoteShips);
         internal static void RemoteShipRemoved() => Interlocked.Decrement(ref _remoteShips);
         internal static void RemoteEntityAdded() => Interlocked.Increment(ref _remoteEntities);
@@ -547,6 +737,23 @@ namespace PunkMultiverse.Core
         internal static void LeaseCommitted() => Interlocked.Increment(ref _leaseCommits);
         internal static void LeaseAcked() => Interlocked.Increment(ref _leaseAcks);
         internal static void StaleEntityStateDropped() => Interlocked.Increment(ref _staleStateDrops);
+        internal static void PositionSegmentStateDropped()
+        {
+            Interlocked.Increment(ref _staleStateDrops);
+            Interlocked.Increment(ref _positionSegmentDrops);
+        }
+        internal static void AuthorityStateDropped()
+        {
+            Interlocked.Increment(ref _staleStateDrops);
+            Interlocked.Increment(ref _authorityStateDrops);
+        }
+        internal static void DisconnectShipDespawned() => Interlocked.Increment(ref _disconnectShipDespawns);
+        internal static void StationRespawnAssigned() => Interlocked.Increment(ref _stationRespawnsAssigned);
+        internal static void AuthoritySnapshotRebaselined() => Interlocked.Increment(ref _authoritySnapshotRebaselines);
+        internal static void StarvedOwnershipRequested() => Interlocked.Increment(ref _starvedOwnershipRequests);
+        internal static void StarvedOwnershipPromoted() => Interlocked.Increment(ref _starvedOwnershipPromotions);
+        internal static void AvailabilityCandidateDeferred() => Interlocked.Increment(ref _availabilityCandidateDeferrals);
+        internal static void LocalAuthorityComponentRepaired() => Interlocked.Increment(ref _localAuthorityComponentRepairs);
         internal static void DuplicateEntityPrevented() => Interlocked.Increment(ref _duplicatesPrevented);
         internal static void DuplicateLifetimeActivated() => Interlocked.Increment(ref _activeDuplicateLifetimes);
         internal static void DuplicateLifetimeReleased() => Interlocked.Decrement(ref _activeDuplicateLifetimes);
@@ -583,6 +790,147 @@ namespace PunkMultiverse.Core
         {
             Interlocked.Add(ref _stateGroupsFiltered, groups);
             Interlocked.Add(ref _stateEntriesFiltered, entries);
+        }
+        internal static void EntitySnapshotCorrection(float worldUnits)
+        {
+            if (float.IsNaN(worldUnits) || float.IsInfinity(worldUnits) || worldUnits < 0f) return;
+            long millimeters = (long)Math.Min(int.MaxValue, Math.Round(worldUnits * 1000.0));
+            Interlocked.Increment(ref _entityCorrectionCount);
+            Interlocked.Add(ref _entityCorrectionMillimeters, millimeters);
+            for (int i = 0; i < EntityCorrectionBucketLimitsMm.Length; i++)
+                if (millimeters <= EntityCorrectionBucketLimitsMm[i])
+                {
+                    Interlocked.Increment(ref EntityCorrectionBuckets[i]);
+                    break;
+                }
+            long observed;
+            while (millimeters > (observed = Interlocked.Read(ref _entityCorrectionMaxMillimeters)))
+                if (Interlocked.CompareExchange(ref _entityCorrectionMaxMillimeters, millimeters, observed) == observed)
+                    break;
+        }
+        internal static void EntityHardSnap() => Interlocked.Increment(ref _entityHardSnaps);
+        internal static void EntityClockSamplesCoalesced(int count) =>
+            Interlocked.Add(ref _entityClockSamplesCoalesced, Math.Max(0, count));
+        internal static void StationaryPropHeartbeatSent() => Interlocked.Increment(ref _stationaryPropHeartbeats);
+        internal static void DeathPositionRepaired(float worldUnits)
+        {
+            Interlocked.Increment(ref _deathPositionRepairs);
+            long millimeters = (long)Math.Min(int.MaxValue, Math.Round(Math.Max(0f, worldUnits) * 1000.0));
+            long observed;
+            while (millimeters > (observed = Interlocked.Read(ref _deathPositionRepairMaxMillimeters)))
+                if (Interlocked.CompareExchange(ref _deathPositionRepairMaxMillimeters, millimeters, observed) == observed)
+                    break;
+        }
+        internal static void SnapshotChunkSent(int bytes, int chunkCount)
+        {
+            Interlocked.Increment(ref _snapshotChunksSent);
+            UpdateMax(ref _snapshotMaxBytes, Math.Max(0, bytes));
+        }
+        internal static void SnapshotChunkReceived(int chunkIndex, int chunkCount) =>
+            Interlocked.Increment(ref _snapshotChunksReceived);
+        internal static void SnapshotChunksMissing(int count) =>
+            Interlocked.Add(ref _snapshotChunksMissing, Math.Max(0, count));
+        internal static void SnapshotKeyframeSent() => Interlocked.Increment(ref _snapshotKeyframes);
+        internal static void SnapshotDeltaFieldsOmitted(int count) =>
+            Interlocked.Add(ref _snapshotDeltaFieldsOmitted, Math.Max(0, count));
+        internal static void SnapshotDeltaWithoutBaseline() => Interlocked.Increment(ref _snapshotDeltaWithoutBaseline);
+        internal static void RuntimeBaselineRequested(bool handoff)
+        {
+            Interlocked.Increment(ref _runtimeBaselinesRequested);
+            if (handoff) Interlocked.Increment(ref _runtimeHandoffBaselines);
+        }
+        internal static void RuntimeBaselineApplied(int entries, bool handoff) =>
+            Interlocked.Increment(ref _runtimeBaselinesApplied);
+        internal static void RuntimeBaselineAcked(bool handoff) => Interlocked.Increment(ref _runtimeBaselinesAcked);
+        internal static void RuntimeBaselineCacheFallback(int entries) =>
+            Interlocked.Increment(ref _runtimeBaselineCacheFallbacks);
+        internal static void RuntimeBaselineEntityMaterialized() =>
+            Interlocked.Increment(ref _runtimeBaselineEntitiesMaterialized);
+        internal static void RuntimeBaselineEntityMissing() =>
+            Interlocked.Increment(ref _runtimeBaselineEntitiesMissing);
+        internal static void RuntimeBaselineIncomplete() => Interlocked.Increment(ref _runtimeBaselineIncomplete);
+        internal static void VisualGenerationMismatch() => Interlocked.Increment(ref _visualGenerationMismatches);
+        internal static void DirectSnapshotSent(int entries) => Interlocked.Add(ref _directSnapshotsSent, Math.Max(0, entries));
+        internal static void DirectSnapshotReceived(int entries) => Interlocked.Add(ref _directSnapshotsReceived, Math.Max(0, entries));
+        internal static void DirectRelayBypassed(int entries) => Interlocked.Add(ref _directRelayBypassedEntries, Math.Max(0, entries));
+        internal static void AdaptiveTimingSample(float delaySeconds, float jitterSeconds)
+        {
+            Interlocked.Increment(ref _adaptiveSamples);
+            Interlocked.Add(ref _adaptiveDelayMicros, (long)(Math.Max(0f, delaySeconds) * 1000000f));
+            Interlocked.Add(ref _adaptiveJitterMicros, (long)(Math.Max(0f, jitterSeconds) * 1000000f));
+        }
+        internal static void InterpolationUnderrun() => Interlocked.Increment(ref _interpolationUnderruns);
+        internal static void HostRelayCompleted(float milliseconds, int bytes)
+        {
+            long micros = (long)(Math.Max(0f, milliseconds) * 1000f);
+            Interlocked.Increment(ref _hostRelaySamples);
+            Interlocked.Add(ref _hostRelayMicros, micros);
+            UpdateMax(ref _hostRelayMaxMicros, micros);
+        }
+        internal static void StaleLifetimeDropped() => Interlocked.Increment(ref _staleLifetimesDropped);
+        internal static void DurableMutationApplied() => Interlocked.Increment(ref _durableMutationsApplied);
+        internal static void StaleMutationDropped() => Interlocked.Increment(ref _staleMutationsDropped);
+        internal static void MutationRevisionGap(uint count) => Interlocked.Add(ref _mutationRevisionGaps, count);
+        internal static void UnauthorizedMutationDropped() => Interlocked.Increment(ref _unauthorizedMutationsDropped);
+        internal static void EntityBoundaryHandoffSent() => Interlocked.Increment(ref _entityBoundaryHandoffsSent);
+        internal static void EntityBoundaryHandoffApplied() => Interlocked.Increment(ref _entityBoundaryHandoffsApplied);
+
+        internal static long BaselineEntriesLive => Interlocked.Read(ref _baselineEntriesLive);
+        internal static long BaselineEntriesLastKnown => Interlocked.Read(ref _baselineEntriesLastKnown);
+        internal static long BaselineEntriesGeneration => Interlocked.Read(ref _baselineEntriesGeneration);
+        internal static long BaselineEntriesCache => Interlocked.Read(ref _baselineEntriesCache);
+        internal static long DormantDamageForwardedCount => Interlocked.Read(ref _dormantDamageForwarded);
+        internal static long DormantClaimsDroppedCount => Interlocked.Read(ref _dormantClaimsDropped);
+        internal static long FirstSnapshotsObserved => Interlocked.Read(ref _firstSnapshotsObserved);
+        internal static long FirstSnapshotDeadlineMisses => Interlocked.Read(ref _firstSnapshotDeadlineMisses);
+        internal static double FirstSnapshotMaxMs => Interlocked.Read(ref _firstSnapshotMaxMicros) / 1000.0;
+        internal static double HandoffDurationMaxMs => Interlocked.Read(ref _handoffDurationMaxMicros) / 1000.0;
+        internal static long HandoffRejects => Interlocked.Read(ref _handoffRejects);
+
+        internal static void BaselineEntryBuilt(Protocol.BaselineEntryOrigin origin)
+        {
+            switch (origin)
+            {
+                case Protocol.BaselineEntryOrigin.Live: Interlocked.Increment(ref _baselineEntriesLive); break;
+                case Protocol.BaselineEntryOrigin.LastKnown: Interlocked.Increment(ref _baselineEntriesLastKnown); break;
+                case Protocol.BaselineEntryOrigin.Generation: Interlocked.Increment(ref _baselineEntriesGeneration); break;
+                default: Interlocked.Increment(ref _baselineEntriesCache); break;
+            }
+        }
+        internal static void DormantDamageForwarded() => Interlocked.Increment(ref _dormantDamageForwarded);
+        internal static void DormantClaimDropped() => Interlocked.Increment(ref _dormantClaimsDropped);
+        internal static void FirstSnapshotObserved(float seconds)
+        {
+            Interlocked.Increment(ref _firstSnapshotsObserved);
+            UpdateMax(ref _firstSnapshotMaxMicros, (long)(Math.Max(0f, seconds) * 1000000f));
+        }
+        internal static void FirstSnapshotDeadlineMissed() => Interlocked.Increment(ref _firstSnapshotDeadlineMisses);
+        internal static void HandoffCommitted(float seconds) =>
+            UpdateMax(ref _handoffDurationMaxMicros, (long)(Math.Max(0f, seconds) * 1000000f));
+        internal static void HandoffRejected() => Interlocked.Increment(ref _handoffRejects);
+
+        internal static long ResidencyReportsSent => Interlocked.Read(ref _residencyReportsSent);
+        internal static long ResidencyReportsApplied => Interlocked.Read(ref _residencyReportsApplied);
+        internal static long DormancyCommitsSent => Interlocked.Read(ref _dormancyCommitsSent);
+        internal static long DormancyCommitsApplied => Interlocked.Read(ref _dormancyCommitsApplied);
+        internal static long DormantTransitions => Interlocked.Read(ref _dormantTransitions);
+        internal static long DormantTransitionsFromCache => Interlocked.Read(ref _dormantTransitionsFromCache);
+
+        internal static void ResidencyReportSent(int segments) => Interlocked.Increment(ref _residencyReportsSent);
+        internal static void ResidencyReportApplied(int segments) => Interlocked.Increment(ref _residencyReportsApplied);
+        internal static void DormancyCommitSent(int entries) => Interlocked.Increment(ref _dormancyCommitsSent);
+        internal static void DormancyCommitApplied(int entries) => Interlocked.Increment(ref _dormancyCommitsApplied);
+        internal static void DormantTransition(bool fromCache)
+        {
+            Interlocked.Increment(ref _dormantTransitions);
+            if (fromCache) Interlocked.Increment(ref _dormantTransitionsFromCache);
+        }
+
+        private static void UpdateMax(ref long location, long value)
+        {
+            long observed;
+            while (value > (observed = Interlocked.Read(ref location)))
+                if (Interlocked.CompareExchange(ref location, value, observed) == observed) break;
         }
     }
 }

@@ -29,6 +29,8 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> Scoreboard;
 
         public static ConfigEntry<float> StateHz;
+        public static ConfigEntry<float> CombatStateHz;
+        public static ConfigEntry<float> DistantStateHz;
         public static ConfigEntry<float> ShipStateHz;
         public static ConfigEntry<float> AuthorityRadius;
         public static ConfigEntry<float> TransferRadius;
@@ -99,8 +101,13 @@ namespace PunkMultiverse
 
             StateHz = cfg.Bind("Sync", "StateHz", 20f,
                 "Snapshot send rate for entities (enemies, props). 20 Hz = a fresh state every " +
-                "50 ms, and puppets buffer two intervals. State is coalesced and interest-filtered " +
+                "50 ms; puppets adapt their interpolation delay to measured jitter. State is MTU-chunked and interest-filtered " +
                 "per peer; raising this still increases apply cost proportional to nearby entities.");
+            CombatStateHz = cfg.Bind("Sync", "CombatStateHz", 30f,
+                "Snapshot rate for nearby or actively firing enemies. Adaptive interpolation uses " +
+                "the measured cadence, so this reduces combat presentation latency without raising every entity.");
+            DistantStateHz = cfg.Bind("Sync", "DistantStateHz", 10f,
+                "Snapshot rate for enemies outside normal interest proximity but still retained by a simulator.");
             ShipStateHz = cfg.Bind("Sync", "ShipStateHz", 40f,
                 "Snapshot send rate for player ships — the thing you watch most, and one tiny " +
                 "message per player, so it runs hotter than entities. 40 Hz halves teammate " +

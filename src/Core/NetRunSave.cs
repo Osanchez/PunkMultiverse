@@ -13,7 +13,7 @@ namespace PunkMultiverse.Core
     /// </summary>
     internal static class NetRunSave
     {
-        private const int FormatVersion = 1;
+        private const int FormatVersion = 2;
         private const float SaveInterval = 60f; // ledgers can reach map scale — don't write 20 MB every 20 s
 
         private static float _nextSaveAt;
@@ -27,6 +27,7 @@ namespace PunkMultiverse.Core
             public int LatestStationNetId;
             public List<(int index, byte type)> Cells = new List<(int, byte)>();
             public List<int> Kills = new List<int>();
+            public List<(int plantNetId, int fruitId)> PlantFruits = new List<(int, int)>();
             public List<(int netId, uint hash)> Upgrades = new List<(int, uint)>();
             public List<(int netId, uint hash)> Instruments = new List<(int, uint)>();
             public List<int> Scanners = new List<int>();
@@ -71,6 +72,7 @@ namespace PunkMultiverse.Core
                 int station = Sync.ProgressionSync.LatestStationNetId;
                 var cells = Sync.WorldSync.LedgerSnapshot();
                 var kills = Sync.EnemySync.KilledSnapshot();
+                var plantFruits = Sync.EnemySync.PlantFruitKilledSnapshot();
                 var upgrades = Sync.ProgressionSync.UpgradeSnapshot();
                 var instruments = Sync.ProgressionSync.InstrumentSnapshot();
                 var scanners = Sync.ProgressionSync.ScannerSnapshot();
@@ -93,6 +95,12 @@ namespace PunkMultiverse.Core
                             foreach (var (index, type) in cells) { bw.Write(index); bw.Write(type); }
                             bw.Write(kills.Count);
                             foreach (var id in kills) bw.Write(id);
+                            bw.Write(plantFruits.Count);
+                            foreach (var (plantNetId, fruitId) in plantFruits)
+                            {
+                                bw.Write(plantNetId);
+                                bw.Write(fruitId);
+                            }
                             bw.Write(upgrades.Count);
                             foreach (var (id, hash) in upgrades) { bw.Write(id); bw.Write(hash); }
                             bw.Write(instruments.Count);
@@ -128,7 +136,8 @@ namespace PunkMultiverse.Core
                 using (var fs = new FileStream(PathFor(), FileMode.Open))
                 using (var br = new BinaryReader(fs))
                 {
-                    if (br.ReadInt32() != FormatVersion) return null;
+                    int version = br.ReadInt32();
+                    if (version < 1 || version > FormatVersion) return null;
                     var d = new Data
                     {
                         Seed = br.ReadInt32(),
@@ -140,6 +149,11 @@ namespace PunkMultiverse.Core
                     for (int i = 0; i < n; i++) d.Cells.Add((br.ReadInt32(), br.ReadByte()));
                     n = br.ReadInt32();
                     for (int i = 0; i < n; i++) d.Kills.Add(br.ReadInt32());
+                    if (version >= 2)
+                    {
+                        n = br.ReadInt32();
+                        for (int i = 0; i < n; i++) d.PlantFruits.Add((br.ReadInt32(), br.ReadInt32()));
+                    }
                     n = br.ReadInt32();
                     for (int i = 0; i < n; i++) d.Upgrades.Add((br.ReadInt32(), br.ReadUInt32()));
                     n = br.ReadInt32();

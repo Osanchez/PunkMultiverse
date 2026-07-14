@@ -19,6 +19,7 @@ namespace PunkMultiverse.Sync
     {
         /// <summary>slot -> ship (index 0..3; local slot points at the vanilla-spawned local ship).</summary>
         public static readonly Dictionary<int, Ship> ShipsBySlot = new Dictionary<int, Ship>();
+        private static readonly Dictionary<byte, byte> ViewSlotByPlayer = new Dictionary<byte, byte>();
         public static Ship LocalShip;
 
         private static float _nextSendAt;
@@ -33,6 +34,7 @@ namespace PunkMultiverse.Sync
         public static void Reset()
         {
             ShipsBySlot.Clear();
+            ViewSlotByPlayer.Clear();
             LastShipStateMs.Clear();
             LocalShip = null;
             _localAimer = null;
@@ -152,14 +154,27 @@ namespace PunkMultiverse.Sync
             var session = NetSession.Instance;
             if (session != null && slot == session.LocalSlot) return;
             LastShipStateMs.Remove(slot);
-            if (!ShipsBySlot.TryGetValue(slot, out var ship)) return;
+            ShipsBySlot.TryGetValue(slot, out var ship);
             ShipsBySlot.Remove(slot);
 
             try
             {
                 if (session != null && slot < session.Players.Count && session.Players[slot] != null)
                     session.Players[slot].Ship = null;
-                if (ship == null) return;
+                // Recover from a lost dictionary entry too. Disconnect is rare, so an exhaustive
+                // lookup is preferable to leaving a frozen, targetable ship prop in the scene.
+                if (ship == null && _shipManager != null)
+                    ship = _shipManager.Ships.FirstOrDefault(candidate => candidate != null
+                        && candidate.GetComponent<RemotePuppet>()?.Slot == slot);
+                if (ship == null)
+                    ship = UnityEngine.Object.FindObjectsByType<RemotePuppet>(FindObjectsSortMode.None)
+                        .FirstOrDefault(candidate => candidate != null && candidate.Slot == slot)
+                        ?.GetComponent<Ship>();
+                if (ship == null)
+                {
+                    Plugin.Log.LogInfo($"[Ships] disconnect cleanup P{slot + 1}: no live puppet remained ({reason})");
+                    return;
+                }
                 RemotePuppet.ScrubInteractions(ship);
                 try
                 {
@@ -177,6 +192,7 @@ namespace PunkMultiverse.Sync
                     var destroy = AccessTools.Method(data.GetType(), "Destroy");
                     if (destroy != null && destroy.GetParameters().Length == 0) destroy.Invoke(data, null);
                 }
+                InstrumentationCounters.DisconnectShipDespawned();
                 Plugin.Log.LogInfo($"[Ships] removed disconnected puppet P{slot + 1} ({reason})");
             }
             catch (Exception e)
@@ -324,11 +340,29 @@ namespace PunkMultiverse.Sync
         {
             EnsureLatePuppets(session);
             SweepDistantCameraTargets();
-            if (LocalShip == null || Time.unscaledTime < _nextSendAt) return;
+            if (Time.unscaledTime < _nextSendAt) return;
             _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
 
-            var rb = LocalShip.GetComponent<Rigidbody2D>();
-            if (rb == null) return;
+            byte viewSlot = UI.SpectatorCam.Active
+                ? (byte)Mathf.Clamp(UI.SpectatorCam.SpectatedSlot, 0, NetSession.MaxPlayers - 1)
+                : (byte)session.LocalSlot;
+
+            // A dead player has no local Ship, but the host still needs their selected spectator
+            // target to route entity interest. This compact state carries no pose and therefore
+            // cannot move or resurrect the destroyed remote ship.
+            if (LocalShip == null || LocalShip.GetComponent<Rigidbody2D>() is not Rigidbody2D rb)
+            {
+                Writer.Reset();
+                new ShipStateMsg
+                {
+                    Slot = (byte)session.LocalSlot,
+                    ViewSlot = viewSlot,
+                    HasBody = false,
+                    TimeMs = (uint)(Time.unscaledTime * 1000f),
+                }.Write(Writer);
+                session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+                return;
+            }
             var dr = LocalShip.GetComponent<DamagableResource>();
             var movement = LocalShip.GetComponent<ShipMovement>();
             var input = LocalShip.GetComponent<ShipInput>();
@@ -353,6 +387,8 @@ namespace PunkMultiverse.Sync
             var msg = new ShipStateMsg
             {
                 Slot = (byte)session.LocalSlot,
+                ViewSlot = viewSlot,
+                HasBody = true,
                 TimeMs = (uint)(Time.unscaledTime * 1000f),
                 Pos = rb.position,
                 Vel = rb.linearVelocity,
@@ -501,6 +537,8 @@ namespace PunkMultiverse.Sync
 
         public static void ApplyShipState(ShipStateMsg msg)
         {
+            ViewSlotByPlayer[msg.Slot] = msg.ViewSlot < NetSession.MaxPlayers ? msg.ViewSlot : msg.Slot;
+            if (!msg.HasBody) return;
             if (!ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
             var puppet = ship.GetComponent<RemotePuppet>();
             if (puppet == null) return; // our own echo — ignore
@@ -533,6 +571,21 @@ namespace PunkMultiverse.Sync
                 }
             }
             catch { }
+        }
+
+        /// <summary>Interest follows what a peer can currently see. During death spectating this
+        /// is the selected teammate, not the corpse left behind across the map.</summary>
+        internal static bool TryGetViewPosition(byte playerSlot, out Vector2 position)
+        {
+            position = default;
+            byte viewSlot = ViewSlotByPlayer.TryGetValue(playerSlot, out byte viewed)
+                ? viewed : playerSlot;
+            if (!ShipsBySlot.TryGetValue(viewSlot, out var ship) || ship == null)
+            {
+                if (!ShipsBySlot.TryGetValue(playerSlot, out ship) || ship == null) return false;
+            }
+            position = ship.transform.position;
+            return true;
         }
     }
 }

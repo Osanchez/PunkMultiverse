@@ -22,7 +22,7 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 6;
+        public const int ProtocolVersion = 12;
         public const int MaxPlayers = 4;
         private const float PingInterval = 1f;
         private const float ConnectTimeout = 15f;
@@ -278,6 +278,7 @@ namespace PunkMultiverse.Core
         // ------------------------------------------------ run start / level barrier / go-live
 
         private readonly Dictionary<int, ulong> _levelChecksums = new Dictionary<int, ulong>();
+        private readonly Dictionary<int, LevelReadyMsg> _levelFingerprints = new Dictionary<int, LevelReadyMsg>();
         // LEVEL_READY is used both by the initial start barrier and by peers that regenerate
         // the world for a late join/rejoin.  Track the latter explicitly: once a catch-up has
         // started, duplicate readiness packets must never enqueue another map-sized replay.
@@ -285,7 +286,10 @@ namespace PunkMultiverse.Core
         private readonly Dictionary<ulong, float> _nextGoLiveRecoveryAt = new Dictionary<ulong, float>();
         private bool _hasLocalLevelChecksum;
         private ulong _localLevelChecksum;
+        private LevelReadyMsg _localLevelReady;
         private float _nextLevelReadyRetryAt;
+        private bool _levelReadyVisualPending;
+        private float _levelReadyVisualStartedAt;
 
         /// <summary>Host's chosen world seed (picked on the GAME SETTINGS screen);
         /// 0 = roll a random one at start. Visible to all in lobby.</summary>
@@ -354,11 +358,15 @@ namespace PunkMultiverse.Core
         {
             CurrentRunSeed = seed;
             _levelChecksums.Clear();
+            _levelFingerprints.Clear();
             _peersAwaitingRejoinState.Clear();
             _nextGoLiveRecoveryAt.Clear();
             _hasLocalLevelChecksum = false;
             _localLevelChecksum = 0;
+            _localLevelReady = default;
             _nextLevelReadyRetryAt = 0f;
+            _levelReadyVisualPending = false;
+            _levelReadyVisualStartedAt = 0f;
             Sync.ShipSync.ResetStartGate();
             Sync.ShipSync.Reset();
             Sync.ProjectileSync.Reset();
@@ -390,21 +398,53 @@ namespace PunkMultiverse.Core
             if (!Active || State != SessionState.Loading) return;
             Sync.WorldSync.CaptureBaseline(level);
             ulong checksum = RunStarter.ChecksumLevel(level);
-            Plugin.Log.LogInfo($"[Run] level generated, checksum {checksum:X16}");
+            var audit = DeterminismAudit.Capture();
+            var ready = new LevelReadyMsg
+            {
+                Checksum = checksum,
+                EntityCount = audit.EntityCount,
+                EntityDigest = audit.EntityDigest,
+                PlantCount = audit.PlantCount,
+                PlantDigest = audit.PlantDigest,
+            };
+            Plugin.Log.LogInfo($"[Run] level generated, checksum {checksum:X16}, " +
+                $"entities {audit.EntityCount}/{audit.EntityDigest:X16}, plants {audit.PlantCount}/{audit.PlantDigest:X16}");
+            // Capture entity identity NOW, before early movers drift. Tile renderers fill their
+            // private variant tables in another LevelGenerated subscriber, so finalize the
+            // readiness packet on a later Update after every subscriber has completed.
+            NetIds.PrepareLocal();
+            _localLevelChecksum = checksum;
+            _localLevelReady = ready;
+            _levelReadyVisualPending = true;
+            _levelReadyVisualStartedAt = Time.unscaledTime;
+        }
+
+        private void TryFinalizeLevelReadyVisual()
+        {
+            if (!_levelReadyVisualPending || State != SessionState.Loading) return;
+            var visual = DeterminismAudit.CaptureVisual(log: false);
+            if (visual.VariantCount == 0)
+            {
+                if (Time.unscaledTime - _levelReadyVisualStartedAt < 3f) return;
+                Plugin.Log.LogError("[Determinism] visual tile variant table was not available; refusing an unverifiable run");
+                StopSession("visual determinism audit unavailable");
+                return;
+            }
+
+            _levelReadyVisualPending = false;
+            _localLevelReady.VisualVariantCount = visual.VariantCount;
+            _localLevelReady.VisualVariantDigest = visual.Digest;
+            Plugin.Log.LogInfo($"[Determinism] visuals={visual.VariantCount}/{visual.Digest:X16} " +
+                $"renderers={visual.RendererCount}");
             if (IsHost)
             {
-                // Fingerprint NOW, same simulation moment every client snapshots at. Waiting
-                // for go-live let entities drift first, and every early mover became a
-                // manifest mismatch (~2% of the map: phantom orphans on clients).
-                NetIds.PrepareLocal();
-                _levelChecksums[0] = checksum;
+                _levelChecksums[HostSlot] = _localLevelChecksum;
+                _levelFingerprints[HostSlot] = _localLevelReady;
                 CheckGoLive();
             }
             else if (_players[HostSlot] != null)
             {
-                NetIds.PrepareLocal(); // ready before the host's manifest chunks arrive
                 _hasLocalLevelChecksum = true;
-                _localLevelChecksum = checksum;
                 SendLevelReady();
             }
         }
@@ -413,7 +453,7 @@ namespace PunkMultiverse.Core
         {
             if (IsHost || !_hasLocalLevelChecksum || _players[HostSlot] == null) return;
             _writer.Reset();
-            new LevelReadyMsg { Checksum = _localLevelChecksum }.Write(_writer);
+            _localLevelReady.Write(_writer);
             SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
             _nextLevelReadyRetryAt = Time.unscaledTime + 1f;
         }
@@ -428,11 +468,17 @@ namespace PunkMultiverse.Core
             {
                 if (_peersAwaitingRejoinState.Remove(peer))
                 {
-                    // Rejoiner finished regenerating the level. A cell-checksum mismatch here is
-                    // the known MergedCellsGenerator cosmetic divergence (unseeded
-                    // UnityEngine.Random) — entity identity and terrain replay still converge it.
-                    if (_levelChecksums.TryGetValue(0, out var hostChecksum) && msg.Checksum != hostChecksum)
-                        Plugin.Log.LogWarning($"[Run] rejoiner cell checksum differs ({msg.Checksum:X16} vs {hostChecksum:X16}) — merged-cell cosmetic divergence, continuing");
+                    if (_levelFingerprints.TryGetValue(0, out var hostReady) && !SameGeneration(hostReady, msg))
+                    {
+                        if (!SameVisualGeneration(hostReady, msg))
+                            InstrumentationCounters.VisualGenerationMismatch();
+                        Plugin.Log.LogError($"[Determinism] rejecting rejoin P{player.Slot + 1}: " +
+                            $"host={DescribeGeneration(hostReady)}, peer={DescribeGeneration(msg)}");
+                        _writer.Reset();
+                        new RejectMsg { Reason = "World generation diverged from the host; refusing an unsafe rejoin." }.Write(_writer);
+                        SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+                        return;
+                    }
                     Plugin.Log.LogInfo($"[Run] LEVEL_READY from rejoining P{player.Slot + 1} — sending one full catch-up");
                     SendRejoinState(peer);
                 }
@@ -447,6 +493,7 @@ namespace PunkMultiverse.Core
             }
 
             _levelChecksums[player.Slot] = msg.Checksum;
+            _levelFingerprints[player.Slot] = msg;
             CheckGoLive();
         }
 
@@ -468,15 +515,18 @@ namespace PunkMultiverse.Core
             var present = _players.Where(p => p != null && p.Connected).ToList();
             if (present.Any(p => !_levelChecksums.ContainsKey(p.Slot))) return;
 
-            var distinct = _levelChecksums.Values.Distinct().ToList();
-            if (distinct.Count > 1)
+            if (present.Any(p => !_levelFingerprints.ContainsKey(p.Slot))) return;
+            var host = _levelFingerprints[HostSlot];
+            if (_levelFingerprints.Values.Any(value => !SameGeneration(host, value)))
             {
-                var detail = string.Join(", ", _levelChecksums.Select(kv => $"P{kv.Key + 1}={kv.Value:X16}"));
-                Plugin.Log.LogError($"[Run] LEVEL CHECKSUM MISMATCH — aborting net run ({detail})");
+                if (_levelFingerprints.Values.Any(value => !SameVisualGeneration(host, value)))
+                    InstrumentationCounters.VisualGenerationMismatch();
+                var detail = string.Join(", ", _levelFingerprints.Select(kv => $"P{kv.Key + 1}={DescribeGeneration(kv.Value)}"));
+                Plugin.Log.LogError($"[Determinism] GENERATION MISMATCH — aborting net run ({detail})");
                 _writer.Reset();
-                new RejectMsg { Reason = "Level generation diverged between players (checksum mismatch)." }.Write(_writer);
+                new RejectMsg { Reason = "World generation diverged between players (terrain/entity/plant/visual fingerprint mismatch)." }.Write(_writer);
                 ForEachRemotePeer(peer => SendReliable(peer, NetChannel.Control, _writer.ToSegment()));
-                StopSession("checksum mismatch");
+                StopSession("generation fingerprint mismatch");
                 return;
             }
 
@@ -499,6 +549,19 @@ namespace PunkMultiverse.Core
             ForEachRemotePeer(peer => SendReliable(peer, NetChannel.Control, _writer.ToSegment()));
             DoGoLive();
         }
+
+        private static bool SameGeneration(LevelReadyMsg a, LevelReadyMsg b) =>
+            a.Checksum == b.Checksum && a.EntityCount == b.EntityCount && a.EntityDigest == b.EntityDigest &&
+            a.PlantCount == b.PlantCount && a.PlantDigest == b.PlantDigest &&
+            a.VisualVariantCount == b.VisualVariantCount && a.VisualVariantDigest == b.VisualVariantDigest;
+
+        private static bool SameVisualGeneration(LevelReadyMsg a, LevelReadyMsg b) =>
+            a.VisualVariantCount == b.VisualVariantCount && a.VisualVariantDigest == b.VisualVariantDigest;
+
+        private static string DescribeGeneration(LevelReadyMsg value) =>
+            $"terrain={value.Checksum:X16} entities={value.EntityCount}/{value.EntityDigest:X16} " +
+            $"plants={value.PlantCount}/{value.PlantDigest:X16} " +
+            $"visuals={value.VisualVariantCount}/{value.VisualVariantDigest:X16}";
 
         private float _autoFlyUntil;
 
@@ -766,6 +829,7 @@ namespace PunkMultiverse.Core
             EnemyHpMult = 1f;
             _pendingResume = null;
             _levelChecksums.Clear();
+            _levelFingerprints.Clear();
             _peersAwaitingRejoinState.Clear();
             _nextGoLiveRecoveryAt.Clear();
             Sync.ShipSync.Reset();
@@ -907,6 +971,10 @@ namespace PunkMultiverse.Core
                 DrainOutbox();
                 if (profiling) NetProfiler.Mark("Transport.Drain");
 
+                // LevelGenerated subscribers finish in engine-defined order. Finalizing here
+                // guarantees UnityTilemapRenderer has populated the sprite-variant table.
+                TryFinalizeLevelReadyVisual();
+
                 if (State == SessionState.Connecting && Time.unscaledTime >= _connectDeadline)
                 {
                     Fail("Could not reach host — no response for 15 seconds.");
@@ -925,6 +993,7 @@ namespace PunkMultiverse.Core
                     TickAutoFly();                              NetProfiler.Mark("AutoFly");
                     RuntimeInstrumentation.SetPhase(PerfPhase.ShipSync);
                     Sync.ShipSync.Tick(this);                   NetProfiler.Mark("ShipSync");
+                    Sync.ProjectileSync.Tick();
                     RuntimeInstrumentation.SetPhase(PerfPhase.WorldFlush);
                     Sync.WorldSync.Flush(this);                 NetProfiler.Mark("WorldSync.Flush");
                     RuntimeInstrumentation.SetPhase(PerfPhase.WorldTick);
@@ -1009,6 +1078,29 @@ namespace PunkMultiverse.Core
             if (_transport != null && _transport.IsRunning) _transport.Send(peer, channel, data, reliable);
         }
 
+        internal bool TryGetPeerId(byte slot, out ulong peerId)
+        {
+            peerId = 0;
+            if (slot >= MaxPlayers) return false;
+            var player = _players[slot];
+            if (player == null || !player.Connected || player.IsLocal || player.PeerId == 0) return false;
+            peerId = player.PeerId;
+            return true;
+        }
+
+        internal void SendReliableToSlot(byte slot, NetChannel channel, ArraySegment<byte> data)
+        {
+            if (slot == LocalSlot) return;
+            if (TryGetPeerId(slot, out ulong peer)) SendReliable(peer, channel, data);
+        }
+
+        internal bool SendUnreliableDirect(byte slot, NetChannel channel, ArraySegment<byte> data)
+        {
+            return TryGetPeerId(slot, out ulong peer)
+                   && _transport != null && _transport.IsRunning
+                   && _transport.Send(peer, channel, data, reliable: false);
+        }
+
         // ---------------------------------------------------------------- transport events
 
         // ---------------------------------------------------------------- party wipe
@@ -1088,6 +1180,7 @@ namespace PunkMultiverse.Core
         {
             _allDeadSince = -1f;
             _levelChecksums.Clear();
+            _levelFingerprints.Clear();
             _peersAwaitingRejoinState.Clear();
             _nextGoLiveRecoveryAt.Clear();
             Sync.ShipSync.Reset();
@@ -1180,6 +1273,8 @@ namespace PunkMultiverse.Core
             if (oldHost != null)
             {
                 oldHost.Connected = false;
+                oldHost.NeedsStationRespawn = true;
+                oldHost.RespawnStationNetId = 0;
                 oldHost.RttMs = -1;
                 oldHost.PeerId = 0;
                 Sync.ShipSync.RemoveRemoteShip(oldHost.Slot, "host departed");
@@ -1227,6 +1322,8 @@ namespace PunkMultiverse.Core
             if (oldHost != null)
             {
                 oldHost.Connected = false;
+                oldHost.NeedsStationRespawn = true;
+                oldHost.RespawnStationNetId = 0;
                 oldHost.RttMs = -1;
                 oldHost.PeerId = 0;
                 Sync.ShipSync.RemoveRemoteShip(oldHostSlot, "host departed");
@@ -1289,6 +1386,9 @@ namespace PunkMultiverse.Core
                     AuthorityManager.OnPeerLost(p.Slot);
                 }
             if (UsingSteam) _lobby?.TakeOverLobby();
+            // Continue the epoch sequence — a promoted host restarting at 1 would lose every
+            // PREPARE to the higher epochs peers already hold.
+            AuthorityManager.OnPromotedToHost();
             // Registrar fallback ownership changed immediately. Re-arm local/puppet components
             // before the next state tick; explicit segment leases converge on the next scan.
             Sync.EnemySync.ApplyAllOwnership();
@@ -1349,6 +1449,8 @@ namespace PunkMultiverse.Core
                     // let the authority scan reassign its world simulation on the next pass.
                     Plugin.Log.LogInfo($"[Session] {player} dropped — slot reserved for rejoin");
                     player.Connected = false;
+                    player.NeedsStationRespawn = true;
+                    player.RespawnStationNetId = 0;
                     player.RttMs = -1;
                     player.PeerId = 0; // transport routes are not durable reconnect identities
                     Sync.ShipSync.RemoveRemoteShip(player.Slot, "peer disconnected");
@@ -1365,6 +1467,14 @@ namespace PunkMultiverse.Core
             }
             else
             {
+                ulong hostPeer = _players[HostSlot]?.PeerId ?? 0;
+                if (peer != hostPeer)
+                {
+                    var meshPlayer = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+                    if (meshPlayer != null) Sync.EnemySync.OnDirectPeerLost(meshPlayer.Slot);
+                    Plugin.Log.LogInfo($"[Session] direct state route to peer {peer} closed; host relay remains active");
+                    return;
+                }
                 OnHostLost("Lost connection to host");
             }
         }
@@ -1396,6 +1506,14 @@ namespace PunkMultiverse.Core
                 && State < SessionState.Loading)
                 return;
 
+            // Client mesh sessions are data-plane only. Control, combat and durable mutations
+            // still pass through the elected host; a direct peer may send only entity snapshots.
+            if (!IsHost && State >= SessionState.Loading)
+            {
+                ulong hostPeer = _players[HostSlot]?.PeerId ?? 0;
+                if (peer != hostPeer && type != MsgType.EntityStateBundle) return;
+            }
+
             switch (type)
             {
                 case MsgType.Hello when IsHost: HandleHello(peer); break;
@@ -1409,8 +1527,32 @@ namespace PunkMultiverse.Core
                     break;
                 case MsgType.RunEnded when !IsHost: EndRunToLobby(); break;
                 case MsgType.AuthRelease when IsHost:
-                    Sync.EnemySync.ApplyAuthRelease(AuthReleaseMsg.Read(_reader), this);
+                {
+                    var release = AuthReleaseMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (sender != null && Sync.EnemySync.OwnerOf(release.NetId) == sender.Slot)
+                        Sync.EnemySync.ApplyAuthRelease(release, this);
                     break;
+                }
+                case MsgType.EntityStarvedRequest when IsHost:
+                {
+                    var request = EntityStarvedRequestMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (sender != null)
+                        Sync.EnemySync.ApplyStarvedOwnershipRequest(request.NetId, sender.Slot, this);
+                    break;
+                }
+                case MsgType.EntityAuthorityPrepare when !IsHost:
+                    Sync.EnemySync.ApplyAuthorityPrepare(EntityAuthorityPrepareMsg.Read(_reader), this);
+                    break;
+                case MsgType.EntityAuthorityAck when IsHost:
+                {
+                    var ack = EntityAuthorityAckMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (sender != null)
+                        Sync.EnemySync.ApplyAuthorityReadyAck(ack.NetId, sender.Slot, this);
+                    break;
+                }
                 case MsgType.LobbyState when !IsHost: HandleLobbyState(); break;
                 case MsgType.Ping: HandlePing(peer); break;
                 case MsgType.Pong: HandlePong(peer); break;
@@ -1451,10 +1593,21 @@ namespace PunkMultiverse.Core
                     {
                         var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
                         if (sender == null || sender.Slot != dmg.AttackerSlot) break;
+                        if (dmg.IsEntity && !NetIds.LifetimeMatches(dmg.TargetNetId, dmg.TargetLifetime))
+                        {
+                            InstrumentationCounters.StaleLifetimeDropped();
+                            break;
+                        }
                     }
                     if (IsHost && dmg.IsEntity) AuthorityManager.NoteCombat(dmg.TargetNetId);
                     byte ownerSlot = dmg.IsEntity ? Sync.EnemySync.OwnerOf(dmg.TargetNetId) : dmg.TargetSlot;
-                    if (IsHost && ownerSlot != LocalSlot)
+                    if (IsHost && dmg.IsEntity && ownerSlot == AuthorityManager.DormantOwner)
+                    {
+                        // Nobody simulates the target: queue the claim and force the segment
+                        // toward the attacker (who provably holds a live object).
+                        Sync.DamageSync.QueueDormantClaim(dmg);
+                    }
+                    else if (IsHost && ownerSlot != LocalSlot)
                     {
                         // Route to the victim's current authority.
                         var target = _players.FirstOrDefault(p => p != null && p.Slot == ownerSlot);
@@ -1467,15 +1620,91 @@ namespace PunkMultiverse.Core
                     }
                     break;
                 }
+                case MsgType.DamageUnservable when IsHost:
+                {
+                    var claim = DamageRequestMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (sender != null) Sync.DamageSync.ApplyDamageUnservable(claim, sender.Slot, this);
+                    break;
+                }
                 case MsgType.AuthAssign when !IsHost:
                     Sync.EnemySync.ApplyAuthAssign(AuthAssignMsg.Read(_reader));
                     break;
                 case MsgType.SegmentLease when !IsHost:
                     AuthorityManager.ApplyLease(SegmentLeaseMsg.Read(_reader), this);
                     break;
-                case MsgType.SegmentLeaseAck when IsHost:
-                    AuthorityManager.ApplyAck(SegmentLeaseAckMsg.Read(_reader), this);
+                case MsgType.ResidencyReport when IsHost:
+                {
+                    var report = ResidencyReportMsg.Read(_reader);
+                    var reporter = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (reporter != null && reporter.Slot == report.Slot)
+                        AuthorityManager.ApplyResidencyReport(report, this);
                     break;
+                }
+                case MsgType.SegmentDormancyCommit:
+                {
+                    var commit = SegmentDormancyCommitMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var committer = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (committer == null || committer.Slot != commit.Slot) break;
+                        RelayToOthers(peer, NetChannel.Events, reliable: true); // every peer keeps the store (I-12)
+                    }
+                    else if (_players[HostSlot] == null || _players[HostSlot].PeerId != peer) break;
+                    Sync.EnemySync.ApplySegmentDormancyCommit(commit, this);
+                    break;
+                }
+                case MsgType.DormantState when !IsHost:
+                    Sync.EnemySync.ApplyDormantState(DormantStateMsg.Read(_reader));
+                    break;
+                case MsgType.RuntimeBaselineRequest when !IsHost:
+                    Sync.EnemySync.ApplyRuntimeBaselineRequest(RuntimeBaselineRequestMsg.Read(_reader), this);
+                    break;
+                case MsgType.RuntimeBaseline:
+                {
+                    var baseline = RuntimeBaselineMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (sender == null || sender.Slot != baseline.SourceSlot) break;
+                        Sync.EnemySync.HostRouteRuntimeBaseline(baseline, this);
+                    }
+                    else Sync.EnemySync.ApplyRuntimeBaseline(baseline, this);
+                    break;
+                }
+                case MsgType.RuntimeBaselineAck when IsHost:
+                {
+                    var ack = RuntimeBaselineAckMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (sender != null) Sync.EnemySync.ApplyRuntimeBaselineAck(ack, sender.Slot, this);
+                    break;
+                }
+                case MsgType.DirectRoute when !IsHost:
+                    Sync.EnemySync.ApplyDirectRoute(DirectRouteMsg.Read(_reader), this);
+                    break;
+                case MsgType.DirectRoutePulse when IsHost:
+                {
+                    var pulse = DirectRoutePulseMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (sender != null) Sync.EnemySync.ApplyDirectRoutePulse(pulse, sender.Slot, this);
+                    break;
+                }
+                case MsgType.EntityBoundaryHandoff:
+                {
+                    var handoff = EntityBoundaryHandoffMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (sender == null || !Sync.EnemySync.ValidateBoundaryHandoff(handoff, sender.Slot))
+                        {
+                            InstrumentationCounters.UnauthorizedMutationDropped();
+                            break;
+                        }
+                    }
+                    Sync.EnemySync.ApplyBoundaryHandoff(handoff);
+                    RelayToOthers(peer, channel, reliable: true);
+                    break;
+                }
                 case MsgType.KillLedger when !IsHost:
                     Sync.EnemySync.ApplyKillLedger(KillLedgerMsg.Read(_reader));
                     break;
@@ -1492,13 +1721,27 @@ namespace PunkMultiverse.Core
                 case MsgType.EntityStateBundle:
                 {
                     var bundle = EntityStateBundleMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
                     if (IsHost)
                     {
-                        var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
                         if (sender == null || sender.Slot != bundle.Slot) break;
                     }
+                    else
+                    {
+                        bool fromHost = _players[HostSlot] != null && _players[HostSlot].PeerId == peer;
+                        if (!fromHost && (sender == null || sender.Slot != bundle.Slot)) break;
+                        if (!fromHost) Sync.EnemySync.NoteDirectBundle(peer, bundle, this);
+                    }
+                    // Route before touching host-side puppets/data. Large-room apply work must not
+                    // sit on the latency-critical owner -> host -> viewer path.
+                    if (IsHost)
+                    {
+                        float relayStarted = Time.realtimeSinceStartup;
+                        Sync.EnemySync.ForwardEntityStateBundle(this, bundle, peer);
+                        InstrumentationCounters.HostRelayCompleted((Time.realtimeSinceStartup - relayStarted) * 1000f,
+                            _lastPayload.Count);
+                    }
                     Sync.EnemySync.ApplyEntityStateBundle(bundle);
-                    if (IsHost) Sync.EnemySync.ForwardEntityStateBundle(this, bundle, peer);
                     break;
                 }
                 case MsgType.EntityFire:
@@ -1512,6 +1755,11 @@ namespace PunkMultiverse.Core
                             InstrumentationCounters.StaleFireDropped();
                             break;
                         }
+                        if (!NetIds.LifetimeMatches(efire.NetId, efire.Lifetime))
+                        {
+                            InstrumentationCounters.StaleLifetimeDropped();
+                            break;
+                        }
                     }
                     if (IsHost) AuthorityManager.NoteAggro(efire.NetId, efire.TargetSlot);
                     RelayToOthers(peer, channel, reliable: false);
@@ -1521,13 +1769,43 @@ namespace PunkMultiverse.Core
                 case MsgType.EntityKilled:
                 {
                     var killed = EntityKilledMsg.Read(_reader);
-                    RelayToOthers(peer, channel, reliable: true);
-                    Sync.EnemySync.ApplyEntityKilled(killed);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (sender == null || !Sync.EnemySync.IsDurableEventAuthorized(killed.NetId, sender.Slot))
+                        {
+                            InstrumentationCounters.UnauthorizedMutationDropped();
+                            break;
+                        }
+                    }
+                    if (Sync.EnemySync.ApplyEntityKilled(killed))
+                        RelayToOthers(peer, channel, reliable: true);
+                    break;
+                }
+                case MsgType.PlantFruitKilled:
+                {
+                    var killed = PlantFruitKilledMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (sender == null || !Sync.EnemySync.IsDurableEventAuthorized(killed.PlantNetId, sender.Slot))
+                        {
+                            InstrumentationCounters.UnauthorizedMutationDropped();
+                            break;
+                        }
+                    }
+                    if (Sync.EnemySync.ApplyPlantFruitKilled(killed))
+                        RelayToOthers(peer, channel, reliable: true);
                     break;
                 }
                 case MsgType.EntitySpawned:
                 {
                     var spawned = EntitySpawnedMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (sender == null || sender.Slot != spawned.OwnerSlot) break;
+                    }
                     RelayToOthers(peer, channel, reliable: true);
                     Sync.MinionSync.ApplyEntitySpawned(spawned);
                     break;
@@ -1535,6 +1813,11 @@ namespace PunkMultiverse.Core
                 case MsgType.MinionSpawned:
                 {
                     var minion = MinionSpawnedMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (sender == null || sender.Slot != minion.OwnerSlot) break;
+                    }
                     RelayToOthers(peer, channel, reliable: true);
                     Sync.MinionSync.ApplyMinionSpawned(minion);
                     break;
@@ -1759,9 +2042,26 @@ namespace PunkMultiverse.Core
 
         private void HandleRejoin(ulong peer, HelloMsg hello, NetPlayer reserved)
         {
+            if (reserved.NeedsStationRespawn && reserved.RespawnStationNetId == 0)
+            {
+                _writer.Reset();
+                new RejectMsg
+                {
+                    Reason = "Your disconnected ship was destroyed. Rejoin after the party unlocks its next station."
+                }.Write(_writer);
+                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+                Plugin.Log.LogInfo($"[Session] rejoin for P{reserved.Slot + 1} deferred — awaiting next station");
+                return;
+            }
+
+            int respawnStation = reserved.RespawnStationNetId != 0
+                ? reserved.RespawnStationNetId
+                : Sync.ProgressionSync.LatestStationNetId;
             reserved.PeerId = peer;
             if (hello.SteamId != 0) reserved.IdentityId = hello.SteamId;
             reserved.Connected = true;
+            reserved.NeedsStationRespawn = false;
+            reserved.RespawnStationNetId = 0;
             reserved.Name = hello.Name;
             Plugin.Log.LogInfo($"[Session] {reserved} REJOINED — replaying run seed {CurrentRunSeed}");
 
@@ -1776,7 +2076,7 @@ namespace PunkMultiverse.Core
             {
                 Seed = CurrentRunSeed,
                 IsRejoin = true,
-                SpawnStationNetId = Sync.ProgressionSync.LatestStationNetId,
+                SpawnStationNetId = respawnStation,
                 EnemyHpMult = EnemyHpMult,
             }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
@@ -1812,6 +2112,10 @@ namespace PunkMultiverse.Core
 
             // 3) Deaths, ownership, shared progression.
             SendEventCatchUp(peer);
+
+            // 3b) Canonical dormant state: last-simulated vitals/poses so the rejoiner's world
+            // reflects what actually happened, not generation guesses.
+            Sync.EnemySync.SendDormantState(this, peer);
 
             // 4) Go.
             _writer.Reset();
@@ -1924,8 +2228,27 @@ namespace PunkMultiverse.Core
 
             foreach (var netId in data.Kills)
             {
-                var msg = new EntityKilledMsg { NetId = netId, KillerSlot = 0 };
+                var msg = new EntityKilledMsg
+                {
+                    NetId = netId, Lifetime = NetIds.LifetimeOf(netId),
+                    MutationRevision = Sync.EnemySync.NextMutationRevision(netId), KillerSlot = 0,
+                };
                 Sync.EnemySync.ApplyEntityKilled(msg);
+                _writer.Reset();
+                msg.Write(_writer);
+                Broadcast();
+                yield return Pace();
+                if (State != SessionState.InGame) yield break;
+            }
+            foreach (var (plantNetId, fruitId) in data.PlantFruits)
+            {
+                var msg = new PlantFruitKilledMsg
+                {
+                    PlantNetId = plantNetId, FruitId = fruitId,
+                    Lifetime = NetIds.LifetimeOf(plantNetId),
+                    MutationRevision = Sync.EnemySync.NextMutationRevision(plantNetId), KillerSlot = 0,
+                };
+                Sync.EnemySync.ApplyPlantFruitKilled(msg);
                 _writer.Reset();
                 msg.Write(_writer);
                 Broadcast();
@@ -1972,7 +2295,22 @@ namespace PunkMultiverse.Core
             foreach (var netId in Sync.EnemySync.KilledSnapshot())
             {
                 _writer.Reset();
-                new EntityKilledMsg { NetId = netId, KillerSlot = 0 }.Write(_writer);
+                new EntityKilledMsg
+                {
+                    NetId = netId, Lifetime = NetIds.LifetimeOf(netId),
+                    MutationRevision = Sync.EnemySync.MutationRevisionOf(netId), KillerSlot = 0,
+                }.Write(_writer);
+                _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
+            }
+            foreach (var (plantNetId, fruitId) in Sync.EnemySync.PlantFruitKilledSnapshot())
+            {
+                _writer.Reset();
+                new PlantFruitKilledMsg
+                {
+                    PlantNetId = plantNetId, FruitId = fruitId,
+                    Lifetime = NetIds.LifetimeOf(plantNetId),
+                    MutationRevision = Sync.EnemySync.PlantFruitRevisionOf(plantNetId, fruitId), KillerSlot = 0,
+                }.Write(_writer);
                 _transport.Send(peer, NetChannel.Events, _writer.ToSegment(), reliable: true);
             }
             var owners = Sync.EnemySync.OwnersSnapshot();
@@ -2028,6 +2366,8 @@ namespace PunkMultiverse.Core
                         ColorIndex = p.ColorIndex,
                         Ready = p.Ready,
                         Connected = p.Connected,
+                        NeedsStationRespawn = p.NeedsStationRespawn,
+                        RespawnStationNetId = p.RespawnStationNetId,
                         ModsMismatch = p.ModsMismatch,
                     });
             return roster;
@@ -2113,10 +2453,32 @@ namespace PunkMultiverse.Core
                     ColorIndex = e.ColorIndex,
                     Ready = e.Ready,
                     Connected = e.Connected,
+                    NeedsStationRespawn = e.NeedsStationRespawn,
+                    RespawnStationNetId = e.RespawnStationNetId,
                     ModsMismatch = e.ModsMismatch,
                     RttMs = oldRtt.TryGetValue(e.IdentityId, out var rtt) ? rtt : -1,
                 };
             }
+        }
+
+        /// <summary>The first station unlocked after a real disconnect becomes that slot's
+        /// respawn point. Kept in the roster so a promoted host preserves the decision.</summary>
+        internal void OnStationUnlocked(int stationNetId)
+        {
+            if (!IsHost || stationNetId == 0 || (State != SessionState.InGame && State != SessionState.Loading)) return;
+            int assigned = 0;
+            foreach (var player in _players)
+            {
+                if (player == null || player.Connected || !player.NeedsStationRespawn
+                    || player.RespawnStationNetId != 0) continue;
+                player.RespawnStationNetId = stationNetId;
+                assigned++;
+                InstrumentationCounters.StationRespawnAssigned();
+                Plugin.Log.LogInfo($"[Session] P{player.Slot + 1} may respawn at newly unlocked station #{stationNetId}");
+            }
+            if (assigned == 0) return;
+            BroadcastLobbyState();
+            RosterChanged?.Invoke();
         }
 
         // ---------------------------------------------------------------- ping

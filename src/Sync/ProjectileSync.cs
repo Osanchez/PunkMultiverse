@@ -31,6 +31,21 @@ namespace PunkMultiverse.Sync
         private static int _replayDepth;
         private static readonly NetWriter Writer = new NetWriter(64);
         private static uint _shotSequence;
+        private sealed class PendingShipFire
+        {
+            internal FireEventMsg Msg;
+            internal float PlayAt;
+        }
+        private static readonly List<PendingShipFire> PendingShipFires = new List<PendingShipFire>();
+        private static long _shipFireQueued, _shipFireLate;
+        private static double _muzzleCorrectionTotal;
+        private static float _muzzleCorrectionMax;
+        internal static int PendingShipFireCount => PendingShipFires.Count;
+        internal static long ShipFireQueued => _shipFireQueued;
+        internal static long ShipFireLate => _shipFireLate;
+        internal static double MuzzleCorrectionAverage => _shipFireQueued + _shipFireLate > 0
+            ? _muzzleCorrectionTotal / (_shipFireQueued + _shipFireLate) : 0.0;
+        internal static float MuzzleCorrectionMax => _muzzleCorrectionMax;
 
         internal readonly struct DamageTrace
         {
@@ -118,6 +133,11 @@ namespace PunkMultiverse.Sync
             SeenFireOrder.Clear();
             SeenImpacts.Clear();
             SeenImpactOrder.Clear();
+            PendingShipFires.Clear();
+            _shipFireQueued = 0;
+            _shipFireLate = 0;
+            _muzzleCorrectionTotal = 0;
+            _muzzleCorrectionMax = 0;
             _warnedEntityReplay = false;
             _warnedShipReplay = false;
         }
@@ -231,6 +251,8 @@ namespace PunkMultiverse.Sync
                         {
                             Slot = (byte)session.LocalSlot,
                             Holder = (byte)state.Holder,
+                            TimeMs = (uint)(Time.unscaledTime * 1000f),
+                            BodyPos = ShipSync.LocalShip != null ? (Vector2)ShipSync.LocalShip.transform.position : Vector2.zero,
                             Pos = __0.Position,
                             Dir = __0.Direction,
                             Seed = _lastFireSeed,
@@ -328,6 +350,7 @@ namespace PunkMultiverse.Sync
             var msg = new EntityFireMsg
             {
                 NetId = owner.netId,
+                Lifetime = Core.NetIds.LifetimeOf(owner.netId),
                 SourceSlot = (byte)session.LocalSlot,
                 SegmentX = segment.X,
                 SegmentY = segment.Y,
@@ -368,6 +391,11 @@ namespace PunkMultiverse.Sync
         {
             var session = NetSession.Instance;
             if (session == null || session.State != SessionState.InGame) return; // stale post-run traffic
+            if (!Core.NetIds.LifetimeMatches(msg.NetId, msg.Lifetime))
+            {
+                Core.InstrumentationCounters.StaleLifetimeDropped();
+                return;
+            }
             if (EnemySync.IsKilled(msg.NetId)) return; // dead here — nothing to anchor the replay to
             var segment = new AuthorityManager.SegmentKey(msg.SegmentX, msg.SegmentY);
             if (!AuthorityManager.SegmentOf(msg.BodyPos).Equals(segment)
@@ -460,8 +488,43 @@ namespace PunkMultiverse.Sync
             if (!AcceptFireIdentity(identity)) return;
             if (!ShipSync.ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
             if (ship.GetComponent<RemotePuppet>() == null) return; // our own echo
+            float playAt = Core.ClockSync.MapToLocalTime(msg.Slot, msg.TimeMs) + RemotePuppet.VisualDelay;
+            float wait = playAt - Time.unscaledTime;
+            if (msg.TimeMs != 0 && wait > 0.002f && wait < 0.5f)
+            {
+                PendingShipFires.Add(new PendingShipFire { Msg = msg, PlayAt = playAt });
+                _shipFireQueued++;
+                return;
+            }
+            _shipFireLate++;
+            ReplayFireNow(msg);
+        }
+
+        public static void Tick()
+        {
+            float now = Time.unscaledTime;
+            for (int i = PendingShipFires.Count - 1; i >= 0; i--)
+            {
+                var pending = PendingShipFires[i];
+                if (now < pending.PlayAt) continue;
+                PendingShipFires.RemoveAt(i);
+                ReplayFireNow(pending.Msg);
+            }
+        }
+
+        private static void ReplayFireNow(FireEventMsg msg)
+        {
+            if (!ShipSync.ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
+            if (ship.GetComponent<RemotePuppet>() == null) return;
             var weapon = GetHolderWeapon(ship, msg.Holder);
             if (weapon == null) return;
+
+            Vector2 pos = msg.BodyPos != Vector2.zero
+                ? (Vector2)ship.transform.position + (msg.Pos - msg.BodyPos)
+                : msg.Pos;
+            float correction = Vector2.Distance(pos, msg.Pos);
+            _muzzleCorrectionTotal += correction;
+            if (correction > _muzzleCorrectionMax) _muzzleCorrectionMax = correction;
 
             var previousShot = _currentShot;
             _currentShot = new ShotContext
@@ -474,7 +537,7 @@ namespace PunkMultiverse.Sync
             _replayDepth++;
             try
             {
-                InvokeSeededDoShoot(weapon, new FakeBarrel(msg.Pos, msg.Dir), msg.Seed);
+                InvokeSeededDoShoot(weapon, new FakeBarrel(pos, msg.Dir), msg.Seed);
             }
             catch (System.Exception e)
             {

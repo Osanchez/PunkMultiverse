@@ -18,8 +18,7 @@ namespace PunkMultiverse.Sync
     [DefaultExecutionOrder(-50)]
     public sealed class RemotePuppet : MonoBehaviour
     {
-        // Two snapshot intervals of buffer at the configured rate — enough for one lost packet.
-        private static float InterpDelay => 2f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
+        internal static float VisualDelay => 1.35f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
         private const float HardSnapDistance = 3f;
         private const float StaleAfter = 1.5f;
 
@@ -35,6 +34,7 @@ namespace PunkMultiverse.Sync
         }
 
         private readonly List<Snap> _buffer = new List<Snap>(32);
+        private readonly AdaptiveSnapshotTiming _timing = new AdaptiveSnapshotTiming(0.025f, 0.12f, 0.025f);
         private Rigidbody2D _rb;
         private ShipMovement _movement;
         private Aimer[] _aimers;
@@ -252,6 +252,7 @@ namespace PunkMultiverse.Sync
 
         public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot, Vector2 aim)
         {
+            _timing.Observe(time);
             AimDirection = aim;
             // Ascending timeline guard — a clock re-anchor may step mapped time backwards.
             if (_buffer.Count > 0 && time <= _buffer[_buffer.Count - 1].Time)
@@ -264,7 +265,7 @@ namespace PunkMultiverse.Sync
         {
             if (_rb == null || _buffer.Count == 0) return;
 
-            float renderTime = Time.unscaledTime - InterpDelay;
+            float renderTime = Time.unscaledTime - _timing.Delay;
             var last = _buffer[_buffer.Count - 1];
 
             if (Time.unscaledTime - last.Time > StaleAfter)
@@ -303,7 +304,10 @@ namespace PunkMultiverse.Sync
             float t = Mathf.Clamp01((renderTime - a.Time) / span);
             Vector2 targetPos = Vector2.LerpUnclamped(a.Pos, b.Pos, t);
             if (renderTime > b.Time) // extrapolate briefly on late packets
+            {
+                _timing.NoteUnderrun();
                 targetPos = b.Pos + b.Vel * Mathf.Min(renderTime - b.Time, 0.25f);
+            }
 
             if (Vector2.Distance(_rb.position, targetPos) > HardSnapDistance)
                 _rb.position = targetPos;

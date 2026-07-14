@@ -62,13 +62,15 @@ namespace PunkMultiverse.Sync
                     if (MarkLootSpawns.Depth > 0 || IsPerPlayerLoot(data.entityId)) return;
 
                     int netId = AllocateNetId(session);
-                    NetIds.RegisterRuntime(netId, instanceId);
+                    uint lifetime = NetIds.NextRuntimeLifetime(netId);
+                    NetIds.RegisterRuntime(netId, instanceId, lifetime);
                     EnemySync.Owners[netId] = (byte)session.LocalSlot; // we simulate it until handoff
 
                     var msg = new EntitySpawnedMsg
                     {
                         NetId = netId,
                         OwnerSlot = (byte)session.LocalSlot,
+                        Lifetime = lifetime,
                         EntityId = data.entityId,
                         Pos = data.position,
                     };
@@ -91,7 +93,8 @@ namespace PunkMultiverse.Sync
             _applyingRemote = true;
             try
             {
-                SpawnReplica(msg.NetId, msg.OwnerSlot, msg.EntityId, msg.Pos, wireOwnerShip: false);
+                if (NetIds.TryGetInstanceId(msg.NetId, out _) && NetIds.LifetimeMatches(msg.NetId, msg.Lifetime)) return;
+                SpawnReplica(msg.NetId, msg.Lifetime, msg.OwnerSlot, msg.EntityId, msg.Pos, wireOwnerShip: false);
             }
             finally
             {
@@ -120,7 +123,8 @@ namespace PunkMultiverse.Sync
                     if (!NetIds.TryGetNetId(se.EntityData.instanceId, out int netId))
                     {
                         netId = AllocateNetId(session);
-                        NetIds.RegisterRuntime(netId, se.EntityData.instanceId);
+                        uint newLifetime = NetIds.NextRuntimeLifetime(netId);
+                        NetIds.RegisterRuntime(netId, se.EntityData.instanceId, newLifetime);
                     }
                     EnemySync.Owners[netId] = (byte)session.LocalSlot;
                     EnemySync.FixedOwners.Add(netId); // minions never hand off
@@ -129,6 +133,7 @@ namespace PunkMultiverse.Sync
                     {
                         NetId = netId,
                         OwnerSlot = (byte)session.LocalSlot,
+                        Lifetime = NetIds.LifetimeOf(netId),
                         EntityId = se.EntityData.entityId,
                         Pos = se.transform.position,
                     };
@@ -155,13 +160,13 @@ namespace PunkMultiverse.Sync
             try
             {
                 // The generic ENTITY_SPAWNED may have created the replica already — just re-own it.
-                if (NetIds.TryGetInstanceId(msg.NetId, out _))
+                if (NetIds.TryGetInstanceId(msg.NetId, out _) && NetIds.LifetimeMatches(msg.NetId, msg.Lifetime))
                 {
                     EnemySync.Owners[msg.NetId] = msg.OwnerSlot;
                     WireMinionOwner(msg.NetId, msg.OwnerSlot);
                     return;
                 }
-                SpawnReplica(msg.NetId, msg.OwnerSlot, msg.EntityId, msg.Pos, wireOwnerShip: true);
+                SpawnReplica(msg.NetId, msg.Lifetime, msg.OwnerSlot, msg.EntityId, msg.Pos, wireOwnerShip: true);
             }
             finally
             {
@@ -171,7 +176,7 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- shared replica spawning
 
-        private static void SpawnReplica(int netId, byte ownerSlot, string entityId, Vector2 pos, bool wireOwnerShip)
+        private static void SpawnReplica(int netId, uint lifetime, byte ownerSlot, string entityId, Vector2 pos, bool wireOwnerShip)
         {
             try
             {
@@ -206,7 +211,7 @@ namespace PunkMultiverse.Sync
                     Plugin.Log.LogWarning($"[Spawns] could not resolve spawned instance for '{entityId}'");
                     return;
                 }
-                NetIds.RegisterRuntime(netId, instanceId);
+                NetIds.RegisterRuntime(netId, instanceId, lifetime);
                 EnemySync.Owners[netId] = ownerSlot;
 
                 if (egm.TryGetSavableEntity(instanceId, out var se) && se != null)
@@ -295,7 +300,7 @@ namespace PunkMultiverse.Sync
 
         private static Dictionary<string, SavableEntity> _prefabsById;
 
-        private static SavableEntity FindPrefab(string entityId)
+        internal static SavableEntity FindPrefab(string entityId)
         {
             // The game's own stream-in resolver: EntityGameObjectManager.entityPrefabDictionary
             // (entityId -> prefab, built at boot from SavablesCollection.savableObjectInfos).

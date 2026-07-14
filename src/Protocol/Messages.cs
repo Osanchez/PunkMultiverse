@@ -48,6 +48,8 @@ namespace PunkMultiverse.Protocol
         public byte ColorIndex;
         public bool Ready;
         public bool Connected;
+        public bool NeedsStationRespawn;
+        public int RespawnStationNetId;
         public bool ModsMismatch; // joiner's plugin set differs from the host's (Warn policy)
 
         public void Write(NetWriter w)
@@ -59,6 +61,8 @@ namespace PunkMultiverse.Protocol
             w.WriteByte(ColorIndex);
             w.WriteBool(Ready);
             w.WriteBool(Connected);
+            w.WriteBool(NeedsStationRespawn);
+            w.WriteVarUInt((uint)RespawnStationNetId);
             w.WriteBool(ModsMismatch);
         }
 
@@ -71,6 +75,8 @@ namespace PunkMultiverse.Protocol
             ColorIndex = r.ReadByte(),
             Ready = r.ReadBool(),
             Connected = r.ReadBool(),
+            NeedsStationRespawn = r.ReadBool(),
+            RespawnStationNetId = (int)r.ReadVarUInt(),
             ModsMismatch = r.ReadBool(),
         };
     }
@@ -204,14 +210,35 @@ namespace PunkMultiverse.Protocol
     public struct LevelReadyMsg
     {
         public ulong Checksum;
+        public int EntityCount;
+        public ulong EntityDigest;
+        public int PlantCount;
+        public ulong PlantDigest;
+        public int VisualVariantCount;
+        public ulong VisualVariantDigest;
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.LevelReady);
             w.WriteULong(Checksum);
+            w.WriteVarUInt((uint)EntityCount);
+            w.WriteULong(EntityDigest);
+            w.WriteVarUInt((uint)PlantCount);
+            w.WriteULong(PlantDigest);
+            w.WriteVarUInt((uint)VisualVariantCount);
+            w.WriteULong(VisualVariantDigest);
         }
 
-        public static LevelReadyMsg Read(NetReader r) => new LevelReadyMsg { Checksum = r.ReadULong() };
+        public static LevelReadyMsg Read(NetReader r) => new LevelReadyMsg
+        {
+            Checksum = r.ReadULong(),
+            EntityCount = (int)r.ReadVarUInt(),
+            EntityDigest = r.ReadULong(),
+            PlantCount = (int)r.ReadVarUInt(),
+            PlantDigest = r.ReadULong(),
+            VisualVariantCount = (int)r.ReadVarUInt(),
+            VisualVariantDigest = r.ReadULong(),
+        };
     }
 
     [System.Flags]
@@ -226,6 +253,8 @@ namespace PunkMultiverse.Protocol
     public struct ShipStateMsg
     {
         public byte Slot;
+        public byte ViewSlot; // ship/camera whose world interest this sender is currently viewing
+        public bool HasBody; // false after death: view routing only, no ship pose follows
         public uint TimeMs; // sender's unscaled clock — ordering + jitter-free interpolation
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Vel;
@@ -241,7 +270,10 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteMsgType(MsgType.ShipState);
             w.WriteByte(Slot);
+            w.WriteByte(ViewSlot);
+            w.WriteBool(HasBody);
             w.WriteUInt(TimeMs);
+            if (!HasBody) return;
             w.WritePosition(Pos);
             w.WriteVector2Half(Vel);
             w.WriteHalf(RotDeg);
@@ -253,20 +285,27 @@ namespace PunkMultiverse.Protocol
             w.WriteHalf(BurnLevel);
         }
 
-        public static ShipStateMsg Read(NetReader r) => new ShipStateMsg
+        public static ShipStateMsg Read(NetReader r)
         {
-            Slot = r.ReadByte(),
-            TimeMs = r.ReadUInt(),
-            Pos = r.ReadPosition(),
-            Vel = r.ReadVector2Half(),
-            RotDeg = r.ReadHalf(),
-            Aim = r.ReadVector2Half(),
-            Move = r.ReadVector2Half(),
-            Flags = (ShipFlags)r.ReadByte(),
-            HpFraction = r.ReadHalf(),
-            ShieldFraction = r.ReadHalf(),
-            BurnLevel = r.ReadHalf(),
-        };
+            var msg = new ShipStateMsg
+            {
+                Slot = r.ReadByte(),
+                ViewSlot = r.ReadByte(),
+                HasBody = r.ReadBool(),
+                TimeMs = r.ReadUInt(),
+            };
+            if (!msg.HasBody) return msg;
+            msg.Pos = r.ReadPosition();
+            msg.Vel = r.ReadVector2Half();
+            msg.RotDeg = r.ReadHalf();
+            msg.Aim = r.ReadVector2Half();
+            msg.Move = r.ReadVector2Half();
+            msg.Flags = (ShipFlags)r.ReadByte();
+            msg.HpFraction = r.ReadHalf();
+            msg.ShieldFraction = r.ReadHalf();
+            msg.BurnLevel = r.ReadHalf();
+            return msg;
+        }
     }
 
     public struct AuthReleaseMsg
@@ -324,6 +363,8 @@ namespace PunkMultiverse.Protocol
     {
         public byte Slot;
         public byte Holder; // 0 = primary, 1 = secondary
+        public uint TimeMs; // shooter's unscaled clock; replay follows the puppet timeline
+        public UnityEngine.Vector2 BodyPos;
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Dir;
         public int Seed;    // RNG seed the shooter used for this burst tick — replays match exactly
@@ -334,6 +375,8 @@ namespace PunkMultiverse.Protocol
             w.WriteMsgType(MsgType.FireEvent);
             w.WriteByte(Slot);
             w.WriteByte(Holder);
+            w.WriteUInt(TimeMs);
+            w.WritePosition(BodyPos);
             w.WritePosition(Pos);
             w.WriteVector2Half(Dir);
             w.WriteInt(Seed);
@@ -344,10 +387,40 @@ namespace PunkMultiverse.Protocol
         {
             Slot = r.ReadByte(),
             Holder = r.ReadByte(),
+            TimeMs = r.ReadUInt(),
+            BodyPos = r.ReadPosition(),
             Pos = r.ReadPosition(),
             Dir = r.ReadVector2Half(),
             Seed = r.ReadInt(),
             ShotId = r.ReadUInt(),
+        };
+    }
+
+    public struct PlantFruitKilledMsg
+    {
+        public int PlantNetId;
+        public int FruitId;
+        public byte KillerSlot;
+        public uint Lifetime;
+        public uint MutationRevision;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.PlantFruitKilled);
+            w.WriteVarUInt((uint)PlantNetId);
+            w.WriteInt(FruitId);
+            w.WriteByte(KillerSlot);
+            w.WriteVarUInt(Lifetime);
+            w.WriteVarUInt(MutationRevision);
+        }
+
+        public static PlantFruitKilledMsg Read(NetReader r) => new PlantFruitKilledMsg
+        {
+            PlantNetId = (int)r.ReadVarUInt(),
+            FruitId = r.ReadInt(),
+            KillerSlot = r.ReadByte(),
+            Lifetime = r.ReadVarUInt(),
+            MutationRevision = r.ReadVarUInt(),
         };
     }
 
@@ -356,25 +429,36 @@ namespace PunkMultiverse.Protocol
         public bool IsEntity;   // false: TargetSlot is a player; true: TargetNetId is an entity
         public byte TargetSlot;
         public int TargetNetId;
+        public uint TargetLifetime;
         public float Amount;
         public uint TypeHash; // FNV-1a of Resource.name; 0 = untyped
         public byte AttackerSlot; // who dealt this damage — travels with it so the owner credits the real killer
         public uint RequestId; // unique per attacker; protects reliable routing/reconnect replay
         public uint ShotId;
         public ushort ProjectileOrdinal;
+        // A dormant-claim replay to a NEW owner. Every peer already recorded RequestId as seen
+        // when the original broadcast passed through, so replays must bypass the dedup or the
+        // claim is dead on arrival at any remote owner.
+        public bool Replay;
 
-        public void Write(NetWriter w)
+        public void Write(NetWriter w) => Write(w, MsgType.DamageRequest);
+
+        /// <summary>Same payload rides two message types: the ordinary request and the owner's
+        /// DamageUnservable bounce to the host (which must carry the full original claim).</summary>
+        public void Write(NetWriter w, MsgType type)
         {
-            w.WriteMsgType(MsgType.DamageRequest);
+            w.WriteMsgType(type);
             w.WriteBool(IsEntity);
             w.WriteByte(TargetSlot);
             w.WriteVarUInt((uint)TargetNetId);
+            w.WriteVarUInt(TargetLifetime);
             w.WriteFloat(Amount);
             w.WriteUInt(TypeHash);
             w.WriteByte(AttackerSlot);
             w.WriteUInt(RequestId);
             w.WriteUInt(ShotId);
             w.WriteUShort(ProjectileOrdinal);
+            w.WriteBool(Replay);
         }
 
         public static DamageRequestMsg Read(NetReader r) => new DamageRequestMsg
@@ -382,12 +466,14 @@ namespace PunkMultiverse.Protocol
             IsEntity = r.ReadBool(),
             TargetSlot = r.ReadByte(),
             TargetNetId = (int)r.ReadVarUInt(),
+            TargetLifetime = r.ReadVarUInt(),
             Amount = r.ReadFloat(),
             TypeHash = r.ReadUInt(),
             AttackerSlot = r.ReadByte(),
             RequestId = r.ReadUInt(),
             ShotId = r.ReadUInt(),
             ProjectileOrdinal = r.ReadUShort(),
+            Replay = r.ReadBool(),
         };
     }
 
@@ -415,9 +501,67 @@ namespace PunkMultiverse.Protocol
         }
     }
 
-    public struct EntityStateEntry
+    /// <summary>A peer proves availability by reporting a concrete puppet it currently has
+    /// instantiated but for which no authoritative snapshots are arriving.</summary>
+    public struct EntityStarvedRequestMsg
     {
         public int NetId;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntityStarvedRequest);
+            w.WriteVarUInt((uint)NetId);
+        }
+
+        public static EntityStarvedRequestMsg Read(NetReader r) => new EntityStarvedRequestMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+        };
+    }
+
+    public struct EntityAuthorityPrepareMsg
+    {
+        public int NetId;
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntityAuthorityPrepare);
+            w.WriteVarUInt((uint)NetId);
+        }
+        public static EntityAuthorityPrepareMsg Read(NetReader r) => new EntityAuthorityPrepareMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+        };
+    }
+
+    public struct EntityAuthorityAckMsg
+    {
+        public int NetId;
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntityAuthorityAck);
+            w.WriteVarUInt((uint)NetId);
+        }
+        public static EntityAuthorityAckMsg Read(NetReader r) => new EntityAuthorityAckMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+        };
+    }
+
+    public struct EntityStateEntry
+    {
+        [System.Flags]
+        public enum Fields : byte
+        {
+            None = 0,
+            Aim = 1,
+            Status = 2,
+            Vitals = 4,
+            Full = Aim | Status | Vitals,
+        }
+
+        public int NetId;
+        public uint Lifetime;
+        public Fields FieldMask;
         public UnityEngine.Vector2 Pos;
         public UnityEngine.Vector2 Vel;
         public float Rot;
@@ -432,32 +576,59 @@ namespace PunkMultiverse.Protocol
         public void Write(NetWriter w)
         {
             w.WriteVarUInt((uint)NetId);
+            w.WriteVarUInt(Lifetime);
+            w.WriteByte((byte)FieldMask);
             w.WritePosition(Pos);
             w.WriteVector2Half(Vel);
             w.WriteHalf(Rot);
-            w.WriteVector2Half(Aim);
-            w.WriteByte(State);
-            w.WriteByte(Fire);
-            w.WriteByte(Ammo);
-            w.WriteHalf(HpFraction);
-            w.WriteHalf(ShieldFraction);
-            w.WriteHalf(BurnLevel);
+            if ((FieldMask & Fields.Aim) != 0) w.WriteVector2Half(Aim);
+            if ((FieldMask & Fields.Status) != 0)
+            {
+                w.WriteByte(State);
+                w.WriteByte(Fire);
+                w.WriteByte(Ammo);
+            }
+            if ((FieldMask & Fields.Vitals) != 0)
+            {
+                w.WriteHalf(HpFraction);
+                w.WriteHalf(ShieldFraction);
+                w.WriteHalf(BurnLevel);
+            }
         }
 
-        public static EntityStateEntry Read(NetReader r) => new EntityStateEntry
+        public static EntityStateEntry Read(NetReader r)
         {
-            NetId = (int)r.ReadVarUInt(),
-            Pos = r.ReadPosition(),
-            Vel = r.ReadVector2Half(),
-            Rot = r.ReadHalf(),
-            Aim = r.ReadVector2Half(),
-            State = r.ReadByte(),
-            Fire = r.ReadByte(),
-            Ammo = r.ReadByte(),
-            HpFraction = r.ReadHalf(),
-            ShieldFraction = r.ReadHalf(),
-            BurnLevel = r.ReadHalf(),
-        };
+            var entry = new EntityStateEntry
+            {
+                NetId = (int)r.ReadVarUInt(),
+                Lifetime = r.ReadVarUInt(),
+                FieldMask = (Fields)r.ReadByte(),
+                Pos = r.ReadPosition(),
+                Vel = r.ReadVector2Half(),
+                Rot = r.ReadHalf(),
+                State = 255,
+                Ammo = 255,
+            };
+            if ((entry.FieldMask & Fields.Aim) != 0) entry.Aim = r.ReadVector2Half();
+            if ((entry.FieldMask & Fields.Status) != 0)
+            {
+                entry.State = r.ReadByte();
+                entry.Fire = r.ReadByte();
+                entry.Ammo = r.ReadByte();
+            }
+            if ((entry.FieldMask & Fields.Vitals) != 0)
+            {
+                entry.HpFraction = r.ReadHalf();
+                entry.ShieldFraction = r.ReadHalf();
+                entry.BurnLevel = r.ReadHalf();
+            }
+            return entry;
+        }
+
+        public int EstimatedWireBytes => 24 // worst-case varints + mandatory motion fields
+            + ((FieldMask & Fields.Aim) != 0 ? 4 : 0)
+            + ((FieldMask & Fields.Status) != 0 ? 3 : 0)
+            + ((FieldMask & Fields.Vitals) != 0 ? 6 : 0);
     }
 
     public struct EntityStateMsg
@@ -531,6 +702,9 @@ namespace PunkMultiverse.Protocol
     {
         public byte Slot;
         public uint TimeMs;
+        public uint Tick;
+        public ushort ChunkIndex;
+        public ushort ChunkCount;
         public System.Collections.Generic.List<EntityStateGroup> Groups;
 
         public void Write(NetWriter w)
@@ -538,18 +712,266 @@ namespace PunkMultiverse.Protocol
             w.WriteMsgType(MsgType.EntityStateBundle);
             w.WriteByte(Slot);
             w.WriteUInt(TimeMs);
+            w.WriteUInt(Tick);
+            w.WriteUShort(ChunkIndex);
+            w.WriteUShort(ChunkCount);
             w.WriteVarUInt((uint)Groups.Count);
             foreach (var group in Groups) group.Write(w);
         }
 
         public static EntityStateBundleMsg Read(NetReader r)
         {
-            var msg = new EntityStateBundleMsg { Slot = r.ReadByte(), TimeMs = r.ReadUInt() };
+            var msg = new EntityStateBundleMsg
+            {
+                Slot = r.ReadByte(),
+                TimeMs = r.ReadUInt(),
+                Tick = r.ReadUInt(),
+                ChunkIndex = r.ReadUShort(),
+                ChunkCount = r.ReadUShort(),
+            };
             int count = (int)r.ReadVarUInt();
             msg.Groups = new System.Collections.Generic.List<EntityStateGroup>(count);
             for (int i = 0; i < count; i++) msg.Groups.Add(EntityStateGroup.Read(r));
             return msg;
         }
+    }
+
+    public enum RuntimeBaselinePurpose : byte
+    {
+        Interest = 0,
+        Handoff = 1,
+    }
+
+    /// <summary>Where a baseline entry's state actually came from. Identity existence must never
+    /// impersonate a simulator: receivers treat only Live/LastKnown/CoordinatorCache values as
+    /// poses a real simulator produced; Generation entries position the object but establish no
+    /// authoritative pose.</summary>
+    public enum BaselineEntryOrigin : byte
+    {
+        Live = 0,             // collected from the source's canonical simulating object
+        LastKnown = 1,        // source's cached full state from the last real simulator output
+        Generation = 2,       // dormant EntityData only — never simulated, state is generation truth
+        CoordinatorCache = 3, // host's snapshot cache (lost-owner fallback)
+    }
+
+    public static class BaselineEntryFlags
+    {
+        public const byte OriginMask = 0x03;
+        public const byte Prop = 0x04; // non-Unit physics prop: bind without AI puppet expectations
+
+        public static byte Pack(BaselineEntryOrigin origin, bool prop) =>
+            (byte)((byte)origin | (prop ? Prop : 0));
+        public static BaselineEntryOrigin Origin(byte flags) => (BaselineEntryOrigin)(flags & OriginMask);
+        public static bool IsProp(byte flags) => (flags & Prop) != 0;
+    }
+
+    public struct RuntimeBaselineRequestMsg
+    {
+        public uint RequestId;
+        public byte SourceSlot;
+        public byte TargetSlot;
+        public int SegmentX, SegmentY;
+        public uint SourceEpoch;
+        public uint TargetEpoch;
+        public RuntimeBaselinePurpose Purpose;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.RuntimeBaselineRequest);
+            w.WriteUInt(RequestId);
+            w.WriteByte(SourceSlot); w.WriteByte(TargetSlot);
+            w.WriteInt(SegmentX); w.WriteInt(SegmentY);
+            w.WriteUInt(SourceEpoch); w.WriteUInt(TargetEpoch);
+            w.WriteByte((byte)Purpose);
+        }
+
+        public static RuntimeBaselineRequestMsg Read(NetReader r) => new RuntimeBaselineRequestMsg
+        {
+            RequestId = r.ReadUInt(),
+            SourceSlot = r.ReadByte(), TargetSlot = r.ReadByte(),
+            SegmentX = r.ReadInt(), SegmentY = r.ReadInt(),
+            SourceEpoch = r.ReadUInt(), TargetEpoch = r.ReadUInt(),
+            Purpose = (RuntimeBaselinePurpose)r.ReadByte(),
+        };
+    }
+
+    public struct RuntimeBaselineMsg
+    {
+        public uint RequestId;
+        public byte SourceSlot;
+        public byte TargetSlot;
+        public int SegmentX, SegmentY;
+        public uint SourceEpoch;
+        public uint TargetEpoch;
+        public uint Tick;
+        public RuntimeBaselinePurpose Purpose;
+        public ulong RosterDigest;
+        public System.Collections.Generic.List<EntityStateEntry> Entries;
+        public System.Collections.Generic.List<string> EntityTypes;
+        public System.Collections.Generic.List<byte> EntryFlags; // BaselineEntryFlags per entry
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.RuntimeBaseline);
+            w.WriteUInt(RequestId);
+            w.WriteByte(SourceSlot); w.WriteByte(TargetSlot);
+            w.WriteInt(SegmentX); w.WriteInt(SegmentY);
+            w.WriteUInt(SourceEpoch); w.WriteUInt(TargetEpoch); w.WriteUInt(Tick);
+            w.WriteByte((byte)Purpose);
+            w.WriteULong(RosterDigest);
+            w.WriteVarUInt((uint)Entries.Count);
+            for (int i = 0; i < Entries.Count; i++)
+            {
+                w.WriteString(EntityTypes != null && i < EntityTypes.Count ? EntityTypes[i] : string.Empty);
+                w.WriteByte(EntryFlags != null && i < EntryFlags.Count ? EntryFlags[i] : (byte)0);
+                var full = Entries[i];
+                full.FieldMask = EntityStateEntry.Fields.Full;
+                full.Write(w);
+            }
+        }
+
+        public static RuntimeBaselineMsg Read(NetReader r)
+        {
+            var msg = new RuntimeBaselineMsg
+            {
+                RequestId = r.ReadUInt(),
+                SourceSlot = r.ReadByte(), TargetSlot = r.ReadByte(),
+                SegmentX = r.ReadInt(), SegmentY = r.ReadInt(),
+                SourceEpoch = r.ReadUInt(), TargetEpoch = r.ReadUInt(), Tick = r.ReadUInt(),
+                Purpose = (RuntimeBaselinePurpose)r.ReadByte(),
+                RosterDigest = r.ReadULong(),
+            };
+            int count = (int)r.ReadVarUInt();
+            msg.Entries = new System.Collections.Generic.List<EntityStateEntry>(count);
+            msg.EntityTypes = new System.Collections.Generic.List<string>(count);
+            msg.EntryFlags = new System.Collections.Generic.List<byte>(count);
+            for (int i = 0; i < count; i++)
+            {
+                msg.EntityTypes.Add(r.ReadString());
+                msg.EntryFlags.Add(r.ReadByte());
+                msg.Entries.Add(EntityStateEntry.Read(r));
+            }
+            return msg;
+        }
+    }
+
+    public struct RuntimeBaselineAckMsg
+    {
+        public uint RequestId;
+        public byte TargetSlot;
+        public int SegmentX, SegmentY;
+        public uint TargetEpoch;
+        public RuntimeBaselinePurpose Purpose;
+        public ulong RosterDigest;
+        public bool Installed;
+        public int ExpectedCount;
+        public int MaterializedCount;
+        public System.Collections.Generic.List<int> MissingNetIds;
+
+        public bool Complete => Installed && MaterializedCount == ExpectedCount
+            && (MissingNetIds == null || MissingNetIds.Count == 0);
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.RuntimeBaselineAck);
+            w.WriteUInt(RequestId); w.WriteByte(TargetSlot);
+            w.WriteInt(SegmentX); w.WriteInt(SegmentY); w.WriteUInt(TargetEpoch);
+            w.WriteByte((byte)Purpose);
+            w.WriteULong(RosterDigest);
+            w.WriteBool(Installed);
+            w.WriteVarUInt((uint)ExpectedCount);
+            w.WriteVarUInt((uint)MaterializedCount);
+            int missing = MissingNetIds?.Count ?? 0;
+            w.WriteVarUInt((uint)missing);
+            for (int i = 0; i < missing; i++) w.WriteVarUInt((uint)MissingNetIds[i]);
+        }
+
+        public static RuntimeBaselineAckMsg Read(NetReader r)
+        {
+            var msg = new RuntimeBaselineAckMsg
+            {
+                RequestId = r.ReadUInt(), TargetSlot = r.ReadByte(),
+                SegmentX = r.ReadInt(), SegmentY = r.ReadInt(), TargetEpoch = r.ReadUInt(),
+                Purpose = (RuntimeBaselinePurpose)r.ReadByte(),
+                RosterDigest = r.ReadULong(),
+                Installed = r.ReadBool(),
+                ExpectedCount = (int)r.ReadVarUInt(),
+                MaterializedCount = (int)r.ReadVarUInt(),
+            };
+            int missing = (int)r.ReadVarUInt();
+            msg.MissingNetIds = new System.Collections.Generic.List<int>(missing);
+            for (int i = 0; i < missing; i++) msg.MissingNetIds.Add((int)r.ReadVarUInt());
+            return msg;
+        }
+    }
+
+    public struct DirectRouteMsg
+    {
+        public byte OwnerSlot;
+        public byte TargetSlot;
+        public int SegmentX, SegmentY;
+        public uint Epoch;
+        public bool Enabled;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.DirectRoute);
+            w.WriteByte(OwnerSlot); w.WriteByte(TargetSlot);
+            w.WriteInt(SegmentX); w.WriteInt(SegmentY); w.WriteUInt(Epoch); w.WriteBool(Enabled);
+        }
+
+        public static DirectRouteMsg Read(NetReader r) => new DirectRouteMsg
+        {
+            OwnerSlot = r.ReadByte(), TargetSlot = r.ReadByte(),
+            SegmentX = r.ReadInt(), SegmentY = r.ReadInt(), Epoch = r.ReadUInt(), Enabled = r.ReadBool(),
+        };
+    }
+
+    public struct DirectRoutePulseMsg
+    {
+        public byte OwnerSlot;
+        public byte TargetSlot;
+        public int SegmentX, SegmentY;
+        public uint Epoch;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.DirectRoutePulse);
+            w.WriteByte(OwnerSlot); w.WriteByte(TargetSlot);
+            w.WriteInt(SegmentX); w.WriteInt(SegmentY); w.WriteUInt(Epoch);
+        }
+
+        public static DirectRoutePulseMsg Read(NetReader r) => new DirectRoutePulseMsg
+        {
+            OwnerSlot = r.ReadByte(), TargetSlot = r.ReadByte(),
+            SegmentX = r.ReadInt(), SegmentY = r.ReadInt(), Epoch = r.ReadUInt(),
+        };
+    }
+
+    public struct EntityBoundaryHandoffMsg
+    {
+        public byte SourceSlot;
+        public byte TargetSlot;
+        public int FromX, FromY, ToX, ToY;
+        public uint FromEpoch, ToEpoch;
+        public EntityStateEntry Entry;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EntityBoundaryHandoff);
+            w.WriteByte(SourceSlot); w.WriteByte(TargetSlot);
+            w.WriteInt(FromX); w.WriteInt(FromY); w.WriteUInt(FromEpoch);
+            w.WriteInt(ToX); w.WriteInt(ToY); w.WriteUInt(ToEpoch);
+            var full = Entry; full.FieldMask = EntityStateEntry.Fields.Full; full.Write(w);
+        }
+
+        public static EntityBoundaryHandoffMsg Read(NetReader r) => new EntityBoundaryHandoffMsg
+        {
+            SourceSlot = r.ReadByte(), TargetSlot = r.ReadByte(),
+            FromX = r.ReadInt(), FromY = r.ReadInt(), FromEpoch = r.ReadUInt(),
+            ToX = r.ReadInt(), ToY = r.ReadInt(), ToEpoch = r.ReadUInt(),
+            Entry = EntityStateEntry.Read(r),
+        };
     }
 
     public struct EntityBaselineEntry
@@ -623,7 +1045,7 @@ namespace PunkMultiverse.Protocol
         public int X, Y;
         public byte Owner;
         public uint Epoch;
-        public byte Phase; // 0 prepare, 1 commit
+        public byte Phase; // 0 prepare, 1 commit, 2 cancel
 
         public void Write(NetWriter w)
         {
@@ -637,40 +1059,155 @@ namespace PunkMultiverse.Protocol
         };
     }
 
-    public struct SegmentLeaseAckMsg
+    /// <summary>Full set of segments this peer's game is currently streaming (its EGM
+    /// activeSegments). Full-set semantics keep it idempotent and self-healing; Rev orders
+    /// reports so a stale one can never regress the host's view.</summary>
+    public struct ResidencyReportMsg
     {
-        public int X, Y;
-        public byte Owner;
-        public uint Epoch;
+        public byte Slot;
+        public uint Rev;
+        public System.Collections.Generic.List<UnityEngine.Vector2Int> Segments;
 
         public void Write(NetWriter w)
         {
-            w.WriteMsgType(MsgType.SegmentLeaseAck);
-            w.WriteInt(X); w.WriteInt(Y); w.WriteByte(Owner); w.WriteUInt(Epoch);
+            w.WriteMsgType(MsgType.ResidencyReport);
+            w.WriteByte(Slot);
+            w.WriteUInt(Rev);
+            int count = Segments?.Count ?? 0;
+            w.WriteVarUInt((uint)count);
+            for (int i = 0; i < count; i++)
+            {
+                w.WriteInt(Segments[i].x);
+                w.WriteInt(Segments[i].y);
+            }
         }
 
-        public static SegmentLeaseAckMsg Read(NetReader r) => new SegmentLeaseAckMsg
+        public static ResidencyReportMsg Read(NetReader r)
         {
-            X = r.ReadInt(), Y = r.ReadInt(), Owner = r.ReadByte(), Epoch = r.ReadUInt(),
-        };
+            var msg = new ResidencyReportMsg { Slot = r.ReadByte(), Rev = r.ReadUInt() };
+            int count = (int)r.ReadVarUInt();
+            msg.Segments = new System.Collections.Generic.List<UnityEngine.Vector2Int>(count);
+            for (int i = 0; i < count; i++)
+                msg.Segments.Add(new UnityEngine.Vector2Int(r.ReadInt(), r.ReadInt()));
+            return msg;
+        }
+    }
+
+    /// <summary>The release edge (I-10): an owner's final entity states for a segment its game
+    /// is unloading, sent BEFORE the objects are destroyed. The host stores them as canonical
+    /// dormant state, relays to every peer (host-migration input), and moves the lease to
+    /// Dormant.</summary>
+    public struct SegmentDormancyCommitMsg
+    {
+        public byte Slot;
+        public int SegmentX, SegmentY;
+        public uint Epoch;
+        public ulong RosterDigest;
+        public System.Collections.Generic.List<EntityStateEntry> Entries;
+        public System.Collections.Generic.List<byte> EntryFlags;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SegmentDormancyCommit);
+            w.WriteByte(Slot);
+            w.WriteInt(SegmentX); w.WriteInt(SegmentY);
+            w.WriteUInt(Epoch);
+            w.WriteULong(RosterDigest);
+            int count = Entries?.Count ?? 0;
+            w.WriteVarUInt((uint)count);
+            for (int i = 0; i < count; i++)
+            {
+                w.WriteByte(EntryFlags != null && i < EntryFlags.Count ? EntryFlags[i] : (byte)0);
+                var full = Entries[i];
+                full.FieldMask = EntityStateEntry.Fields.Full;
+                full.Write(w);
+            }
+        }
+
+        public static SegmentDormancyCommitMsg Read(NetReader r)
+        {
+            var msg = new SegmentDormancyCommitMsg
+            {
+                Slot = r.ReadByte(),
+                SegmentX = r.ReadInt(), SegmentY = r.ReadInt(),
+                Epoch = r.ReadUInt(),
+                RosterDigest = r.ReadULong(),
+            };
+            int count = (int)r.ReadVarUInt();
+            msg.Entries = new System.Collections.Generic.List<EntityStateEntry>(count);
+            msg.EntryFlags = new System.Collections.Generic.List<byte>(count);
+            for (int i = 0; i < count; i++)
+            {
+                msg.EntryFlags.Add(r.ReadByte());
+                msg.Entries.Add(EntityStateEntry.Read(r));
+            }
+            return msg;
+        }
+    }
+
+    /// <summary>Late-join replay of the coordinator's canonical state cache: last known state
+    /// (vitals, poses, velocities) for every entity that was ever simulated, chunked.</summary>
+    public struct DormantStateMsg
+    {
+        public ushort Start, Total;
+        public System.Collections.Generic.List<EntityStateEntry> Entries;
+        public System.Collections.Generic.List<byte> EntryFlags;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.DormantState);
+            w.WriteUShort(Start); w.WriteUShort(Total);
+            int count = Entries?.Count ?? 0;
+            w.WriteVarUInt((uint)count);
+            for (int i = 0; i < count; i++)
+            {
+                w.WriteByte(EntryFlags != null && i < EntryFlags.Count ? EntryFlags[i] : (byte)0);
+                var full = Entries[i];
+                full.FieldMask = EntityStateEntry.Fields.Full;
+                full.Write(w);
+            }
+        }
+
+        public static DormantStateMsg Read(NetReader r)
+        {
+            var msg = new DormantStateMsg { Start = r.ReadUShort(), Total = r.ReadUShort() };
+            int count = (int)r.ReadVarUInt();
+            msg.Entries = new System.Collections.Generic.List<EntityStateEntry>(count);
+            msg.EntryFlags = new System.Collections.Generic.List<byte>(count);
+            for (int i = 0; i < count; i++)
+            {
+                msg.EntryFlags.Add(r.ReadByte());
+                msg.Entries.Add(EntityStateEntry.Read(r));
+            }
+            return msg;
+        }
     }
 
     public struct KillLedgerMsg
     {
-        public System.Collections.Generic.List<int> NetIds;
+        public System.Collections.Generic.List<(int netId, uint lifetime, uint revision)> Entries;
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.KillLedger);
-            w.WriteVarUInt((uint)NetIds.Count);
-            foreach (int id in NetIds) w.WriteVarUInt((uint)id);
+            w.WriteVarUInt((uint)Entries.Count);
+            foreach (var entry in Entries)
+            {
+                w.WriteVarUInt((uint)entry.netId);
+                w.WriteVarUInt(entry.lifetime);
+                w.WriteVarUInt(entry.revision);
+            }
         }
 
         public static KillLedgerMsg Read(NetReader r)
         {
             int n = (int)r.ReadVarUInt();
-            var m = new KillLedgerMsg { NetIds = new System.Collections.Generic.List<int>(n) };
-            for (int i = 0; i < n; i++) m.NetIds.Add((int)r.ReadVarUInt());
+            var m = new KillLedgerMsg
+            {
+                Entries = new System.Collections.Generic.List<(int, uint, uint)>(n),
+            };
+            for (int i = 0; i < n; i++)
+                m.Entries.Add(((int)r.ReadVarUInt(), r.ReadVarUInt(), r.ReadVarUInt()));
             return m;
         }
     }
@@ -678,20 +1215,36 @@ namespace PunkMultiverse.Protocol
     public struct EntityKilledMsg
     {
         public int NetId;
+        public uint Lifetime;
+        public uint MutationRevision;
         public byte KillerSlot;
+        public bool HasPosition;
+        public UnityEngine.Vector2 Position;
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.EntityKilled);
             w.WriteVarUInt((uint)NetId);
+            w.WriteVarUInt(Lifetime);
+            w.WriteVarUInt(MutationRevision);
             w.WriteByte(KillerSlot);
+            w.WriteBool(HasPosition);
+            if (HasPosition) w.WritePosition(Position);
         }
 
-        public static EntityKilledMsg Read(NetReader r) => new EntityKilledMsg
+        public static EntityKilledMsg Read(NetReader r)
         {
-            NetId = (int)r.ReadVarUInt(),
-            KillerSlot = r.ReadByte(),
-        };
+            var msg = new EntityKilledMsg
+            {
+                NetId = (int)r.ReadVarUInt(),
+                Lifetime = r.ReadVarUInt(),
+                MutationRevision = r.ReadVarUInt(),
+                KillerSlot = r.ReadByte(),
+                HasPosition = r.ReadBool(),
+            };
+            if (msg.HasPosition) msg.Position = r.ReadPosition();
+            return msg;
+        }
     }
 
     public struct ShipLifeMsg // ShipDied / ShipResurrected share the body
@@ -744,6 +1297,7 @@ namespace PunkMultiverse.Protocol
     public struct EntityFireMsg
     {
         public int NetId;
+        public uint Lifetime;
         public byte SourceSlot;               // simulator that originated this burst
         public int SegmentX, SegmentY;        // lease containing BodyPos at fire time
         public uint Epoch;                    // committed lease epoch at fire time
@@ -759,6 +1313,7 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteMsgType(MsgType.EntityFire);
             w.WriteVarUInt((uint)NetId);
+            w.WriteVarUInt(Lifetime);
             w.WriteByte(SourceSlot);
             w.WriteInt(SegmentX);
             w.WriteInt(SegmentY);
@@ -774,6 +1329,7 @@ namespace PunkMultiverse.Protocol
         public static EntityFireMsg Read(NetReader r) => new EntityFireMsg
         {
             NetId = (int)r.ReadVarUInt(),
+            Lifetime = r.ReadVarUInt(),
             SourceSlot = r.ReadByte(),
             SegmentX = r.ReadInt(),
             SegmentY = r.ReadInt(),
@@ -810,6 +1366,7 @@ namespace PunkMultiverse.Protocol
     {
         public int NetId;
         public byte OwnerSlot;
+        public uint Lifetime;
         public string EntityId;
         public UnityEngine.Vector2 Pos;
 
@@ -818,6 +1375,7 @@ namespace PunkMultiverse.Protocol
             w.WriteMsgType(MsgType.EntitySpawned);
             w.WriteVarUInt((uint)NetId);
             w.WriteByte(OwnerSlot);
+            w.WriteVarUInt(Lifetime);
             w.WriteString(EntityId);
             w.WritePosition(Pos);
         }
@@ -826,6 +1384,7 @@ namespace PunkMultiverse.Protocol
         {
             NetId = (int)r.ReadVarUInt(),
             OwnerSlot = r.ReadByte(),
+            Lifetime = r.ReadVarUInt(),
             EntityId = r.ReadString(),
             Pos = r.ReadPosition(),
         };
@@ -857,6 +1416,7 @@ namespace PunkMultiverse.Protocol
     {
         public int NetId;       // runtime id: (ownerSlot+1)<<12 | counter
         public byte OwnerSlot;
+        public uint Lifetime;
         public string EntityId; // SavablesCollection prefab key
         public UnityEngine.Vector2 Pos;
 
@@ -865,6 +1425,7 @@ namespace PunkMultiverse.Protocol
             w.WriteMsgType(MsgType.MinionSpawned);
             w.WriteVarUInt((uint)NetId);
             w.WriteByte(OwnerSlot);
+            w.WriteVarUInt(Lifetime);
             w.WriteString(EntityId);
             w.WritePosition(Pos);
         }
@@ -873,6 +1434,7 @@ namespace PunkMultiverse.Protocol
         {
             NetId = (int)r.ReadVarUInt(),
             OwnerSlot = r.ReadByte(),
+            Lifetime = r.ReadVarUInt(),
             EntityId = r.ReadString(),
             Pos = r.ReadPosition(),
         };

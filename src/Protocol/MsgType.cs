@@ -32,6 +32,7 @@
         EntitySpawned = 26, // (ch2) generic runtime entity spawn (boss adds, spawner enemies)
         ShipDash = 27,      // ship dashed (visual/audio replay on peers)
         EntityStateBundle = 28, // coalesced multi-segment snapshots, interest-routed by host
+        DirectRoutePulse = 29,  // viewer -> host: direct owner snapshot route is alive
 
         // ---- Channel 2: reliable events ----
         DamageRequest = 40, // non-authority -> authority (routed via host)
@@ -56,12 +57,27 @@
         MapDiscovered = 59, // any player permanently revealed a station/POI on the map (overdrawn icon)
 
         SegmentLease = 60,     // host -> all: prepare/commit a segment simulator + epoch
-        SegmentLeaseAck = 61,  // selected simulator -> host: prepare is installed
+        SegmentLeaseAck = 61,  // RETIRED — nothing ever sent it; commits ride RuntimeBaselineAck
         KillLedger = 62,       // host -> all: periodic canonical entity-death reconciliation
         EntityBaseline = 63,   // host -> client: canonical generation-time entity positions
         TerrainDigest = 64,    // host -> clients: canonical terrain-ledger revision/hash
         TerrainRepairRequest = 65,
         TerrainRepairChunk = 66,
+        EntityStarvedRequest = 67, // viewer -> host: visible puppet has no servicing simulator
+        EntityAuthorityPrepare = 68, // host -> candidate: prove exact netId is still instantiated
+        EntityAuthorityAck = 69,     // candidate -> host: exact netId is ready for simulation
+        PlantFruitKilled = 70,       // stable (plant netId, generated fruit id) child destruction
+        RuntimeBaselineRequest = 71, // host -> current owner: full state for interest/handoff
+        RuntimeBaseline = 72,        // owner -> target (host-routed): reliable full segment state
+        RuntimeBaselineAck = 73,     // target -> host: baseline installed; deltas/commit may begin
+        DirectRoute = 74,            // host -> owner: add/remove direct owner->viewer state route
+        EntityBoundaryHandoff = 75,  // reliable final state when a mobile entity crosses lease cells
+        DamageUnservable = 76,       // owner -> host: I own this target but have no live object;
+                                     // queue the claim and hand the segment to the attacker
+        ResidencyReport = 77,        // peer -> host: full set of segments my game is streaming
+        SegmentDormancyCommit = 78,  // owner -> host -> all: final entity states for a segment
+                                     // the owner is unloading (the release edge, I-10)
+        DormantState = 79,           // host -> rejoiner: canonical state cache replay chunks
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

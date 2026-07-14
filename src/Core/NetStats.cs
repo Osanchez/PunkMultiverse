@@ -11,7 +11,7 @@ namespace PunkMultiverse.Core
 
         public static long BytesIn, BytesOut;
         public static long MsgsIn, MsgsOut;
-        public static readonly long[] BytesInByType = new long[64]; // indexed by MsgType
+        public static readonly long[] BytesInByType = new long[128]; // indexed by MsgType
         public static int AuthFlips;    // ownership changes applied (host)
         public static int AuthReleases; // releases handled (host) / sent (client)
 

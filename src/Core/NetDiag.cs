@@ -91,6 +91,7 @@ namespace PunkMultiverse.Core
         /// <summary>"P1", or "P1(host)" for the current session host slot.</summary>
         public static string Owner(byte slot)
         {
+            if (slot == byte.MaxValue) return "dormant";
             var s = NetSession.Instance;
             return (s != null && s.HostSlot == slot) ? $"P{slot + 1}(host)" : $"P{slot + 1}";
         }

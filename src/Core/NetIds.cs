@@ -23,6 +23,10 @@ namespace PunkMultiverse.Core
     {
         private static readonly Dictionary<int, int> NetToInstance = new Dictionary<int, int>();
         private static readonly Dictionary<int, int> InstanceToNet = new Dictionary<int, int>();
+        // Logical spawn generation. Streaming a GameObject out/in does not change this value;
+        // only an authoritative reuse/replacement of a netId does. Delayed packets from an older
+        // lifetime are rejected before touching the new object.
+        private static readonly Dictionary<int, uint> Lifetimes = new Dictionary<int, uint>();
         private static Dictionary<ulong, int> _localFps;    // key (instanceId as ulong) -> instanceId
         private static readonly List<(int netId, ulong fp)> _unmatched = new List<(int, ulong)>();
         private static readonly HashSet<int> OrphanInstances = new HashSet<int>();
@@ -49,6 +53,7 @@ namespace PunkMultiverse.Core
         {
             NetToInstance.Clear();
             InstanceToNet.Clear();
+            Lifetimes.Clear();
             LastManifest = new List<ulong>();
             _localFps = null;
             _unmatched.Clear();
@@ -62,7 +67,19 @@ namespace PunkMultiverse.Core
         public static bool TryGetInstanceId(int netId, out int instanceId) => NetToInstance.TryGetValue(netId, out instanceId);
         public static bool TryGetNetId(int instanceId, out int netId) => InstanceToNet.TryGetValue(instanceId, out netId);
 
-        public static void RegisterRuntime(int netId, int instanceId)
+        public static uint LifetimeOf(int netId) => Lifetimes.TryGetValue(netId, out uint value) ? value : 1u;
+
+        public static bool LifetimeMatches(int netId, uint lifetime) => lifetime != 0 && LifetimeOf(netId) == lifetime;
+
+        public static uint NextRuntimeLifetime(int netId)
+        {
+            uint next = Lifetimes.TryGetValue(netId, out uint current) ? current + 1u : 1u;
+            if (next == 0) next = 1;
+            Lifetimes[netId] = next;
+            return next;
+        }
+
+        public static void RegisterRuntime(int netId, int instanceId, uint lifetime = 1)
         {
             // A netId must never alias two entities — remove the stale reverse mapping, or
             // authority/state/kill traffic cross-applies between the pair.
@@ -73,6 +90,7 @@ namespace PunkMultiverse.Core
             }
             NetToInstance[netId] = instanceId;
             InstanceToNet[instanceId] = netId;
+            Lifetimes[netId] = lifetime == 0 ? 1u : lifetime;
         }
 
         // ---------------------------------------------------------------- identity keys
@@ -127,6 +145,7 @@ namespace PunkMultiverse.Core
                 int instanceId = _localFps[sorted[netId]];
                 NetToInstance[netId] = instanceId;
                 InstanceToNet[instanceId] = netId;
+                Lifetimes[netId] = 1;
             }
             ManifestComplete = true;
             LastManifest = sorted;
@@ -196,6 +215,7 @@ namespace PunkMultiverse.Core
                 {
                     NetToInstance[netId] = instanceId;
                     InstanceToNet[instanceId] = netId;
+                    Lifetimes[netId] = 1;
                     _matched++;
                 }
                 else
@@ -310,6 +330,7 @@ namespace PunkMultiverse.Core
                 candidates.RemoveAt(best);
                 NetToInstance[e.NetId] = instanceId;
                 InstanceToNet[instanceId] = e.NetId;
+                Lifetimes[e.NetId] = 1;
                 OrphanInstances.Remove(instanceId);
                 resolved++;
                 Sync.EnemySync.OnResolvedOrphan(e.NetId, instanceId);

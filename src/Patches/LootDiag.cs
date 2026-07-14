@@ -28,13 +28,16 @@ namespace PunkMultiverse.Patches
         [HarmonyPatch(typeof(LootDropper), "DropLoot")]
         internal static class DropLootGuard
         {
-            private static bool Prefix(LootDropper __instance)
+            private static bool Prefix(LootDropper __instance, out DeterministicGeneration.Scope __state)
             {
+                __state = null;
                 var session = NetSession.Instance;
                 if (session == null || !NetSession.Active) return true; // single-player: unchanged
 
                 // No netId (unsynced orphan): each machine handles its own copy locally — allow.
                 if (!EnemySync.TryGetNetId(__instance, out int netId)) return true;
+                bool isPlantFruit = EnemySync.TryGetPlantFruitIdentity(__instance,
+                    out int plantNetId, out int fruitId);
 
                 // Instanced, but only where a player can actually reach it. The killer always gets
                 // their copy; so does any player standing near the death. A teammate across the
@@ -56,7 +59,10 @@ namespace PunkMultiverse.Patches
                 }
 
                 // De-dup so a re-applied / zombie death can't drop twice HERE.
-                if (!EnemySync.TryMarkLootDropped(netId))
+                bool firstDrop = isPlantFruit
+                    ? EnemySync.TryMarkPlantFruitLootDropped(plantNetId, fruitId)
+                    : EnemySync.TryMarkLootDropped(netId);
+                if (!firstDrop)
                 {
                     NetDiag.Throttled($"loot-dup-{netId}", 10f, "Loot",
                         () => $"{NetDiag.Describe(netId)} drop SUPPRESSED — already dropped here (duplicate death)");
@@ -66,8 +72,20 @@ namespace PunkMultiverse.Patches
 
                 if (NetDiag.Enabled)
                     NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} dropped loot (instanced, one per nearby player)");
+                // Pickups are per-player copies, but their CONTENTS should agree across
+                // machines: seed the roll from stable identity + this death's mutation
+                // revision so every peer's local copy rolls the same result.
+                uint revision = isPlantFruit
+                    ? EnemySync.PlantFruitRevisionOf(plantNetId, fruitId)
+                    : EnemySync.MutationRevisionOf(netId);
+                __state = DeterministicGeneration.Begin(DeterministicGeneration.Mix(
+                    session.CurrentRunSeed, isPlantFruit ? plantNetId : netId,
+                    unchecked((int)revision), isPlantFruit ? fruitId ^ 0x4C4F4F54 : 0x4C4F4F54));
                 return true;
             }
+
+            private static void Postfix(DeterministicGeneration.Scope __state)
+                => DeterministicGeneration.End(__state);
 
             // A drop is worth spawning here only if the local player is close enough to collect it.
             private const float LootReachRadius = 55f;

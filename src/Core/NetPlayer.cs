@@ -11,6 +11,10 @@
         public bool Ready;
         public bool IsLocal;
         public bool Connected = true; // false = slot reserved for a dropped player (rejoin)
+        // A real mid-run disconnect destroys the ship. The slot can only re-enter after the
+        // party unlocks another station; host migration reattachments do not set this flag.
+        public bool NeedsStationRespawn;
+        public int RespawnStationNetId;
         public bool ModsMismatch;  // plugin set differs from the host's (Warn policy marker)
         public int RttMs = -1;     // -1 = unknown
 

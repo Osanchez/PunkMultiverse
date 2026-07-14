@@ -23,6 +23,7 @@ namespace PunkMultiverse.Sync
 
         // Host-side event history for rejoin catch-up.
         private static readonly List<(int netId, uint hash)> AppliedUpgrades = new List<(int, uint)>();
+        private static readonly HashSet<ulong> AppliedUpgradeKeys = new HashSet<ulong>();
         private static readonly HashSet<int> UsedScanners = new HashSet<int>();
 
         public static List<(int netId, uint hash)> UpgradeSnapshot() => new List<(int, uint)>(AppliedUpgrades);
@@ -43,15 +44,23 @@ namespace PunkMultiverse.Sync
 
         // Catch-up ledgers accumulate on EVERY machine (not just the host) so that a client
         // promoted by host migration can serve full catch-up to rejoiners and late joiners.
-        public static void RecordUpgrade(int netId, uint hash)
+        private static ulong EventKey(int netId, uint hash) => ((ulong)(uint)netId << 32) | hash;
+
+        public static bool RecordUpgrade(int netId, uint hash)
         {
+            if (!AppliedUpgradeKeys.Add(EventKey(netId, hash))) return false;
             LatestStationNetId = netId;
             AppliedUpgrades.Add((netId, hash));
+            NetSession.Instance?.OnStationUnlocked(netId);
+            InstrumentationCounters.DurableMutationApplied();
+            return true;
         }
 
-        public static void RecordScanner(int netId)
+        public static bool RecordScanner(int netId)
         {
-            UsedScanners.Add(netId);
+            if (!UsedScanners.Add(netId)) return false;
+            InstrumentationCounters.DurableMutationApplied();
+            return true;
         }
 
         public static void Reset()
@@ -61,9 +70,11 @@ namespace PunkMultiverse.Sync
             PendingUpgrades.Clear();
             PendingScanners.Clear();
             AppliedUpgrades.Clear();
+            AppliedUpgradeKeys.Clear();
             UsedScanners.Clear();
             PendingInstruments.Clear();
             UsedInstruments.Clear();
+            UsedInstrumentKeys.Clear();
             DiscoveredEntities.Clear();
             _discoverablesByHash = null;
         }
@@ -98,7 +109,7 @@ namespace PunkMultiverse.Sync
 
         public static void ApplyStationUpgrade(StationUpgradeMsg msg)
         {
-            RecordUpgrade(msg.StationNetId, msg.UpgradeHash);
+            if (!RecordUpgrade(msg.StationNetId, msg.UpgradeHash)) return;
             if (!TryApplyUpgrade(msg.StationNetId, msg.UpgradeHash))
             {
                 if (!PendingUpgrades.TryGetValue(msg.StationNetId, out var list))
@@ -195,7 +206,7 @@ namespace PunkMultiverse.Sync
 
         public static void ApplyScannerUsed(ScannerUsedMsg msg)
         {
-            RecordScanner(msg.NetId);
+            if (!RecordScanner(msg.NetId)) return;
             if (!TryApplyScanner(msg.NetId))
             {
                 PendingScanners.Add(msg.NetId);
@@ -242,6 +253,7 @@ namespace PunkMultiverse.Sync
 
         private static readonly Dictionary<int, List<uint>> PendingInstruments = new Dictionary<int, List<uint>>();
         private static readonly List<(int netId, uint hash)> UsedInstruments = new List<(int, uint)>();
+        private static readonly HashSet<ulong> UsedInstrumentKeys = new HashSet<ulong>();
 
         public static List<(int netId, uint hash)> InstrumentSnapshot() => new List<(int, uint)>(UsedInstruments);
 
@@ -258,7 +270,9 @@ namespace PunkMultiverse.Sync
                     var name = (__0 as UnityEngine.Object)?.name;
                     if (string.IsNullOrEmpty(name)) return;
                     uint hash = DamageSync.HashName(name);
+                    if (!UsedInstrumentKeys.Add(EventKey(netId, hash))) return;
                     UsedInstruments.Add((netId, hash));
+                    InstrumentationCounters.DurableMutationApplied();
                     Writer.Reset();
                     new InstrumentUsedMsg { NetId = netId, DiscoverableHash = hash }.Write(Writer);
                     session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
@@ -273,7 +287,9 @@ namespace PunkMultiverse.Sync
 
         public static void ApplyInstrumentUsed(InstrumentUsedMsg msg)
         {
+            if (!UsedInstrumentKeys.Add(EventKey(msg.NetId, msg.DiscoverableHash))) return;
             UsedInstruments.Add((msg.NetId, msg.DiscoverableHash));
+            InstrumentationCounters.DurableMutationApplied();
             if (!TryApplyInstrument(msg.NetId, msg.DiscoverableHash))
             {
                 if (!PendingInstruments.TryGetValue(msg.NetId, out var list))
@@ -371,7 +387,8 @@ namespace PunkMultiverse.Sync
 
         public static void ApplyMapDiscovered(MapDiscoveredMsg msg)
         {
-            DiscoveredEntities.Add(msg.NetId);
+            if (!DiscoveredEntities.Add(msg.NetId)) return;
+            InstrumentationCounters.DurableMutationApplied();
             if (!NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return;
             try
             {
