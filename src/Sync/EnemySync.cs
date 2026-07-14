@@ -571,6 +571,12 @@ namespace PunkMultiverse.Sync
                 finally { PatchProfiler.Exit(PatchId.EnemyOnEntitySpawned, profile); }
             }
 
+            /// <summary>Runtime spawns lose the race: this hook runs during CreateEntity, BEFORE
+            /// MinionSync's postfix registers the netId, so the early TryGetNetId bail skipped
+            /// LiveEntities registration — the spawner then never state-synced its own spawn and
+            /// remote replicas starved frozen. The capture re-runs the alignment once the id exists.</summary>
+            internal static void Align(EntityData data) => PostfixBody(data);
+
             private static void PostfixBody(EntityData __0)
             {
                 var session = NetSession.Instance;

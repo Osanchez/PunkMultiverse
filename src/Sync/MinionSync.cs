@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using HarmonyLib;
@@ -66,6 +66,7 @@ namespace PunkMultiverse.Sync
                     uint lifetime = NetIds.NextRuntimeLifetime(netId);
                     NetIds.RegisterRuntime(netId, instanceId, lifetime);
                     EnemySync.Owners[netId] = (byte)session.LocalSlot; // we simulate it until handoff
+                    EnemySync.OnEntitySpawned.Align(data); // the spawn hook ran pre-registration — redo it
 
                     var msg = new EntitySpawnedMsg
                     {
@@ -175,6 +176,27 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // Replicas are instantiated INACTIVE (below) so prefab-active actions can't burst-fire
+        // before muting — but that means Awake hasn't run when Bind executes. EntityMapItem.Bind
+        // dereferences its Awake-cached MapIconManager and NREd, silently killing EVERY enemy or
+        // prop replica (minion prefabs carry no map icon, which is why minions still worked).
+        [HarmonyPatch(typeof(EntityMapItem), "Bind")]
+        internal static class HealInactiveMapItemBind
+        {
+            private static readonly System.Reflection.FieldInfo MimField =
+                AccessTools.Field(typeof(EntityMapItem), "mapIconManager");
+
+            private static void Prefix(EntityMapItem __instance)
+            {
+                try
+                {
+                    if (MimField != null && MimField.GetValue(__instance) == null)
+                        MimField.SetValue(__instance, ServiceLocator.Get<MapIconManager>());
+                }
+                catch { }
+            }
+        }
+
         // ---------------------------------------------------------------- shared replica spawning
 
         private static void SpawnReplica(int netId, uint lifetime, byte ownerSlot, string entityId, Vector2 pos, bool wireOwnerShip)
@@ -230,7 +252,10 @@ namespace PunkMultiverse.Sync
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning($"[Spawns] replica failed: {e.Message}");
+                // CreateEntity is invoked via reflection — unwrap, or the real error is invisible.
+                var real = e is System.Reflection.TargetInvocationException tie && tie.InnerException != null
+                    ? tie.InnerException : e;
+                Plugin.Log.LogWarning($"[Spawns] replica failed for '{entityId}': {real}");
             }
         }
 
