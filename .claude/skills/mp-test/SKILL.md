@@ -102,7 +102,16 @@ Delete stale `devcmd.txt` files before launching.
   for positional tests).
 - For fire tests, send `knockback off` to BOTH instances first (per-machine flag) —
   projectile impulses otherwise shove ships off their marks and read as position noise.
-  Re-assert positions with `tp` between phases anyway.
+  Re-assert positions with `tp` between phases anyway. (Weapon RECOIL on the firing ship
+  still applies — long bursts drift the shooter; tp back between phases.)
+- Weapon/build sync: `loadout` dumps holder weapons + grid clusters for every ship —
+  puppet rows must match their owner's local row. `equip <id> [sec]` installs a weapon
+  module through the real grid path; `fire N sec` drives the secondary. `status` includes
+  `shipFireReplays` (how many remote ship shots THIS machine replayed) — the positive
+  assertion that another player's fire is visible here.
+- Never leave spawned aggro-able enemies near a parked ship while running other phases —
+  a grunt spawned 7u away chased and killed the AFK host mid-scenario once. Spawn
+  targets only when the phase needs them; prefer turrets; kill leftovers with poke.
 - Host stalls no longer kill loopback sessions (fixed after 0.1.91): a timeout-driven host
   loss reconnects in place ("treating as a host stall; reconnecting in place" → "reattached
   to new host") instead of self-promoting onto the shared port. `stall <secs>` (1-25)

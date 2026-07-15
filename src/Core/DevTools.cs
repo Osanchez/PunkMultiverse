@@ -161,7 +161,8 @@ namespace PunkMultiverse.Core
                         ? $"{ship.transform.position.x:0.0},{ship.transform.position.y:0.0}" : "none";
                     string dead = ship != null && ship.IsDead ? " DEAD" : "";
                     Out($"status v{PluginVersionInfo.Version} state={session.State} slot={session.LocalSlot} " +
-                        $"host={session.IsHost} ship={pos}{dead}");
+                        $"host={session.IsHost} ship={pos}{dead} " +
+                        $"shipFireReplays={ProjectileSync.ShipFireQueued + ProjectileSync.ShipFireLate}");
                     return;
                 }
                 case "entities":
@@ -219,19 +220,23 @@ namespace PunkMultiverse.Core
                     if (parts.Length >= 2)
                         float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out fireSecs);
                     if (fireSecs <= 0f) { _fireUntil = Time.unscaledTime; TickFire(); return; } // fire 0 = stop
+                    // Optional `sec` after the duration drives the SECONDARY holder's shooter.
+                    int argAt = 2;
+                    bool fireSec = parts.Length >= 3 && parts[2].Equals("sec", StringComparison.OrdinalIgnoreCase);
+                    if (fireSec) argAt = 3;
                     _fireTargetNetId = 0; _fireDir = Vector2.zero;
-                    if (parts.Length >= 4 && parts[2].Equals("at", StringComparison.OrdinalIgnoreCase))
-                        int.TryParse(parts[3], out _fireTargetNetId);
-                    else if (parts.Length >= 5 && parts[2].Equals("dir", StringComparison.OrdinalIgnoreCase)
-                        && float.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out float dx)
-                        && float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float dy))
+                    if (parts.Length >= argAt + 2 && parts[argAt].Equals("at", StringComparison.OrdinalIgnoreCase))
+                        int.TryParse(parts[argAt + 1], out _fireTargetNetId);
+                    else if (parts.Length >= argAt + 3 && parts[argAt].Equals("dir", StringComparison.OrdinalIgnoreCase)
+                        && float.TryParse(parts[argAt + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out float dx)
+                        && float.TryParse(parts[argAt + 2], NumberStyles.Float, CultureInfo.InvariantCulture, out float dy))
                         _fireDir = new Vector2(dx, dy).normalized;
-                    _fireShooter = ship.GetComponentInChildren<Shooter>(true);
-                    _fireWeapon = _fireShooter == null ? ship.PrimaryWeapon : null;
+                    _fireShooter = FindShooter(ship, fireSec);
+                    _fireWeapon = _fireShooter == null ? (fireSec ? ship.SecondaryWeapon : ship.PrimaryWeapon) : null;
                     if (_fireShooter == null && _fireWeapon == null) { Out("fire: no shooter/weapon on ship"); return; }
                     _fireBarrels = ship.GetComponentsInChildren<BarrelTransform>(true);
                     _fireUntil = Time.unscaledTime + fireSecs;
-                    Out($"fire: {fireSecs:0.0}s via {(_fireShooter != null ? "Shooter" : "PrimaryWeapon")}" +
+                    Out($"fire: {fireSecs:0.0}s{(fireSec ? " SECONDARY" : "")} via {(_fireShooter != null ? "Shooter" : "weapon trigger")}" +
                         (_fireTargetNetId != 0 ? $" at #{_fireTargetNetId}" : _fireDir != Vector2.zero ? $" dir {_fireDir.x:0.00},{_fireDir.y:0.00}" : ""));
                     return;
                 }
@@ -332,6 +337,73 @@ namespace PunkMultiverse.Core
                         $"{(EnemySync.OwnerOf(netId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(netId) + 1))})");
                     return;
                 }
+                case "loadout":
+                {
+                    // Weapon-sync diagnostics: every ship's holder weapons + what its module
+                    // grid says the weapon clusters hold. A puppet whose grid has a secondary
+                    // module but whose holder weapon is null = holder rebuild failed; a puppet
+                    // missing the module = grid sync never delivered.
+                    foreach (var kv in ShipSync.ShipsBySlot)
+                    {
+                        var s = kv.Value;
+                        if (s == null) continue;
+                        bool pup = s.GetComponent<RemotePuppet>() != null;
+                        string pri = "?", sec = "?", gPri = "?", gSec = "?", count = "?";
+                        try { pri = s.PrimaryWeapon != null ? WeaponName(s.PrimaryWeapon) : "none"; } catch { }
+                        try { sec = s.SecondaryWeapon != null ? WeaponName(s.SecondaryWeapon) : "none"; } catch { }
+                        try
+                        {
+                            var grid = s.ModuleGridOwner != null ? s.ModuleGridOwner.ModuleGrid : null;
+                            if (grid != null)
+                            {
+                                gPri = ClusterMain(grid, ClusterType.PrimaryWeapon);
+                                gSec = ClusterMain(grid, ClusterType.SecondaryWeapon);
+                                var mg = grid as ModuleGrid;
+                                if (mg != null) count = mg.Modules.Count.ToString();
+                            }
+                        }
+                        catch (Exception e) { gPri = $"ERR:{e.Message}"; }
+                        Out($"loadout P{kv.Key + 1}{(pup ? "(puppet)" : "(local)")}: pri={pri} sec={sec} " +
+                            $"gridPri={gPri} gridSec={gSec} modules={count}");
+                    }
+                    if (ShipSync.ShipsBySlot.Count == 0) Out("loadout: no ships");
+                    return;
+                }
+                case "equip":
+                {
+                    // Install a weapon module on the LOCAL ship's grid — the same path real
+                    // gameplay uses (grid Install → cluster refresh → holder rebuilds weapon),
+                    // so ModuleGridSync must pick it up. `equip list` enumerates ids.
+                    var ship = ShipSync.LocalShip;
+                    if (ship == null) { Out("equip: no local ship"); return; }
+                    var registry = ServiceLocator.Get<ModuleRegistry>();
+                    if (registry == null) { Out("equip: no ModuleRegistry"); return; }
+                    if (parts.Length < 2 || parts[1].Equals("list", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var names = new System.Text.StringBuilder("equip list:");
+                        foreach (var item in registry.AllItems)
+                            if (item is WeaponModuleData w) names.Append(' ').Append(w.Id);
+                        Out(names.ToString());
+                        return;
+                    }
+                    bool secondary = parts.Length >= 3 && parts[2].Equals("sec", StringComparison.OrdinalIgnoreCase);
+                    WeaponModuleData found = null;
+                    foreach (var item in registry.AllItems)
+                        if (item is WeaponModuleData w
+                            && (w.Id.Equals(parts[1], StringComparison.OrdinalIgnoreCase)
+                                || w.Id.IndexOf(parts[1], StringComparison.OrdinalIgnoreCase) >= 0))
+                        { found = w; break; }
+                    if (found == null) { Out($"equip: no weapon module matches '{parts[1]}'"); return; }
+                    var grid2 = ship.ModuleGridOwner != null ? ship.ModuleGridOwner.ModuleGrid as ModuleGrid : null;
+                    if (grid2 == null) { Out("equip: local ship has no ModuleGrid"); return; }
+                    var pos2 = secondary ? ModuleGrid.SecondaryWeaponGridPosition : ModuleGrid.PrimaryWeaponGridPosition;
+                    var module = found.DeepCopy();
+                    var existing = grid2[pos2];
+                    if (existing != null) module.CopyConnectionsFrom(existing);
+                    grid2.Install(pos2, module);
+                    Out($"equip: installed {found.Id} in {(secondary ? "SECONDARY" : "PRIMARY")} slot");
+                    return;
+                }
                 case "knockback":
                 {
                     // Harness aid: projectile impulses shove ships off their test marks, which
@@ -424,6 +496,32 @@ namespace PunkMultiverse.Core
                 return false;
             pos = rel ? origin + new Vector2(x, y) : new Vector2(x, y);
             return true;
+        }
+
+        /// <summary>The ship's shooter for the wanted holder: each Shooter is wired to one
+        /// WeaponHolder, so match by the holder's current weapon instance.</summary>
+        private static Shooter FindShooter(Ship ship, bool secondary)
+        {
+            WeaponBase want = null;
+            try { want = secondary ? ship.SecondaryWeapon : ship.PrimaryWeapon; } catch { }
+            Shooter first = null;
+            foreach (var s in ship.GetComponentsInChildren<Shooter>(true))
+            {
+                if (first == null) first = s;
+                if (want != null && s.weaponHolder != null && ReferenceEquals(s.weaponHolder.Weapon, want))
+                    return s;
+            }
+            return secondary ? null : first;
+        }
+
+        private static string WeaponName(WeaponBase w)
+            => w.TemplateData != null ? w.TemplateData.name : w.GetType().Name;
+
+        private static string ClusterMain(IModuleGrid grid, ClusterType type)
+        {
+            var cluster = grid.GetCluster(type);
+            return cluster != null && cluster.HasMainModule && cluster.MainModule != null
+                ? cluster.MainModule.Data.Id : "empty";
         }
 
         // ---------------------------------------------------------------- knockback switch

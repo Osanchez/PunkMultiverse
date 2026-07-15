@@ -149,6 +149,21 @@ Multi-part bodies must survive hard teleports intact.
 - A REAL host departure (kill the host process) should still migrate: client elects
   itself, binds the now-free port, `promoted to host (migration)`.
 
+## 14. weapon-loadout-sync (secondary/build replication) — VERIFIED 2026-07-15
+
+- Both live: `loadout` on both sides must agree for every ship (holder weapons AND grid
+  cluster ids). Then CLIENT: `equip <weaponModuleId> sec`, wait ≥6s (grid broadcast is
+  5s-gated), HOST `loadout`: the P2 puppet must show the new secondary weapon and module.
+- Then CLIENT `knockback off` (both sides) + `fire 5 sec dir 0 1`; HOST `status`:
+  `shipFireReplays` must increase (host replayed the secondary shots) with zero
+  `has no weapon on the puppet` / `replay failed` warnings.
+- Log markers: `[Grid] module grid broadcast (raw -> packed bytes)` on the owner,
+  `[Grid] applied Px's module grid` on every viewer. A `[Grid]`-silent session is the
+  historical failure mode (sync dead since inception via a bad reflection lookup —
+  masked because default builds are identical on all machines).
+- FAIL signatures: `MessageSize` send failures (grid memento outgrew compression),
+  `[Fire] Px's holder N has no weapon on the puppet`, loadout divergence after 10s.
+
 ---
 
 ### Cadence

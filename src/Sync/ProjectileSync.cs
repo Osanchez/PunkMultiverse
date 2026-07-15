@@ -146,6 +146,7 @@ namespace PunkMultiverse.Sync
         // enemy fire rates becomes a disk-log storm that reads as an FPS bug.
         private static bool _warnedEntityReplay;
         private static bool _warnedShipReplay;
+        private static float _nextNullHolderWarnAt;
 
         // ---------------------------------------------------------------- capture
 
@@ -517,7 +518,18 @@ namespace PunkMultiverse.Sync
             if (!ShipSync.ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
             if (ship.GetComponent<RemotePuppet>() == null) return;
             var weapon = GetHolderWeapon(ship, msg.Holder);
-            if (weapon == null) return;
+            if (weapon == null)
+            {
+                // The owner fired a weapon this puppet doesn't have — its module grid hasn't
+                // (or never) arrived. Was a silent return; that hid a dead ModuleGridSync.
+                if (Time.unscaledTime >= _nextNullHolderWarnAt)
+                {
+                    _nextNullHolderWarnAt = Time.unscaledTime + 5f;
+                    Plugin.Log.LogWarning($"[Fire] P{msg.Slot + 1}'s holder {msg.Holder} has no weapon on the puppet " +
+                        "(module grid not applied?) — shot dropped");
+                }
+                return;
+            }
 
             Vector2 pos = msg.BodyPos != Vector2.zero
                 ? (Vector2)ship.transform.position + (msg.Pos - msg.BodyPos)

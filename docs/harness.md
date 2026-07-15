@@ -38,8 +38,13 @@ entities [radius=60]        # structured dump of nearby units -> devout.txt:
 status                      # session state, slot, host?, ship position -> devout.txt
 fire <seconds>              # hold the local ship's trigger (Shooter.SetShooting — the
                             # game's own API); fire 0 stops early
-fire <seconds> at <netId>   # ...steering the barrels at that entity every frame
-fire <seconds> dir <dx dy>  # ...or in a fixed direction. Stand off 8-12u from targets
+fire <seconds> sec          # ...the SECONDARY holder's shooter instead of the primary
+fire <seconds> [sec] at <netId>   # ...steering the barrels at that entity every frame
+fire <seconds> [sec] dir <dx dy>  # ...or in a fixed direction. Stand off 8-12u from targets
+loadout                     # every ship's holder weapons + grid weapon clusters + module
+                            # count — the weapon-sync diagnostic (puppet must match owner)
+equip <id|list> [sec]       # install a weapon module on the LOCAL ship's grid (the real
+                            # gameplay path, so ModuleGridSync must replicate it)
 owner [x y | rel dx dy]     # segment + current lease owner at a position (default: ship)
                             # -> poll until "= P2" to wait for a lease commit
 probe <netId>               # the target's OWN senses: AIAgent/Vision seen/target/shooter

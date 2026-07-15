@@ -2067,6 +2067,7 @@ namespace PunkMultiverse.Core
                     _peersAwaitingRejoinState.Add(peer);
                     _nextGoLiveRecoveryAt.Remove(peer);
                 }
+                Sync.ModuleGridSync.ForceRebroadcast(); // late joiner builds our puppet from defaults
             }
         }
 
@@ -2087,6 +2088,7 @@ namespace PunkMultiverse.Core
             BroadcastLobbyState();
             RosterChanged?.Invoke();
             SendEventCatchUp(peer);
+            Sync.ModuleGridSync.ForceRebroadcast(); // their puppet of us may hold a stale build
             // Cell diffs sent during the handover gap are gone for good — stream the ledger
             // (idempotent, vicinity-first) so the reattached peer converges regardless.
             Sync.WorldSync.BeginStreamTo(this, peer, reserved.Slot, StreamFallbackPos());
@@ -2137,6 +2139,7 @@ namespace PunkMultiverse.Core
                 _peersAwaitingRejoinState.Add(peer);
                 _nextGoLiveRecoveryAt.Remove(peer);
             }
+            Sync.ModuleGridSync.ForceRebroadcast(); // rejoiner rebuilds our puppet from defaults
             // Their LEVEL_READY (handled below while we're InGame) triggers the catch-up stream.
         }
 
@@ -2490,6 +2493,19 @@ namespace PunkMultiverse.Core
                 {
                     Sync.ShipSync.RemoveRemoteShip(old.Slot, "roster disconnected");
                     Sync.EnemySync.ReassignFixedOwners(old.Slot, HostSlot);
+                }
+
+            // A peer coming (back) online builds our ship's puppet from prefab defaults —
+            // resend our module grid so its build (weapons included) matches ours.
+            foreach (var e in roster)
+                if (e.Connected && e.Slot != LocalSlot)
+                {
+                    var previous = _players[e.Slot];
+                    if (previous == null || !previous.Connected)
+                    {
+                        Sync.ModuleGridSync.ForceRebroadcast();
+                        break;
+                    }
                 }
 
             var oldRtt = _players.Where(p => p != null).ToDictionary(p => p.IdentityId, p => p.RttMs);

@@ -1,5 +1,6 @@
 ﻿using System;
-using HarmonyLib;
+using System.IO;
+using System.IO.Compression;
 using PunkMultiverse.Core;
 using PunkMultiverse.Protocol;
 using PunkMultiverse.Transport;
@@ -20,12 +21,22 @@ namespace PunkMultiverse.Sync
 
         private static float _nextCheckAt;
         private static byte[] _lastSent;
+        private static bool _warnedNoGrid;
         private static readonly NetWriter Writer = new NetWriter(4096);
 
         public static void Reset()
         {
             _nextCheckAt = 0;
             _lastSent = null;
+            _warnedNoGrid = false;
+        }
+
+        /// <summary>A peer (re)joined: its puppet of our ship was built from prefab defaults.
+        /// Drop the change gate so the next tick resends our current build to everyone.</summary>
+        public static void ForceRebroadcast()
+        {
+            _lastSent = null;
+            _nextCheckAt = 0f;
         }
 
         public static void Tick(NetSession session)
@@ -35,16 +46,31 @@ namespace PunkMultiverse.Sync
             try
             {
                 var bytes = SerializeGrid(ShipSync.LocalShip);
-                if (bytes == null) return;
+                if (bytes == null)
+                {
+                    // A silent null here is how this sync stayed dead for weeks — say so once.
+                    if (!_warnedNoGrid)
+                    {
+                        _warnedNoGrid = true;
+                        Plugin.Log.LogWarning("[Grid] local ship has no bound module grid — build sync inactive");
+                    }
+                    return;
+                }
                 if (_lastSent != null && SameBytes(bytes, _lastSent)) return;
                 _lastSent = bytes;
 
+                // The raw Odin memento is ~95KB of mostly-default slot data — over the UDP
+                // datagram limit (loopback sends failed with MessageSize). Gzip gets it down
+                // to a few KB; both ends always run the same mod version, so no back-compat.
+                var packed = Compress(bytes);
+                if (packed.Length > 60000)
+                    Plugin.Log.LogWarning($"[Grid] compressed grid is {packed.Length} bytes — nearing the datagram limit");
                 Writer.Reset();
                 Writer.WriteMsgType(MsgType.ModuleGridState);
                 Writer.WriteByte((byte)session.LocalSlot);
-                Writer.WriteBytes(bytes, 0, bytes.Length);
+                Writer.WriteBytes(packed, 0, packed.Length);
                 session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
-                Plugin.Log.LogInfo($"[Grid] module grid broadcast ({bytes.Length} bytes)");
+                Plugin.Log.LogInfo($"[Grid] module grid broadcast ({bytes.Length} -> {packed.Length} bytes)");
             }
             catch (Exception e)
             {
@@ -61,18 +87,22 @@ namespace PunkMultiverse.Sync
             if (ship.GetComponent<RemotePuppet>() == null) return;
             try
             {
-                var gridOwner = Traverse.Create(ship).Field("moduleGridOwner").GetValue();
-                var data = gridOwner != null ? Traverse.Create(gridOwner).Property("Data").GetValue() : null;
-                if (data == null) return;
-                var memento = SerializationUtility.DeserializeValueWeak(bytes, DataFormat.Binary);
-                if (memento == null) return;
-                var restore = AccessTools.Method(data.GetType(), "RestoreFromMemento");
-                if (restore == null)
+                // Typed access — the old reflection looked up a "Data" property that does not
+                // exist (SavableComponent exposes ComponentData), so this sync never ran.
+                var data = ship.ModuleGridOwner != null ? ship.ModuleGridOwner.ComponentData : null;
+                if (data == null)
                 {
-                    Plugin.Log.LogWarning("[Grid] RestoreFromMemento not found");
+                    Plugin.Log.LogWarning($"[Grid] P{slot + 1} puppet has no bound module grid — apply skipped");
                     return;
                 }
-                restore.Invoke(data, new[] { memento });
+                var memento = SerializationUtility.DeserializeValueWeak(Decompress(bytes), DataFormat.Binary)
+                    as ModuleGridOwner.Data.Memento;
+                if (memento == null)
+                {
+                    Plugin.Log.LogWarning($"[Grid] P{slot + 1} grid memento failed to deserialize ({bytes.Length} bytes)");
+                    return;
+                }
+                data.RestoreFromMemento(memento);
                 Plugin.Log.LogInfo($"[Grid] applied P{slot + 1}'s module grid ({bytes.Length} bytes)");
             }
             catch (Exception e)
@@ -83,12 +113,31 @@ namespace PunkMultiverse.Sync
 
         private static byte[] SerializeGrid(Ship ship)
         {
-            var gridOwner = Traverse.Create(ship).Field("moduleGridOwner").GetValue();
-            var data = gridOwner != null ? Traverse.Create(gridOwner).Property("Data").GetValue() : null;
+            var data = ship.ModuleGridOwner != null ? ship.ModuleGridOwner.ComponentData : null;
             if (data == null) return null;
-            var create = AccessTools.Method(data.GetType(), "CreateMemento");
-            var memento = create?.Invoke(data, null);
+            var memento = data.CreateMemento();
             return memento == null ? null : SerializationUtility.SerializeValueWeak(memento, DataFormat.Binary);
+        }
+
+        private static byte[] Compress(byte[] raw)
+        {
+            using (var ms = new MemoryStream())
+            {
+                using (var gz = new GZipStream(ms, System.IO.Compression.CompressionLevel.Fastest))
+                    gz.Write(raw, 0, raw.Length);
+                return ms.ToArray();
+            }
+        }
+
+        private static byte[] Decompress(byte[] packed)
+        {
+            using (var src = new MemoryStream(packed))
+            using (var gz = new GZipStream(src, CompressionMode.Decompress))
+            using (var dst = new MemoryStream())
+            {
+                gz.CopyTo(dst);
+                return dst.ToArray();
+            }
         }
 
         private static bool SameBytes(byte[] a, byte[] b)
