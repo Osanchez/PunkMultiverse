@@ -222,6 +222,59 @@ each window's delta attributes replays to one slot of one shooter.
   `lastSent` ticks (epoch-0 fixed groups gated behind the lease-baseline handshake);
   `owner wiring failed: Unit cannot be converted to SavableEntity`.
 
+## 17. entity-sweep (one of everything — the pre-playtest zoo)
+
+Spawns one of every combat-relevant entity in batches, alternating owner direction, and
+asserts the full lifecycle for each: replicates → wakes on hit → HP syncs → shooters fire
+VISIBLY on the other machine → damage reaches the ships' pipeline (god-shielded) → dies on
+both machines → droppers/containers drop on both machines. Replaces "find them one by one
+in a playthrough".
+
+Setup (both instances): normal harness config **plus `[Diag] SyncDiagnostics = true`**
+(loot assertions read `[Diag:Loot]` lines). After GO LIVE send `god` to BOTH instances —
+the local ship's damage blocks at the routing chokepoints while every hit still audits as
+`[CombatHit] ... applied=False` with source attribution. `god off` (or run end) restores.
+
+Algorithm (driver-side; ~1 min per batch of 4-5):
+
+1. `roster damageable` on the host → the spawn list with per-entity flags
+   (`unit/body/damageable/shooter/loot`). Skip ships and anything already covered by a
+   bespoke scenario (minions → 16). Note the batch's expected runtime netIds: host spawns
+   are `1048576 + n`, client spawns `2097152 + n`, n = that machine's running spawn count.
+2. Per batch: the OWNER instance (alternate host/client per batch) spawns 4-5 entries in a
+   ring (`spawn <id> rel ±8..12 ±4`); wait 3s.
+   - ASSERT (viewer): every id in `entities 40` with `puppet` + `owner=P<spawner>`
+     (or post-handoff owner — any owner is fine; `dormant` after 5s = FAIL).
+3. VIEWER pokes each netId once (`poke <id> 3`); wait 3s.
+   - ASSERT both sides: `entities` hp < 1.00 for each (wake + cross-machine damage);
+     a dormant target must produce `[Damage] dormant hit ... claiming` (host log) and
+     still end up hp-synced (the wake path).
+4. Fire window: wait 8s with both ships parked in range.
+   - ASSERT for every `shooter=True` entry: owner log `[FireAudit] owned #id`, viewer log
+     `[FireAudit] puppet #id`, and viewer `[ProjectileTimeline] ... replayUnarmed` DID NOT
+     grow during the window (the armed-replay regression signature). `fireUnresolved`
+     growth on the owner = capture regression (names the weapon in a warning).
+   - ASSERT ship-damage pipeline: ≥1 `[CombatHit] ... entity#<id> ... applied=False` on
+     whichever machine's ship was targeted (god shield keeps it alive AND audited).
+5. Kill pass: `poke <id> 9999` each from the VIEWER; wait 3s.
+   - ASSERT both sides: `sync <id>` → `killed=True` on host AND client.
+   - ASSERT for every `loot=True` entry: `[Diag:Loot] ... dropped loot (instanced` on
+     BOTH machines (both ships are in LootReachRadius) — this is the "container contents
+     visible on host and client" check, per the instanced-loot design (contents roll the
+     same on every machine via the deterministic per-death seed).
+6. Between batches: `entities 40` must show no leftovers; re-`tp` ships to their marks if
+   knockback drifted them (or `knockback off` both at setup).
+7. End: final `[Residency]`/`[ProjectileTimeline]`/`[Counts]` dumps from both logs; FAIL
+   on any `Exception`, `replica failed`, `no armed Shooter`, `unresolved entity weapon`.
+
+Report one row per entity: replicated / woke / hp-synced / fired-visibly / ship-hit-audited /
+killed-both / loot-both — PASS requires every applicable column.
+
+HAZARDS learned: spawn positions must be vetted open space near the ships (mid-air spawns
+fall — grounded types end ~13u below the spawn echo; assert against `entities`, not the
+spawn line); melee chasers lock aggro on first damager — poke from the machine you want
+targeted; never leave a batch aggro'd while setting up the next (kill pass is mandatory).
+
 ---
 
 ### Cadence

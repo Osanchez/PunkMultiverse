@@ -36,6 +36,17 @@ namespace PunkMultiverse.Core
         private static float _nextPollAt;
         private static bool _warnedPath;
 
+        /// <summary>Dev shield for sweep tests: the local ship's damage is BLOCKED at the
+        /// routing chokepoints (DamageSync), so every incoming hit still logs its
+        /// [CombatHit] audit line with source attribution (applied=False) — the test proves
+        /// enemy damage reaches the player pipeline without ever losing the test ship.</summary>
+        internal static bool GodMode { get; private set; }
+
+        internal static void Reset()
+        {
+            GodMode = false;
+        }
+
         // fire <seconds>: hold the local ship's trigger via the game's own Shooter API
         // (SetShooting — what every AI ShootAction uses); weapons without a Shooter get the
         // IsTriggerPulled+Warmup fallback. Driven every frame, independent of the poll gate.
@@ -154,6 +165,44 @@ namespace PunkMultiverse.Core
                 case "say":
                     Out($"say: {line.Substring(3).Trim()}");
                     return;
+                case "god":
+                {
+                    GodMode = parts.Length < 2 || !parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
+                    Out($"god {(GodMode ? "ON" : "OFF")} — local ship damage " +
+                        (GodMode ? "blocked at the routing chokepoints (hits still audit as [CombatHit] applied=False)"
+                                 : "back to normal"));
+                    return;
+                }
+                case "roster":
+                {
+                    // Every spawnable entity with the classification the sweep scenario needs:
+                    // what to spawn, and which assertions apply (fire audit only for shooters,
+                    // loot lines only for droppers, kill sync for anything damageable).
+                    var egm = ServiceLocator.Get<EntityGameObjectManager>();
+                    var dict = Traverse.Create(egm).Field("entityPrefabDictionary").GetValue()
+                        as System.Collections.Generic.Dictionary<string, SavableEntity>;
+                    if (dict == null) { Out("roster: prefab dictionary unavailable"); return; }
+                    string filter = parts.Length >= 2 ? parts[1].ToLowerInvariant() : null;
+                    int listed = 0;
+                    foreach (var kv in System.Linq.Enumerable.OrderBy(dict, item => item.Key))
+                    {
+                        var prefab = kv.Value;
+                        if (prefab == null) continue;
+                        bool unit = prefab.GetComponent<Unit>() != null;
+                        bool body = prefab.GetComponent<Rigidbody2D>() != null;
+                        bool damageable = prefab.GetComponentInChildren<DamagableResource>(true) != null
+                                          || prefab.GetComponentInChildren<Health>(true) != null;
+                        bool shooter = prefab.GetComponentInChildren<Shooter>(true) != null;
+                        bool loot = prefab.GetComponentInChildren<LootDropper>(true) != null;
+                        if (filter == "unit" && !unit) continue;
+                        if (filter == "damageable" && !damageable) continue;
+                        listed++;
+                        Out($"roster {kv.Key} unit={unit} body={body} damageable={damageable} " +
+                            $"shooter={shooter} loot={loot}");
+                    }
+                    Out($"roster: {listed} entries");
+                    return;
+                }
                 case "status":
                 {
                     var ship = ShipSync.LocalShip;
@@ -201,7 +250,10 @@ namespace PunkMultiverse.Core
                         byte owner = netId != 0 ? EnemySync.OwnerOf(netId) : (byte)255;
                         bool puppet = unit.GetComponent<RemoteEntityPuppet>() != null
                                       || unit.GetComponent<RemotePuppet>() != null;
+                        // Root first, then children — Unit_Hiver-class entities keep health on
+                        // a sub-part and read hp=-1.00 with the root-only lookup.
                         var dr = unit.GetComponent<DamagableResource>();
+                        if (dr == null) dr = unit.GetComponentInChildren<DamagableResource>(true);
                         float hp = -1f;
                         try { if (dr != null && dr.MaxHealth > 0) hp = dr.CurrentHealth / dr.MaxHealth; } catch { }
                         byte fire = UnitStatus.ReadFireState(unit);

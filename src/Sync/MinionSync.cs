@@ -242,6 +242,19 @@ namespace PunkMultiverse.Sync
                     created = AccessTools.Method(typeof(EntityGameObjectManager), "CreateEntity")
                         .Invoke(egm, new object[] { prefab, pos });
                 }
+                catch (Exception bindFailure)
+                {
+                    // Some components can only Bind AFTER Awake ran (Shield.Setup NREs on
+                    // inactive instantiation — caught live: Enemy_Turret_Seeker existed on the
+                    // owner and NOWHERE else). The vanilla spawn order is active-then-Bind, so
+                    // retry the vanilla way and mute immediately after — a one-frame action
+                    // window is recoverable, a missing entity is a permanent divergence.
+                    prefabGo.SetActive(prefabWasActive);
+                    Plugin.Log.LogWarning($"[Spawns] inactive replica bind failed for '{entityId}' " +
+                        $"({(bindFailure.InnerException ?? bindFailure).GetType().Name}) — retrying active");
+                    created = AccessTools.Method(typeof(EntityGameObjectManager), "CreateEntity")
+                        .Invoke(egm, new object[] { prefab, pos });
+                }
                 finally
                 {
                     prefabGo.SetActive(prefabWasActive);

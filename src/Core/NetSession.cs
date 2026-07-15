@@ -378,6 +378,7 @@ namespace PunkMultiverse.Core
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
             Sync.MapShareSync.Reset();
+            DevTools.Reset();
             AuthorityManager.Reset();
             NetDiag.Reset();
             NetIds.Reset();
@@ -848,6 +849,7 @@ namespace PunkMultiverse.Core
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
             Sync.MapShareSync.Reset();
+            DevTools.Reset();
             AuthorityManager.Reset();
             NetDiag.Reset();
             NetIds.Reset();
@@ -1204,6 +1206,7 @@ namespace PunkMultiverse.Core
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
             Sync.MapShareSync.Reset();
+            DevTools.Reset();
             AuthorityManager.Reset();
             NetDiag.Reset();
             NetIds.Reset();
@@ -1815,11 +1818,17 @@ namespace PunkMultiverse.Core
                     if (IsHost)
                     {
                         var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
-                        if (sender == null || !Sync.EnemySync.IsDurableEventAuthorized(killed.NetId, sender.Slot))
-                        {
-                            InstrumentationCounters.UnauthorizedMutationDropped();
-                            break;
-                        }
+                        if (sender == null) break;
+                        // Do NOT gate kills on CURRENT ownership: a kill legitimately sent by
+                        // the owner races its own release/handoff/dormancy, and a dropped kill
+                        // is a PERMANENT divergence (the kill ledger only heals host->client;
+                        // nothing heals a host-side miss — caught live by the entity sweep:
+                        // dead-on-client, alive-on-host after an ownership flip). Lifetime,
+                        // revision monotonicity, and the KilledNetIds dedup inside
+                        // ApplyEntityKilled already reject stale/duplicate kills.
+                        if (Sync.EnemySync.OwnerOf(killed.NetId) != sender.Slot && NetDiag.Enabled)
+                            NetDiag.Log("Auth", $"accepting kill #{killed.NetId} from " +
+                                $"P{sender.Slot + 1} past an ownership transition");
                     }
                     if (Sync.EnemySync.ApplyEntityKilled(killed))
                         RelayToOthers(peer, channel, reliable: true);
@@ -1828,15 +1837,11 @@ namespace PunkMultiverse.Core
                 case MsgType.PlantFruitKilled:
                 {
                     var killed = PlantFruitKilledMsg.Read(_reader);
-                    if (IsHost)
-                    {
-                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
-                        if (sender == null || !Sync.EnemySync.IsDurableEventAuthorized(killed.PlantNetId, sender.Slot))
-                        {
-                            InstrumentationCounters.UnauthorizedMutationDropped();
-                            break;
-                        }
-                    }
+                    if (IsHost && _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer) == null)
+                        break;
+                    // Same reasoning as EntityKilled: kills race ownership transitions, and the
+                    // fruit tombstone machinery (revision + KilledPlantFruits dedup) already
+                    // rejects stale/duplicate events.
                     if (Sync.EnemySync.ApplyPlantFruitKilled(killed))
                         RelayToOthers(peer, channel, reliable: true);
                     break;

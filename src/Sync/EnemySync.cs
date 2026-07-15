@@ -3044,10 +3044,9 @@ namespace PunkMultiverse.Sync
             return true;
         }
 
-        internal static bool IsDurableEventAuthorized(int netId, byte senderSlot)
-        {
-            return OwnerOf(netId) == senderSlot;
-        }
+        // (IsDurableEventAuthorized removed: gating kills on receive-time ownership dropped
+        // legitimate owner kills that raced their own release/handoff — permanent divergence.
+        // Boundary handoffs keep their own dedicated validation.)
 
         private static bool _warnedDataDestroy;
 

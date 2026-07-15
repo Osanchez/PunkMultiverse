@@ -147,6 +147,7 @@ namespace PunkMultiverse.Sync
             private static bool PrefixBody(DamagableResource __instance, Damage __0)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
+                if (IsGodShieldedLocalShip(__instance)) return false; // dev sweep: audit-only hit
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId))
                 {
                     NoteLocalDamage(__instance); // I simulate it and I'm hitting it → I'm the attacker
@@ -190,6 +191,7 @@ namespace PunkMultiverse.Sync
             private static bool PrefixBody(DamagableResource __instance, IReadOnlyList<Damage> __0)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
+                if (IsGodShieldedLocalShip(__instance)) return false; // dev sweep: audit-only hit
                 if (!TryGetRemoteTarget(__instance, out bool isEntity, out byte slot, out int netId))
                 {
                     NoteLocalDamage(__instance);
@@ -304,6 +306,7 @@ namespace PunkMultiverse.Sync
             private static bool PrefixBody(HealthBase __instance)
             {
                 if (!NetSession.Active) return true;
+                if (IsGodShieldedLocalShip(__instance)) return false; // dev sweep shield
                 if (__instance.GetComponent<RemotePuppet>() != null
                     || __instance.GetComponent<RemoteEntityPuppet>() != null) return false;
                 var hold = __instance.GetComponent<PropPuppet>();
@@ -318,11 +321,22 @@ namespace PunkMultiverse.Sync
             private static bool Prefix(DamagableResource __instance)
             {
                 if (!NetSession.Active || _applyingRemote) return true;
+                if (IsGodShieldedLocalShip(__instance)) return false;
                 if (__instance.GetComponent<RemotePuppet>() != null
                     || __instance.GetComponent<RemoteEntityPuppet>() != null) return false;
                 var hold = __instance.GetComponent<PropPuppet>();
                 return hold == null || !hold.Hold;
             }
+        }
+
+        /// <summary>Dev-sweep god shield: blocks damage to the LOCAL ship only, and only while
+        /// the `god` dev command armed it. Sits after the audit capture, so every blocked hit
+        /// still logs [CombatHit] applied=False with full source attribution.</summary>
+        private static bool IsGodShieldedLocalShip(Component victim)
+        {
+            if (!Core.DevTools.GodMode) return false;
+            var local = ShipSync.LocalShip;
+            return local != null && victim != null && victim.GetComponentInParent<Ship>() == local;
         }
 
         private static void SendDamageRequest(bool isEntity, byte targetSlot, int targetNetId, Damage damage)
@@ -406,7 +420,11 @@ namespace PunkMultiverse.Sync
                         if (egm.TryGetSavableEntity(instanceId, out var se) && se != null)
                         {
                             spawnedHere = true;
+                            // Root first, then children: some entities (Unit_Hiver) keep their
+                            // DamagableResource on a sub-part — the root-only lookup made them
+                            // permanently immune to routed teammate damage.
                             dr = se.GetComponent<DamagableResource>();
+                            if (dr == null) dr = se.GetComponentInChildren<DamagableResource>(true);
                         }
                     }
                     catch { }

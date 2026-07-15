@@ -60,6 +60,11 @@ sync <netId>                # one line of sync truth for one entity on THIS mach
                             # Run on BOTH sides to bisect owner-vs-viewer in one step.
 knockback off|on            # suppress projectile impulses ON THIS MACHINE — fire tests
                             # stop shoving ships off their marks (send to BOTH instances)
+god [on|off]                # dev shield: local ship damage blocks at the routing
+                            # chokepoints; every hit still audits as [CombatHit]
+                            # applied=False with source — sweep tests survive the zoo
+roster [unit|damageable]    # every spawnable entityId with class flags
+                            # (unit/body/damageable/shooter/loot) -> devout.txt
 stall <secs>                # freeze the main thread 1-25s: reproduces a load/GC stall
                             # (exercises the loopback reconnect-in-place path)
 autofly <seconds>           # re-arm scripted flight mid-run
