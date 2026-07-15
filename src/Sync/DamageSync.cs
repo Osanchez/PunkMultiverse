@@ -418,9 +418,7 @@ namespace PunkMultiverse.Sync
                     // (they have it spawned; their shot just landed on it).
                     if (session.IsHost)
                     {
-                        PendingDormantDamage.Add((msg, UnityEngine.Time.unscaledTime));
-                        Core.InstrumentationCounters.DormantDamageQueued();
-                        Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
+                        QueueDormantClaim(msg);
                     }
                     else
                     {
@@ -506,6 +504,37 @@ namespace PunkMultiverse.Sync
             // actually reach the claim path (and OnDormantHit wakes them for the attacker).
             Plugin.Log.LogInfo($"[Damage] dormant hit on #{msg.TargetNetId} — claiming its segment for P{msg.AttackerSlot + 1}");
             Core.AuthorityManager.OnDormantHit(msg.TargetNetId, msg.AttackerSlot);
+            // The segment claim alone died in the field (dormantDamage=16 queued / 0 replayed,
+            // 12 TTL drops in one playtest): the forced grant NACKs whenever the host's
+            // canonical position maps the target to a segment the attacker isn't streaming.
+            // The attacker's possession is per-ENTITY proof, so wake per entity as well —
+            // whichever path commits first drains the claim.
+            EnemySync.ApplyStarvedOwnershipRequest(msg.TargetNetId, msg.AttackerSlot, session, wake: true);
+        }
+
+        /// <summary>Host: a per-entity authority assignment just committed — drain any queued
+        /// dormant claims for that entity to its new simulator (segment commits have their own
+        /// drain; per-entity promotions never match a segment key).</summary>
+        internal static void OnEntityAssigned(int netId, byte owner, NetSession session)
+        {
+            if (session == null || !session.IsHost || PendingDormantDamage.Count == 0) return;
+            ulong peer = 0;
+            foreach (var p in session.Players)
+                if (p != null && p.Connected && p.Slot == owner) { peer = p.PeerId; break; }
+            for (int i = 0; i < PendingDormantDamage.Count;)
+            {
+                var msg = PendingDormantDamage[i].msg;
+                if (msg.TargetNetId != netId) { i++; continue; }
+                PendingDormantDamage.RemoveAt(i);
+                if (owner == session.LocalSlot) ApplyDamageRequest(msg, true);
+                else if (peer != 0)
+                {
+                    msg.Replay = true; // every peer already saw the original RequestId
+                    Writer.Reset(); msg.Write(Writer);
+                    session.SendToPeer(peer, NetChannel.Combat, Writer.ToSegment(), reliable: true);
+                }
+                Core.InstrumentationCounters.DormantDamageReplayed();
+            }
         }
 
         /// <summary>Host: an owner reported it cannot serve a damage claim (no live object).

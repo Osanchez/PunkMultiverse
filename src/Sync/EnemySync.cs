@@ -627,9 +627,37 @@ namespace PunkMultiverse.Sync
                 }
                 if (session.State != SessionState.InGame) return;
                 try { ApplyOwnership(netId, __0.instanceId); } catch { }
+                try { ApplyCanonicalState(netId, __0.instanceId); } catch { }
                 try { ProgressionSync.ApplyPendingFor(netId); } catch { }
                 try { HookSync.ApplyPendingFor(netId); } catch { }
             }
+        }
+
+        /// <summary>I-7 at materialization: a freshly streamed object adopts the canonical
+        /// store's last-simulated vitals/pose when one exists. Direct dormant activation no
+        /// longer sends a baseline (the store is already replicated), so this is where a
+        /// half-dead enemy's HP survives its segment being unloaded and re-entered.</summary>
+        private static void ApplyCanonicalState(int netId, int instanceId)
+        {
+            if (!FullState.TryGetValue(netId, out var entry)
+                || !NetIds.LifetimeMatches(netId, entry.Lifetime)) return;
+            if (FullStateOrigins.TryGetValue(netId, out var origin)
+                && origin == BaselineEntryOrigin.Generation) return; // a guess, not a record
+            if (!LiveEntities.TryGetValue(netId, out var se) || se == null) return;
+            var rb = se.GetComponent<Rigidbody2D>();
+            if (rb != null && Vector2.Distance(rb.position, entry.Pos) > 0.25f)
+                RemoteEntityPuppet.TeleportWithChildren(rb, entry.Pos);
+            if (se.GetComponent<Unit>() != null)
+            {
+                UnitStatus.WriteShieldFraction(se, entry.ShieldFraction);
+                UnitStatus.WriteBurnLevel(se, entry.BurnLevel);
+            }
+            try
+            {
+                var dr = se.GetComponent<DamagableResource>();
+                if (dr != null && dr.MaxHealth > 0) dr.CurrentHealth = entry.HpFraction * dr.MaxHealth;
+            }
+            catch { }
         }
 
         /// <summary>An orphan just got adopted into a shared identity (type+position resolve):
@@ -2137,6 +2165,10 @@ namespace PunkMultiverse.Sync
                 (expired ??= new List<AuthorityManager.SegmentKey>(4)).Add(kv.Key);
             }
             if (expired == null) return;
+            // One aggregated line per sweep: a lease-churn burst used to expire many segments
+            // in one frame and each miss wrote its own synchronous log line — the disk I/O
+            // showed up as EnemySync.Watchdogs frame spikes on the machine reporting them.
+            System.Text.StringBuilder misses = null;
             foreach (var segment in expired)
             {
                 var awaited = FirstSnapshotDeadlines[segment];
@@ -2145,10 +2177,14 @@ namespace PunkMultiverse.Sync
                 // there that the committed owner should be servicing.
                 if (!AwaitingStateInSegment(segment, awaited.owner, session)) continue;
                 InstrumentationCounters.FirstSnapshotDeadlineMissed();
-                Plugin.Log.LogWarning($"[Residency] no snapshots from P{awaited.owner + 1} for segment {segment} " +
-                    $"within {FirstSnapshotDeadlineSeconds:0.#}s of epoch={awaited.epoch} commit — " +
-                    "owner may hold authority without a live simulator");
+                misses ??= new System.Text.StringBuilder(128);
+                if (misses.Length > 0) misses.Append(", ");
+                misses.Append(segment).Append("<-P").Append(awaited.owner + 1)
+                    .Append("/e").Append(awaited.epoch);
             }
+            if (misses != null)
+                Plugin.Log.LogWarning($"[Residency] no snapshots within {FirstSnapshotDeadlineSeconds:0.#}s " +
+                    $"of commit for: {misses} — owner may hold authority without a live simulator");
         }
 
         private static bool AwaitingStateInSegment(AuthorityManager.SegmentKey segment, byte owner,
@@ -2245,6 +2281,13 @@ namespace PunkMultiverse.Sync
         }
 
         public static void ApplyStarvedOwnershipRequest(int netId, byte requester, NetSession session)
+            => ApplyStarvedOwnershipRequest(netId, requester, session, wake: false);
+
+        /// <summary>wake=true is the combat path: the requester's shot just landed on its live
+        /// local object, which is stronger evidence of possession than any stability heuristic —
+        /// the observed alternative was claims queuing for 15 s and dying (dormantDamage=16/0)
+        /// while the player emptied a magazine into a frozen boss.</summary>
+        public static void ApplyStarvedOwnershipRequest(int netId, byte requester, NetSession session, bool wake)
         {
             if (!session.IsHost) return;
             if (KilledNetIds.Contains(netId)) { LogStarvedDrop(netId, "killed"); return; }
@@ -2283,7 +2326,7 @@ namespace PunkMultiverse.Sync
                         NetDiag.Log("Availability", $"declined local promotion for {NetDiag.Describe(netId)} — not-puppet");
                     return;
                 }
-                if (!IsStableAvailabilityCandidate(local, localPuppet, out _, out string reason))
+                if (!wake && !IsStableAvailabilityCandidate(local, localPuppet, out _, out string reason))
                 {
                     InstrumentationCounters.AvailabilityCandidateDeferred();
                     if (NetDiag.Enabled)
@@ -2296,9 +2339,10 @@ namespace PunkMultiverse.Sync
 
             PendingPromotions[netId] = (requester, previous, now);
             Writer.Reset();
-            new EntityAuthorityPrepareMsg { NetId = netId }.Write(Writer);
+            new EntityAuthorityPrepareMsg { NetId = netId, Wake = wake }.Write(Writer);
             session.SendToPeer(player.PeerId, NetChannel.Events, Writer.ToSegment(), reliable: true);
-            Plugin.Log.LogInfo($"[Availability] prepare {NetDiag.Describe(netId)} for P{requester + 1}; awaiting live-entity ACK");
+            Plugin.Log.LogInfo($"[Availability] prepare {NetDiag.Describe(netId)} for P{requester + 1}; " +
+                (wake ? "combat wake — " : "") + "awaiting live-entity ACK");
         }
 
         public static void ApplyAuthorityPrepare(EntityAuthorityPrepareMsg msg, NetSession session)
@@ -2310,7 +2354,11 @@ namespace PunkMultiverse.Sync
                 Plugin.Log.LogInfo($"[Availability] declined prepare for {NetDiag.Describe(msg.NetId)} — entity streamed out");
                 return;
             }
-            if (!IsStableAvailabilityCandidate(entity, puppet, out float distance, out string reason))
+            // A combat wake carries its own proof (the candidate's shot hit this object
+            // locally); the stability gates exist for starvation churn, not for hits.
+            float distance = 0f;
+            string reason = "wake";
+            if (!msg.Wake && !IsStableAvailabilityCandidate(entity, puppet, out distance, out reason))
             {
                 InstrumentationCounters.AvailabilityCandidateDeferred();
                 Plugin.Log.LogInfo($"[Availability] declined prepare for {NetDiag.Describe(msg.NetId)} — " +
@@ -2347,9 +2395,12 @@ namespace PunkMultiverse.Sync
             assign.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
             InstrumentationCounters.StarvedOwnershipPromoted();
+            // Queued dormant-damage claims for this entity finally have a simulator — the
+            // segment-commit drain never matches per-entity promotions, so drain here too.
+            DamageSync.OnEntityAssigned(netId, requester, session);
             string segment = AuthorityManager.TrySegmentOf(netId, out var key) ? key.ToString() : "unknown";
             Plugin.Log.LogWarning($"[Availability] promoted {NetDiag.Describe(netId)} segment={segment} " +
-                $"P{previous + 1}->P{requester + 1}; explicit entity authority now bypasses interest filtering");
+                $"{NetDiag.Owner(previous)}->P{requester + 1}; explicit entity authority now bypasses interest filtering");
         }
 
         private static bool IsSpawnedHere(EntityGameObjectManager egm, int netId)

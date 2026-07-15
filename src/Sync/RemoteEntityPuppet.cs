@@ -186,7 +186,11 @@ namespace PunkMultiverse.Sync
                 try { _shooter = GetComponentInChildren<Shooter>(true); } catch { }
             }
             if (_shooter == null || _barrels == null || _barrels.Length == 0) return;
-            if (!(_shooter.Weapon is HitscanWeapon beam)) return;
+            // Shooter.weapon is subscription-assigned in OnEnable — null forever on replicas
+            // muted before first activation. The holder owns the weapon either way.
+            var weapon = _shooter.Weapon;
+            if (weapon == null && _shooter.weaponHolder != null) weapon = _shooter.weaponHolder.Weapon;
+            if (!(weapon is HitscanWeapon beam)) return;
             var barrel = _barrels[0];
             if (barrel == null) return;
             try

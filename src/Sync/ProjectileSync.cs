@@ -115,9 +115,15 @@ namespace PunkMultiverse.Sync
         private const int RecentIdentityLimit = 8192;
 
         // weapon -> owning net entity, for enemy/boss fire capture (enemy weapons are stable
-        // per instance, unlike ship weapons which rebuild on grid refresh).
+        // per instance, unlike ship weapons which rebuild on grid refresh). Only successful
+        // resolutions live here; failures sit in UnresolvedRetryAt and re-resolve on a timer.
         private static readonly Dictionary<WeaponBase, (SavableEntity se, int netId)> EntityWeapons
             = new Dictionary<WeaponBase, (SavableEntity, int)>();
+        private static readonly Dictionary<WeaponBase, float> UnresolvedRetryAt
+            = new Dictionary<WeaponBase, float>();
+        private const float UnresolvedRetryInterval = 5f;
+        private static float _nextUnresolvedWarnAt;
+        private static float _nextUnarmedDumpAt;
 
         public static bool IsReplaying => _replayDepth > 0;
 
@@ -125,6 +131,9 @@ namespace PunkMultiverse.Sync
         {
             VisualProjectiles.Clear();
             EntityWeapons.Clear();
+            UnresolvedRetryAt.Clear();
+            DisposeReplayWeapons();
+            _nextUnresolvedWarnAt = 0;
             _replayDepth = 0;
             _shotSequence = 0;
             _currentShot = null;
@@ -173,14 +182,14 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(WeaponBase), "DoShoot")]
         internal static class CaptureFire
         {
-            private static bool Prefix(WeaponBase __instance, out FirePatchState __state)
+            private static bool Prefix(WeaponBase __instance, IBarrel __0, out FirePatchState __state)
             {
                 var profile = PatchProfiler.Enter(PatchId.ProjectileCaptureFirePrefix);
-                try { return PrefixBody(__instance, out __state); }
+                try { return PrefixBody(__instance, __0, out __state); }
                 finally { PatchProfiler.Exit(PatchId.ProjectileCaptureFirePrefix, profile); }
             }
 
-            private static bool PrefixBody(WeaponBase weapon, out FirePatchState state)
+            private static bool PrefixBody(WeaponBase weapon, IBarrel barrel, out FirePatchState state)
             {
                 state = new FirePatchState { Holder = -1, PreviousShot = _currentShot };
                 var session = NetSession.Instance;
@@ -192,8 +201,26 @@ namespace PunkMultiverse.Sync
                 {
                     if (!EntityWeapons.TryGetValue(weapon, out var owner))
                     {
-                        owner = ResolveEntityWeapon(weapon);
-                        EntityWeapons[weapon] = owner;
+                        // Successes cache forever (enemy weapons are stable per instance).
+                        // Failures RETRY on a timer instead of caching (null,0) permanently —
+                        // that permanent cache is how a main boss whose Shooter resolved before
+                        // its identity registered went silent for the whole session, with no
+                        // counter and no log.
+                        if (!UnresolvedRetryAt.TryGetValue(weapon, out float retryAt)
+                            || Time.unscaledTime >= retryAt)
+                        {
+                            owner = ResolveEntityWeapon(weapon, barrel);
+                            if (owner.se != null)
+                            {
+                                EntityWeapons[weapon] = owner;
+                                UnresolvedRetryAt.Remove(weapon);
+                            }
+                            else
+                            {
+                                UnresolvedRetryAt[weapon] = Time.unscaledTime + UnresolvedRetryInterval;
+                                NoteUnresolvedEntityFire(weapon, barrel);
+                            }
+                        }
                     }
                     state.Entity = owner.se;
                     state.NetId = owner.netId;
@@ -280,6 +307,59 @@ namespace PunkMultiverse.Sync
             return ((uint)slot << 24) | _shotSequence;
         }
 
+        // Shooter -> replay weapon built from its holder's WeaponData when the replica's own
+        // assembly never initialized. Built exactly the way StaticWeaponHolder.Start would have.
+        private static readonly Dictionary<Shooter, WeaponBase> ReplayWeapons
+            = new Dictionary<Shooter, WeaponBase>();
+
+        private static WeaponBase GetOrBuildReplayWeapon(Shooter candidate)
+        {
+            if (ReplayWeapons.TryGetValue(candidate, out var cached) && cached != null) return cached;
+            try
+            {
+                var factory = ServiceLocator.Get<WeaponFactory>();
+                if (factory == null) return null;
+                WeaponBase built = null;
+                var holder = candidate.weaponHolder;
+                if (holder is StaticWeaponHolder staticHolder && staticHolder.WeaponData != null)
+                {
+                    // What StaticWeaponHolder.Start would have built.
+                    built = factory.Create(staticHolder.WeaponData);
+                }
+                else if (holder is ModuleSlotWeaponHolder moduleHolder)
+                {
+                    // What ModuleSlotWeaponHolder.OnGridOwnerBound -> RefreshWeapon would have
+                    // built. Its OnEnable subscription missed the bind event (replicas bind
+                    // while still inactive), so the holder never armed — this path is how
+                    // enemy weapons (module-grid based, e.g. Unit_Fly) actually work.
+                    var gridOwner = Traverse.Create(moduleHolder).Field("gridOwner").GetValue() as ModuleGridOwner;
+                    if (gridOwner == null) gridOwner = moduleHolder.GetComponentInParent<ModuleGridOwner>();
+                    var grid = gridOwner != null ? gridOwner.ModuleGrid : null;
+                    bool secondary = Traverse.Create(moduleHolder).Field("isSecondary").GetValue<bool>();
+                    var cluster = grid?.GetCluster(secondary ? ClusterType.SecondaryWeapon : ClusterType.PrimaryWeapon);
+                    if (cluster != null && cluster.HasMainModule && cluster.MainModule is WeaponModule weaponModule
+                        && weaponModule.WeaponData != null)
+                        built = factory.Create(weaponModule.WeaponData, cluster.ConnectedAndPoweredModules);
+                }
+                if (built == null) return null;
+                built.InitializeVisuals();
+                ReplayWeapons[candidate] = built;
+                return built;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void DisposeReplayWeapons()
+        {
+            foreach (var weapon in ReplayWeapons.Values)
+                if (weapon != null)
+                    try { weapon.Dispose(); } catch { }
+            ReplayWeapons.Clear();
+        }
+
         /// <summary>Replay DoShoot with the shooter's RNG seed, restoring the local stream after.</summary>
         private static void InvokeSeededDoShoot(WeaponBase weapon, FakeBarrel barrel, int seed)
         {
@@ -358,12 +438,8 @@ namespace PunkMultiverse.Sync
             SavableEntity resolvedEntity, int resolvedNetId, uint shotId)
         {
             var owner = (se: resolvedEntity, netId: resolvedNetId);
-            if (owner.se == null && !EntityWeapons.TryGetValue(weapon, out owner))
-            {
-                owner = ResolveEntityWeapon(weapon);
-                EntityWeapons[weapon] = owner; // caches failures as (null, 0) too
-            }
-            if (owner.se == null) return;
+            if (owner.se == null && !EntityWeapons.TryGetValue(weapon, out owner)) return;
+            if (owner.se == null) return; // unresolved — counted + warned in the prefix
             if (EnemySync.IsKilled(owner.netId)) return; // zombie awaiting re-kill — never announce
             // Only the entity's simulating authority announces its shots.
             if (!EnemySync.CanSimulate(owner.se, owner.netId)) return;
@@ -411,18 +487,70 @@ namespace PunkMultiverse.Sync
             session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
         }
 
-        private static (SavableEntity, int) ResolveEntityWeapon(WeaponBase weapon)
+        private static (SavableEntity, int) ResolveEntityWeapon(WeaponBase weapon, IBarrel barrel)
         {
+            // The barrel is the cheapest, most reliable anchor: it hangs off the firing
+            // sub-part, whatever spawned the weapon (Shooter, ProjectileDispenser,
+            // WeaponFactory). Fall back to the Shooter scan only when the barrel isn't a
+            // scene component (e.g. our own FakeBarrel never reaches here — _replayDepth
+            // guards — but a game-side abstract barrel could).
+            if (barrel is Component barrelComponent)
+            {
+                var resolved = ResolveNetEntityAbove(barrelComponent);
+                if (resolved.se != null) return resolved;
+            }
             foreach (var shooter in Object.FindObjectsByType<Shooter>(FindObjectsSortMode.None))
             {
                 var w = Traverse.Create(shooter).Field("weapon").GetValue() as WeaponBase;
                 if (w != weapon) continue;
-                var se = shooter.GetComponentInParent<SavableEntity>();
-                if (se != null && se.EntityData != null && Core.NetIds.TryGetNetId(se.EntityData.instanceId, out int netId))
-                    return (se, netId);
-                break;
+                var resolved = ResolveNetEntityAbove(shooter);
+                if (resolved.se != null) return resolved;
+                // keep scanning: ShootComplexAction bosses hold several Shooters and the
+                // same weapon can be reachable through more than one of them
             }
             return (null, 0);
+        }
+
+        /// <summary>The TOPMOST netId-bearing SavableEntity above a component. Multi-part
+        /// bosses mount Shooters/barrels on child sub-parts that are themselves SavableEntities
+        /// without identities — GetComponentInParent stopped at the sub-part and the whole
+        /// boss's fire vanished silently. The root is also the authority anchor, which is what
+        /// CanSimulate and the fire message need.</summary>
+        private static (SavableEntity se, int netId) ResolveNetEntityAbove(Component from)
+        {
+            SavableEntity best = null;
+            int bestNetId = 0;
+            var se = from != null ? from.GetComponentInParent<SavableEntity>() : null;
+            while (se != null)
+            {
+                if (se.EntityData != null
+                    && Core.NetIds.TryGetNetId(se.EntityData.instanceId, out int netId))
+                {
+                    best = se;
+                    bestNetId = netId;
+                }
+                var parent = se.transform.parent;
+                se = parent != null ? parent.GetComponentInParent<SavableEntity>() : null;
+            }
+            return (best, bestNetId);
+        }
+
+        /// <summary>An entity weapon fired and no net identity could be resolved: its shots
+        /// CANNOT replicate. This was a fully silent path — the exact shape of the invisible
+        /// main-boss projectiles — so it now counts and names itself.</summary>
+        private static void NoteUnresolvedEntityFire(WeaponBase weapon, IBarrel barrel)
+        {
+            InstrumentationCounters.EntityFireUnresolved();
+            if (Time.unscaledTime < _nextUnresolvedWarnAt) return;
+            _nextUnresolvedWarnAt = Time.unscaledTime + 10f;
+            string where = "<no scene barrel>";
+            if (barrel is Component c)
+            {
+                var root = c.transform.root;
+                where = $"{c.name} under {root.name}";
+            }
+            Plugin.Log.LogWarning($"[Fire] unresolved entity weapon {weapon.GetType().Name} " +
+                $"(barrel {where}) — its shots cannot replicate to other players; will retry in {UnresolvedRetryInterval:0}s");
         }
 
         public static void ReplayEntityFire(EntityFireMsg msg)
@@ -451,15 +579,64 @@ namespace PunkMultiverse.Sync
                 var egm = ServiceLocator.Get<EntityGameObjectManager>();
                 if (!egm.TryGetSavableEntity(instanceId, out var se) || se == null) return;
                 if (se.GetComponent<RemoteEntityPuppet>() == null) return; // we own it — our own echo
-                var shooter = se.GetComponentInChildren<Shooter>(true);
-                var weapon = shooter != null ? Traverse.Create(shooter).Field("weapon").GetValue() as WeaponBase : null;
-                if (weapon == null) return;
-                // The puppet is drawn where the interpolation buffer says, ~100-250 ms behind the
-                // authority — anchor the muzzle to the local body (keeping the authority's muzzle
-                // offset) so shots visibly come out of the enemy, not out of empty space.
-                Vector2 pos = msg.BodyPos != Vector2.zero
+                // Multi-shooter bosses: pick the armed Shooter whose position best matches the
+                // authority's muzzle offset. "First child Shooter" replayed every barrel of a
+                // boss through one weapon — and silently dropped ALL its fire whenever that
+                // first Shooter happened to be unarmed.
+                Vector2 muzzleWorld = msg.BodyPos != Vector2.zero
                     ? (Vector2)se.transform.position + (msg.Pos - msg.BodyPos)
                     : msg.Pos;
+                Shooter shooter = null;
+                WeaponBase weapon = null;
+                float bestScore = float.MaxValue;
+                foreach (var candidate in se.GetComponentsInChildren<Shooter>(true))
+                {
+                    // A puppet's weapon assembly frequently never initializes: Shooter.weapon is
+                    // subscription-assigned in OnEnable (muted-before-activation replicas never
+                    // subscribe), and the holder's own Start may sit on a child object only the
+                    // muted AI would have activated. Resolution order per candidate:
+                    // live field -> holder's built weapon -> BUILD ONE ourselves from the
+                    // holder's WeaponData via the game's own WeaponFactory (cached per Shooter).
+                    // This was the invisible-projectile class — 195 silent drops in one
+                    // verification run before the counter existed.
+                    var w = Traverse.Create(candidate).Field("weapon").GetValue() as WeaponBase;
+                    if (w == null && candidate.weaponHolder != null) w = candidate.weaponHolder.Weapon;
+                    if (w == null) w = GetOrBuildReplayWeapon(candidate);
+                    if (w == null) continue;
+                    float score = ((Vector2)candidate.transform.position - muzzleWorld).sqrMagnitude;
+                    if (score < bestScore)
+                    {
+                        bestScore = score;
+                        shooter = candidate;
+                        weapon = w;
+                    }
+                }
+                if (weapon == null)
+                {
+                    InstrumentationCounters.EntityFireReplayUnarmed();
+                    if (Time.unscaledTime >= _nextUnarmedDumpAt)
+                    {
+                        _nextUnarmedDumpAt = Time.unscaledTime + 10f;
+                        var detail = new System.Text.StringBuilder(160);
+                        foreach (var candidate in se.GetComponentsInChildren<Shooter>(true))
+                        {
+                            var holder = candidate.weaponHolder;
+                            detail.Append(candidate.name)
+                                .Append("[active=").Append(candidate.gameObject.activeInHierarchy)
+                                .Append(" holder=").Append(holder != null ? holder.GetType().Name : "null")
+                                .Append(" holderWeapon=").Append(holder != null && holder.Weapon != null)
+                                .Append(" data=").Append(holder is StaticWeaponHolder swh && swh.WeaponData != null)
+                                .Append("] ");
+                        }
+                        Plugin.Log.LogWarning($"[Fire] no armed Shooter on #{msg.NetId} to replay " +
+                            $"shot={msg.ShotId}: {detail}");
+                    }
+                    return;
+                }
+                // The puppet is drawn where the interpolation buffer says, ~100-250 ms behind the
+                // authority — muzzleWorld already anchors the authority's muzzle offset to the
+                // local body so shots visibly come out of the enemy, not out of empty space.
+                Vector2 pos = muzzleWorld;
                 if (Core.NetDiag.Enabled)
                     Core.NetDiag.Throttled($"replay{msg.NetId}", 1f, "Fire",
                         () => $"{Core.NetDiag.Describe(msg.NetId)} replaying remote shot={msg.ShotId} (puppet here)" +

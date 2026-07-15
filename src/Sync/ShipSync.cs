@@ -333,6 +333,42 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // A field report of "the other player flew straight through an enemy" could not be
+        // reproduced under controlled conditions and does not self-report anywhere. This 1 Hz
+        // tripwire names the exact entity, its ownership, and its puppet state the moment a
+        // remote ship's body overlaps an enemy in the wild — one log line turns the next
+        // sighting into a diagnosis.
+        private static float _nextOverlapSweepAt;
+        private static readonly Collider2D[] OverlapScratch = new Collider2D[16];
+        private static readonly Dictionary<(byte slot, int netId), float> NextOverlapLogAt
+            = new Dictionary<(byte, int), float>();
+
+        private static void SweepPuppetOverlaps()
+        {
+            if (Time.unscaledTime < _nextOverlapSweepAt) return;
+            _nextOverlapSweepAt = Time.unscaledTime + 1f;
+            foreach (var kv in ShipsBySlot)
+            {
+                var ship = kv.Value;
+                if (ship == null || ship.IsDead || ship.GetComponent<RemotePuppet>() == null) continue;
+                int hits = Physics2D.OverlapCircleNonAlloc(ship.transform.position, 1.25f, OverlapScratch);
+                for (int i = 0; i < hits; i++)
+                {
+                    var unit = OverlapScratch[i] != null ? OverlapScratch[i].GetComponentInParent<Unit>() : null;
+                    if (unit == null || unit.GetComponentInParent<Ship>() != null) continue;
+                    if (!EnemySync.TryGetNetId(unit, out int netId)) continue;
+                    var pairKey = ((byte)kv.Key, netId);
+                    if (NextOverlapLogAt.TryGetValue(pairKey, out float next) && Time.unscaledTime < next) continue;
+                    NextOverlapLogAt[pairKey] = Time.unscaledTime + 5f;
+                    var se = unit.GetComponentInParent<SavableEntity>();
+                    bool puppet = unit.GetComponentInParent<RemoteEntityPuppet>() != null;
+                    Plugin.Log.LogWarning($"[Contact] remote ship P{kv.Key + 1} overlapping " +
+                        $"#{netId} {se?.EntityData?.entityId ?? "?"} owner={Core.NetDiag.Owner(EnemySync.OwnerOf(netId))} " +
+                        $"puppet={puppet} — if no collision was visible in-game, report this line");
+                }
+            }
+        }
+
         // ---------------------------------------------------------------- snapshot TX/RX
 
         /// <summary>Called from NetSession.Update while InGame.</summary>
@@ -340,6 +376,7 @@ namespace PunkMultiverse.Sync
         {
             EnsureLatePuppets(session);
             SweepDistantCameraTargets();
+            SweepPuppetOverlaps();
             if (Time.unscaledTime < _nextSendAt) return;
             _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
 

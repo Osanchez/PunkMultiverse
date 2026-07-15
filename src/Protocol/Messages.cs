@@ -522,14 +522,20 @@ namespace PunkMultiverse.Protocol
     public struct EntityAuthorityPrepareMsg
     {
         public int NetId;
+        // Combat wake: the candidate provably possesses the object (its shot just landed on
+        // it locally), so the ordinary stability gates (distance/residence/pose age) must not
+        // block the promotion — a blocked wake is a swallowed hit on a frozen enemy.
+        public bool Wake;
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.EntityAuthorityPrepare);
             w.WriteVarUInt((uint)NetId);
+            w.WriteBool(Wake);
         }
         public static EntityAuthorityPrepareMsg Read(NetReader r) => new EntityAuthorityPrepareMsg
         {
             NetId = (int)r.ReadVarUInt(),
+            Wake = r.ReadBool(),
         };
     }
 

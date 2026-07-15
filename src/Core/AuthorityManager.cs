@@ -497,6 +497,24 @@ namespace PunkMultiverse.Core
                 uint cancelledEpoch = lease.PendingEpoch;
                 SendLease(session, key, lease.Owner, cancelledEpoch, 2);
                 EnemySync.CancelHandoffFreeze(key, cancelledEpoch);
+                lease.Pending = false;
+            }
+            if (lease.Owner == DormantOwner)
+            {
+                // Activation from Dormant: nobody holds live state to transfer — the canonical
+                // store is already replicated on every peer (dormancy commits broadcast; late
+                // joiners get DormantState), so the baseline round-trip bought nothing but two
+                // RTTs of frozen mannequins plus a NACK-retry loop whenever the target's loader
+                // hadn't finished building (the 1,898-baseline / 142-incomplete / 26-reject
+                // churn in the 0.1.96 playtest). Commit directly: entities arm as the target
+                // materializes them, and canonical state applies on spawn.
+                lease.Pending = true;
+                lease.PendingOwner = owner;
+                lease.PendingEpoch = _nextEpoch++;
+                lease.PreparedAt = Time.unscaledTime;
+                NetStats.AuthFlips++;
+                Commit(session, key, lease);
+                return;
             }
             lease.Pending = true;
             lease.PendingOwner = owner;
@@ -524,8 +542,17 @@ namespace PunkMultiverse.Core
             DamageSync.OnSegmentAuthorityCommitted(key, lease.Owner);
             InstrumentationCounters.LeaseCommitted();
             InstrumentationCounters.HandoffCommitted(duration);
-            Plugin.Log.LogInfo($"[Lease] segment {key} {NetDiag.Owner(old)}->P{lease.Owner + 1} epoch={lease.Epoch} " +
-                $"handoff={duration * 1000f:0}ms");
+            // Dormant->grant cycles run at player movement rate (2,785 lease lines in one
+            // 6-minute playtest); BepInEx log writes are synchronous, so routine cycles are
+            // diag-gated and only true peer->peer handoffs stay at Info.
+            if (old == DormantOwner)
+            {
+                if (NetDiag.Enabled)
+                    NetDiag.Log("Lease", $"segment {key} dormant->P{lease.Owner + 1} epoch={lease.Epoch}");
+            }
+            else
+                Plugin.Log.LogInfo($"[Lease] segment {key} {NetDiag.Owner(old)}->P{lease.Owner + 1} epoch={lease.Epoch} " +
+                    $"handoff={duration * 1000f:0}ms");
         }
 
         /// <summary>Host: move a segment to Dormant — nobody simulates it; the canonical store
@@ -546,8 +573,13 @@ namespace PunkMultiverse.Core
             SendLease(session, key, DormantOwner, lease.Epoch, 1);
             EnemySync.MarkSegmentOwnershipDirty(key);
             InstrumentationCounters.DormantTransition(fromCache);
-            Plugin.Log.LogInfo($"[Lease] segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch}" +
-                (fromCache ? " (coordinator-cache fallback — no dormancy commit received)" : ""));
+            // Routine unload-driven transitions are diag-gated (movement-rate volume); the
+            // cache fallback stays loud — it means an owner left without its commit.
+            if (fromCache)
+                Plugin.Log.LogInfo($"[Lease] segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch} " +
+                    "(coordinator-cache fallback — no dormancy commit received)");
+            else if (NetDiag.Enabled)
+                NetDiag.Log("Lease", $"segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch}");
         }
 
         /// <summary>Host: an owner committed its final states for a segment it is unloading. If

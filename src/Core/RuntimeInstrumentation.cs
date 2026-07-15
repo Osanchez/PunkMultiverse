@@ -372,10 +372,12 @@ namespace PunkMultiverse.Core
                 InstrumentationCounters.ResidencyReportsSent,
                 InstrumentationCounters.ResidencyReportsApplied));
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
-                "[ProjectileTimeline] mono={0:0.000}s pending={1} queued={2} late={3} muzzleCorrectionAvg={4:0.000} max={5:0.000}",
+                "[ProjectileTimeline] mono={0:0.000}s pending={1} queued={2} late={3} muzzleCorrectionAvg={4:0.000} max={5:0.000} fireUnresolved={6} replayUnarmed={7}",
                 mono, ProjectileSync.PendingShipFireCount, ProjectileSync.ShipFireQueued,
                 ProjectileSync.ShipFireLate, ProjectileSync.MuzzleCorrectionAverage,
-                ProjectileSync.MuzzleCorrectionMax));
+                ProjectileSync.MuzzleCorrectionMax,
+                InstrumentationCounters.EntityFireUnresolvedCount,
+                InstrumentationCounters.EntityFireReplayUnarmedCount));
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
                 "[PlantLedger] mono={0:0.000}s killedFruits={1} announced={2} applied={3} missingLiveChild={4}",
                 mono, EnemySync.PlantFruitKilledCount, EnemySync.PlantFruitAnnouncedCount,
@@ -626,6 +628,7 @@ namespace PunkMultiverse.Core
         private static long _residencyReportsSent, _residencyReportsApplied;
         private static long _dormancyCommitsSent, _dormancyCommitsApplied;
         private static long _dormantTransitions, _dormantTransitionsFromCache;
+        private static long _entityFireUnresolved, _entityFireReplayUnarmed;
 
         internal static int RemoteShips => Math.Max(0, Volatile.Read(ref _remoteShips));
         internal static int RemoteEntities => Math.Max(0, Volatile.Read(ref _remoteEntities));
@@ -925,6 +928,11 @@ namespace PunkMultiverse.Core
             Interlocked.Increment(ref _dormantTransitions);
             if (fromCache) Interlocked.Increment(ref _dormantTransitionsFromCache);
         }
+
+        internal static long EntityFireUnresolvedCount => Interlocked.Read(ref _entityFireUnresolved);
+        internal static long EntityFireReplayUnarmedCount => Interlocked.Read(ref _entityFireReplayUnarmed);
+        internal static void EntityFireUnresolved() => Interlocked.Increment(ref _entityFireUnresolved);
+        internal static void EntityFireReplayUnarmed() => Interlocked.Increment(ref _entityFireReplayUnarmed);
 
         private static void UpdateMax(ref long location, long value)
         {

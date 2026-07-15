@@ -377,6 +377,7 @@ namespace PunkMultiverse.Core
             Sync.ProgressionSync.Reset();
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
+            Sync.MapShareSync.Reset();
             AuthorityManager.Reset();
             NetDiag.Reset();
             NetIds.Reset();
@@ -846,6 +847,7 @@ namespace PunkMultiverse.Core
             Sync.ProgressionSync.Reset();
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
+            Sync.MapShareSync.Reset();
             AuthorityManager.Reset();
             NetDiag.Reset();
             NetIds.Reset();
@@ -1201,6 +1203,7 @@ namespace PunkMultiverse.Core
             Sync.ProgressionSync.Reset();
             Sync.ModuleGridSync.Reset();
             Sync.FogSync.Reset();
+            Sync.MapShareSync.Reset();
             AuthorityManager.Reset();
             NetDiag.Reset();
             NetIds.Reset();
