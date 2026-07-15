@@ -740,6 +740,10 @@ namespace PunkMultiverse.Sync
                 if (!FixedOwners.Contains(netId))
                     SimulationSegments[netId] = AuthorityManager.SegmentOf(se.transform.position);
                 if (puppet != null) UnityEngine.Object.Destroy(puppet);
+                // An ex-replica promoted to simulator has an unarmed weapon assembly (missed
+                // subscription events while inactive) — the "boss animates shooting but fires
+                // nothing anywhere" class. Cheap no-op for already-armed entities.
+                ProjectileSync.ArmShootersForLocalSimulation(se, netId);
             }
             else
             {

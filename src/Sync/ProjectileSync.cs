@@ -360,6 +360,67 @@ namespace PunkMultiverse.Sync
             ReplayWeapons.Clear();
         }
 
+        /// <summary>Arm every Shooter on an entity THIS machine now simulates. An ex-replica
+        /// (runtime spawn from another machine) was instantiated inactive and muted, so its
+        /// Shooter missed the WeaponChanged subscription AND its holder missed the bind event —
+        /// after an ownership transfer the promoted simulator runs full AI, plays its attack
+        /// animations, pulls the trigger... and Shooter.Update silently returns on weapon==null.
+        /// This is the "boss animates shooting but fires nothing, with me standing next to it"
+        /// class: bosses are trigger-spawned (replica path), world enemies stream through the
+        /// game's own active-then-bind order and never hit it. Rebuilds the assembly exactly
+        /// the way the missed events would have, then installs the weapon directly (event
+        /// ordering with the deferred puppet unmute is not trustworthy).</summary>
+        internal static void ArmShootersForLocalSimulation(SavableEntity se, int netId)
+        {
+            if (se == null) return;
+            try
+            {
+                int armed = 0;
+                foreach (var shooter in se.GetComponentsInChildren<Shooter>(true))
+                {
+                    var walker = Traverse.Create(shooter);
+                    if (walker.Field("weapon").GetValue() as WeaponBase != null) continue;
+                    var holder = shooter.weaponHolder;
+                    if (holder != null && holder.Weapon == null) RebuildHolderWeapon(holder);
+                    var weapon = holder != null ? holder.Weapon : null;
+                    if (weapon == null) continue;
+                    walker.Field("weapon").SetValue(weapon);
+                    armed++;
+                }
+                if (armed > 0)
+                    Plugin.Log.LogInfo($"[Fire] armed {armed} shooter(s) on #{netId} — ex-replica promoted to simulator");
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[Fire] shooter arming failed for #{netId}: {e.Message}");
+            }
+        }
+
+        private static void RebuildHolderWeapon(WeaponHolder holder)
+        {
+            if (holder is ModuleSlotWeaponHolder moduleHolder)
+            {
+                var holderWalker = Traverse.Create(moduleHolder);
+                var gridOwner = holderWalker.Field("gridOwner").GetValue() as ModuleGridOwner;
+                if (gridOwner == null) gridOwner = moduleHolder.GetComponentInParent<ModuleGridOwner>();
+                var data = gridOwner != null ? gridOwner.ComponentData : null;
+                if (data == null) return;
+                if (holderWalker.Field("weaponFactory").GetValue() == null)
+                    holderWalker.Field("weaponFactory").SetValue(ServiceLocator.Get<WeaponFactory>());
+                // Replays the bind the holder missed while inactive: resolves the weapon
+                // cluster, subscribes refreshes, creates the weapon, fires WeaponChanged.
+                AccessTools.Method(typeof(ModuleSlotWeaponHolder), "OnGridOwnerBound")
+                    ?.Invoke(moduleHolder, new object[] { data });
+            }
+            else if (holder is StaticWeaponHolder staticHolder && staticHolder.WeaponData != null)
+            {
+                var holderWalker = Traverse.Create(staticHolder);
+                if (holderWalker.Field("weaponFactory").GetValue() == null)
+                    holderWalker.Field("weaponFactory").SetValue(ServiceLocator.Get<WeaponFactory>());
+                AccessTools.Method(typeof(StaticWeaponHolder), "Start")?.Invoke(staticHolder, null);
+            }
+        }
+
         /// <summary>Replay DoShoot with the shooter's RNG seed, restoring the local stream after.</summary>
         private static void InvokeSeededDoShoot(WeaponBase weapon, FakeBarrel barrel, int seed)
         {
