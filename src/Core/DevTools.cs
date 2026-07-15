@@ -47,6 +47,23 @@ namespace PunkMultiverse.Core
             GodMode = false;
         }
 
+        /// <summary>Runs at the poll cadence while god is armed: re-assert infinite weapon
+        /// resource (respawns rebuild the ship) and refill every non-shared tank — fire tests
+        /// never run dry mid-burst, fuel-type drains included.</summary>
+        private static void TickGod()
+        {
+            if (!GodMode) return;
+            try
+            {
+                var ship = ShipSync.LocalShip;
+                var unit = ship != null ? ship.GetComponent<Unit>() : null;
+                if (unit == null) return;
+                if (!unit.HasInfiniteResource) unit.HasInfiniteResource = true;
+                unit.ComponentData?.RefillResources();
+            }
+            catch { }
+        }
+
         // fire <seconds>: hold the local ship's trigger via the game's own Shooter API
         // (SetShooting — what every AI ShootAction uses); weapons without a Shooter get the
         // IsTriggerPulled+Warmup fallback. Driven every frame, independent of the poll gate.
@@ -105,6 +122,7 @@ namespace PunkMultiverse.Core
             float now = Time.unscaledTime;
             if (now < _nextPollAt) return;
             _nextPollAt = now + 0.5f;
+            TickGod();
 
             string path;
             try { path = Path.IsPathRooted(file) ? file : Path.Combine(ModFolder.Dir, file); }
@@ -168,8 +186,17 @@ namespace PunkMultiverse.Core
                 case "god":
                 {
                     GodMode = parts.Length < 2 || !parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
+                    try
+                    {
+                        // Infinite weapon resource rides the game's own flag (Shooter checks it
+                        // before every cost gate); TickGod keeps tanks topped for fuel-type
+                        // drains and re-arms across respawns.
+                        var unit = ShipSync.LocalShip != null ? ShipSync.LocalShip.GetComponent<Unit>() : null;
+                        if (unit != null) unit.HasInfiniteResource = GodMode;
+                    }
+                    catch { }
                     Out($"god {(GodMode ? "ON" : "OFF")} — local ship damage " +
-                        (GodMode ? "blocked at the routing chokepoints (hits still audit as [CombatHit] applied=False)"
+                        (GodMode ? "blocked at the routing chokepoints (hits still audit as [CombatHit] applied=False), weapon resource infinite"
                                  : "back to normal"));
                     return;
                 }
@@ -577,22 +604,66 @@ namespace PunkMultiverse.Core
 
                     var egm = ServiceLocator.Get<EntityGameObjectManager>();
                     if (egm == null || egm.savablesCollection == null) { Out("spawn: no EGM"); return; }
+                    // Trailing "pin": freeze the spawn's position in place (rotation stays free
+                    // so turrets aim) — sweep tests stop fighting chase AI for geometry.
+                    bool pinAtSpawn = parts.Length >= 2
+                        && parts[parts.Length - 1].Equals("pin", StringComparison.OrdinalIgnoreCase);
                     foreach (var info in egm.savablesCollection.savableObjectInfos)
                     {
                         if (!string.Equals(info.entityId, parts[1], StringComparison.OrdinalIgnoreCase)) continue;
                         // CreateEntity rides MinionSync's generic runtime-spawn capture, so this
                         // spawn replicates to every peer with a proper runtime netId + authority.
-                        egm.CreateEntity(info.prefab, pos);
-                        Out($"spawned {info.entityId} at {pos.x:0.0},{pos.y:0.0}");
+                        var spawned = egm.CreateEntity(info.prefab, pos);
+                        if (pinAtSpawn && spawned != null) PinBody(spawned.GetComponent<Rigidbody2D>(), true);
+                        Out($"spawned {info.entityId} at {pos.x:0.0},{pos.y:0.0}" + (pinAtSpawn ? " (pinned)" : ""));
                         return;
                     }
                     Out($"spawn: unknown EntityId '{parts[1]}' (names are the prefab entityIds, e.g. Unit_Fly)");
+                    return;
+                }
+                case "pin":
+                {
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out int pinId))
+                    {
+                        Out("pin: usage pin <netId> [off]");
+                        return;
+                    }
+                    bool release = parts.Length >= 3 && parts[2].Equals("off", StringComparison.OrdinalIgnoreCase);
+                    if (!NetIds.TryGetInstanceId(pinId, out int pinInstance))
+                    {
+                        Out($"pin: netId {pinId} unknown");
+                        return;
+                    }
+                    var pinEgm = ServiceLocator.Get<EntityGameObjectManager>();
+                    if (pinEgm == null || !pinEgm.TryGetSavableEntity(pinInstance, out var pinSe) || pinSe == null)
+                    {
+                        Out($"pin: #{pinId} has no live object here");
+                        return;
+                    }
+                    PinBody(pinSe.GetComponent<Rigidbody2D>(), !release);
+                    bool puppetHere = pinSe.GetComponentInChildren<Sync.RemoteEntityPuppet>(true) != null;
+                    Out($"pin: #{pinId} {(release ? "released" : "position frozen (AI/aim/fire still live)")}" +
+                        (puppetHere ? $" — NOTE: this copy is a puppet; {NetDiag.Owner(EnemySync.OwnerOf(pinId))} simulates it, pin there" : ""));
                     return;
                 }
                 default:
                     Out($"unknown command '{parts[0]}' (spawn/tp/poke/entities/status/autofly/say)");
                     return;
             }
+        }
+
+        /// <summary>Freeze/release a body's position while leaving rotation (turret aim) and
+        /// every behaviour untouched — the harness's "hold still" for spawned test targets.</summary>
+        private static void PinBody(Rigidbody2D rb, bool pin)
+        {
+            if (rb == null) return;
+            if (pin)
+            {
+                rb.linearVelocity = Vector2.zero;
+                rb.angularVelocity = 0f;
+                rb.constraints |= RigidbodyConstraints2D.FreezePosition;
+            }
+            else rb.constraints &= ~RigidbodyConstraints2D.FreezePosition;
         }
 
         /// <summary>Parse "[rel] x y" starting at <paramref name="start"/>; rel is offset from

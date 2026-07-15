@@ -274,6 +274,10 @@ HAZARDS learned: spawn positions must be vetted open space near the ships (mid-a
 fall — grounded types end ~13u below the spawn echo; assert against `entities`, not the
 spawn line); melee chasers lock aggro on first damager — poke from the machine you want
 targeted; never leave a batch aggro'd while setting up the next (kill pass is mandatory).
+**Use `spawn <id> rel <x> <y> pin`** — pinned spawns hold their exact offsets (rotation
+free, AI/fire live), so batches stay geometric, `fire ... at <netId>` always connects,
+and mobile types can't scatter or chase ships across the map. `god` also grants infinite
+weapon resource, so `fire 30 at <id>` bursts never run dry.
 
 ---
 

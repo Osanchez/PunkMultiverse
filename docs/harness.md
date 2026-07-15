@@ -61,10 +61,16 @@ sync <netId>                # one line of sync truth for one entity on THIS mach
 knockback off|on            # suppress projectile impulses ON THIS MACHINE — fire tests
                             # stop shoving ships off their marks (send to BOTH instances)
 god [on|off]                # dev shield: local ship damage blocks at the routing
-                            # chokepoints; every hit still audits as [CombatHit]
-                            # applied=False with source — sweep tests survive the zoo
+                            # chokepoints (every hit still audits as [CombatHit]
+                            # applied=False with source) AND weapon resource is
+                            # infinite + tanks refill — fire forever, survive the zoo
 roster [unit|damageable]    # every spawnable entityId with class flags
                             # (unit/body/damageable/shooter/loot) -> devout.txt
+spawn <EntityId> ... pin    # trailing `pin` freezes the spawn's POSITION in place
+                            # (rotation free: turrets aim, AI/fire live) — park test
+                            # targets at exact offsets without fighting chase AI
+pin <netId> [off]           # same freeze for an already-live entity; only bites on
+                            # the machine that SIMULATES it (warns if run on a puppet)
 stall <secs>                # freeze the main thread 1-25s: reproduces a load/GC stall
                             # (exercises the loopback reconnect-in-place path)
 autofly <seconds>           # re-arm scripted flight mid-run
