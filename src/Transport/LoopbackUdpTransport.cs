@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
@@ -54,6 +54,7 @@ namespace PunkMultiverse.Transport
         private readonly Queue<PendingSend> _pacedReliable = new Queue<PendingSend>();
         private const int ReliableDatagramsPerPoll = 8;
 
+        private float _nextQueueFullWarnAt;
         private IPEndPoint _hostEndPoint;   // client mode
         private bool _connectedToHost;
         private float _lastConnectAttempt;
@@ -137,6 +138,11 @@ namespace PunkMultiverse.Transport
         private static Socket CreateSocket()
         {
             var s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp) { Blocking = false };
+            // Loopback "reliable" is paced-but-unacknowledged UDP — under sustained load the
+            // OS default receive buffer (~8-64KB) overflows and drops datagrams silently, which
+            // read as protocol bugs (observed live: ~96% of availability requests lost while a
+            // kill-ledger/combat flood ran). A big buffer makes localhost loss effectively zero.
+            try { s.ReceiveBufferSize = 4 * 1024 * 1024; s.SendBufferSize = 1024 * 1024; } catch { }
             return s;
         }
 
@@ -147,7 +153,17 @@ namespace PunkMultiverse.Transport
             if (ep == null) return false;
             if (reliable)
             {
-                if (_pacedReliable.Count >= 8192) return false;
+                if (_pacedReliable.Count >= 8192)
+                {
+                    // A silently-dropped reliable message here breaks protocol invariants
+                    // downstream (lost leases, lost availability requests) — say so, loudly.
+                    if (Time.unscaledTime >= _nextQueueFullWarnAt)
+                    {
+                        _nextQueueFullWarnAt = Time.unscaledTime + 2f;
+                        Plugin.Log.LogWarning($"[Loopback] paced reliable queue FULL ({_pacedReliable.Count}) — dropping ch{(int)channel}");
+                    }
+                    return false;
+                }
                 var frame = new byte[data.Count + 2];
                 frame[0] = FrameData;
                 frame[1] = (byte)channel;

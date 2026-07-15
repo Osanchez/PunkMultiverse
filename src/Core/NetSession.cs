@@ -1548,6 +1548,8 @@ namespace PunkMultiverse.Core
                     var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
                     if (sender != null)
                         Sync.EnemySync.ApplyStarvedOwnershipRequest(request.NetId, sender.Slot, this);
+                    else
+                        Plugin.Log.LogWarning($"[Availability] starved request for #{request.NetId} from UNKNOWN peer {peer} — dropped");
                     break;
                 }
                 case MsgType.EntityAuthorityPrepare when !IsHost:

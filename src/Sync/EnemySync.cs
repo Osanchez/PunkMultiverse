@@ -2200,22 +2200,36 @@ namespace PunkMultiverse.Sync
 
         /// <summary>Begin a two-phase promotion for one proven-live entity. A remote candidate
         /// must ACK that the concrete netId is still instantiated before authority changes.</summary>
+        // A starved request that dies silently strands the requester with a frozen, immortal
+        // puppet (observed live: 100+ requests for one entity, zero prepares, no trace of why).
+        // Every drop names its gate, throttled per entity.
+        private static readonly Dictionary<int, float> NextStarvedDropLogAt = new Dictionary<int, float>();
+
+        private static void LogStarvedDrop(int netId, string gate)
+        {
+            float now = Time.unscaledTime;
+            if (NextStarvedDropLogAt.TryGetValue(netId, out float at) && now < at) return;
+            NextStarvedDropLogAt[netId] = now + 5f;
+            Plugin.Log.LogWarning($"[Availability] DROPPED starved request for #{netId} — gate={gate}");
+        }
+
         public static void ApplyStarvedOwnershipRequest(int netId, byte requester, NetSession session)
         {
-            if (!session.IsHost || KilledNetIds.Contains(netId)
-                || !NetIds.TryGetInstanceId(netId, out _)) return;
+            if (!session.IsHost) return;
+            if (KilledNetIds.Contains(netId)) { LogStarvedDrop(netId, "killed"); return; }
+            if (!NetIds.TryGetInstanceId(netId, out _)) { LogStarvedDrop(netId, "no-instance-mapping"); return; }
             var player = session.Players.FirstOrDefault(p => p != null && p.Connected && p.Slot == requester);
-            if (player == null) return;
+            if (player == null) { LogStarvedDrop(netId, $"requester-P{requester + 1}-not-connected"); return; }
 
             float now = Time.unscaledTime;
             byte previous = OwnerOf(netId);
             // Includes already-explicit and segment-owned cases. The requester repairs a stale
             // local puppet component itself; there is no authority change to transact here.
-            if (previous == requester) return;
+            if (previous == requester) { LogStarvedDrop(netId, "requester-already-owner"); return; }
             if (LastStarvedPromotionAt.TryGetValue(netId, out float last)
-                && now - last < StarvedPromotionCooldown) return;
+                && now - last < StarvedPromotionCooldown) { LogStarvedDrop(netId, "promotion-cooldown"); return; }
             if (PendingPromotions.TryGetValue(netId, out var pending)
-                && now - pending.preparedAt < StarvedPromotionCooldown) return;
+                && now - pending.preparedAt < StarvedPromotionCooldown) { LogStarvedDrop(netId, "prepare-pending"); return; }
 
             if (requester == session.LocalSlot)
             {
