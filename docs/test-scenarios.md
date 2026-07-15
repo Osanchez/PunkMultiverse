@@ -36,18 +36,22 @@ Does a teammate-owned shooter engage a player it only knows as a puppet?
   | yes | no | no | fire-STATE sync gap |
   | yes | yes | no | fire-EVENT capture/replay gap for that weapon |
   | yes | yes | yes | working |
-- **VERDICT (reproduced 2026-07-14, row 1): enemy AI does NOT acquire puppet ships as
-  targets.** Controlled pair: a poked client-owned Enemy_Fly_Laser sat 1.2u from the
-  host's PUPPET ship for 25s with zero owned-fire lines (fire=0 throughout), while the
-  identical poke on an enemy near a REAL local ship produced fire=2 within seconds.
-  This is the user's original "silent mini boss". Fix hunt: Vision/AIAgent target
-  acquisition vs whatever differs on ship puppets (faction? muted component? layer?).
-- Working script (verified): client `tp` to fresh area → poll `owner` until `= P2`
-  (lease must COMMIT before the host arrives — nearest-resident wins otherwise; sticky
-  only protects committed owners) → `spawn` → `entities` for the netId → client retreats
-  ~60u (stays resident) → host `tp` to standoff 8-12u from the enemy (NOT point-blank —
-  projectiles spawn past the muzzle) → client `poke <netId>` to aggro → 25s window →
-  grade FireAudit pair + MarkVisual + host ship hp.
+- **FINAL VERDICT (2026-07-14, probe-verified): puppet ships are fully visible, targetable,
+  and FIRED UPON — there is no puppet-targeting bug.** Probe evidence: an owned grunt with
+  only a puppet ship in range showed `enemies=1 target=shipP2(puppet)/visible`, fired, and
+  the viewer logged the matching `puppet` FireAudit. The silent-enemy phenomenon decomposed
+  into real bugs, all fixed: (1) runtime-spawn MUTUAL-PUPPET ZOMBIE — `Owners[netId]` was
+  written but never consulted for non-minions, so a spawn landing in a foreign/dormant
+  segment became a puppet on its own spawner while the lease holder also puppeted its
+  replica: nobody simulated it (fixed 0.1.90: the spawner pulls the lease, same mechanism
+  as wake-on-hit); (2) spawn-registration race (0.1.87); (3) EntityMapItem inactive-bind
+  NRE killing replicas (0.1.87); (4) the ORIGINAL natural silent mini-boss = the
+  pre-0.1.85 dormant mannequin (frozen attack-loop animator + activation lag), fixed in
+  0.1.85. FireAudit stays armed to catch any natural counterexample.
+- Scenario rules learned: use `probe` FIRST (senses beat fire-counting); expect projectile
+  KNOCKBACK to displace ships (drift/falls near platforms are physics, not desync —
+  re-assert positions with `tp` between phases); verify spawn ownership with `probe`
+  (aiOn=False PUPPET on the spawner = the zombie signature).
 
 ## 3. debug-spawn-activation — RESOLVED
 

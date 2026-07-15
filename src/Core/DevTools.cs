@@ -101,10 +101,19 @@ namespace PunkMultiverse.Core
             string[] lines;
             try
             {
-                if (!File.Exists(path)) return;
-                lines = File.ReadAllLines(path);
+                // Consume by RENAME, not read-then-truncate: a command written between the read
+                // and the truncate was silently erased (observed live — dropped tp commands mid-
+                // scenario). Move is atomic: we either take the whole file or fail and retry;
+                // anything written after the move lands in a fresh file for the next poll.
+                string consuming = path + ".consuming";
+                if (!File.Exists(consuming)) // crash leftover from a previous poll gets drained first
+                {
+                    if (!File.Exists(path)) return;
+                    File.Move(path, consuming);
+                }
+                lines = File.ReadAllLines(consuming);
+                File.Delete(consuming);
                 if (lines.Length == 0) return;
-                File.WriteAllText(path, ""); // consumed — the harness appends fresh commands
             }
             catch (IOException) { return; } // writer holds the file — retry next poll
             catch (Exception e)
@@ -234,6 +243,70 @@ namespace PunkMultiverse.Core
                     var key = AuthorityManager.SegmentOf(pos);
                     byte o = AuthorityManager.OwnerOf(key);
                     Out($"owner ({key.X},{key.Y}) = {(o == AuthorityManager.DormantOwner ? "dormant" : "P" + (o + 1))}");
+                    return;
+                }
+                case "probe":
+                {
+                    // The enemy's own senses, straight from its AIAgent/Vision — answers "can
+                    // this enemy see anything / who is it hunting" in one line, no firing needed.
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out int netId))
+                    { Out("probe: usage probe <netId>"); return; }
+                    if (!NetIds.TryGetInstanceId(netId, out int instanceId))
+                    { Out($"probe: netId {netId} unknown"); return; }
+                    var egm = ServiceLocator.Get<EntityGameObjectManager>();
+                    if (egm == null || !egm.TryGetSavableEntity(instanceId, out var se) || se == null)
+                    { Out($"probe: #{netId} has no live object here"); return; }
+                    var ai = se.GetComponentInChildren<AIAgent>(true);
+                    var vision = se.GetComponentInChildren<Vision>(true);
+                    var shooter = se.GetComponentInChildren<Shooter>(true);
+                    var puppet = se.GetComponent<RemoteEntityPuppet>();
+                    string type = se.EntityData != null ? se.EntityData.entityId : se.name;
+                    if (ai == null || vision == null)
+                    { Out($"probe #{netId} {type}: no AIAgent/Vision{(puppet != null ? " (puppet)" : "")}"); return; }
+                    string target = "none";
+                    try
+                    {
+                        if (ai.HasTarget && ai.Target != null)
+                        {
+                            var tShip = ai.Target.GetComponent<Ship>();
+                            var tPup = ai.Target.GetComponent<RemotePuppet>();
+                            target = tShip != null
+                                ? (tPup != null ? $"shipP{tPup.Slot + 1}(puppet)" : "ship(local)")
+                                : ai.Target.name;
+                            target += ai.IsTargetVisible ? "/visible" : "/lost";
+                        }
+                    }
+                    catch { target = "err"; }
+                    Out($"probe #{netId} {type}{(puppet != null ? " PUPPET" : "")} aiOn={ai.enabled} " +
+                        $"visionOn={vision.enabled} range={vision.Range:0} seen={vision.VisibleUnits.Count} " +
+                        $"enemies={ai.VisibleEnemyCount} friends={ai.VisibleFriendCount} " +
+                        $"target={target} shooter={(shooter != null ? (shooter.enabled ? "on" : "off") : "none")}");
+                    // Deep diagnostics: force a scan NOW, dump the mask, and manually overlap so
+                    // "scan never ran" / "mask excludes ships" / "no collider found" separate.
+                    try
+                    {
+                        int freshCount = vision.Scan().Count;
+                        var maskField = AccessTools.Field(typeof(ComponentScanner<Unit>), "targetLayers");
+                        var delayField = AccessTools.Field(typeof(Vision), "refreshDelay");
+                        int mask = maskField != null ? ((LayerMask)maskField.GetValue(vision)).value : -1;
+                        float delay = delayField != null ? (float)delayField.GetValue(vision) : -1f;
+                        var myShip = ShipSync.LocalShip;
+                        string shipInfo = "no-ship";
+                        int rawHits = -1, rawUnitHits = -1;
+                        if (myShip != null)
+                        {
+                            var shipCols = myShip.GetComponentsInChildren<Collider2D>(false);
+                            shipInfo = $"shipLayer={myShip.gameObject.layer} shipCols={shipCols.Length} " +
+                                $"colLayers={string.Join("/", System.Linq.Enumerable.Distinct(System.Linq.Enumerable.Select(shipCols, c => c.gameObject.layer)))} " +
+                                $"dist={Vector2.Distance(vision.transform.position, myShip.transform.position):0.0}";
+                            var hits = Physics2D.OverlapCircleAll(vision.transform.position, vision.Range, mask);
+                            rawHits = hits.Length;
+                            rawUnitHits = System.Linq.Enumerable.Count(hits, h => h != null && h.GetComponent<Unit>() != null);
+                        }
+                        Out($"probe2 #{netId} scanNow={freshCount} mask={mask} refresh={delay:0.0}s " +
+                            $"rawHits={rawHits} rawUnitHits={rawUnitHits} {shipInfo} visionPos={vision.transform.position.x:0.0},{vision.transform.position.y:0.0}");
+                    }
+                    catch (Exception e) { Out($"probe2 #{netId} FAILED: {e.Message}"); }
                     return;
                 }
                 case "poke":

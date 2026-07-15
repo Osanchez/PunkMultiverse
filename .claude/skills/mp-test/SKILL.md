@@ -89,3 +89,16 @@ Delete stale `devcmd.txt` files before launching.
   grade on content, not exit codes.
 - The stale-instance trap: a user instance may predate your run by hours; check
   `Get-Process Punk | Select Id,StartTime` BEFORE launching so your PID set is unambiguous.
+- `probe <netId>` is the FIRST diagnostic for any behavior question — it reads the enemy's
+  own AIAgent/Vision (seen/enemies/target/shooter + probe2's scanNow/mask/rawHits). An
+  owned spawn showing `PUPPET aiOn=False` on its spawner = the mutual-puppet zombie
+  signature (fixed 0.1.90 via spawner lease-pull; watch for regressions).
+- Projectile hits KNOCK SHIPS BACK — drifting ships and deaths near platform edges during
+  fire tests are physics, not desync. Re-assert positions with `tp` between phases.
+- Scenario-killers learned the hard way: NEVER `spawn ... rel 0 0` (contact damage kills
+  the ship → party-wipe reset); spawn coords must be VETTED open space (near a spot a
+  ship physically occupies) or enemy Vision may be terrain-blocked and the test reads as
+  a false sync bug; aggro'd mobile enemies chase and wreck the geometry (prefer turrets
+  for positional tests); a long host stall can trigger FALSE host-migration on loopback —
+  the promoted client can't bind the shared port and its session dies (check for
+  "promoted to host (migration)" in a wedged client's log).

@@ -68,6 +68,25 @@ namespace PunkMultiverse.Sync
                     EnemySync.Owners[netId] = (byte)session.LocalSlot; // we simulate it until handoff
                     EnemySync.OnEntitySpawned.Align(data); // the spawn hook ran pre-registration — redo it
 
+                    // "We simulate it until handoff" was never actually wired: Owners[] is only
+                    // consulted for FixedOwners, so a spawn landing in a segment leased to ANOTHER
+                    // player (or dormant) instantly became a puppet on its own spawner while the
+                    // lease holder also treated it as a replica — a mutual-puppet zombie nobody
+                    // simulates (observed live: host's own grunt spawned as owner=P2 PUPPET).
+                    // Pull the lease to the spawner — the same mechanism dormant wake-on-hit uses.
+                    if (Core.AuthorityManager.OwnerOf(netId) != session.LocalSlot)
+                    {
+                        if (session.IsHost)
+                            Core.AuthorityManager.OnDormantHit(netId, (byte)session.LocalSlot);
+                        else
+                        {
+                            Writer.Reset();
+                            new EntityStarvedRequestMsg { NetId = netId }.Write(Writer);
+                            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                        }
+                        Plugin.Log.LogInfo($"[Spawns] spawn #{netId} landed in a foreign/dormant segment — pulling the lease to P{session.LocalSlot + 1}");
+                    }
+
                     var msg = new EntitySpawnedMsg
                     {
                         NetId = netId,
