@@ -295,22 +295,59 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // Holder ids on the wire: 0/1 = primary/secondary WeaponHolder; 2/3/4 = the Active1-3
+        // grid slots. Active-slot weapons live on the module itself (WeaponBasedActiveModule's
+        // private field — verified against the decompile; the resolver warns if it vanishes),
+        // rebuilt from the synced grid on every machine, so both ends resolve the same weapon.
+        private static readonly System.Reflection.FieldInfo ActiveModuleWeaponField =
+            AccessTools.Field(typeof(WeaponBasedActiveModule), "weapon");
+        private static readonly ClusterType[] ActiveClusters =
+            { ClusterType.Active1, ClusterType.Active2, ClusterType.Active3 };
+        private static bool _warnedActiveField;
+
         private static int FindLocalHolder(WeaponBase weapon)
         {
             var ship = ShipSync.LocalShip;
             if (ship == null) return -1;
             if (GetHolderWeapon(ship, 0) == weapon) return 0;
             if (GetHolderWeapon(ship, 1) == weapon) return 1;
+            for (int i = 0; i < ActiveClusters.Length; i++)
+                if (GetActiveSlotWeapon(ship, i) == weapon) return 2 + i;
             return -1;
         }
 
         private static WeaponBase GetHolderWeapon(Ship ship, int holder)
         {
+            if (holder >= 2) return GetActiveSlotWeapon(ship, holder - 2);
             try
             {
                 var field = holder == 0 ? "primaryWeaponHolder" : "secondaryWeaponHolder";
                 var wh = Traverse.Create(ship).Field(field).GetValue() as WeaponHolder;
                 return wh != null ? wh.Weapon : null;
+            }
+            catch { return null; }
+        }
+
+        private static WeaponBase GetActiveSlotWeapon(Ship ship, int activeIndex)
+        {
+            if (activeIndex < 0 || activeIndex >= ActiveClusters.Length) return null;
+            try
+            {
+                var grid = ship.ModuleGridOwner != null ? ship.ModuleGridOwner.ModuleGrid : null;
+                var cluster = grid != null ? grid.GetCluster(ActiveClusters[activeIndex]) : null;
+                if (cluster == null || !cluster.HasMainModule) return null;
+                var module = cluster.MainModule as WeaponBasedActiveModule;
+                if (module == null) return null;
+                if (ActiveModuleWeaponField == null)
+                {
+                    if (!_warnedActiveField)
+                    {
+                        _warnedActiveField = true;
+                        Plugin.Log.LogWarning("[Fire] WeaponBasedActiveModule.weapon field not found — active-slot fire sync inactive");
+                    }
+                    return null;
+                }
+                return ActiveModuleWeaponField.GetValue(module) as WeaponBase;
             }
             catch { return null; }
         }
@@ -530,6 +567,11 @@ namespace PunkMultiverse.Sync
                 }
                 return;
             }
+            // Active-slot weapons are only Equip()ed inside Activate() on the owner — the
+            // puppet's instance has no Owner until we mirror that here, and ownerless
+            // projectiles lose their faction/attribution.
+            if (msg.Holder >= 2 && weapon.Owner != ship.Unit)
+                try { weapon.Equip(ship.Unit); } catch { /* fire anyway */ }
 
             Vector2 pos = msg.BodyPos != Vector2.zero
                 ? (Vector2)ship.transform.position + (msg.Pos - msg.BodyPos)

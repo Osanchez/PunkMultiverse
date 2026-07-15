@@ -104,11 +104,13 @@ Delete stale `devcmd.txt` files before launching.
   projectile impulses otherwise shove ships off their marks and read as position noise.
   Re-assert positions with `tp` between phases anyway. (Weapon RECOIL on the firing ship
   still applies — long bursts drift the shooter; tp back between phases.)
-- Weapon/build sync: `loadout` dumps holder weapons + grid clusters for every ship —
-  puppet rows must match their owner's local row. `equip <id> [sec]` installs a weapon
-  module through the real grid path; `fire N sec` drives the secondary. `status` includes
+- Weapon/build sync: `loadout` dumps holder weapons + grid clusters (incl. acts=) for
+  every ship — puppet rows must match their owner's local row. `equip <id> [sec|actN]`
+  installs a weapon/active module through the real grid path; `fire N sec` drives the
+  secondary; `useactive <n>` triggers an ability slot. `status` includes
   `shipFireReplays` (how many remote ship shots THIS machine replayed) — the positive
-  assertion that another player's fire is visible here.
+  assertion that another player's fire is visible here. Explosive actives fire from the
+  ship's own position and can self-kill the shooter — one activation, then sample.
 - Never leave spawned aggro-able enemies near a parked ship while running other phases —
   a grunt spawned 7u away chased and killed the AFK host mid-scenario once. Spawn
   targets only when the phase needs them; prefer turrets; kill leftovers with poke.

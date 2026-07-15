@@ -194,9 +194,14 @@ each window's delta attributes replays to one slot of one shooter.
 - First run's numbers (White Popper primary / Rocket Rookie + BouncerRed secondaries,
   4s windows): host fire → client replays 0→16→19; client fire → host replays 0→16→53;
   the shooter's own counter stayed 0 throughout; zero warnings.
-- KNOWN GAP (do not grade): weapons socketed in Active1-3 ability slots fire via
-  WeaponBasedActiveModule (no holder) — CaptureFire has no ship path for them, so
-  active-slot projectiles are expected to be invisible remotely until that ships.
+- Active-slot window (FIXED + VERIFIED 2026-07-15, v0.1.95 — holder ids 2/3/4 on the
+  wire): CLIENT `equip <weapon-based active id> act1` (pick from `equip list`'s
+  `(active)` entries), wait ≥8s, assert host loadout shows it in `acts=`; then CLIENT
+  `useactive 1` → HOST shipFireReplays delta > 0. First pass: MISSILE_SURGE, host 0→1,
+  zero warnings. HAZARD: actives fire from the ship's own position (game passes a
+  barrel at owner pos) — explosive actives can SELF-KILL the firing ship; sample the
+  observer counter after the FIRST activation, and treat a `status ... DEAD` on the
+  shooter as an invalidated window, not a sync failure.
 
 ---
 

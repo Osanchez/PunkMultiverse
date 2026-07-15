@@ -41,10 +41,14 @@ fire <seconds>              # hold the local ship's trigger (Shooter.SetShooting
 fire <seconds> sec          # ...the SECONDARY holder's shooter instead of the primary
 fire <seconds> [sec] at <netId>   # ...steering the barrels at that entity every frame
 fire <seconds> [sec] dir <dx dy>  # ...or in a fixed direction. Stand off 8-12u from targets
-loadout                     # every ship's holder weapons + grid weapon clusters + module
-                            # count — the weapon-sync diagnostic (puppet must match owner)
-equip <id|list> [sec]       # install a weapon module on the LOCAL ship's grid (the real
-                            # gameplay path, so ModuleGridSync must replicate it)
+loadout                     # every ship's holder weapons + grid weapon/active clusters +
+                            # module count — the weapon-sync diagnostic (puppet == owner)
+equip <id|list> [sec|act1|act2|act3]  # install a weapon (or weapon-based active) module
+                            # on the LOCAL ship's grid — the real gameplay path, so
+                            # ModuleGridSync must replicate it. `list` prints id + name.
+useactive <1-3>             # trigger an ability-slot module (the ModuleActivator path,
+                            # minus cooldown). Weapon actives fire FROM THE SHIP'S OWN
+                            # POSITION — explosive ones can self-kill the test ship.
 owner [x y | rel dx dy]     # segment + current lease owner at a position (default: ship)
                             # -> poll until "= P2" to wait for a lease commit
 probe <netId>               # the target's OWN senses: AIAgent/Vision seen/target/shooter

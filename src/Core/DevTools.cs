@@ -351,6 +351,7 @@ namespace PunkMultiverse.Core
                         string pri = "?", sec = "?", gPri = "?", gSec = "?", count = "?";
                         try { pri = s.PrimaryWeapon != null ? WeaponName(s.PrimaryWeapon) : "none"; } catch { }
                         try { sec = s.SecondaryWeapon != null ? WeaponName(s.SecondaryWeapon) : "none"; } catch { }
+                        string acts = "?";
                         try
                         {
                             var grid = s.ModuleGridOwner != null ? s.ModuleGridOwner.ModuleGrid : null;
@@ -358,13 +359,16 @@ namespace PunkMultiverse.Core
                             {
                                 gPri = ClusterMain(grid, ClusterType.PrimaryWeapon);
                                 gSec = ClusterMain(grid, ClusterType.SecondaryWeapon);
+                                acts = ClusterMain(grid, ClusterType.Active1) + "/"
+                                     + ClusterMain(grid, ClusterType.Active2) + "/"
+                                     + ClusterMain(grid, ClusterType.Active3);
                                 var mg = grid as ModuleGrid;
                                 if (mg != null) count = mg.Modules.Count.ToString();
                             }
                         }
                         catch (Exception e) { gPri = $"ERR:{e.Message}"; }
                         Out($"loadout P{kv.Key + 1}{(pup ? "(puppet)" : "(local)")}: pri={pri} sec={sec} " +
-                            $"gridPri={gPri} gridSec={gSec} modules={count}");
+                            $"gridPri={gPri} gridSec={gSec} acts={acts} modules={count}");
                     }
                     if (ShipSync.ShipsBySlot.Count == 0) Out("loadout: no ships");
                     return;
@@ -383,29 +387,72 @@ namespace PunkMultiverse.Core
                         // One line per weapon: id + display name (spaces -> _ so the harness can
                         // match by name token) — bare GUIDs made picking a test weapon blind.
                         foreach (var item in registry.AllItems)
+                        {
                             if (item is WeaponModuleData w)
                                 Out($"equip: {w.Id} {(string.IsNullOrEmpty(w.displayName) ? "?" : w.displayName.Replace(' ', '_'))}");
+                            else if (item is WeaponBasedActiveModuleData a)
+                                Out($"equip: {a.Id} {(string.IsNullOrEmpty(a.displayName) ? "?" : a.displayName.Replace(' ', '_'))} (active)");
+                        }
                         return;
                     }
-                    bool secondary = parts.Length >= 3 && parts[2].Equals("sec", StringComparison.OrdinalIgnoreCase);
-                    WeaponModuleData found = null;
+                    // Slot token: sec = secondary holder; act1/act2/act3 = the ability slots
+                    // (weapon-based actives only — the point is projectile replication).
+                    bool secondary = false;
+                    int active = 0;
+                    if (parts.Length >= 3)
+                    {
+                        var slotTok = parts[2].ToLowerInvariant();
+                        secondary = slotTok == "sec";
+                        if (slotTok == "act1") active = 1;
+                        else if (slotTok == "act2") active = 2;
+                        else if (slotTok == "act3") active = 3;
+                    }
+                    ModuleData found = null;
                     string wanted = parts[1].Replace('_', ' ');
                     foreach (var item in registry.AllItems)
-                        if (item is WeaponModuleData w
-                            && (w.Id.Equals(parts[1], StringComparison.OrdinalIgnoreCase)
-                                || w.Id.IndexOf(parts[1], StringComparison.OrdinalIgnoreCase) >= 0
-                                || (!string.IsNullOrEmpty(w.displayName)
-                                    && w.displayName.IndexOf(wanted, StringComparison.OrdinalIgnoreCase) >= 0)))
-                        { found = w; break; }
-                    if (found == null) { Out($"equip: no weapon module matches '{parts[1]}'"); return; }
+                    {
+                        bool typeOk = active > 0 ? item is WeaponBasedActiveModuleData : item is WeaponModuleData;
+                        if (!typeOk) continue;
+                        var m = (ModuleData)item;
+                        if (m.Id.Equals(parts[1], StringComparison.OrdinalIgnoreCase)
+                            || m.Id.IndexOf(parts[1], StringComparison.OrdinalIgnoreCase) >= 0
+                            || (!string.IsNullOrEmpty(m.displayName)
+                                && m.displayName.IndexOf(wanted, StringComparison.OrdinalIgnoreCase) >= 0))
+                        { found = m; break; }
+                    }
+                    if (found == null)
+                    { Out($"equip: no {(active > 0 ? "weapon-based active" : "weapon")} module matches '{parts[1]}'"); return; }
                     var grid2 = ship.ModuleGridOwner != null ? ship.ModuleGridOwner.ModuleGrid as ModuleGrid : null;
                     if (grid2 == null) { Out("equip: local ship has no ModuleGrid"); return; }
-                    var pos2 = secondary ? ModuleGrid.SecondaryWeaponGridPosition : ModuleGrid.PrimaryWeaponGridPosition;
+                    var pos2 = active == 1 ? ModuleGrid.Active1GridPosition
+                        : active == 2 ? ModuleGrid.Active2GridPosition
+                        : active == 3 ? ModuleGrid.Active3GridPosition
+                        : secondary ? ModuleGrid.SecondaryWeaponGridPosition : ModuleGrid.PrimaryWeaponGridPosition;
                     var module = found.DeepCopy();
                     var existing = grid2[pos2];
                     if (existing != null) module.CopyConnectionsFrom(existing);
                     grid2.Install(pos2, module);
-                    Out($"equip: installed {found.Id} in {(secondary ? "SECONDARY" : "PRIMARY")} slot");
+                    Out($"equip: installed {found.Id} in {(active > 0 ? "ACTIVE" + active : secondary ? "SECONDARY" : "PRIMARY")} slot");
+                    return;
+                }
+                case "useactive":
+                {
+                    // Trigger an ability-slot module through the game's own path (what
+                    // ModuleActivator does on key-hold, minus the cooldown gate). A weapon-based
+                    // active fires its weapon -> DoShoot -> captured like any ship fire.
+                    var ship = ShipSync.LocalShip;
+                    if (ship == null) { Out("useactive: no local ship"); return; }
+                    int idx = 1;
+                    if (parts.Length >= 2) int.TryParse(parts[1], out idx);
+                    if (idx < 1 || idx > 3) { Out("useactive: index must be 1-3"); return; }
+                    var grid = ship.ModuleGridOwner != null ? ship.ModuleGridOwner.ModuleGrid : null;
+                    var cluster = grid != null
+                        ? grid.GetCluster(idx == 1 ? ClusterType.Active1 : idx == 2 ? ClusterType.Active2 : ClusterType.Active3)
+                        : null;
+                    var activeModule = cluster != null && cluster.HasMainModule ? cluster.MainModule as ActiveModule : null;
+                    if (activeModule == null) { Out($"useactive: no active module in slot {idx}"); return; }
+                    activeModule.Activate(ship.Unit);
+                    Out($"useactive: activated slot {idx} ({activeModule.Data.Id})");
                     return;
                 }
                 case "knockback":
