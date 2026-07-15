@@ -42,6 +42,12 @@ fire <seconds> at <netId>   # ...steering the barrels at that entity every frame
 fire <seconds> dir <dx dy>  # ...or in a fixed direction. Stand off 8-12u from targets
 owner [x y | rel dx dy]     # segment + current lease owner at a position (default: ship)
                             # -> poll until "= P2" to wait for a lease commit
+probe <netId>               # the target's OWN senses: AIAgent/Vision seen/target/shooter
+                            # + probe2 line (forced scan, layer mask, raw physics overlaps)
+knockback off|on            # suppress projectile impulses ON THIS MACHINE — fire tests
+                            # stop shoving ships off their marks (send to BOTH instances)
+stall <secs>                # freeze the main thread 1-25s: reproduces a load/GC stall
+                            # (exercises the loopback reconnect-in-place path)
 autofly <seconds>           # re-arm scripted flight mid-run
 say <marker text>           # timestamped marker in the log — bracket your scenarios
 # lines starting with # are ignored

@@ -991,7 +991,7 @@ namespace PunkMultiverse.Core
                 if (_reattaching && Time.unscaledTime >= _reattachDeadline)
                 {
                     _reattaching = false;
-                    Fail("Could not reach the new host.");
+                    Fail("Could not reach the host to resume the run.");
                     return;
                 }
 
@@ -1249,17 +1249,30 @@ namespace PunkMultiverse.Core
 
         /// <summary>The host is gone. Steam follows lobby ownership; loopback deterministically
         /// elects the lowest connected slot and reconnects through the fixed dev port.</summary>
-        private void OnHostLost(string reason)
+        private void OnHostLost(string reason, bool hostQuit = false)
         {
             // SessionEnded and the transport disconnect commonly arrive back-to-back. The second
             // signal used to call Fail() and tear down a migration that was already in progress.
-            if (_migrating)
+            if (_migrating || _reattaching)
             {
-                Plugin.Log.LogInfo($"[Session] duplicate host-loss signal ignored during migration ({reason})");
+                Plugin.Log.LogInfo($"[Session] duplicate host-loss signal ignored during migration/reattach ({reason})");
                 return;
             }
             if (State == SessionState.InGame && !UsingSteam)
             {
+                // A loopback timeout is almost always a stalled host (level load, GC, debugger),
+                // not a dead one — and self-promotion while the real host lives can't bind the
+                // shared dev port, so a false migration always killed the session. Only migrate
+                // when the host provably departed (SessionEnded or an explicit DISCONNECT frame,
+                // both of which mean its socket closed and the port is free); otherwise hold the
+                // session and reconnect in place.
+                bool hostReallyGone = hostQuit
+                    || (_transport is LoopbackUdpTransport lb && lb.LastDisconnectWasRemote);
+                if (!hostReallyGone)
+                {
+                    BeginLoopbackReconnect(reason);
+                    return;
+                }
                 _migrating = true;
                 StartCoroutine(MigrateLoopbackHost(reason));
                 return;
@@ -1271,6 +1284,23 @@ namespace PunkMultiverse.Core
                 return;
             }
             Fail(reason);
+        }
+
+        /// <summary>Timeout-driven host loss on loopback: keep the run alive and reconnect to
+        /// the same fixed address. The transport already retries CONNECT on its own once its
+        /// host route drops; arming _reattaching makes the reconnect send a resume-HELLO, and
+        /// HandleWelcome completes the reattach with the run still live. No sync state is torn
+        /// down — the host's world resumes from snapshots the moment it answers. If it never
+        /// answers, the reattach deadline fails the session cleanly instead of a doomed
+        /// self-promotion onto a port the stalled host still holds.</summary>
+        private void BeginLoopbackReconnect(string reason)
+        {
+            Plugin.Log.LogInfo($"[Session] {reason} — treating as a host stall; reconnecting in place (loopback never migrates on timeout)");
+            UI.Toast.Show("CONNECTION TO HOST LOST — RECONNECTING…", 6f);
+            _reattaching = true;
+            _reattachDeadline = Time.unscaledTime + 30f;
+            _joinTargetHostSlot = HostSlot;
+            _joinTargetPeerId = 0;
         }
 
         private System.Collections.IEnumerator MigrateHost(string reason)
@@ -1528,7 +1558,7 @@ namespace PunkMultiverse.Core
                 case MsgType.SetLobbyPrefs when IsHost: HandleSetLobbyPrefs(peer); break;
                 case MsgType.Welcome when !IsHost: HandleWelcome(); break;
                 case MsgType.Reject when !IsHost: HandleReject(); break;
-                case MsgType.SessionEnded when !IsHost: OnHostLost("Host ended the session."); break;
+                case MsgType.SessionEnded when !IsHost: OnHostLost("Host ended the session.", hostQuit: true); break;
                 case MsgType.Kicked when !IsHost:
                     UI.Toast.Show("YOU HAVE BEEN KICKED FROM THE LOBBY", 6f);
                     Fail("You were kicked by the host.");
@@ -1960,12 +1990,24 @@ namespace PunkMultiverse.Core
                 reject = $"Game version mismatch: host {Application.version}, you {hello.GameVersion}.";
             else if (reject == null && midRun)
             {
-                // Mid-run: a reserved slot matching (SteamID, else name) is a rejoin; anyone
-                // else is a late joiner and takes a free slot below.
-                var reserved = _players.FirstOrDefault(p => p != null && !p.Connected
+                // Mid-run: a slot matching (SteamID, else name) is a rejoin/resume; anyone else
+                // is a late joiner and takes a free slot below. The match deliberately includes
+                // slots still marked Connected: a reconnect can beat the old route's timeout
+                // (LastHeard is stamped at drain time, so a host waking from a stall sees the
+                // dead route as fresh) — the same identity on a new route supersedes the old
+                // one; it must never be seated in a second slot.
+                var reserved = _players.FirstOrDefault(p => p != null && !p.IsLocal
                     && (hello.SteamId != 0 ? p.IdentityId == hello.SteamId : p.Name == hello.Name));
                 if (reserved != null)
                 {
+                    if (reserved.Connected && reserved.PeerId != 0 && reserved.PeerId != peer)
+                    {
+                        Plugin.Log.LogInfo($"[Session] {reserved} reconnected on a new route before the old one timed out — superseding peer {reserved.PeerId}");
+                        Sync.WorldSync.CancelStream(reserved.PeerId);
+                        ClearOutboxFor(reserved.PeerId);
+                        _peersAwaitingRejoinState.Remove(reserved.PeerId);
+                        _nextGoLiveRecoveryAt.Remove(reserved.PeerId);
+                    }
                     reserved.ModsMismatch = modsMismatch;
                     if (hello.Resuming) HandleResume(peer, hello, reserved);
                     else HandleRejoin(peer, hello, reserved);

@@ -99,6 +99,12 @@ Delete stale `devcmd.txt` files before launching.
   the ship → party-wipe reset); spawn coords must be VETTED open space (near a spot a
   ship physically occupies) or enemy Vision may be terrain-blocked and the test reads as
   a false sync bug; aggro'd mobile enemies chase and wreck the geometry (prefer turrets
-  for positional tests); a long host stall can trigger FALSE host-migration on loopback —
-  the promoted client can't bind the shared port and its session dies (check for
-  "promoted to host (migration)" in a wedged client's log).
+  for positional tests).
+- For fire tests, send `knockback off` to BOTH instances first (per-machine flag) —
+  projectile impulses otherwise shove ships off their marks and read as position noise.
+  Re-assert positions with `tp` between phases anyway.
+- Host stalls no longer kill loopback sessions (fixed after 0.1.91): a timeout-driven host
+  loss reconnects in place ("treating as a host stall; reconnecting in place" → "reattached
+  to new host") instead of self-promoting onto the shared port. `stall <secs>` (1-25)
+  freezes an instance's main thread to exercise exactly this. "promoted to host (migration)"
+  in a client log after a mere stall is now a REGRESSION.

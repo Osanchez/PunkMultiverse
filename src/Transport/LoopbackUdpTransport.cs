@@ -65,6 +65,12 @@ namespace PunkMultiverse.Transport
 
         public event Action<ulong> PeerConnected;
         public event Action<ulong> PeerDisconnected;
+
+        /// <summary>True when the most recent PeerDisconnected came from an explicit DISCONNECT
+        /// frame (the peer's socket really closed) rather than a silence timeout (the peer may
+        /// just be stalled). NetSession's host-loss policy branches on this: a dead host frees
+        /// the shared dev port for migration; a stalled one must be reconnected to instead.</summary>
+        public bool LastDisconnectWasRemote { get; private set; }
         public event Action<ulong, NetChannel, ArraySegment<byte>> DataReceived;
 
         public LoopbackUdpTransport(string hostAddress, int port)
@@ -209,7 +215,7 @@ namespace PunkMultiverse.Transport
                     else if (now - p.LastSent > KeepaliveInterval) SendFrame(p.EndPoint, FrameKeepalive, ref p.LastSent, now);
                 }
                 if (dead != null)
-                    foreach (var id in dead) DropPeer(id, "timeout");
+                    foreach (var id in dead) DropPeer(id, "timeout", remote: false);
             }
             else
             {
@@ -224,7 +230,7 @@ namespace PunkMultiverse.Transport
                 }
                 else if (_peers.TryGetValue(HostPeerId, out var host))
                 {
-                    if (now - host.LastHeard > PeerTimeout) { DropPeer(HostPeerId, "timeout"); _connectedToHost = false; }
+                    if (now - host.LastHeard > PeerTimeout) { DropPeer(HostPeerId, "timeout", remote: false); _connectedToHost = false; }
                     else if (now - host.LastSent > KeepaliveInterval) SendFrame(host.EndPoint, FrameKeepalive, ref host.LastSent, now);
                 }
             }
@@ -315,7 +321,7 @@ namespace PunkMultiverse.Transport
                 case FrameDisconnect:
                 {
                     var peer = Touch(from, now);
-                    if (peer != null) DropPeer(peer.Id, "remote disconnect");
+                    if (peer != null) DropPeer(peer.Id, "remote disconnect", remote: true);
                     if (!IsHost) _connectedToHost = false;
                     break;
                 }
@@ -331,12 +337,13 @@ namespace PunkMultiverse.Transport
             return peer;
         }
 
-        private void DropPeer(ulong id, string reason)
+        private void DropPeer(ulong id, string reason, bool remote)
         {
             if (!_peers.TryGetValue(id, out var peer)) return;
             _peers.Remove(id);
             _peersByEndpoint.Remove(EndpointKey(peer.EndPoint));
             Plugin.Log.LogInfo($"[Loopback] peer {id} disconnected ({reason})");
+            LastDisconnectWasRemote = remote;
             PeerDisconnected?.Invoke(id);
         }
 

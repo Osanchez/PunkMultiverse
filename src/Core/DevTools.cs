@@ -332,6 +332,29 @@ namespace PunkMultiverse.Core
                         $"{(EnemySync.OwnerOf(netId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(netId) + 1))})");
                     return;
                 }
+                case "knockback":
+                {
+                    // Harness aid: projectile impulses shove ships off their test marks, which
+                    // reads as position noise in assertions. Per-machine — issue to BOTH sides.
+                    bool off = parts.Length >= 2
+                        && (parts[1].Equals("off", StringComparison.OrdinalIgnoreCase) || parts[1] == "0");
+                    KnockbackDisabled = off;
+                    Out($"knockback: {(off ? "OFF (projectiles push nothing on this machine)" : "on (vanilla)")}");
+                    return;
+                }
+                case "stall":
+                {
+                    // Freeze the main thread to reproduce a load/GC stall — the reconnect-in-
+                    // place path on the other machine is exactly what this exists to exercise.
+                    float stallSecs = 12f;
+                    if (parts.Length >= 2)
+                        float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out stallSecs);
+                    stallSecs = Mathf.Clamp(stallSecs, 1f, 25f);
+                    Out($"stall: freezing main thread {stallSecs:0.0}s");
+                    System.Threading.Thread.Sleep((int)(stallSecs * 1000f));
+                    Out("stall: resumed");
+                    return;
+                }
                 case "autofly":
                     if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float secs))
                     {
@@ -401,6 +424,22 @@ namespace PunkMultiverse.Core
                 return false;
             pos = rel ? origin + new Vector2(x, y) : new Vector2(x, y);
             return true;
+        }
+
+        // ---------------------------------------------------------------- knockback switch
+        internal static bool KnockbackDisabled;
+
+        /// <summary>`knockback off` suppresses the projectile impulse at its single gate
+        /// (Projectile.CanKnockBack) so fire tests keep ships parked on their marks.</summary>
+        [HarmonyPatch(typeof(Projectile), "CanKnockBack")]
+        internal static class SuppressKnockback
+        {
+            private static bool Prefix(ref bool __result)
+            {
+                if (!KnockbackDisabled) return true;
+                __result = false;
+                return false;
+            }
         }
 
         // ---------------------------------------------------------------- debug menu key

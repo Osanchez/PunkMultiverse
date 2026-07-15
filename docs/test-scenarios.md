@@ -133,6 +133,22 @@ Multi-part bodies must survive hard teleports intact.
   spawns at `LatestStationNetId` if one was unlocked, and its old ship was despawned
   (`disconnectDespawns` incremented) — no ghost ship.
 
+## 13. stall-reconnect (loopback false-migration guard) — VERIFIED 2026-07-15
+
+- Both live, then HOST devcmd: `stall 15` (freezes the host main thread past the 10s
+  loopback peer timeout — same signature as a level-load/GC stall).
+- PASS (client log, in order): `[Loopback] peer 1 disconnected (timeout)` →
+  `treating as a host stall; reconnecting in place` → `reattached to new host (slot 1,
+  host slot 0)`. Host log: `reattached after host migration` (the resume path) and NO
+  second `joined` line (no duplicate slot). Post-reconnect `status`/`entities` on both
+  sides still InGame with mirrored state.
+- FAIL signatures: `loopback host election starting` or `promoted to host (migration)`
+  after a mere stall (regression to false migration), a duplicate `joined (mid-run)` on
+  the host (reconnect beat the old route's timeout and got a second slot), or the client
+  failing with `Could not reach the host to resume the run.` while the host lives.
+- A REAL host departure (kill the host process) should still migrate: client elects
+  itself, binds the now-free port, `promoted to host (migration)`.
+
 ---
 
 ### Cadence
