@@ -164,11 +164,45 @@ Multi-part bodies must survive hard teleports intact.
 - FAIL signatures: `MessageSize` send failures (grid memento outgrew compression),
   `[Fire] Px's holder N has no weapon on the puppet`, loadout divergence after 10s.
 
+## 15. multi-weapon-bidirectional (both slots, both directions) — VERIFIED 2026-07-15
+
+Proves every weapon slot's projectiles are visible on the OTHER machine, in both
+directions, using `shipFireReplays` (in `status`) sampled between fire windows —
+each window's delta attributes replays to one slot of one shooter.
+
+- Setup: both live, `knockback off` on BOTH. Pick two DISTINCT plain projectile
+  weapons from `equip list` (avoid minion/summon weapons — their spawns add noise;
+  Weapon_Fly spawns flies). HOST: `equip <A> sec`. CLIENT: `equip <B> sec`. Wait ≥8s.
+- Loadout parity (assert first, both sides): on the host, P2(puppet) row must equal the
+  client's P2(local) row; on the client, P1(puppet) must equal the host's P1(local) —
+  holder weapons AND gridPri/gridSec ids. Different secondaries on each ship also catch
+  cross-application bugs (a grid applied to the wrong slot/ship).
+- Fire matrix — four 4s windows, sampling `status` on BOTH sides before/after each:
+  1. HOST `fire 4 dir 0 1`        → CLIENT shipFireReplays delta > 0 (host primary)
+  2. HOST `fire 4 sec dir 0 1`    → CLIENT delta > 0 again (host secondary)
+  3. CLIENT `fire 4 dir 0 1`      → HOST delta > 0 (client primary)
+  4. CLIENT `fire 4 sec dir 0 1`  → HOST delta > 0 again (client secondary)
+  The non-observing side's counter must NOT move (nobody replays their own shots).
+- Zero tolerance in both logs: `has no weapon on the puppet`, `replay failed`,
+  `MessageSize`, `[Grid] apply failed`.
+- Fire SIDEWAYS (`dir 1 0`), never up, and avoid explosive weapons in the test slots:
+  rockets fired upward at spawn splash the station's overhead terrain and party-wipe the
+  run (learned live — the wipe resets counters, equips, and both grids mid-scenario).
+  Recoil may drift the shooter — irrelevant here, counters are the assertion.
+- Command-file discipline: back-to-back devcmd writes <4s apart can race the 2Hz
+  rename-consume and drop one — batch each sample point into a single multi-line write.
+- First run's numbers (White Popper primary / Rocket Rookie + BouncerRed secondaries,
+  4s windows): host fire → client replays 0→16→19; client fire → host replays 0→16→53;
+  the shooter's own counter stayed 0 throughout; zero warnings.
+- KNOWN GAP (do not grade): weapons socketed in Active1-3 ability slots fire via
+  WeaponBasedActiveModule (no holder) — CaptureFire has no ship path for them, so
+  active-slot projectiles are expected to be invisible remotely until that ships.
+
 ---
 
 ### Cadence
 
-- **Every build**: 1 (smoke), 5, 10 — fully automatable today.
+- **Every build**: 1 (smoke), 5, 10, 15 — fully automatable today.
 - **Every protocol change**: + 8, 11, 12.
 - **Feature-specific**: the scenario matching the touched system.
 - **Blocked on manual/aim input**: 4, 6 (visual), 7 (kill setup), 9 — candidates for a

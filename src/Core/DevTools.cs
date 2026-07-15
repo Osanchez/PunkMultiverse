@@ -380,18 +380,22 @@ namespace PunkMultiverse.Core
                     if (registry == null) { Out("equip: no ModuleRegistry"); return; }
                     if (parts.Length < 2 || parts[1].Equals("list", StringComparison.OrdinalIgnoreCase))
                     {
-                        var names = new System.Text.StringBuilder("equip list:");
+                        // One line per weapon: id + display name (spaces -> _ so the harness can
+                        // match by name token) — bare GUIDs made picking a test weapon blind.
                         foreach (var item in registry.AllItems)
-                            if (item is WeaponModuleData w) names.Append(' ').Append(w.Id);
-                        Out(names.ToString());
+                            if (item is WeaponModuleData w)
+                                Out($"equip: {w.Id} {(string.IsNullOrEmpty(w.displayName) ? "?" : w.displayName.Replace(' ', '_'))}");
                         return;
                     }
                     bool secondary = parts.Length >= 3 && parts[2].Equals("sec", StringComparison.OrdinalIgnoreCase);
                     WeaponModuleData found = null;
+                    string wanted = parts[1].Replace('_', ' ');
                     foreach (var item in registry.AllItems)
                         if (item is WeaponModuleData w
                             && (w.Id.Equals(parts[1], StringComparison.OrdinalIgnoreCase)
-                                || w.Id.IndexOf(parts[1], StringComparison.OrdinalIgnoreCase) >= 0))
+                                || w.Id.IndexOf(parts[1], StringComparison.OrdinalIgnoreCase) >= 0
+                                || (!string.IsNullOrEmpty(w.displayName)
+                                    && w.displayName.IndexOf(wanted, StringComparison.OrdinalIgnoreCase) >= 0)))
                         { found = w; break; }
                     if (found == null) { Out($"equip: no weapon module matches '{parts[1]}'"); return; }
                     var grid2 = ship.ModuleGridOwner != null ? ship.ModuleGridOwner.ModuleGrid as ModuleGrid : null;
