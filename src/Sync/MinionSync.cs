@@ -265,6 +265,11 @@ namespace PunkMultiverse.Sync
                     puppet.MuteNow();
                     se.gameObject.SetActive(true);
                     UnitStatus.ApplyEnemyHpScale(se, instanceId, netId);
+                    // The game's spawn hook ran during CreateEntity, BEFORE RegisterRuntime — the
+                    // same race the spawner side heals with Align. Without it the replica never
+                    // enters LiveEntities, and the receive path has nowhere to push snapshots:
+                    // the puppet stays frozen at its spawn pose forever (observed with minions).
+                    if (se.EntityData != null) EnemySync.OnEntitySpawned.Align(se.EntityData);
                 }
                 if (wireOwnerShip) WireMinionOwner(netId, ownerSlot);
                 Plugin.Log.LogInfo($"[Spawns] replica '{entityId}' netId {netId} (P{ownerSlot + 1})");
@@ -287,12 +292,16 @@ namespace PunkMultiverse.Sync
                 var egm = ServiceLocator.Get<EntityGameObjectManager>();
                 if (!egm.TryGetSavableEntity(instanceId, out var se) || se == null) return;
                 if (!ShipSync.ShipsBySlot.TryGetValue(ownerSlot, out var ownerShip) || ownerShip == null) return;
-                var ownerUnit = ownerShip.GetComponent<Unit>();
+                // SetOwner's first parameter is the owner's SavableEntity — passing the Unit threw
+                // an ArgumentException on every wiring, so no minion replica ever had an owner.
+                var ownerEntity = ownerShip.GetComponent<SavableEntity>();
                 var minionUnit = se.GetComponent<Unit>();
-                if (ownerUnit == null || minionUnit == null) return;
+                if (ownerEntity == null || minionUnit == null) return;
                 var setOwner = AccessTools.Method(typeof(Unit), "SetOwner");
                 var connectionType = setOwner.GetParameters()[1].ParameterType;
-                setOwner.Invoke(minionUnit, new object[] { ownerUnit, Enum.ToObject(connectionType, 0) });
+                // Connection type 0 on purpose: the puppet ship's own SpawnMinionModule culls
+                // excess minions by matching connection type — replicas must never match it.
+                setOwner.Invoke(minionUnit, new object[] { ownerEntity, Enum.ToObject(connectionType, 0) });
             }
             catch (Exception e)
             {

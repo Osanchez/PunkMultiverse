@@ -43,9 +43,10 @@ fire <seconds> [sec] at <netId>   # ...steering the barrels at that entity every
 fire <seconds> [sec] dir <dx dy>  # ...or in a fixed direction. Stand off 8-12u from targets
 loadout                     # every ship's holder weapons + grid weapon/active clusters +
                             # module count — the weapon-sync diagnostic (puppet == owner)
-equip <id|list> [sec|act1|act2|act3]  # install a weapon (or weapon-based active) module
-                            # on the LOCAL ship's grid — the real gameplay path, so
-                            # ModuleGridSync must replicate it. `list` prints id + name.
+equip <id|list> [sec|act1|act2|act3]  # install a weapon, weapon-based active, or minion
+                            # (SpawnMinionModule) module on the LOCAL ship's grid — the
+                            # real gameplay path, so ModuleGridSync must replicate it.
+                            # `list` prints id + name, tagged (active) / (minion).
 useactive <1-3>             # trigger an ability-slot module (the ModuleActivator path,
                             # minus cooldown). Weapon actives fire FROM THE SHIP'S OWN
                             # POSITION — explosive ones can self-kill the test ship.
@@ -53,6 +54,10 @@ owner [x y | rel dx dy]     # segment + current lease owner at a position (defau
                             # -> poll until "= P2" to wait for a lease commit
 probe <netId>               # the target's OWN senses: AIAgent/Vision seen/target/shooter
                             # + probe2 line (forced scan, layer mask, raw physics overlaps)
+sync <netId>                # one line of sync truth for one entity on THIS machine:
+                            # live/puppet/killed/fixed/owner, lastSent age (am I streaming
+                            # it?), recvFrom (am I receiving it?), simSegment, lifetime.
+                            # Run on BOTH sides to bisect owner-vs-viewer in one step.
 knockback off|on            # suppress projectile impulses ON THIS MACHINE — fire tests
                             # stop shoving ships off their marks (send to BOTH instances)
 stall <secs>                # freeze the main thread 1-25s: reproduces a load/GC stall

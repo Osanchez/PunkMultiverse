@@ -203,6 +203,25 @@ each window's delta attributes replays to one slot of one shooter.
   observer counter after the FIRST activation, and treat a `status ... DEAD` on the
   shooter as an invalidated window, not a sync failure.
 
+## 16. minion-sync (summoned drones tracked remotely) — VERIFIED 2026-07-15
+
+- HOST: `equip <SpawnMinionModuleData id> act1` (from `equip list`'s `(minion)` entries,
+  e.g. COMBAT_DRONE), then `useactive 1` — repeat spaced ≥5s apart until
+  `[Spawns] runtime spawn 'Ally_Drone'` appears (the first activations can fail silent
+  resource gates). Extract the netId from that line.
+- `sync <netId>` is the assertion tool (one line of send/receive truth per machine):
+  - OWNER must show `live=True fixed=True owner=P1 lastSent=<0.5s ago`.
+  - VIEWER must show `live=True puppet=True owner=P1 recvFrom=P1/e0` — and its
+    `entities` position for the drone must CHANGE across ≥15s samples (orbits the ship).
+  - Viewer `owner` must STAY the summoner across ≥40s (a flip to the viewer's own slot =
+    the starved-recovery theft regression; fixed owners are exempt from promotion).
+- Both logs: zero `owner wiring failed`, zero `DROPPED starved request ... gate=fixed-owner`
+  storms (one-off drops during the spawn window are fine).
+- FAIL signatures (all were live bugs): viewer `live=False` (replica missing from
+  LiveEntities — Align not run on the replica side); viewer `recvFrom=never` while owner
+  `lastSent` ticks (epoch-0 fixed groups gated behind the lease-baseline handshake);
+  `owner wiring failed: Unit cannot be converted to SavableEntity`.
+
 ---
 
 ### Cadence

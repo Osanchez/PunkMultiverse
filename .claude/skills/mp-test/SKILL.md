@@ -89,6 +89,14 @@ Delete stale `devcmd.txt` files before launching.
   grade on content, not exit codes.
 - The stale-instance trap: a user instance may predate your run by hours; check
   `Get-Process Punk | Select Id,StartTime` BEFORE launching so your PID set is unambiguous.
+- `sync <netId>` on BOTH machines bisects any "entity not tracked" report in one step:
+  owner shows lastSent (streaming?), viewer shows live/puppet/recvFrom (registered?
+  receiving?). viewer live=False = replica missing from LiveEntities; recvFrom=never
+  while owner streams = a send/route gate. Minions are `fixed=True owner=<summoner>` —
+  the viewer's owner flipping to itself is the starved-theft regression.
+- Minion summons (`equip <id> act1` from the (minion) list + `useactive 1`) can fail
+  SILENT resource gates — repeat spaced activations until `[Spawns] runtime spawn`
+  appears, and only then grade.
 - `probe <netId>` is the FIRST diagnostic for any behavior question — it reads the enemy's
   own AIAgent/Vision (seen/enemies/target/shooter + probe2's scanNow/mask/rawHits). An
   owned spawn showing `PUPPET aiOn=False` on its spawner = the mutual-puppet zombie

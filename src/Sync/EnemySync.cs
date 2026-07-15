@@ -215,6 +215,23 @@ namespace PunkMultiverse.Sync
             return AuthorityManager.OwnerOf(netId);
         }
 
+        /// <summary>One-line send/receive truth for a single entity — the dev harness `sync`
+        /// command. Answers "is the owner collecting this at all / is the viewer receiving"
+        /// without log archaeology.</summary>
+        public static string DescribeSyncState(int netId)
+        {
+            bool live = LiveEntities.TryGetValue(netId, out var se) && se != null;
+            bool puppet = live && se.GetComponent<RemoteEntityPuppet>() != null;
+            byte owner = OwnerOf(netId);
+            float now = Time.unscaledTime;
+            string sent = LastSentAt.TryGetValue(netId, out float at) ? $"{now - at:0.0}s ago" : "never";
+            string recv = LastEntityStateMs.TryGetValue(netId, out var last) ? $"P{last.slot + 1}/e{last.epoch}" : "never";
+            string seg = SimulationSegments.TryGetValue(netId, out var s) ? $"({s.X},{s.Y})" : "-";
+            return $"sync #{netId}: live={live} puppet={puppet} killed={KilledNetIds.Contains(netId)} " +
+                $"fixed={FixedOwners.Contains(netId)} owner={(owner == 255 ? "dormant" : "P" + (owner + 1))} " +
+                $"lastSent={sent} recvFrom={recv} simSeg={seg} lifetime={NetIds.LifetimeOf(netId)}";
+        }
+
         public static List<int> KilledSnapshot() => new List<int>(KilledNetIds);
 
         public static List<(int plantNetId, int fruitId)> PlantFruitKilledSnapshot()
@@ -1243,6 +1260,17 @@ namespace PunkMultiverse.Sync
             foreach (var group in source)
             {
                 bool selected = IsGroupInterestingTo(targetSlot, group);
+                // Fixed-owner groups (epoch 0: minions and other spawner-bound entities) must
+                // not ride the segment-lease route machinery: the runtime-baseline handshake
+                // keys on lease epochs, and CanApplyRuntimeBaseline rejects epoch 0 against any
+                // real lease forever — the route never turned Ready and minions NEVER streamed.
+                // Their replicas are guaranteed by the reliable spawn messages instead, and the
+                // receiver still validates each entry via IsStateAuthority's fixed-owner path.
+                if (selected && group.Epoch == 0)
+                {
+                    target.Add(group);
+                    continue;
+                }
                 if (selected && NetSession.Instance is NetSession session && session.IsHost
                     && targetSlot != session.LocalSlot)
                 {
@@ -2022,6 +2050,9 @@ namespace PunkMultiverse.Sync
                     || entity.GetComponent<DuplicateEntityInert>() != null) continue;
                 var puppet = entity.GetComponent<RemoteEntityPuppet>();
                 if (puppet == null || puppet.NetId < 0) continue;
+                // Fixed owners (minions) never hand off — their summoner is the only valid
+                // simulator, so requesting promotion here can only steal them mid-window.
+                if (FixedOwners.Contains(netId)) continue;
                 float staleAfter = puppet.HasSnapshot ? StarvedSnapshotAfter : StarvedNeverAfter;
                 if (puppet.PuppetAge < staleAfter || puppet.SnapshotAge < staleAfter) continue;
                 if (NextStarvedRequestAt.TryGetValue(netId, out float next) && now < next) continue;
@@ -2217,6 +2248,10 @@ namespace PunkMultiverse.Sync
         {
             if (!session.IsHost) return;
             if (KilledNetIds.Contains(netId)) { LogStarvedDrop(netId, "killed"); return; }
+            // Minions and other fixed-owner entities never hand off — a viewer's brief
+            // pre-first-snapshot starvation window must not steal a minion from its summoner
+            // (observed live: the client promoted itself over the host's drone).
+            if (FixedOwners.Contains(netId)) { LogStarvedDrop(netId, "fixed-owner"); return; }
             if (!NetIds.TryGetInstanceId(netId, out _)) { LogStarvedDrop(netId, "no-instance-mapping"); return; }
             var player = session.Players.FirstOrDefault(p => p != null && p.Connected && p.Slot == requester);
             if (player == null) { LogStarvedDrop(netId, $"requester-P{requester + 1}-not-connected"); return; }

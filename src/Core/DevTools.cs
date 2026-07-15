@@ -392,6 +392,8 @@ namespace PunkMultiverse.Core
                                 Out($"equip: {w.Id} {(string.IsNullOrEmpty(w.displayName) ? "?" : w.displayName.Replace(' ', '_'))}");
                             else if (item is WeaponBasedActiveModuleData a)
                                 Out($"equip: {a.Id} {(string.IsNullOrEmpty(a.displayName) ? "?" : a.displayName.Replace(' ', '_'))} (active)");
+                            else if (item is SpawnMinionModuleData m)
+                                Out($"equip: {m.Id} {(string.IsNullOrEmpty(m.displayName) ? "?" : m.displayName.Replace(' ', '_'))} (minion)");
                         }
                         return;
                     }
@@ -411,7 +413,9 @@ namespace PunkMultiverse.Core
                     string wanted = parts[1].Replace('_', ' ');
                     foreach (var item in registry.AllItems)
                     {
-                        bool typeOk = active > 0 ? item is WeaponBasedActiveModuleData : item is WeaponModuleData;
+                        bool typeOk = active > 0
+                            ? item is WeaponBasedActiveModuleData || item is SpawnMinionModuleData
+                            : item is WeaponModuleData;
                         if (!typeOk) continue;
                         var m = (ModuleData)item;
                         if (m.Id.Equals(parts[1], StringComparison.OrdinalIgnoreCase)
@@ -433,6 +437,13 @@ namespace PunkMultiverse.Core
                     if (existing != null) module.CopyConnectionsFrom(existing);
                     grid2.Install(pos2, module);
                     Out($"equip: installed {found.Id} in {(active > 0 ? "ACTIVE" + active : secondary ? "SECONDARY" : "PRIMARY")} slot");
+                    return;
+                }
+                case "sync":
+                {
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out int syncId))
+                    { Out("sync: usage sync <netId>"); return; }
+                    Out(EnemySync.DescribeSyncState(syncId));
                     return;
                 }
                 case "useactive":
