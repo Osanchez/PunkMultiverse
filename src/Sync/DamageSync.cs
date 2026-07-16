@@ -33,6 +33,9 @@ namespace PunkMultiverse.Sync
         private static readonly List<(DamageRequestMsg msg, float queuedAt)> PendingDormantDamage
             = new List<(DamageRequestMsg, float)>();
         private const float DormantClaimTtl = 15f;
+        // Per-entity brake on the dormant-claim wake machinery (see QueueDormantClaim).
+        private static readonly Dictionary<int, float> NextDormantWakeAt = new Dictionary<int, float>();
+        private const float DormantWakeCooldown = 0.5f;
         private static readonly HashSet<ulong> SeenDamageRequests = new HashSet<ulong>();
         private static readonly Queue<ulong> SeenDamageRequestOrder = new Queue<ulong>();
         private static uint _requestSequence;
@@ -61,6 +64,7 @@ namespace PunkMultiverse.Sync
             _applyingRemote = false;
             LastDamager.Clear();
             PendingDormantDamage.Clear();
+            NextDormantWakeAt.Clear();
             SeenDamageRequests.Clear();
             SeenDamageRequestOrder.Clear();
             _requestSequence = 0;
@@ -517,6 +521,16 @@ namespace PunkMultiverse.Sync
             }
             PendingDormantDamage.Add((msg, UnityEngine.Time.unscaledTime));
             Core.InstrumentationCounters.DormantDamageQueued();
+            // Wake machinery at most once per entity per cooldown. Without this the claim can
+            // RECYCLE synchronously — OnDormantHit sees the lease already the attacker's, drains
+            // the queue, the replayed request finds no spawned object and re-queues right here —
+            // and when the attacker can never materialize the entity (world-database divergence),
+            // the cycle runs at dispatch speed forever: one live session wrote 92k of the log
+            // line below at ~1.1k/s and starved the receive drain into a 55 s freeze.
+            float now = UnityEngine.Time.unscaledTime;
+            if (NextDormantWakeAt.TryGetValue(msg.TargetNetId, out float at) && now < at)
+                return; // claim stays queued; the in-flight wake (or the next one) drains it
+            NextDormantWakeAt[msg.TargetNetId] = now + DormantWakeCooldown;
             // Loud on purpose: dormantDamage has read 0/0 across sessions where players report
             // fighting frozen "mannequins" — this line proves whether hits on dormant entities
             // actually reach the claim path (and OnDormantHit wakes them for the attacker).

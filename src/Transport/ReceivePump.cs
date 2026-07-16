@@ -16,9 +16,15 @@ namespace PunkMultiverse.Transport
     /// </summary>
     internal sealed class ReceivePump
     {
-        // Past this queue depth the drain ignores the budget and catches up in one frame —
-        // falling steadily behind is worse than one long frame.
+        // Past this queue depth the drain ignores the per-frame budget and catches up hard —
+        // falling steadily behind is worse than a few long frames.
         private const int ForceDrainDepth = 1024;
+        // But catch-up must still be BOUNDED: it processes at most the backlog present at entry
+        // and at most this many ms, then yields the frame. "Drain until empty" against a live
+        // producer thread never exits when arrival outpaces dispatch — observed live as a 55+ s
+        // main-thread freeze inside one drain while a damage-claim storm arrived faster than its
+        // own synchronous log lines could be written.
+        private const float CatchUpBudgetMs = 100f;
 
         public struct Item
         {
@@ -75,14 +81,18 @@ namespace PunkMultiverse.Transport
         {
             if (_rx.IsEmpty) return;
             float budgetMs = NetConfig.ReceiveBudgetMs.Value;
-            bool unbounded = budgetMs <= 0f || _rx.Count > ForceDrainDepth;
-            long budgetTicks = unbounded ? 0 : (long)(budgetMs / 1000f * Stopwatch.Frequency);
+            int backlog = _rx.Count;
+            bool catchUp = budgetMs <= 0f || backlog > ForceDrainDepth;
+            long budgetTicks = (long)((catchUp ? CatchUpBudgetMs : budgetMs) / 1000f * Stopwatch.Frequency);
+            // Catch-up drains only the items that were queued when it started — never the live
+            // tail the pump thread keeps appending — so it always terminates.
+            int remaining = catchUp ? backlog : int.MaxValue;
             _drainWatch.Restart();
-            while (_rx.TryDequeue(out var item))
+            while (remaining-- > 0 && _rx.TryDequeue(out var item))
             {
                 try { dispatch(in item); }
                 finally { if (item.Buf != null) ArrayPool<byte>.Shared.Return(item.Buf); }
-                if (!unbounded && _drainWatch.ElapsedTicks >= budgetTicks) break;
+                if (budgetTicks > 0 && _drainWatch.ElapsedTicks >= budgetTicks) break;
             }
         }
 

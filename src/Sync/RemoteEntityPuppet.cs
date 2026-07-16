@@ -105,6 +105,10 @@ namespace PunkMultiverse.Sync
                 _savedBodyType = _rb.bodyType;
                 _savedGravityScale = _rb.gravityScale;
                 _savedFullKinematicContacts = _rb.useFullKinematicContacts;
+                // The save above existed but the ASSIGNMENT was missing — puppets stepped at
+                // 50 Hz on 150+ fps displays (reported as "winged enemies jitter": wings animate
+                // relative to body motion and amplify every fixed-step edge).
+                _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
                 // Passive kinematic bodies remain raycast/projectile targets but do not fall,
                 // integrate forces, or generate kinematic-vs-static terrain contacts. This is
                 // intentionally true even before the first snapshot and while packets are stale.
