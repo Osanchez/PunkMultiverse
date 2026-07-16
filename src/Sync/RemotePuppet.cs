@@ -51,7 +51,10 @@ namespace PunkMultiverse.Sync
             _movement = GetComponent<ShipMovement>();
             // Snapshots apply in the 50 Hz physics step — without render interpolation the
             // ship visibly stutters on high-refresh displays ("the other player is lagging").
-            if (_rb != null) _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
+            // Child bodies (articulated parts) must interpolate too, or they render at
+            // fixed-step poses against a between-steps hull and jitter relative to it.
+            foreach (var body in GetComponentsInChildren<Rigidbody2D>(true))
+                if (body != null) body.interpolation = RigidbodyInterpolation2D.Interpolate;
         }
 
         private void Start()

@@ -92,6 +92,8 @@ namespace PunkMultiverse.Sync
             ? float.PositiveInfinity
             : Time.unscaledTime - _lastSnapshotReceivedAt;
 
+        private (Rigidbody2D body, RigidbodyInterpolation2D saved)[] _childInterpolation;
+
         private void Awake()
         {
             _rb = GetComponent<Rigidbody2D>();
@@ -109,6 +111,19 @@ namespace PunkMultiverse.Sync
                 // 50 Hz on 150+ fps displays (reported as "winged enemies jitter": wings animate
                 // relative to body motion and amplify every fixed-step edge).
                 _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
+                // Articulated children (a swimmer's jointed tail, wing segments) are separate
+                // dynamic bodies local physics drives via joints. With only the root interpolated
+                // they render at fixed-step poses against a between-steps root — the appendage
+                // jitters RELATIVE to its own body. Interpolate the whole hierarchy.
+                var childBodies = GetComponentsInChildren<Rigidbody2D>(true);
+                var savedChildren = new List<(Rigidbody2D, RigidbodyInterpolation2D)>(childBodies.Length);
+                foreach (var child in childBodies)
+                    if (child != null && child != _rb)
+                    {
+                        savedChildren.Add((child, child.interpolation));
+                        child.interpolation = RigidbodyInterpolation2D.Interpolate;
+                    }
+                _childInterpolation = savedChildren.ToArray();
                 // Passive kinematic bodies remain raycast/projectile targets but do not fall,
                 // integrate forces, or generate kinematic-vs-static terrain contacts. This is
                 // intentionally true even before the first snapshot and while packets are stale.
@@ -277,6 +292,9 @@ namespace PunkMultiverse.Sync
                 _rb.useFullKinematicContacts = _savedFullKinematicContacts;
                 _rb.interpolation = _savedInterpolation;
             }
+            if (_childInterpolation != null)
+                foreach (var (body, saved) in _childInterpolation)
+                    if (body != null) body.interpolation = saved;
         }
 
         private void RemoveInstrumentationCount()
@@ -390,6 +408,12 @@ namespace PunkMultiverse.Sync
         {
             Vector2 delta = target - root.position;
             root.position = target;
+            // Also reposition the Transform: Unity resets a body's interpolation pose when its
+            // Transform moves, so the teleport CUTS instead of rendering a one-frame glide
+            // streak across the gap (bodies are interpolated puppets now). Parented child
+            // transforms follow automatically; their physics poses shift by the same delta.
+            var t = root.transform.position;
+            root.transform.position = new Vector3(target.x, target.y, t.z);
             if (delta.sqrMagnitude < 0.0001f) return;
             foreach (var child in root.GetComponentsInChildren<Rigidbody2D>(true))
                 if (child != null && child != root) child.position += delta;
