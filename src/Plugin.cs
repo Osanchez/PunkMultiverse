@@ -67,6 +67,9 @@ namespace PunkMultiverse
             if (_runtime != null) Object.Destroy(_runtime);
             try { _harmony?.UnpatchSelf(); } catch { }
             RuntimeInstrumentation.Shutdown();
+            // Last: we own SteamAPI on direct launches, and an un-shut-down steamclient
+            // intermittently deadlocks process exit (the windowless zombie Punk.exe).
+            Transport.SteamBootstrap.Shutdown();
         }
     }
 }

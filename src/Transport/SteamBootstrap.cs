@@ -94,5 +94,26 @@ namespace PunkMultiverse.Transport
                 try { SteamAPI.RunCallbacks(); } catch { }
             }
         }
+
+        /// <summary>Whoever initializes SteamAPI must shut it down before process exit (the
+        /// game's own SteamManager.OnDestroy does exactly this for Steam launches). A
+        /// still-running steamclient64 tears down inside DLL_PROCESS_DETACH under the loader
+        /// lock, which intermittently deadlocks — the windowless Punk.exe that stays in Task
+        /// Manager after closing a direct-launch instance.</summary>
+        public static void Shutdown()
+        {
+            if (!SelfInitialized) return;
+            SelfInitialized = false;
+            Available = false;
+            try
+            {
+                SteamAPI.Shutdown();
+                Plugin.Log.LogInfo("[Steam] self-initialized API shut down");
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Steam] shutdown failed: {e.Message}");
+            }
+        }
     }
 }
