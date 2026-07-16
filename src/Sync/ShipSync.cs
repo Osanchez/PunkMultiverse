@@ -308,29 +308,75 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(GameController), "AssignHuds")]
         internal static class NoPuppetHuds
         {
-            private static void Postfix(GameController __instance)
+            private static void Postfix(GameController __instance) => EnforcePuppetHudGate(__instance);
+        }
+
+        private static void EnforcePuppetHudGate(GameController gc)
+        {
+            if (!NetSession.Active || gc == null) return;
+            try
             {
-                if (!NetSession.Active) return;
+                var huds = AccessTools.Field(typeof(GameController), "huds").GetValue(gc) as Array;
+                if (huds == null) return;
+                for (int i = 0; i < huds.Length; i++)
+                {
+                    // Match by the hud's ASSIGNED ship, not list position — Ships[] can reorder
+                    // across death/respawn, and an index match could black out a real player.
+                    if (huds.GetValue(i) is ShipHud hud && hud.Ship != null
+                        && hud.Ship.GetComponent<RemotePuppet>() != null && hud.gameObject.activeSelf)
+                    {
+                        hud.gameObject.SetActive(false);
+                        Plugin.Log.LogInfo($"[Ships] disabled HUD {i} (puppet ship)");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Ships] HUD gating failed: {e.Message}");
+            }
+        }
+
+        // AssignHuds runs once per run, but the HUD show/hide ANIMATORS run on every ship-menu
+        // close (InGameHud.SetHudVisible triggers "Show" on ship2HudAnimator unconditionally) —
+        // observed live: the remote player's HUD reappeared mid-run and its panel shoved the
+        // minimap into the co-op corner. Counter the trigger immediately, and re-run the gate
+        // at 1 Hz as a backstop against any other vanilla re-show path.
+        [HarmonyPatch(typeof(InGameHud), "SetHudVisible")]
+        internal static class NoPuppetHudReshow
+        {
+            private static void Postfix(InGameHud __instance, bool visible)
+            {
+                if (!visible || !NetSession.Active) return;
                 try
                 {
-                    var huds = AccessTools.Field(typeof(GameController), "huds").GetValue(__instance) as Array;
-                    if (huds == null) return;
-                    var sm = ServiceLocator.Get<ShipManager>();
-                    for (int i = 0; i < huds.Length && i < sm.Ships.Count; i++)
-                    {
-                        if (sm.Ships[i] != null && sm.Ships[i].GetComponent<RemotePuppet>() != null
-                            && huds.GetValue(i) is Component hud)
-                        {
-                            hud.gameObject.SetActive(false);
-                            Plugin.Log.LogInfo($"[Ships] disabled HUD {i} (puppet ship)");
-                        }
-                    }
+                    // ship2HudAnimator is hard-wired to huds[1]; check that hud's ASSIGNED ship.
+                    var gc = ServiceLocator.Get<GameController>();
+                    var huds = gc != null
+                        ? AccessTools.Field(typeof(GameController), "huds").GetValue(gc) as Array
+                        : null;
+                    if (huds == null || huds.Length < 2 || huds.GetValue(1) is not ShipHud hud
+                        || hud.Ship == null || hud.Ship.GetComponent<RemotePuppet>() == null) return;
+                    var animator = AccessTools.Field(typeof(InGameHud), "ship2HudAnimator")
+                        .GetValue(__instance) as Animator;
+                    if (animator == null || !animator.isActiveAndEnabled) return;
+                    animator.ResetTrigger("Show");
+                    animator.ResetTrigger("SetToVisible");
+                    animator.SetTrigger("SetToHidden");
                 }
                 catch (Exception e)
                 {
-                    Plugin.Log.LogWarning($"[Ships] HUD gating failed: {e.Message}");
+                    Plugin.Log.LogWarning($"[Ships] HUD re-show gating failed: {e.Message}");
                 }
             }
+        }
+
+        private static float _nextHudSweepAt;
+
+        private static void SweepPuppetHudGate()
+        {
+            if (Time.unscaledTime < _nextHudSweepAt) return;
+            _nextHudSweepAt = Time.unscaledTime + 1f;
+            try { EnforcePuppetHudGate(ServiceLocator.Get<GameController>()); } catch { }
         }
 
         // A field report of "the other player flew straight through an enemy" could not be
@@ -377,6 +423,7 @@ namespace PunkMultiverse.Sync
             EnsureLatePuppets(session);
             SweepDistantCameraTargets();
             SweepPuppetOverlaps();
+            SweepPuppetHudGate();
             if (Time.unscaledTime < _nextSendAt) return;
             _nextSendAt = Time.unscaledTime + 1f / Mathf.Max(1f, NetConfig.ShipStateHz.Value);
 

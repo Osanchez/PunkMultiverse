@@ -39,6 +39,7 @@ namespace PunkMultiverse.Sync
         private ShipMovement _movement;
         private Aimer[] _aimers;
         private BarrelTransform[] _barrels; // only barrels no Aimer owns — written directly
+        private Crosshair _crosshair;
         private bool _boosting;
         private bool _frozenStale;
         private float _savedGravityScale;
@@ -67,6 +68,7 @@ namespace PunkMultiverse.Sync
             foreach (var barrel in GetComponentsInChildren<BarrelTransform>(true))
                 if (!owned.Contains(barrel)) free.Add(barrel);
             _barrels = free.ToArray();
+            _crosshair = GetComponentInChildren<Crosshair>(true);
             StartCoroutine(RemoveCameraTargets());
         }
 
@@ -169,6 +171,16 @@ namespace PunkMultiverse.Sync
             foreach (var barrel in _barrels)
                 if (barrel != null)
                     barrel.Direction = AimDirection;
+        }
+
+        // The ship prefab's Crosshair is a WORLD-SPACE sprite parked at Aimer.TargetPosition —
+        // feeding the puppet's Aimer (above) floats the remote player's crosshair on everyone's
+        // screen. Vanilla Ship.Update re-asserts crosshair.Visible EVERY frame (from the control
+        // action map, which stays enabled on puppets), so this must run in LateUpdate to land
+        // after it deterministically — a plain Update write is a script-order coin flip.
+        private void LateUpdate()
+        {
+            if (_crosshair != null && _crosshair.Visible) _crosshair.Visible = false;
         }
 
         /// <summary>Disable local input/physics-driving components; replication owns this body.</summary>
