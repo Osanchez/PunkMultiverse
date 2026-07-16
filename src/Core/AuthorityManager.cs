@@ -74,6 +74,17 @@ namespace PunkMultiverse.Core
         private static readonly Dictionary<byte, uint> ResidencyRevs = new Dictionary<byte, uint>();
         // Segments whose owner stopped being resident and whose dormancy commit hasn't arrived.
         private static readonly Dictionary<SegmentKey, float> PendingDormancy = new Dictionary<SegmentKey, float>();
+        // Dormancy commits that arrived while another peer still looked resident: the transition
+        // defers to a possible handoff, but the received commit must stay first-class state — if
+        // the prospective target leaves before the scan hands off, the segment goes Dormant
+        // directly from the commit instead of waiting out the crash grace (a co-flying trailing
+        // player made that fallback fire on 29 host-owned segments in one playtest).
+        private static readonly Dictionary<SegmentKey, byte> DeferredDormancyCommits
+            = new Dictionary<SegmentKey, byte>();
+
+        /// <summary>Why a segment moves to Dormant. The paths must not share a log message —
+        /// deliberate disconnect cleanup reading as "commit lost" buries the real anomalies.</summary>
+        private enum DormantReason { OwnerCommit, GraceFallback, PeerLost }
         private static readonly NetWriter Writer = new NetWriter(512);
         private static float _nextScanAt;
         private static uint _nextEpoch = 1;
@@ -97,6 +108,7 @@ namespace PunkMultiverse.Core
             ResidentSets.Clear();
             ResidencyRevs.Clear();
             PendingDormancy.Clear();
+            DeferredDormancyCommits.Clear();
             _nextScanAt = 0;
             _nextEpoch = 1;
             _nextLedgerAt = 0;
@@ -241,6 +253,10 @@ namespace PunkMultiverse.Core
                 // Event-driven readiness retry: a target that just became resident no longer
                 // needs to sit out the blind post-NACK backoff.
                 UnreadyUntil.Remove((key, slot));
+                // The committed-and-left owner is streaming the segment again: it resumes
+                // simulating, so its old final-state commit no longer describes the future.
+                if (DeferredDormancyCommits.TryGetValue(key, out byte committedBy) && committedBy == slot)
+                    DeferredDormancyCommits.Remove(key);
             }
             foreach (var key in previous)
             {
@@ -297,8 +313,15 @@ namespace PunkMultiverse.Core
             // from the coordinator's cache. Segments other peers stream are re-granted by the
             // next scan; the rest stay Dormant.
             if (session != null && session.IsHost)
+            {
                 foreach (var key in _lostScratch)
-                    CommitDormant(session, key, Leases[key], fromCache: true);
+                    CommitDormant(session, key, Leases[key],
+                        DeferredDormancyCommits.TryGetValue(key, out byte by) && by == slot
+                            ? DormantReason.OwnerCommit : DormantReason.PeerLost);
+                if (_lostScratch.Count > 0)
+                    Plugin.Log.LogInfo($"[Lease] P{slot + 1} disconnected — resolved " +
+                        $"{_lostScratch.Count} owned segment(s) to dormant from the coordinator cache");
+            }
             _nextScanAt = 0;
         }
 
@@ -384,9 +407,19 @@ namespace PunkMultiverse.Core
                 }
                 if (desired == DormantOwner)
                 {
-                    // Owner left and nobody else streams the segment: the owner's dormancy
-                    // commit (or the grace fallback below) moves it to Dormant — never a blind
-                    // reassignment to a peer that can't simulate it.
+                    // Owner left and nobody else streams the segment. If the owner's dormancy
+                    // commit already arrived (deferred while a handoff looked possible), the
+                    // canonical store is fed — go Dormant now, no grace. Otherwise wait for the
+                    // commit (or the grace fallback below) — never a blind reassignment to a
+                    // peer that can't simulate it.
+                    if (lease != null && lease.Owner != DormantOwner
+                        && DeferredDormancyCommits.TryGetValue(key, out byte committedBy)
+                        && committedBy == lease.Owner)
+                    {
+                        PendingDormancy.Remove(key);
+                        CommitDormant(session, key, lease, DormantReason.OwnerCommit);
+                        continue;
+                    }
                     if (lease != null && !PendingDormancy.ContainsKey(key))
                         PendingDormancy[key] = Time.unscaledTime + DormancyCommitGrace;
                     continue;
@@ -455,7 +488,7 @@ namespace PunkMultiverse.Core
                 PendingDormancy.Remove(key);
                 if (!Leases.TryGetValue(key, out var lease) || lease.Owner == DormantOwner) continue;
                 if (IsResident(lease.Owner, key)) continue; // owner came back — keep the lease
-                CommitDormant(session, key, lease, fromCache: true);
+                CommitDormant(session, key, lease, DormantReason.GraceFallback);
             }
 
             // Everything this scan committed flips in one entity pass.
@@ -535,6 +568,9 @@ namespace PunkMultiverse.Core
             lease.Owner = lease.PendingOwner;
             lease.Epoch = lease.PendingEpoch;
             lease.Pending = false;
+            // The handoff the deferred commit waited on happened — the latch is spent (a stale
+            // one could later dormant-commit a NEW owner's lease without its commit).
+            DeferredDormancyCommits.Remove(key);
             SendLease(session, key, lease.Owner, lease.Epoch, 1);
             EnemySync.FinalizeHandoffFreeze(key, lease.Epoch);
             EnemySync.MarkSegmentOwnershipDirty(key); // batched: one entity pass per wave, not per segment
@@ -556,9 +592,9 @@ namespace PunkMultiverse.Core
         }
 
         /// <summary>Host: move a segment to Dormant — nobody simulates it; the canonical store
-        /// (fed by the owner's dormancy commit, or the host's own snapshot cache on
-        /// <paramref name="fromCache"/>) is the truth until residency re-activates it.</summary>
-        private static void CommitDormant(NetSession session, SegmentKey key, Lease lease, bool fromCache)
+        /// (fed by the owner's dormancy commit, or the host's own snapshot cache on the
+        /// non-commit reasons) is the truth until residency re-activates it.</summary>
+        private static void CommitDormant(NetSession session, SegmentKey key, Lease lease, DormantReason reason)
         {
             if (lease.Pending)
             {
@@ -570,16 +606,29 @@ namespace PunkMultiverse.Core
             lease.Owner = DormantOwner;
             lease.Epoch = _nextEpoch++;
             lease.PreparedAt = 0f;
+            DeferredDormancyCommits.Remove(key);
             SendLease(session, key, DormantOwner, lease.Epoch, 1);
             EnemySync.MarkSegmentOwnershipDirty(key);
-            InstrumentationCounters.DormantTransition(fromCache);
-            // Routine unload-driven transitions are diag-gated (movement-rate volume); the
-            // cache fallback stays loud — it means an owner left without its commit.
-            if (fromCache)
-                Plugin.Log.LogInfo($"[Lease] segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch} " +
-                    "(coordinator-cache fallback — no dormancy commit received)");
-            else if (NetDiag.Enabled)
-                NetDiag.Log("Lease", $"segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch}");
+            InstrumentationCounters.DormantTransition(reason != DormantReason.OwnerCommit);
+            // Routine commit-driven transitions are diag-gated (movement-rate volume). Disconnect
+            // cleanup is expected and says so. Only the grace fallback stays loud — after the
+            // deferred-commit latch, it means an owner truly left without its commit.
+            switch (reason)
+            {
+                case DormantReason.GraceFallback:
+                    Plugin.Log.LogWarning($"[Lease] segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch} " +
+                        "(coordinator-cache fallback — no dormancy commit received within grace)");
+                    break;
+                case DormantReason.PeerLost:
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Lease", $"segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch} " +
+                            "(owner disconnected — resolved from coordinator cache)");
+                    break;
+                default:
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Lease", $"segment {key} {NetDiag.Owner(old)}->dormant epoch={lease.Epoch}");
+                    break;
+            }
         }
 
         /// <summary>Host: an owner committed its final states for a segment it is unloading. If
@@ -593,10 +642,14 @@ namespace PunkMultiverse.Core
             foreach (var kv in ResidentSets)
                 if (kv.Key != sender && kv.Value.Contains(key))
                 {
-                    _nextScanAt = 0; // a resident peer exists — let the scan hand off instead
+                    // A resident peer exists — let the scan hand off instead. But LATCH the
+                    // commit: if that peer unloads before the handoff, the scan resolves the
+                    // segment dormant from this commit, not the crash-grace cache fallback.
+                    DeferredDormancyCommits[key] = sender;
+                    _nextScanAt = 0;
                     return;
                 }
-            CommitDormant(session, key, lease, fromCache: false);
+            CommitDormant(session, key, lease, DormantReason.OwnerCommit);
         }
 
         private static void SendLease(NetSession session, SegmentKey key, byte owner, uint epoch, byte phase)

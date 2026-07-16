@@ -78,6 +78,9 @@
         SegmentDormancyCommit = 78,  // owner -> host -> all: final entity states for a segment
                                      // the owner is unloading (the release edge, I-10)
         DormantState = 79,           // host -> rejoiner: canonical state cache replay chunks
+        SegmentRosterAudit = 80,     // owner -> host -> all: periodic identity roster for an
+                                     // owned segment; receivers detect and heal world-database
+                                     // divergence (entity data missing behind a live identity)
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

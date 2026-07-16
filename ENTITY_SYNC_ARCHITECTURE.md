@@ -359,6 +359,25 @@ Timeout: if `SegmentDormancyCommit` is lost (crash mid-unload), H detects via Re
 source, marked `origin=CoordinatorCache` — the honest version of today's
 `BuildCachedBaselineRoster`.
 
+Three refinements added 2026-07-15 after the fallback fired 88× in one playtest with zero crashes:
+
+- **Deferred-commit latch** (`AuthorityManager.DeferredDormancyCommits`): when a commit arrives
+  while another peer looks resident, `OnDormancyCommit` defers to a possible handoff — but the
+  received commit stays first-class state. If the prospective target unloads before the scan
+  hands off, the segment goes Dormant from the latched commit (quiet), never via the crash grace.
+  The latch invalidates when the committing owner becomes resident again, when the lease commits
+  to a new owner, and on any dormant transition.
+- **Lease decline** (`EnemySync.PendingLeaseAcceptance`): a grant can race the target's unload —
+  the destroy-prefix commit never fires because the owner's lease replica lagged (`OwnerOf(key)`
+  wasn't "me" yet at `DestroyGameObjects` time), or the grant landed after the segment was gone.
+  Every grant to the local slot is checked ~1.25 s later: still owned + still not streaming →
+  send the dormancy commit then (the decline). Timeouts are for crashes only; every graceful
+  path gets an explicit message.
+- **Disconnect cleanup logs as itself**: `OnPeerLost` resolutions print one summary line
+  ("resolved N owned segment(s) to dormant"), not N per-segment "no commit received" warnings.
+  After these three, any remaining `coordinator-cache fallback` warning is a real anomaly worth
+  chasing (verified: 0 across a full co-flight harness run, `dormantTransitions=213(cache0)`).
+
 ### 5.4 Activation (Dormant segment gains a resident peer B — stream-in or interaction claim)
 
 ```
@@ -463,6 +482,9 @@ transition to an honest state, never a fabricated one.
 | PREPARE sent | target gone / no ACK | existing PrepareRetry (2s) ×3 | CANCEL epoch; if source still resident → stays Live(A); else → Dormant |
 | Handoff baseline (source) | source can't produce (crashed, non-resident) | request retry ×2 then residency check | H substitutes CoordinatorCache dormancy entries; target becomes Activation instead of Handoff |
 | Baseline apply (target) | materialization failures (`data/type/segment-inactive/spawn/not-unit`) | NACK w/ reason + missing list (existing) | retry after target reports residency for S (event-driven, replaces blind 3s `UnreadyUntil`); ×3 → Dormant |
+| Baseline apply (target) | PERMANENT failure: no entity data behind a live identity (world-database divergence) | target-side: `data`/`identity` failure code; host-side: `PermanentNetIds` in the ack (2026-07-15) | target self-heals by respawning from the baseline entry (`TryRespawnFromBaseline`, once per lifetime); if 3 identical-permanent-missing NACKs still accrue, host PINS the entities to the source as explicit owners — rosters exclude fixed owners, so the next retry completes and the segment stops being hostage. Transient codes (`segment-inactive`, `spawn:*`, `egm`) never count toward the pin |
+| Entity data divergence at rest | a peer's EntityManager lost data another peer still simulates (not detectable at handoff edges alone) | **SegmentRosterAudit** (2026-07-15): owners broadcast identity rosters (netId, lifetime, type, pos) for owned+streamed segments ~4/s round-robin | receivers heal missing data via `TryRespawnFromBaseline`; reverse case (local live entity absent from owner's roster) logs on the 2nd consecutive audit; counters `rosterAudits=tx/rx divergence=found/healed/pinned` in `[Residency]` |
+| Availability promotion | candidate has a GameObject but no EntityManager data (can't actually simulate) | `HasSimulableEntityData` gate on both the local-commit and remote-prepare paths (2026-07-15) | promotion declined (`no-entity-data` gate) — the starved puppet stays a puppet until the audit/baseline heal restores its data |
 | COMMIT broadcast | peer missed COMMIT | reliable channel + lease snapshot replay on reconnect (existing `Snapshot()`) | idempotent re-apply |
 | First snapshot after commit | owner never streams | **FirstSnapshotDeadline** (new, e.g. 2s per committed lease) | host-side alarm counter + forced audit: owner resident? no → dormancy path; yes → log + re-request; never silent |
 | Dormancy commit | lost mid-unload | ResidencyReport shows owner left w/o commit | CoordinatorCache fallback, flagged `origin=CoordinatorCache` counter |

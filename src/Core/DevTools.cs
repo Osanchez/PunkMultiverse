@@ -733,7 +733,6 @@ namespace PunkMultiverse.Core
         {
             private static readonly FieldInfo IsOpenedF = AccessTools.Field(typeof(DebugMenu), "isOpened");
             private static readonly FieldInfo ScreenF = AccessTools.Field(typeof(DebugMenu), "screen");
-            private static readonly FieldInfo TimeMgrF = AccessTools.Field(typeof(DebugMenu), "timeManager");
             private static readonly FieldInfo WeaponDropF = AccessTools.Field(typeof(DebugMenu), "weaponDropdown");
             private static readonly MethodInfo SetHoverM = AccessTools.Method(typeof(DebugMenu), "SetShipsHovering");
             private static bool _warned;
@@ -749,7 +748,8 @@ namespace PunkMultiverse.Core
                     IsOpenedF.SetValue(__instance, true);
                     ServiceLocator.Get<ShipManager>()?.DisableShipControl();
                     SetHoverM?.Invoke(__instance, new object[] { true });
-                    (TimeMgrF?.GetValue(__instance) as TimeManager)?.SetTimeScale(0.1f, __instance);
+                    // Deliberately NOT the vanilla SetTimeScale(0.1f) here: local slow-mo while
+                    // peers run full speed starves this machine's share of the shared sim.
                     (ScreenF?.GetValue(__instance) as UIScreen)?.Open();
                     (WeaponDropF?.GetValue(__instance) as WeaponDropdown)?.Refresh();
                     Plugin.Log.LogInfo("[Dev] debug menu opened (F1)");

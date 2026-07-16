@@ -873,6 +873,10 @@ namespace PunkMultiverse.Protocol
         public int ExpectedCount;
         public int MaterializedCount;
         public System.Collections.Generic.List<int> MissingNetIds;
+        // The subset of MissingNetIds that failed for PERMANENT reasons (no entity data, wrong
+        // type, unbindable object) rather than transient ones (segment loader still building).
+        // Only these count toward the host's pin-to-source escalation.
+        public System.Collections.Generic.List<int> PermanentNetIds;
 
         public bool Complete => Installed && MaterializedCount == ExpectedCount
             && (MissingNetIds == null || MissingNetIds.Count == 0);
@@ -890,6 +894,9 @@ namespace PunkMultiverse.Protocol
             int missing = MissingNetIds?.Count ?? 0;
             w.WriteVarUInt((uint)missing);
             for (int i = 0; i < missing; i++) w.WriteVarUInt((uint)MissingNetIds[i]);
+            int permanent = PermanentNetIds?.Count ?? 0;
+            w.WriteVarUInt((uint)permanent);
+            for (int i = 0; i < permanent; i++) w.WriteVarUInt((uint)PermanentNetIds[i]);
         }
 
         public static RuntimeBaselineAckMsg Read(NetReader r)
@@ -907,6 +914,9 @@ namespace PunkMultiverse.Protocol
             int missing = (int)r.ReadVarUInt();
             msg.MissingNetIds = new System.Collections.Generic.List<int>(missing);
             for (int i = 0; i < missing; i++) msg.MissingNetIds.Add((int)r.ReadVarUInt());
+            int permanent = (int)r.ReadVarUInt();
+            msg.PermanentNetIds = new System.Collections.Generic.List<int>(permanent);
+            for (int i = 0; i < permanent; i++) msg.PermanentNetIds.Add((int)r.ReadVarUInt());
             return msg;
         }
     }
@@ -1147,6 +1157,50 @@ namespace PunkMultiverse.Protocol
                 msg.EntryFlags.Add(r.ReadByte());
                 msg.Entries.Add(EntityStateEntry.Read(r));
             }
+            return msg;
+        }
+    }
+
+    /// <summary>Periodic identity roster for a segment its owner is simulating: which entities
+    /// exist there, with enough info (type, position, lifetime) for a receiver whose world lost
+    /// the entity data to respawn it. Divergence detection the baseline path can't provide —
+    /// baselines only run at handoff/interest edges, while data can vanish mid-play.</summary>
+    public struct SegmentRosterAuditMsg
+    {
+        public byte Slot;
+        public int SegmentX, SegmentY;
+        public uint Epoch;
+        public System.Collections.Generic.List<(int netId, uint lifetime, string entityType, UnityEngine.Vector2 pos)> Entries;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SegmentRosterAudit);
+            w.WriteByte(Slot);
+            w.WriteInt(SegmentX); w.WriteInt(SegmentY);
+            w.WriteUInt(Epoch);
+            int count = Entries?.Count ?? 0;
+            w.WriteVarUInt((uint)count);
+            for (int i = 0; i < count; i++)
+            {
+                w.WriteVarUInt((uint)Entries[i].netId);
+                w.WriteVarUInt(Entries[i].lifetime);
+                w.WriteString(Entries[i].entityType);
+                w.WritePosition(Entries[i].pos);
+            }
+        }
+
+        public static SegmentRosterAuditMsg Read(NetReader r)
+        {
+            var msg = new SegmentRosterAuditMsg
+            {
+                Slot = r.ReadByte(),
+                SegmentX = r.ReadInt(), SegmentY = r.ReadInt(),
+                Epoch = r.ReadUInt(),
+            };
+            int count = (int)r.ReadVarUInt();
+            msg.Entries = new System.Collections.Generic.List<(int, uint, string, UnityEngine.Vector2)>(count);
+            for (int i = 0; i < count; i++)
+                msg.Entries.Add(((int)r.ReadVarUInt(), r.ReadVarUInt(), r.ReadString(), r.ReadPosition()));
             return msg;
         }
     }

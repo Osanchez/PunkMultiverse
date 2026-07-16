@@ -1703,6 +1703,19 @@ namespace PunkMultiverse.Core
                 case MsgType.DormantState when !IsHost:
                     Sync.EnemySync.ApplyDormantState(DormantStateMsg.Read(_reader));
                     break;
+                case MsgType.SegmentRosterAudit:
+                {
+                    var audit = SegmentRosterAuditMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var auditor = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (auditor == null || auditor.Slot != audit.Slot) break;
+                        RelayToOthers(peer, NetChannel.Events, reliable: true); // every peer audits its own world
+                    }
+                    else if (_players[HostSlot] == null || _players[HostSlot].PeerId != peer) break;
+                    Sync.EnemySync.ApplySegmentRosterAudit(audit, this);
+                    break;
+                }
                 case MsgType.RuntimeBaselineRequest when !IsHost:
                     Sync.EnemySync.ApplyRuntimeBaselineRequest(RuntimeBaselineRequestMsg.Read(_reader), this);
                     break;

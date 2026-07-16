@@ -102,6 +102,13 @@ namespace PunkMultiverse.Sync
         private static readonly Dictionary<(byte target, AuthorityManager.SegmentKey segment), InterestRoute> InterestRoutes
             = new Dictionary<(byte, AuthorityManager.SegmentKey), InterestRoute>();
         private static readonly Dictionary<uint, BaselineRequest> PendingBaselines = new Dictionary<uint, BaselineRequest>();
+        // Host: consecutive identical-missing baseline failures per (target, segment). Bounded
+        // retries with escalation — after the cap the missing entities are pinned to the source
+        // as explicit owners (rosters exclude fixed-owner entities), so the NEXT retry completes
+        // and a segment stops being hostage to entities the target can never materialize.
+        private static readonly Dictionary<(byte target, AuthorityManager.SegmentKey segment), (ulong missingHash, int count)>
+            BaselineFailureStreaks = new Dictionary<(byte, AuthorityManager.SegmentKey), (ulong, int)>();
+        private const int MaxIdenticalBaselineFailures = 3;
         private static readonly Dictionary<(byte target, AuthorityManager.SegmentKey segment), uint> DirectSendRoutes
             = new Dictionary<(byte, AuthorityManager.SegmentKey), uint>();
         private static readonly HashSet<(AuthorityManager.SegmentKey segment, uint epoch)> FrozenHandoffSegments
@@ -143,6 +150,17 @@ namespace PunkMultiverse.Sync
         private const float SilentOwnerPromotionAfter = 10f;
         private const float DuplicateRetireGrace = 0.75f;
         private const float DuplicateRetireScanInterval = 0.25f;
+        // Roster audit: owners periodically broadcast the identity roster of segments they
+        // simulate; receivers detect world-database divergence (data missing behind a live
+        // identity) and heal it long before a handoff trips over it. Round-robin budgeted.
+        private const float RosterAuditInterval = 1f;
+        private const int RosterAuditSegmentsPerTick = 4;
+        private static float _nextRosterAuditAt;
+        private static int _rosterAuditCursor;
+        // netId -> consecutive audits (same segment+lifetime) where the OWNER's roster lacked an
+        // entity this machine holds live. One miss can be a boundary-crossing race; two is real.
+        private static readonly Dictionary<int, (AuthorityManager.SegmentKey segment, uint lifetime, int count)>
+            ReverseDivergenceStreaks = new Dictionary<int, (AuthorityManager.SegmentKey, uint, int)>();
         private static float _availabilityRecoveryReadyAt;
         private static float _nextRetirementScanAt;
         private static int _firstLifetimes, _reenteredLifetimes, _overlappingLifetimes, _retiredLifetimes;
@@ -194,6 +212,8 @@ namespace PunkMultiverse.Sync
             NextFireAuditAt.Clear();
             InterestRoutes.Clear();
             PendingBaselines.Clear();
+            BaselineFailureStreaks.Clear();
+            DivergenceHealAttempts.Clear();
             DirectSendRoutes.Clear();
             FrozenHandoffSegments.Clear();
             NextDirectPulse.Clear();
@@ -203,6 +223,10 @@ namespace PunkMultiverse.Sync
             ReceivedChunks.Clear();
             MappedBundleTimes.Clear();
             _nextRetirementScanAt = 0;
+            _nextRosterAuditAt = 0;
+            _rosterAuditCursor = 0;
+            ReverseDivergenceStreaks.Clear();
+            PendingLeaseAcceptance.Clear();
             _firstLifetimes = _reenteredLifetimes = _overlappingLifetimes = _retiredLifetimes = 0;
             _loggedFirstAssign = false;
             _loggedFirstState = false;
@@ -861,10 +885,14 @@ namespace PunkMultiverse.Sync
         private static void SendDormancyCommit(LevelSegmentComponent segmentComponent)
         {
             var session = NetSession.Instance;
-            if (session == null || session.State != SessionState.InGame || segmentComponent == null) return;
-            if (!NetIds.ManifestComplete) return;
+            if (session == null || segmentComponent == null) return;
             var pos = segmentComponent.SegmentPosition;
-            var key = new AuthorityManager.SegmentKey(pos.x, pos.y);
+            SendDormancyCommitForSegment(new AuthorityManager.SegmentKey(pos.x, pos.y), session);
+        }
+
+        private static void SendDormancyCommitForSegment(AuthorityManager.SegmentKey key, NetSession session)
+        {
+            if (session.State != SessionState.InGame || !NetIds.ManifestComplete) return;
             if (AuthorityManager.OwnerOf(key) != session.LocalSlot) return;
             BuildRuntimeBaselineRoster(key, session, out var entries, out _, out var entryFlags);
             var msg = new SegmentDormancyCommitMsg
@@ -1034,6 +1062,113 @@ namespace PunkMultiverse.Sync
             try { return ServiceLocator.Get<EntityGameObjectManager>(); } catch { return null; }
         }
 
+        // ---------------------------------------------------------------- roster audit
+
+        /// <summary>Every peer: broadcast the identity roster of segments this machine OWNS and
+        /// streams, a few per second round-robin. Baselines only run at handoff/interest edges,
+        /// so entity data that vanishes mid-play (world-database divergence) went unnoticed until
+        /// a handoff wedged on it; the audit finds and heals it continuously.</summary>
+        private static void TickRosterAudit(NetSession session)
+        {
+            if (Time.unscaledTime < _nextRosterAuditAt || !NetIds.ManifestComplete) return;
+            _nextRosterAuditAt = Time.unscaledTime + RosterAuditInterval;
+            var active = TryGetActiveSegments();
+            if (active == null || active.Count == 0) return;
+            EntityManager em;
+            try { em = ServiceLocator.Get<EntityManager>(); }
+            catch { return; }
+            if (em == null) return;
+            var owned = new List<Vector2Int>();
+            foreach (var s in active)
+                if (AuthorityManager.OwnerOf(new AuthorityManager.SegmentKey(s.x, s.y)) == session.LocalSlot)
+                    owned.Add(s);
+            if (owned.Count == 0) return;
+            owned.Sort((a, b) => a.x != b.x ? a.x.CompareTo(b.x) : a.y.CompareTo(b.y)); // stable cycle
+            int audits = Mathf.Min(RosterAuditSegmentsPerTick, owned.Count);
+            for (int n = 0; n < audits; n++)
+            {
+                var seg = owned[_rosterAuditCursor++ % owned.Count];
+                var key = new AuthorityManager.SegmentKey(seg.x, seg.y);
+                var entries = new List<(int netId, uint lifetime, string entityType, Vector2 pos)>();
+                foreach (var data in em.GetEntitiesInSegment(seg))
+                {
+                    if (data == null || !NetIds.TryGetNetId(data.instanceId, out int netId)) continue;
+                    if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
+                    if (!AuthorityManager.SegmentOf(data.position).Equals(key)) continue;
+                    // Mirror the roster rule: bespoke-system entities only count while concrete.
+                    if (!data.isUnloadable && !LiveEntities.ContainsKey(netId)) continue;
+                    entries.Add((netId, NetIds.LifetimeOf(netId), data.entityId ?? string.Empty, data.position));
+                }
+                var msg = new SegmentRosterAuditMsg
+                {
+                    Slot = (byte)session.LocalSlot,
+                    SegmentX = seg.x, SegmentY = seg.y,
+                    Epoch = AuthorityManager.EpochOf(key),
+                    Entries = entries,
+                };
+                InstrumentationCounters.RosterAuditSent(entries.Count);
+                Writer.Reset();
+                msg.Write(Writer);
+                session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            }
+        }
+
+        /// <summary>Compare an owner's roster against this machine's world. Two divergence
+        /// shapes: an entity the owner simulates that has no local data (heal by respawning it
+        /// from the audit entry), and a local live entity the owner's roster lacks (log-only —
+        /// only the owner could heal that side, and resurrecting from a viewer is authority
+        /// inversion).</summary>
+        internal static void ApplySegmentRosterAudit(SegmentRosterAuditMsg msg, NetSession session)
+        {
+            if (msg.Slot == session.LocalSlot || msg.Entries == null) return;
+            var key = new AuthorityManager.SegmentKey(msg.SegmentX, msg.SegmentY);
+            if (AuthorityManager.OwnerOf(key) != msg.Slot) return; // stale — lease moved on
+            InstrumentationCounters.RosterAuditApplied(msg.Entries.Count);
+            EntityManager em = null;
+            try { em = ServiceLocator.Get<EntityManager>(); } catch { }
+            var active = TryGetActiveSegments();
+            var listed = new HashSet<int>();
+            foreach (var (netId, lifetime, entityType, pos) in msg.Entries)
+            {
+                listed.Add(netId);
+                if (KilledNetIds.Contains(netId)) continue;
+                bool hasData = false;
+                if (NetIds.TryGetInstanceId(netId, out int instanceId))
+                    try { hasData = em?.GetEntity(instanceId) != null; } catch { }
+                if (hasData) continue;
+                InstrumentationCounters.DivergenceDetected();
+                var entry = new EntityStateEntry { NetId = netId, Lifetime = lifetime, Pos = pos };
+                TryHealDivergedEntity(entry, entityType, key, msg.Slot, active);
+            }
+            // Reverse divergence: our live entity is missing from its owner's roster. A single
+            // miss can be a boundary-crossing race; flag on the second consecutive audit.
+            if (active == null || !active.Contains(new Vector2Int(key.X, key.Y))) return;
+            foreach (var kv in LiveEntities)
+            {
+                int netId = kv.Key;
+                var se = kv.Value;
+                if (se == null || listed.Contains(netId)) continue;
+                if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
+                if (se.GetComponent<Unit>() == null && se.GetComponent<Rigidbody2D>() == null) continue;
+                if (!AuthorityManager.TrySegmentOf(netId, out var entitySegment)
+                    || !entitySegment.Equals(key)) continue;
+                uint lifetime = NetIds.LifetimeOf(netId);
+                if (!ReverseDivergenceStreaks.TryGetValue(netId, out var streak)
+                    || !streak.segment.Equals(key) || streak.lifetime != lifetime)
+                    streak = (key, lifetime, 0);
+                streak.count++;
+                if (streak.count == 2)
+                {
+                    InstrumentationCounters.DivergenceDetected();
+                    Plugin.Log.LogWarning($"[RosterAudit] reverse divergence: {NetDiag.Describe(netId)} " +
+                        $"is live here in segment {key} but absent from owner P{msg.Slot + 1}'s roster");
+                }
+                ReverseDivergenceStreaks[netId] = streak;
+            }
+            // Entities the owner listed again are healthy — forget their streaks.
+            foreach (int id in listed) ReverseDivergenceStreaks.Remove(id);
+        }
+
         /// <summary>The game's own residency truth: segments whose entity GameObjects are
         /// currently instantiated on this machine (radius-3 streamer, one build per frame).</summary>
         internal static HashSet<Vector2Int> TryGetActiveSegments()
@@ -1077,6 +1212,8 @@ namespace PunkMultiverse.Sync
             NetProfiler.Mark("EnemySync.Residency");
             DetectStarvedPuppets(session);
             SweepFirstSnapshotDeadlines(session);
+            SweepPendingLeaseAcceptance(session);
+            TickRosterAudit(session);
             if (session.IsHost) PruneInterestRoutes(session);
             NetProfiler.Mark("EnemySync.Watchdogs");
 
@@ -1701,6 +1838,37 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // One heal attempt per (netId, lifetime): a spawn that cannot bind (missing prefab,
+        // persistent bind exception) must stay missing instead of respawn-looping every retry.
+        private static readonly Dictionary<int, uint> DivergenceHealAttempts = new Dictionary<int, uint>();
+
+        private static bool TryHealDivergedEntity(EntityStateEntry entry, string entityType,
+            AuthorityManager.SegmentKey segment, byte sourceSlot, HashSet<Vector2Int> activeSegments)
+        {
+            if (string.IsNullOrEmpty(entityType) || KilledNetIds.Contains(entry.NetId)) return false;
+            // Never rewind identity: a local lifetime newer than the offered entry means this
+            // netId was re-registered here since — respawning would downgrade Lifetimes[] and
+            // cross-apply state between the generations.
+            if (NetIds.LifetimeOf(entry.NetId) > entry.Lifetime) return false;
+            // Only heal into a streamed segment — the object must be able to live here right now;
+            // elsewhere the periodic audit re-offers the entry once the segment activates.
+            if (activeSegments == null || !activeSegments.Contains(new Vector2Int(segment.X, segment.Y)))
+                return false;
+            if (DivergenceHealAttempts.TryGetValue(entry.NetId, out uint attempted)
+                && attempted == entry.Lifetime) return false;
+            DivergenceHealAttempts[entry.NetId] = entry.Lifetime;
+            // A stale GameObject may survive the missing data (the classic starved-puppet shape).
+            // Destroy it first or the heal leaves a visual double until duplicate retirement.
+            if (LiveEntities.TryGetValue(entry.NetId, out var stale) && stale != null)
+                UnityEngine.Object.Destroy(stale.gameObject);
+            if (!MinionSync.TryRespawnFromBaseline(entry.NetId, entry.Lifetime, sourceSlot, entityType, entry.Pos))
+                return false;
+            InstrumentationCounters.DivergenceHealed();
+            Plugin.Log.LogWarning($"[BaselineRoster] healed diverged entity #{entry.NetId} '{entityType}' — " +
+                "local world had no entity data for it; respawned from the baseline entry");
+            return true;
+        }
+
         internal static void ApplyRuntimeBaseline(RuntimeBaselineMsg baseline, NetSession session)
         {
             if (baseline.TargetSlot != session.LocalSlot) return;
@@ -1716,6 +1884,10 @@ namespace PunkMultiverse.Sync
             var activeSegments = TryGetActiveSegments();
             float now = Time.unscaledTime;
             var missing = new List<int>();
+            // Missing for a PERMANENT reason (no data, wrong type, unbindable) — the subset the
+            // host may escalate on. Loader races (segment-inactive, spawn hiccups) stay
+            // transient: they resolve themselves and must never trip the pin.
+            var permanent = new List<int>();
             var missingDetails = new List<string>();
             int materialized = 0;
             bool rosterValid = baseline.Entries != null && baseline.EntityTypes != null
@@ -1742,20 +1914,31 @@ namespace PunkMultiverse.Sync
                     if (missingDetails.Count < 12) missingDetails.Add($"#{entry.NetId}:lifetime");
                     continue;
                 }
-                if (!NetIds.TryGetInstanceId(entry.NetId, out int instanceId))
+                bool hasIdentity = NetIds.TryGetInstanceId(entry.NetId, out int instanceId);
+                EntityData data = null;
+                if (hasIdentity)
+                    try { data = em?.GetEntity(instanceId); } catch { }
+                // World-database divergence: the source still simulates this entity but our world
+                // has no identity/data for it. Respawn it from the baseline entry (the replica
+                // machinery runtime spawns use) instead of NACKing the segment forever — one
+                // unmaterializable entity used to hold a whole segment's handoff and interest
+                // route hostage (#3594 wedged (38,36) for 150+ epochs).
+                if (data == null
+                    && TryHealDivergedEntity(entry, expectedType, baselineSegment, baseline.SourceSlot, activeSegments))
+                {
+                    hasIdentity = NetIds.TryGetInstanceId(entry.NetId, out instanceId);
+                    if (hasIdentity)
+                        try { data = em?.GetEntity(instanceId); } catch { }
+                }
+                if (!hasIdentity)
                 {
                     InstrumentationCounters.RuntimeBaselineEntityMissing();
                     missing.Add(entry.NetId);
+                    permanent.Add(entry.NetId);
                     if (missingDetails.Count < 12) missingDetails.Add($"#{entry.NetId}:identity");
                     continue;
                 }
-                EntityData data = null;
-                try
-                {
-                    data = em?.GetEntity(instanceId);
-                    if (data != null) data.MoveTo(new Vector3(entry.Pos.x, entry.Pos.y, data.position.z));
-                }
-                catch { }
+                try { data?.MoveTo(new Vector3(entry.Pos.x, entry.Pos.y, data.position.z)); } catch { }
                 string failure = null;
                 SavableEntity se = null;
                 if (data == null) failure = "data";
@@ -1782,6 +1965,8 @@ namespace PunkMultiverse.Sync
                 {
                     InstrumentationCounters.RuntimeBaselineEntityMissing();
                     missing.Add(entry.NetId);
+                    if (failure != "segment-inactive" && failure != "egm" && !failure.StartsWith("spawn:"))
+                        permanent.Add(entry.NetId);
                     if (missingDetails.Count < 12) missingDetails.Add($"#{entry.NetId}:{failure}");
                     continue;
                 }
@@ -1842,6 +2027,7 @@ namespace PunkMultiverse.Sync
                 ExpectedCount = baseline.Entries.Count,
                 MaterializedCount = materialized,
                 MissingNetIds = missing,
+                PermanentNetIds = permanent,
             };
             if (session.IsHost) ApplyRuntimeBaselineAck(ack, baseline.TargetSlot, session);
             else
@@ -1849,6 +2035,58 @@ namespace PunkMultiverse.Sync
                 Writer.Reset(); ack.Write(Writer);
                 session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             }
+        }
+
+        /// <summary>Host: bounded-retry escalation. When a target keeps failing a segment
+        /// baseline over the exact same missing entities, no further retry will differ — the
+        /// entities are unmaterializable there (world-database divergence the target-side heal
+        /// couldn't fix, a type mismatch, a prefab that can't bind). Pin them to the source,
+        /// which demonstrably HAS them live: rosters exclude explicit-owner entities, so the
+        /// next retry completes and the rest of the segment streams again. The pin is not
+        /// forever — explicit authority releases when the source streams the entity out.</summary>
+        private static void NoteBaselineFailure(BaselineRequest pending, List<int> missingNetIds,
+            NetSession session)
+        {
+            if (missingNetIds == null || missingNetIds.Count == 0) return;
+            // The source must be alive to hold the pin (the lost-owner cache path names a slot
+            // that can no longer simulate anything).
+            bool sourceAlive = pending.Source == session.LocalSlot
+                || session.Players.Any(p => p != null && p.Connected && p.Slot == pending.Source);
+            if (!sourceAlive) return;
+            ulong hash = 14695981039346656037UL;
+            foreach (int id in missingNetIds.OrderBy(i => i))
+                unchecked
+                {
+                    hash = (hash ^ (uint)id) * 1099511628211UL;
+                    hash = (hash ^ NetIds.LifetimeOf(id)) * 1099511628211UL;
+                }
+            var key = (pending.Target, pending.Segment);
+            if (!BaselineFailureStreaks.TryGetValue(key, out var streak) || streak.missingHash != hash)
+                streak = (hash, 0);
+            streak.count++;
+            if (streak.count < MaxIdenticalBaselineFailures)
+            {
+                BaselineFailureStreaks[key] = streak;
+                return;
+            }
+            BaselineFailureStreaks.Remove(key);
+            var entries = new List<(int netId, byte owner)>();
+            foreach (int id in missingNetIds)
+                if (!KilledNetIds.Contains(id) && !FixedOwners.Contains(id))
+                    entries.Add((id, pending.Source));
+            if (entries.Count == 0) return;
+            var assign = new AuthAssignMsg { Entries = entries };
+            ApplyAuthAssign(assign);
+            Writer.Reset();
+            assign.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            foreach (var (netId, owner) in entries) DamageSync.OnEntityAssigned(netId, owner, session);
+            InstrumentationCounters.DivergencePinned(entries.Count);
+            Plugin.Log.LogWarning($"[BaselineRoster] pinned {entries.Count} unmaterializable " +
+                $"entit{(entries.Count == 1 ? "y" : "ies")} " +
+                $"({string.Join(",", entries.Take(8).Select(e => "#" + e.netId))}) to P{pending.Source + 1} " +
+                $"after {MaxIdenticalBaselineFailures} identical failures — " +
+                $"segment {pending.Segment} roster unblocked for P{pending.Target + 1}");
         }
 
         internal static void ApplyRuntimeBaselineAck(RuntimeBaselineAckMsg ack, byte senderSlot, NetSession session)
@@ -1868,6 +2106,7 @@ namespace PunkMultiverse.Sync
                     $"segment={pending.Segment} epoch={ack.TargetEpoch} " +
                     $"materialized={ack.MaterializedCount}/{ack.ExpectedCount} " +
                     $"missing={string.Join(",", (ack.MissingNetIds ?? new List<int>()).Take(16).Select(id => "#" + id))}");
+                NoteBaselineFailure(pending, ack.PermanentNetIds, session);
                 if (ack.Purpose == RuntimeBaselinePurpose.Handoff)
                     AuthorityManager.RejectBaselineHandoff(pending.Segment, ack.TargetSlot,
                         ack.TargetEpoch, ack.MissingNetIds ?? new List<int>(), session);
@@ -1885,6 +2124,7 @@ namespace PunkMultiverse.Sync
                 return;
             }
             InstrumentationCounters.RuntimeBaselineAcked(ack.Purpose == RuntimeBaselinePurpose.Handoff);
+            BaselineFailureStreaks.Remove((ack.TargetSlot, pending.Segment));
             if (ack.Purpose == RuntimeBaselinePurpose.Handoff)
             {
                 AuthorityManager.CompleteBaselineHandoff(pending.Segment, ack.TargetSlot, ack.TargetEpoch, session);
@@ -2149,13 +2389,60 @@ namespace PunkMultiverse.Sync
         internal static void NoteLeaseCommitted(AuthorityManager.SegmentKey segment, uint epoch, byte owner)
         {
             var session = NetSession.Instance;
-            if (session == null || owner == session.LocalSlot) return;
+            if (session == null) return;
+            if (owner == session.LocalSlot)
+            {
+                // Grant-vs-unload race: this lease may name a segment our game is not (or no
+                // longer) streaming — the destroy-prefix commit already missed or will never
+                // fire because the lease replica lagged the unload. Check after the segment
+                // loader has had a beat; if still not streaming, DECLINE with a dormancy commit
+                // instead of leaving the coordinator to time out its grace.
+                PendingLeaseAcceptance[segment] = (epoch, Time.unscaledTime + LeaseAcceptanceDeadline);
+                return;
+            }
+            PendingLeaseAcceptance.Remove(segment);
             if (owner == AuthorityManager.DormantOwner)
             {
                 FirstSnapshotDeadlines.Remove(segment); // dormant: nobody owes anybody snapshots
                 return;
             }
             FirstSnapshotDeadlines[segment] = (epoch, owner, Time.unscaledTime);
+        }
+
+        // Leases granted to this machine whose segments the game wasn't streaming at grant time
+        // may need a decline-commit; checked once after the segment loader has had time to build.
+        private static readonly Dictionary<AuthorityManager.SegmentKey, (uint epoch, float deadline)>
+            PendingLeaseAcceptance = new Dictionary<AuthorityManager.SegmentKey, (uint, float)>();
+        private const float LeaseAcceptanceDeadline = 1.25f;
+        private static readonly List<AuthorityManager.SegmentKey> _acceptanceScratch
+            = new List<AuthorityManager.SegmentKey>();
+
+        private static void SweepPendingLeaseAcceptance(NetSession session)
+        {
+            if (PendingLeaseAcceptance.Count == 0) return;
+            var active = TryGetActiveSegments();
+            if (active == null) return; // can't evaluate residency mid-transition — try next tick
+            _acceptanceScratch.Clear();
+            foreach (var kv in PendingLeaseAcceptance)
+            {
+                var key = kv.Key;
+                if (AuthorityManager.OwnerOf(key) != session.LocalSlot
+                    || AuthorityManager.EpochOf(key) != kv.Value.epoch
+                    || active.Contains(new Vector2Int(key.X, key.Y)))
+                {
+                    _acceptanceScratch.Add(key); // superseded, or accepted normally — nothing owed
+                    continue;
+                }
+                if (Time.unscaledTime < kv.Value.deadline) continue;
+                _acceptanceScratch.Add(key);
+                // Still ours, still not streamed: the destroy-edge commit can never fire. Send
+                // the decline-commit now — our state cache carries anything we ever simulated
+                // there, and the coordinator transitions quietly instead of via grace fallback.
+                SendDormancyCommitForSegment(key, session);
+                if (NetDiag.Enabled)
+                    NetDiag.Log("Lease", $"declined lease for unstreamed segment {key} epoch={kv.Value.epoch} (dormancy commit sent)");
+            }
+            foreach (var key in _acceptanceScratch) PendingLeaseAcceptance.Remove(key);
         }
 
         private static void SweepFirstSnapshotDeadlines(NetSession session)
@@ -2205,6 +2492,17 @@ namespace PunkMultiverse.Sync
                 return true;
             }
             return false;
+        }
+
+        /// <summary>Authority is only useful to a peer whose game can actually SIMULATE the
+        /// entity. A live GameObject without EntityManager data (world-database divergence — the
+        /// observed #3594 wedge) looks like a promotion candidate but can neither move nor take
+        /// damage authoritatively; promoting it just relocates the starvation.</summary>
+        internal static bool HasSimulableEntityData(int netId)
+        {
+            if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return false;
+            try { return ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId) != null; }
+            catch { return false; }
         }
 
         /// <summary>A concrete object is only a useful simulator candidate while it is well inside
@@ -2330,6 +2628,12 @@ namespace PunkMultiverse.Sync
                         NetDiag.Log("Availability", $"declined local promotion for {NetDiag.Describe(netId)} — not-puppet");
                     return;
                 }
+                if (!HasSimulableEntityData(netId))
+                {
+                    InstrumentationCounters.AvailabilityCandidateDeferred();
+                    LogStarvedDrop(netId, "no-entity-data (world-database divergence)");
+                    return;
+                }
                 if (!wake && !IsStableAvailabilityCandidate(local, localPuppet, out _, out string reason))
                 {
                     InstrumentationCounters.AvailabilityCandidateDeferred();
@@ -2356,6 +2660,12 @@ namespace PunkMultiverse.Sync
                 || entity.GetComponent<RemoteEntityPuppet>() is not RemoteEntityPuppet puppet)
             {
                 Plugin.Log.LogInfo($"[Availability] declined prepare for {NetDiag.Describe(msg.NetId)} — entity streamed out");
+                return;
+            }
+            if (!HasSimulableEntityData(msg.NetId))
+            {
+                Plugin.Log.LogInfo($"[Availability] declined prepare for {NetDiag.Describe(msg.NetId)} — " +
+                    "no local entity data (world-database divergence)");
                 return;
             }
             // A combat wake carries its own proof (the candidate's shot hit this object

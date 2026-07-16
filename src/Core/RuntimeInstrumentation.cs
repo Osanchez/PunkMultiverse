@@ -349,7 +349,8 @@ namespace PunkMultiverse.Core
                 "baselineOrigins=live{3}/last{4}/gen{5}/cache{6} dmgForwarded={7} claimsDropped={8} " +
                 "firstSnap=ok{9}/miss{10}/max{11:0}ms handoffRejects={12} handoffMax={13:0}ms " +
                 "dormantLeases={14} dormancyCommits=tx{15}/rx{16} dormantTransitions={17}(cache{18}) " +
-                "residencyReports=tx{19}/rx{20}",
+                "residencyReports=tx{19}/rx{20} rosterAudits=tx{21}/rx{22} " +
+                "divergence=found{23}/healed{24}/pinned{25}",
                 mono,
                 AuthorityManager.CountOwnedSegmentsNotResident(NetSession.Instance),
                 EnemySync.CountFixedOwnedNotLive(NetSession.Instance),
@@ -370,7 +371,12 @@ namespace PunkMultiverse.Core
                 InstrumentationCounters.DormantTransitions,
                 InstrumentationCounters.DormantTransitionsFromCache,
                 InstrumentationCounters.ResidencyReportsSent,
-                InstrumentationCounters.ResidencyReportsApplied));
+                InstrumentationCounters.ResidencyReportsApplied,
+                InstrumentationCounters.RosterAuditsSent,
+                InstrumentationCounters.RosterAuditsApplied,
+                InstrumentationCounters.DivergencesDetected,
+                InstrumentationCounters.DivergencesHealed,
+                InstrumentationCounters.DivergencesPinned));
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
                 "[ProjectileTimeline] mono={0:0.000}s pending={1} queued={2} late={3} muzzleCorrectionAvg={4:0.000} max={5:0.000} fireUnresolved={6} replayUnarmed={7}",
                 mono, ProjectileSync.PendingShipFireCount, ProjectileSync.ShipFireQueued,
@@ -629,6 +635,8 @@ namespace PunkMultiverse.Core
         private static long _dormancyCommitsSent, _dormancyCommitsApplied;
         private static long _dormantTransitions, _dormantTransitionsFromCache;
         private static long _entityFireUnresolved, _entityFireReplayUnarmed;
+        private static long _rosterAuditsSent, _rosterAuditsApplied;
+        private static long _divergencesDetected, _divergencesHealed, _divergencesPinned;
 
         internal static int RemoteShips => Math.Max(0, Volatile.Read(ref _remoteShips));
         internal static int RemoteEntities => Math.Max(0, Volatile.Read(ref _remoteEntities));
@@ -933,6 +941,17 @@ namespace PunkMultiverse.Core
         internal static long EntityFireReplayUnarmedCount => Interlocked.Read(ref _entityFireReplayUnarmed);
         internal static void EntityFireUnresolved() => Interlocked.Increment(ref _entityFireUnresolved);
         internal static void EntityFireReplayUnarmed() => Interlocked.Increment(ref _entityFireReplayUnarmed);
+
+        internal static long RosterAuditsSent => Interlocked.Read(ref _rosterAuditsSent);
+        internal static long RosterAuditsApplied => Interlocked.Read(ref _rosterAuditsApplied);
+        internal static long DivergencesDetected => Interlocked.Read(ref _divergencesDetected);
+        internal static long DivergencesHealed => Interlocked.Read(ref _divergencesHealed);
+        internal static long DivergencesPinned => Interlocked.Read(ref _divergencesPinned);
+        internal static void RosterAuditSent(int entries) => Interlocked.Increment(ref _rosterAuditsSent);
+        internal static void RosterAuditApplied(int entries) => Interlocked.Increment(ref _rosterAuditsApplied);
+        internal static void DivergenceDetected() => Interlocked.Increment(ref _divergencesDetected);
+        internal static void DivergenceHealed() => Interlocked.Increment(ref _divergencesHealed);
+        internal static void DivergencePinned(int entities) => Interlocked.Add(ref _divergencesPinned, entities);
 
         private static void UpdateMax(ref long location, long value)
         {

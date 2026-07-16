@@ -218,6 +218,22 @@ namespace PunkMultiverse.Sync
 
         // ---------------------------------------------------------------- shared replica spawning
 
+        /// <summary>Divergence heal: this machine's world lost (or never created) the entity data
+        /// behind a netId another peer still simulates. A baseline/audit entry carries everything
+        /// a runtime spawn does (type, position, lifetime) — recreate it through the same replica
+        /// machinery instead of NACKing the segment forever. Returns true when the identity maps
+        /// to concrete local entity data afterwards.</summary>
+        internal static bool TryRespawnFromBaseline(int netId, uint lifetime, byte ownerSlot,
+            string entityId, Vector2 pos)
+        {
+            _applyingRemote = true; // the CreateEntity below must not re-capture as a new spawn
+            try { SpawnReplica(netId, lifetime, ownerSlot, entityId, pos, wireOwnerShip: false); }
+            finally { _applyingRemote = false; }
+            if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return false;
+            try { return ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId) != null; }
+            catch { return false; }
+        }
+
         private static void SpawnReplica(int netId, uint lifetime, byte ownerSlot, string entityId, Vector2 pos, bool wireOwnerShip)
         {
             try
