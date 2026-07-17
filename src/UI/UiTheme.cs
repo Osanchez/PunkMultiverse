@@ -184,6 +184,14 @@ namespace PunkMultiverse.UI
                 if (icon != null) icon.gameObject.SetActive(false);
                 var tmp = go.GetComponentInChildren<TMP_Text>(true);
                 tmp.text = label;
+                // Font_Minimum is a bitmap-style asset that drops its 1px 'I' stroke below
+                // ~size 30 ("WAITING FOR PLAYER" rendered as "WA TING"). Vanilla never uses it
+                // small — small labels take the SDF hud font, same as the options screen.
+                if (fontSize < 30f && HudFont != null)
+                {
+                    tmp.font = HudFont;
+                    fontSize *= HudFontScale;
+                }
                 tmp.fontSize = fontSize;
                 tmp.enableAutoSizing = false;
                 tmp.color = TextBright;
@@ -255,18 +263,34 @@ namespace PunkMultiverse.UI
             return t.gameObject;
         }
 
-        /// <summary>Toggle a cloned button's vanilla selected/unselected look (tab-frame sprite
-        /// swap + PunkButton animator bool + label color).</summary>
+        // Vanilla's toggled option text color (uitree of the options screen's ON button).
+        private static readonly Color ToggledText = new Color(0.894f, 0.490f, 0.118f); // #e47d1e
+
+        /// <summary>Give a cloned button the vanilla SELECTED-option look: pushed-in body
+        /// (down 2px, 5px shorter), the placeholders_10 frame, and orange text — byte-for-byte
+        /// what the options screen's animator does to the chosen OFF/ON button. Untoggled
+        /// restores the plain placeholders_3 frame and white text. The clone's own animator
+        /// doesn't drive ToggleOn, so the effect is applied directly (SetToggled is still
+        /// forwarded in case a future game build wires it).</summary>
         public static void SetToggled(TMP_Text label, bool on)
         {
             var btn = ButtonOf(label);
             if (btn == null) return;
-            var punk = btn.GetComponentInParent<PunkButton>();
+            var punk = btn.transform.parent != null ? btn.transform.parent.GetComponent<PunkButton>() : null;
             try { if (punk != null) punk.SetToggled(on); } catch { }
             var img = btn.targetGraphic as Image;
-            if (img != null && FrameOnSprite != null && FrameOffSprite != null)
-                img.sprite = on ? FrameOnSprite : FrameOffSprite;
-            label.color = on ? TextBright : new Color(Accent.r, Accent.g, Accent.b, 0.85f);
+            if (img != null)
+            {
+                if (on && PromptSprite != null) img.sprite = PromptSprite;
+                else if (!on && FrameSprite != null) img.sprite = FrameSprite;
+            }
+            if (punk != null) // only clones have the wrapper/body split to push into
+            {
+                var bodyRt = (RectTransform)btn.transform;
+                bodyRt.anchoredPosition = on ? new Vector2(0, -2) : Vector2.zero;
+                bodyRt.sizeDelta = on ? new Vector2(0, -5) : Vector2.zero;
+            }
+            label.color = on ? ToggledText : TextBright;
         }
 
         // 8-bit-hud's cap height is ~1.6x its em size (bitmap-font conversion), so a "17" reads

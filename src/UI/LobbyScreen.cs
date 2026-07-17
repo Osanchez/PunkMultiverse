@@ -306,9 +306,10 @@ namespace PunkMultiverse.UI
             {
                 var sel = es.currentSelectedGameObject;
                 var activePanel = ActivePanel();
+                var backRoot = UiTheme.RootOf(_backLabel);
                 bool selValid = sel != null && sel.activeInHierarchy && activePanel != null
                     && (sel.transform.IsChildOf(activePanel.transform)
-                        || sel.transform.IsChildOf(_canvasGo.transform) && !sel.transform.IsChildOf(_window.transform));
+                        || (backRoot != null && sel.transform.IsChildOf(backRoot.transform)));
                 if (!selValid) SelectFirstIn(activePanel);
             }
 
@@ -397,13 +398,15 @@ namespace PunkMultiverse.UI
             _lobbyPanel.SetActive(false);
             _seedPanel.SetActive(false);
 
-            // Bottom-left BACK/LEAVE — mouse path; hidden for gamepad in favor of the B glyph.
-            _backLabel = UiTheme.MakeButton(_canvasGo.transform, "Btn_Back", "BACK",
-                Vector2.zero, new Vector2(250, 62), () => BackAction(), 26);
+            // BACK/LEAVE sits just below the window's bottom-left corner — anchored to the
+            // window, not the screen, so it can't overlap the modal at narrower aspect ratios.
+            // Hidden for gamepad in favor of the B glyph.
+            _backLabel = UiTheme.MakeButton(_window.transform, "Btn_Back", "BACK",
+                Vector2.zero, new Vector2(240, 58), () => BackAction(), 20);
             var backRt = (RectTransform)UiTheme.RootOf(_backLabel).transform;
             backRt.anchorMin = backRt.anchorMax = new Vector2(0f, 0f);
-            backRt.pivot = new Vector2(0f, 0f);
-            backRt.anchoredPosition = new Vector2(96, 56);
+            backRt.pivot = new Vector2(0f, 1f);
+            backRt.anchoredPosition = new Vector2(4, -16);
             BuildPadHint();
 
             _canvasGo.SetActive(false);
@@ -413,12 +416,12 @@ namespace PunkMultiverse.UI
         private void BuildPadHint()
         {
             _padHint = new GameObject("PadHint", typeof(RectTransform));
-            _padHint.transform.SetParent(_canvasGo.transform, false);
+            _padHint.transform.SetParent(_window.transform, false);
             var rt = (RectTransform)_padHint.transform;
-            rt.anchorMin = rt.anchorMax = new Vector2(0f, 0f);
-            rt.pivot = new Vector2(0f, 0f);
-            rt.anchoredPosition = new Vector2(96, 56);
-            rt.sizeDelta = new Vector2(250, 62);
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, 0f); // window bottom-left
+            rt.pivot = new Vector2(0f, 1f);
+            rt.anchoredPosition = new Vector2(4, -16);
+            rt.sizeDelta = new Vector2(240, 58);
 
             var chip = UiTheme.MakeImage(_padHint.transform, "Chip", new Color(0.19f, 0.19f, 0.19f, 1f), UiTheme.ChipSprite);
             var crt = chip.rectTransform;
@@ -474,7 +477,7 @@ namespace PunkMultiverse.UI
             // Only offered while a liveness probe says the remembered session still exists
             // (disconnect / crash / mid-run quit); see RejoinMemory + ProbeRejoinTarget.
             _rejoinLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Rejoin", "REJOIN LAST SESSION",
-                new Vector2(0, -124), new Vector2(620, 74), () => NetSession.Instance.RejoinLastSession(), 27);
+                new Vector2(0, -124), new Vector2(620, 74), () => NetSession.Instance.RejoinLastSession(), 20);
             var rejoinNote = UiTheme.MakeText(_connectPanel.transform, "RejoinNote",
                 "YOUR LAST SESSION IS STILL RUNNING — JUMP BACK IN", 14, UiTheme.TextFaint);
             var nrt = rejoinNote.rectTransform;
@@ -497,25 +500,25 @@ namespace PunkMultiverse.UI
                 "TYPE ONE, PASTE, OR LEAVE ON RANDOM", 168);
             _seedInput = MakeSeedInput(seedRow, new Vector2(42, 0), new Vector2(320, 58));
             _pasteLabel = UiTheme.MakeButton(seedRow, "Btn_Paste", "PASTE",
-                new Vector2(291, 0), new Vector2(150, 54), PasteSeedIntoInput, 21);
+                new Vector2(291, 0), new Vector2(150, 54), PasteSeedIntoInput, 16);
             _randomLabel = UiTheme.MakeButton(seedRow, "Btn_Random", "RANDOM",
-                new Vector2(455, 0), new Vector2(150, 54), () => { if (_seedInput != null) _seedInput.text = ""; }, 21);
+                new Vector2(455, 0), new Vector2(150, 54), () => { if (_seedInput != null) _seedInput.text = ""; }, 16);
 
             // FRIENDLY FIRE row --------------------------------------------------------
             var ffRow = MakeSettingsRow(_seedPanel.transform, "FRIENDLY FIRE",
                 "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS", 42);
             _ffOff = UiTheme.MakeButton(ffRow, "Btn_FFOff", "OFF",
-                new Vector2(235, 0), new Vector2(190, 60), () => SetFriendlyFire(false), 26);
+                new Vector2(235, 0), new Vector2(190, 60), () => SetFriendlyFire(false), 30);
             _ffOn = UiTheme.MakeButton(ffRow, "Btn_FFOn", "ON",
-                new Vector2(440, 0), new Vector2(190, 60), () => SetFriendlyFire(true), 26);
+                new Vector2(440, 0), new Vector2(190, 60), () => SetFriendlyFire(true), 30);
 
             // ENEMY HP SCALING row -----------------------------------------------------
             var hpRow = MakeSettingsRow(_seedPanel.transform, "ENEMY HP SCALING",
                 "+25% ENEMY HEALTH PER PLAYER", -84);
             _hpOff = UiTheme.MakeButton(hpRow, "Btn_HPOff", "OFF",
-                new Vector2(235, 0), new Vector2(190, 60), () => SetHpScaling(false), 26);
+                new Vector2(235, 0), new Vector2(190, 60), () => SetHpScaling(false), 30);
             _hpOn = UiTheme.MakeButton(hpRow, "Btn_HPOn", "ON",
-                new Vector2(440, 0), new Vector2(190, 60), () => SetHpScaling(true), 26);
+                new Vector2(440, 0), new Vector2(190, 60), () => SetHpScaling(true), 30);
 
             _hostLobbyLabel = UiTheme.MakeButton(_seedPanel.transform, "Btn_HostLobby", "HOST LOBBY",
                 new Vector2(0, -238), new Vector2(500, 92), HostWithSeed, 38);
@@ -667,7 +670,7 @@ namespace PunkMultiverse.UI
             codeBtn.onClick.AddListener(CopyCodeWithFeedback);
             codeBtn.onClick.AddListener(UiTheme.PlayClick);
             _copyChipLabel = UiTheme.MakeButton(_codeText.transform, "Btn_Copy", "COPY",
-                Vector2.zero, new Vector2(110, 42), CopyCodeWithFeedback, 18);
+                Vector2.zero, new Vector2(110, 42), CopyCodeWithFeedback, 14);
             _copyChipRoot = (RectTransform)UiTheme.RootOf(_copyChipLabel).transform;
             _copyChipRoot.gameObject.SetActive(false);
 
@@ -696,7 +699,9 @@ namespace PunkMultiverse.UI
                 srt.sizeDelta = new Vector2(40, 40);
                 row.Swatch = swatch;
 
-                row.Name = UiTheme.MakeText(bg.transform, "Name", "", 26, UiTheme.TextBright, UiTheme.PixelFont);
+                // Hud font, not Font_Minimum: player names are arbitrary text and the pixel
+                // font loses its 'I' stroke below ~30 ("WAITING" rendered as "WA TING").
+                row.Name = UiTheme.MakeText(bg.transform, "Name", "", 20, UiTheme.TextBright);
                 row.Name.alignment = TextAlignmentOptions.MidlineLeft;
                 StretchWithMargins(row.Name.rectTransform, 84, 300);
 
@@ -707,7 +712,7 @@ namespace PunkMultiverse.UI
                 int slotIndex = i;
                 row.KickLabel = UiTheme.MakeButton(bg.transform, "Btn_Kick", "KICK",
                     new Vector2((WindowW - 120) / 2f - 70, 0), new Vector2(96, 44),
-                    () => NetSession.Instance.KickPlayer((byte)slotIndex), 17);
+                    () => NetSession.Instance.KickPlayer((byte)slotIndex), 13);
                 UiTheme.RootOf(row.KickLabel).SetActive(false);
 
                 _rows.Add(row);
@@ -767,7 +772,7 @@ namespace PunkMultiverse.UI
             _startLabel = UiTheme.MakeButton(_lobbyPanel.transform, "Btn_Start", "START GAME",
                 new Vector2(0, -228), new Vector2(300, 80), StartGame, 32);
             _inviteLabel = UiTheme.MakeButton(_lobbyPanel.transform, "Btn_Invite", "INVITE FRIENDS",
-                new Vector2(320, -228), new Vector2(300, 80), () => NetSession.Instance.Lobby?.OpenInviteOverlay(), 24);
+                new Vector2(320, -228), new Vector2(300, 80), () => NetSession.Instance.Lobby?.OpenInviteOverlay(), 18);
         }
 
         private GameObject _startButton => UiTheme.RootOf(_startLabel);
