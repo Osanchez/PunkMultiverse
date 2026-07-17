@@ -30,8 +30,26 @@ namespace PunkMultiverse.Core
             string dir = System.IO.Path.Combine(ModFolder.Dir, "shots");
             System.IO.Directory.CreateDirectory(dir);
             string path = System.IO.Path.Combine(dir, name);
-            ScreenCapture.CaptureScreenshot(path);
+            // ScreenCapture lives in UnityEngine.ScreenCaptureModule, which the CI reference
+            // bundle doesn't carry (shot is a dev-only harness command). Invoke it by reflection
+            // so the mod takes no compile-time dependency on that module; it's present at runtime.
+            var capture = ScreenCaptureMethod();
+            if (capture == null) { outFn("shot: ScreenCapture module unavailable"); return; }
+            capture.Invoke(null, new object[] { path });
             outFn($"shot: capturing -> {path} ({Screen.width}x{Screen.height})");
+        }
+
+        // Resolves UnityEngine.ScreenCapture.CaptureScreenshot(string) at runtime — see Shot().
+        private static System.Reflection.MethodInfo _screenCapture;
+        private static System.Reflection.MethodInfo ScreenCaptureMethod()
+        {
+            if (_screenCapture != null) return _screenCapture;
+            var t = Type.GetType("UnityEngine.ScreenCapture, UnityEngine.ScreenCaptureModule");
+            if (t == null)
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                    if ((t = asm.GetType("UnityEngine.ScreenCapture")) != null) break;
+            _screenCapture = t?.GetMethod("CaptureScreenshot", new[] { typeof(string) });
+            return _screenCapture;
         }
 
         internal static void Dump(string[] parts, Action<string> outFn)
