@@ -646,8 +646,14 @@ namespace PunkMultiverse.Core
                         (puppetHere ? $" — NOTE: this copy is a puppet; {NetDiag.Owner(EnemySync.OwnerOf(pinId))} simulates it, pin there" : ""));
                     return;
                 }
+                case "shot": DevUi.Shot(parts, Out); return;
+                case "uidump": DevUi.Dump(parts, Out); return;
+                case "uitree": DevUi.Tree(parts, Out); return;
+                case "click": DevUi.Click(parts, Out); return;
+                case "nav": DevUi.Nav(parts, Out); return;
+                case "sel": DevUi.Sel(Out); return;
                 default:
-                    Out($"unknown command '{parts[0]}' (spawn/tp/poke/entities/status/autofly/say)");
+                    Out($"unknown command '{parts[0]}' (spawn/tp/poke/entities/status/autofly/say/shot/uidump/uitree/click/nav/sel)");
                     return;
             }
         }

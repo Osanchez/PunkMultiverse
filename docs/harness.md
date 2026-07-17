@@ -75,8 +75,20 @@ stall <secs>                # freeze the main thread 1-25s: reproduces a load/GC
                             # (exercises the loopback reconnect-in-place path)
 autofly <seconds>           # re-arm scripted flight mid-run
 say <marker text>           # timestamped marker in the log — bracket your scenarios
+shot [name]                 # screenshot -> plugin folder/shots/<name>.png (path in devout)
+uidump [filter]             # every active Selectable: path, screen rect, nav links, label
+uitree <name…> [depth]      # hierarchy dump (rects, sprites, colors, fonts, text);
+                            # names may contain spaces, trailing integer = depth
+click <token>               # submit-click a Selectable by name/label substring (also
+                            # matches the wrapper name up to 3 ancestors)
+nav up|down|left|right      # drive EventSystem navigation like a gamepad dpad
+nav submit|cancel           # submit/cancel on the current selection
+sel                         # current EventSystem selection + screen rect
 # lines starting with # are ignored
 ```
+
+UI commands work at the MAIN MENU too (no session needed): the command file is polled
+even before a transport exists — that's how menu screens are driven and screenshotted.
 
 **Response channel**: every command's result is appended to `devout.txt` next to the
 command file (`[<mono>] <result>` lines) AND mirrored to the log as `[Dev] ...`. The

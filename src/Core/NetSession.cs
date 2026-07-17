@@ -136,23 +136,51 @@ namespace PunkMultiverse.Core
         /// 1 + (EnemyHealthScalePerPlayer * connected players). Replicated in START_RUN.</summary>
         public float EnemyHpMult { get; private set; } = 1f;
 
-        private NetRunSave.Data _pendingResume;
-
-        /// <summary>Host a lobby that resumes the saved run: same seed and settings; after
-        /// go-live the ledgers replay to everyone and players spawn at the saved checkpoint
-        /// with their stashed builds.</summary>
-        public void HostResume()
+        /// <summary>Rejoin the session this machine last went live in (RejoinMemory) — the
+        /// normal join path; the host's rejoin machinery does the catch-up. Callers should
+        /// gate on ProbeRejoinTarget so this is only offered while the session still exists.</summary>
+        public void RejoinLastSession()
         {
-            var data = NetRunSave.Load();
-            if (data == null)
+            if (!RejoinMemory.TryLoad(out var record))
             {
-                LastError = "No saved run to resume.";
+                LastError = "No recent session to rejoin.";
                 return;
             }
-            HostOnline(data.Seed, data.FriendlyFire, data.HpScaling);
-            _pendingResume = data; // after HostOnline: a synchronous loopback restart won't clear it
-            Plugin.Log.LogInfo($"[Session] hosting resume of run seed {data.Seed} " +
-                $"({data.Cells.Count} cells, {data.Kills.Count} kills, {data.Upgrades.Count} upgrades)");
+            LastError = null;
+            if (record.Steam)
+            {
+                if (!UsingSteam) { LastError = "Last session was a Steam session (transport is Loopback)."; return; }
+                Plugin.Log.LogInfo($"[Session] rejoining last session (lobby {record.LobbyId})");
+                JoinLobbyId(new Steamworks.CSteamID(record.LobbyId));
+            }
+            else
+            {
+                if (UsingSteam) { LastError = "Last session was a loopback session (transport is Steam)."; return; }
+                Plugin.Log.LogInfo($"[Session] rejoining last session ({record.Address})");
+                JoinSession(record.Address);
+            }
+        }
+
+        /// <summary>Is the remembered session still alive and joinable? Steam: asks the lobby
+        /// directory (async; "no reply" never invokes the callback — treat the button as hidden
+        /// until a probe says otherwise). Loopback (dev): no directory to ask — reports true and
+        /// lets the connect timeout arbitrate. Safe to call repeatedly; overlapping Steam probes
+        /// are dropped.</summary>
+        public void ProbeRejoinTarget(Action<bool> done)
+        {
+            try
+            {
+                if (State != SessionState.Offline || !RejoinMemory.TryLoad(out var record)) { done(false); return; }
+                if (!record.Steam) { done(!UsingSteam); return; }
+                if (!UsingSteam || !SteamBootstrap.Available) { done(false); return; }
+                EnsureLobbyController();
+                _lobby.ProbeLobby(new Steamworks.CSteamID(record.LobbyId), done);
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Rejoin] probe failed: {e.Message}");
+                done(false);
+            }
         }
 
         /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
@@ -310,24 +338,18 @@ namespace PunkMultiverse.Core
             if (EnemyHpMult > 1f)
                 Plugin.Log.LogInfo($"[Run] enemy HP x{EnemyHpMult:F2} ({playerCount} players)");
 
-            // Resuming a saved run rides the rejoin path for EVERYONE: economy stash restore
-            // and checkpoint spawn included. Terrain restores from each machine's OWN save
-            // (it can be map-scale); the small ledgers replay after go-live.
-            bool resume = _pendingResume != null;
-            int spawnStation = resume ? _pendingResume.LatestStationNetId : 0;
-
             _writer.Reset();
             new StartRunMsg
             {
                 Seed = seed,
-                IsRejoin = resume,
-                IsResume = resume,
-                SpawnStationNetId = spawnStation,
+                IsRejoin = false,
+                IsResume = false, // wire field kept for compatibility; save-based resume removed
+                SpawnStationNetId = 0,
                 EnemyHpMult = EnemyHpMult,
             }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
-            _isRejoin = resume;
-            _spawnStationNetId = spawnStation;
+            _isRejoin = false;
+            _spawnStationNetId = 0;
             BeginRun(seed);
         }
 
@@ -387,7 +409,6 @@ namespace PunkMultiverse.Core
             RuntimeInstrumentation.ResetRun();
             ClockSync.Reset();
             EconomyStash.Reset();
-            NetRunSave.Reset();
             Sync.HookSync.Reset();
             _autoPicked = false;
             _autoPickAt = Time.unscaledTime + 2f;
@@ -579,15 +600,18 @@ namespace PunkMultiverse.Core
                 // Spawn at the party's latest unlocked station instead of the run start.
                 if (_spawnStationNetId != 0) Sync.ShipSync.TeleportLocalShip(_spawnStationNetId);
             }
-            if (IsHost && _pendingResume != null)
+            // Remember this session as the rejoin target: if this machine disconnects, crashes,
+            // or quits mid-run, the CONNECT screen can offer REJOIN while the session lives.
+            try
             {
-                var data = _pendingResume;
-                _pendingResume = null;
-                ApplyResumePayload(data);
+                if (UsingSteam && _lobby != null && _lobby.InLobby)
+                    RejoinMemory.Remember(steam: true, _lobby.CurrentLobby.m_SteamID, null);
+                else if (!UsingSteam)
+                    RejoinMemory.Remember(steam: false, 0, IsHost
+                        ? $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}"
+                        : _lastJoinAddress);
             }
-            // Clients never restore terrain from their own save: the host's ledger is the one
-            // source of truth and streams in vicinity-first chunks (resume: after its local
-            // restore; rejoin: from SendRejoinState) — no save required, no divergence.
+            catch { }
             if (NetConfig.AutoFly.Value > 0f)
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
         }
@@ -763,9 +787,12 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
         }
 
+        private string _lastJoinAddress; // loopback rejoin target (Steam rejoins use the lobby id)
+
         public void JoinSession(string address)
         {
             if (State != SessionState.Offline) StopSession("rejoining");
+            _lastJoinAddress = address;
             HostSlot = 0;
             _joinTargetHostSlot = 0;
             ulong.TryParse(address, out _joinTargetPeerId); // SteamID64; loopback "ip:port" -> 0
@@ -806,11 +833,10 @@ namespace PunkMultiverse.Core
 
             if (wasInRun)
             {
-                // Final economy stash + run save (the periodic ones may be seconds stale) and
-                // world cleanup: the run continues solo, so it must be coherent — teammate
+                // Final economy stash (the periodic ones may be seconds stale) and world
+                // cleanup: the run continues solo, so it must be coherent — teammate
                 // puppets despawn and remote-simulated enemies get their AI back.
                 try { EconomyStash.Save(CurrentRunSeed); } catch { }
-                try { NetRunSave.Save(this); } catch { }
                 CleanupAbandonedRun();
             }
 
@@ -833,7 +859,6 @@ namespace PunkMultiverse.Core
             FriendlyFire = false;
             HpScaling = false;
             EnemyHpMult = 1f;
-            _pendingResume = null;
             _levelChecksums.Clear();
             _levelFingerprints.Clear();
             _peersAwaitingRejoinState.Clear();
@@ -968,7 +993,10 @@ namespace PunkMultiverse.Core
             {
                 RuntimeInstrumentation.SetPhase(PerfPhase.SteamPump);
                 SteamBootstrap.Pump();
-                if (_transport == null || !_transport.IsRunning) return;
+                // No transport (main menu, offline): still poll the dev command file so the
+                // harness can drive/screenshot menu UI. In-session ticking stays below, after
+                // Poll/Drain, so scenario commands keep acting on post-dispatch state.
+                if (_transport == null || !_transport.IsRunning) { DevTools.Tick(this); return; }
                 profiling = State == SessionState.InGame;
                 if (profiling) NetProfiler.FrameStart();
 
@@ -1020,8 +1048,6 @@ namespace PunkMultiverse.Core
                     Sync.FogSync.Tick(this);                    NetProfiler.Mark("Fog");
                     RuntimeInstrumentation.SetPhase(PerfPhase.Economy);
                     EconomyStash.Tick(this);                    NetProfiler.Mark("Economy");
-                    RuntimeInstrumentation.SetPhase(PerfPhase.RunSave);
-                    NetRunSave.Tick(this);                      NetProfiler.Mark("RunSave");
                     RuntimeInstrumentation.SetPhase(PerfPhase.Diagnostics);
                     NetDiag.TickPeriodic();                     NetProfiler.Mark("Diag");
                     if (IsHost)
@@ -1213,12 +1239,26 @@ namespace PunkMultiverse.Core
             NetProfiler.Reset();
             RuntimeInstrumentation.ResetRun();
             EconomyStash.Reset();
-            NetRunSave.Reset();
-            NetRunSave.Delete();
             Sync.HookSync.Reset();
             foreach (var p in _players)
                 if (p != null)
                     p.Ready = false;
+            // Mid-run slot reservations end with the run: a ghost left in the roster collides
+            // with its owner coming back through the lobby-join path (same identity seated in
+            // two slots crashed the client-side LobbyState apply). They can rejoin normally.
+            if (IsHost)
+            {
+                bool dropped = false;
+                for (int i = 0; i < MaxPlayers; i++)
+                {
+                    var p = _players[i];
+                    if (p == null || p.IsLocal || p.Connected) continue;
+                    Plugin.Log.LogInfo($"[Session] run over — releasing reserved slot of {p}");
+                    _players[i] = null;
+                    dropped = true;
+                }
+                if (dropped) BroadcastLobbyState();
+            }
             if (announce)
                 UI.Toast.Show(IsHost
                     ? "RUN OVER — PRESS RETRY FOR A NEW RUN"
@@ -1567,6 +1607,7 @@ namespace PunkMultiverse.Core
                 case MsgType.SessionEnded when !IsHost: OnHostLost("Host ended the session.", hostQuit: true); break;
                 case MsgType.Kicked when !IsHost:
                     UI.Toast.Show("YOU HAVE BEEN KICKED FROM THE LOBBY", 6f);
+                    RejoinMemory.Clear(); // never auto-offer a session we were removed from
                     Fail("You were kicked by the host.");
                     break;
                 case MsgType.RunEnded when !IsHost: EndRunToLobby(); break;
@@ -2035,6 +2076,25 @@ namespace PunkMultiverse.Core
                     return;
                 }
             }
+            else if (reject == null)
+            {
+                // Lobby state: the same identity may still be seated (stale route, or a ghost
+                // reservation that outlived its run) — release it so one identity never holds
+                // two slots. The joiner then seats normally, often into the freed slot.
+                for (int i = 1; i < MaxPlayers; i++)
+                {
+                    var p = _players[i];
+                    if (p == null || p.IsLocal) continue;
+                    if (!(hello.SteamId != 0 ? p.IdentityId == hello.SteamId : p.Name == hello.Name)) continue;
+                    Plugin.Log.LogInfo($"[Session] {p} rejoined the lobby on a new route — releasing the old seat");
+                    if (p.Connected && p.PeerId != 0 && p.PeerId != peer)
+                    {
+                        Sync.WorldSync.CancelStream(p.PeerId);
+                        ClearOutboxFor(p.PeerId);
+                    }
+                    _players[i] = null;
+                }
+            }
 
             int slot = -1;
             if (reject == null)
@@ -2242,128 +2302,6 @@ namespace PunkMultiverse.Core
             return Vector2.zero;
         }
 
-        /// <summary>Replay a saved run's ledgers on the host: terrain applies locally paced
-        /// (it can be millions of cells), then streams to every client in vicinity-first
-        /// chunks — clients need no save of their own and can never diverge. The small event
-        /// ledgers apply locally and broadcast, throttled so the reliable buffer holds.</summary>
-        private void ApplyResumePayload(NetRunSave.Data data)
-        {
-            StartCoroutine(RestoreTerrainThenStream(data));
-            StartCoroutine(BroadcastEventLedgersPaced(data));
-        }
-
-        private System.Collections.IEnumerator RestoreTerrainThenStream(NetRunSave.Data data)
-        {
-            // The paced apply fills the ledger as it goes; streams start once it's complete
-            // so every chunk a client receives reflects the full saved history.
-            yield return StartCoroutine(ApplyCellsPaced(data.Cells, "resume"));
-            if (State != SessionState.InGame) yield break;
-            foreach (var p in _players)
-                if (p != null && !p.IsLocal && p.Connected)
-                    Sync.WorldSync.BeginStreamTo(this, p.PeerId, p.Slot, StreamFallbackPos());
-        }
-
-        private System.Collections.IEnumerator ApplyCellsPaced(List<(int index, byte type)> cells, string source)
-        {
-            const int cellsPerFrame = 20000;
-            int sinceYield = 0;
-            for (int start = 0; start < cells.Count; start += 500)
-            {
-                var msg = new CellDiffMsg { Cells = cells.GetRange(start, Math.Min(500, cells.Count - start)) };
-                Sync.WorldSync.Apply(msg);
-                sinceYield += msg.Cells.Count;
-                if (sinceYield >= cellsPerFrame)
-                {
-                    sinceYield = 0;
-                    yield return null;
-                }
-                if (State != SessionState.InGame) yield break; // run ended mid-restore
-            }
-            Plugin.Log.LogInfo($"[Session] terrain restored from {source} ({cells.Count} cells)");
-        }
-
-        private System.Collections.IEnumerator BroadcastEventLedgersPaced(NetRunSave.Data data)
-        {
-            const int messagesPerFrame = 32;
-            int sent = 0;
-
-            System.Collections.IEnumerator Pace()
-            {
-                if (++sent >= messagesPerFrame)
-                {
-                    sent = 0;
-                    yield return null;
-                }
-            }
-
-            void Broadcast()
-            {
-                var segment = _writer.ToSegment();
-                ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Events, segment, reliable: true));
-            }
-
-            foreach (var netId in data.Kills)
-            {
-                var msg = new EntityKilledMsg
-                {
-                    NetId = netId, Lifetime = NetIds.LifetimeOf(netId),
-                    MutationRevision = Sync.EnemySync.NextMutationRevision(netId), KillerSlot = 0,
-                };
-                Sync.EnemySync.ApplyEntityKilled(msg);
-                _writer.Reset();
-                msg.Write(_writer);
-                Broadcast();
-                yield return Pace();
-                if (State != SessionState.InGame) yield break;
-            }
-            foreach (var (plantNetId, fruitId) in data.PlantFruits)
-            {
-                var msg = new PlantFruitKilledMsg
-                {
-                    PlantNetId = plantNetId, FruitId = fruitId,
-                    Lifetime = NetIds.LifetimeOf(plantNetId),
-                    MutationRevision = Sync.EnemySync.NextMutationRevision(plantNetId), KillerSlot = 0,
-                };
-                Sync.EnemySync.ApplyPlantFruitKilled(msg);
-                _writer.Reset();
-                msg.Write(_writer);
-                Broadcast();
-                yield return Pace();
-                if (State != SessionState.InGame) yield break;
-            }
-            foreach (var (netId, hash) in data.Upgrades)
-            {
-                var msg = new StationUpgradeMsg { StationNetId = netId, UpgradeHash = hash };
-                Sync.ProgressionSync.ApplyStationUpgrade(msg);
-                _writer.Reset();
-                msg.Write(_writer);
-                Broadcast();
-                yield return Pace();
-            }
-            foreach (var (netId, hash) in data.Instruments)
-            {
-                var msg = new InstrumentUsedMsg { NetId = netId, DiscoverableHash = hash };
-                Sync.ProgressionSync.ApplyInstrumentUsed(msg);
-                _writer.Reset();
-                msg.Write(_writer);
-                Broadcast();
-                yield return Pace();
-            }
-            foreach (var netId in data.Scanners)
-            {
-                var msg = new ScannerUsedMsg { NetId = netId };
-                Sync.ProgressionSync.ApplyScannerUsed(msg);
-                _writer.Reset();
-                msg.Write(_writer);
-                Broadcast();
-                yield return Pace();
-            }
-            Sync.ProgressionSync.RestoreCheckpoint(data.LatestStationNetId);
-            UI.Toast.Show("RUN RESUMED", 4f);
-            Plugin.Log.LogInfo($"[Session] resume events replayed ({data.Kills.Count} kills, " +
-                $"{data.Upgrades.Count} upgrades, {data.Scanners.Count} scanners)");
-        }
-
         /// <summary>Deaths, ownership, and shared progression — every message idempotent on the
         /// receiver, so it serves both full rejoins and post-migration resume gaps.</summary>
         private void SendEventCatchUp(ulong peer)
@@ -2529,7 +2467,13 @@ namespace PunkMultiverse.Core
                     }
                 }
 
-            var oldRtt = _players.Where(p => p != null).ToDictionary(p => p.IdentityId, p => p.RttMs);
+            // Not ToDictionary: a malformed roster seating one identity in two slots (seen when
+            // a ghost reservation collided with its owner rejoining) must not throw and leave
+            // the whole roster un-applied.
+            var oldRtt = new Dictionary<ulong, int>();
+            foreach (var p in _players)
+                if (p != null && !oldRtt.ContainsKey(p.IdentityId))
+                    oldRtt[p.IdentityId] = p.RttMs;
             for (int i = 0; i < MaxPlayers; i++) _players[i] = null;
             foreach (var e in roster)
             {

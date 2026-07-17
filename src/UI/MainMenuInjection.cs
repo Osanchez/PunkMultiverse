@@ -90,6 +90,10 @@ namespace PunkMultiverse.UI
             Core.UpdateCheck.Kick(this);
             CreateVersionBanner(selector, menuFont);
 
+            // Build (and theme-harvest) the lobby screens NOW, while the menu scene holds every
+            // vanilla template — a mid-game Show() (host quit) then reuses the themed canvas.
+            GetComponent<LobbyScreen>()?.EnsureBuilt();
+
             Plugin.Log.LogInfo("[UI] PLAY ONLINE button injected into main menu");
         }
 

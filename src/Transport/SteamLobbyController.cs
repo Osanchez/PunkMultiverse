@@ -21,6 +21,7 @@ namespace PunkMultiverse.Transport
         private CallResult<LobbyEnter_t> _lobbyEntered;
         private Callback<GameLobbyJoinRequested_t> _joinRequested;
         private Callback<LobbyChatUpdate_t> _chatUpdate;
+        private Callback<LobbyDataUpdate_t> _dataUpdate;
 
         public CSteamID CurrentLobby { get; private set; }
         public bool InLobby => CurrentLobby.IsValid() && CurrentLobby.IsLobby();
@@ -40,6 +41,7 @@ namespace PunkMultiverse.Transport
             _lobbyEntered = CallResult<LobbyEnter_t>.Create(OnLobbyEntered);
             _joinRequested = Callback<GameLobbyJoinRequested_t>.Create(r => JoinRequested?.Invoke(r.m_steamIDLobby));
             _chatUpdate = Callback<LobbyChatUpdate_t>.Create(OnChatUpdate);
+            _dataUpdate = Callback<LobbyDataUpdate_t>.Create(OnLobbyDataUpdate);
         }
 
         public void Dispose()
@@ -49,6 +51,51 @@ namespace PunkMultiverse.Transport
             _lobbyEntered?.Dispose();
             _joinRequested?.Dispose();
             _chatUpdate?.Dispose();
+            _dataUpdate?.Dispose();
+        }
+
+        // ---------------------------------------------------------------- liveness probe
+
+        private CSteamID _probeTarget;
+        private Action<bool> _probeDone;
+
+        /// <summary>Ask Steam whether a lobby still exists and looks joinable (members present,
+        /// host stamped, same mod version). The answer arrives via callback; if Steam never
+        /// replies (offline), the callback simply never fires — callers must treat "no answer"
+        /// as dead. One probe at a time; overlapping requests are dropped.</summary>
+        public void ProbeLobby(CSteamID lobbyId, Action<bool> done)
+        {
+            if (_probeDone != null) return; // previous probe still in flight
+            if (!lobbyId.IsValid() || !lobbyId.IsLobby()) { done(false); return; }
+            _probeTarget = lobbyId;
+            _probeDone = done;
+            if (!SteamMatchmaking.RequestLobbyData(lobbyId))
+            {
+                _probeDone = null;
+                done(false);
+            }
+        }
+
+        private void OnLobbyDataUpdate(LobbyDataUpdate_t update)
+        {
+            // Also fires for ordinary data changes of a lobby we're sitting in — only consume
+            // it as a probe answer when one is outstanding for that exact lobby.
+            if (_probeDone == null || update.m_ulSteamIDLobby != _probeTarget.m_SteamID) return;
+            if (update.m_ulSteamIDMember != update.m_ulSteamIDLobby) return; // member-data noise
+            var done = _probeDone;
+            _probeDone = null;
+            bool alive = false;
+            if (update.m_bSuccess != 0)
+            {
+                // Steam destroys a lobby when its last member leaves, so a successful data
+                // reply means somebody is still in it. Member counts are unreliable from
+                // outside the lobby — don't ask. Host stamp + matching mod version = joinable.
+                string hostId = SteamMatchmaking.GetLobbyData(_probeTarget, KeyHostId);
+                string modVer = SteamMatchmaking.GetLobbyData(_probeTarget, KeyModVersion);
+                alive = !string.IsNullOrEmpty(hostId)
+                        && (string.IsNullOrEmpty(modVer) || modVer == Plugin.Version);
+            }
+            done(alive);
         }
 
         // ---------------------------------------------------------------- host

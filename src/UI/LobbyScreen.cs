@@ -1,57 +1,87 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using PunkMultiverse.Core;
 using TMPro;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 namespace PunkMultiverse.UI
 {
     /// <summary>
-    /// The player-facing lobby screen (NEW-style), built entirely at runtime on its own overlay
-    /// canvas — no asset bundles. Two panels:
-    ///   CONNECT  — Host Lobby / Join from Clipboard / Back
-    ///   LOBBY    — 4 player rows (name, color swatch, ready), Copy Code, Invite, Ready, Start (host)
-    /// Auto-shows when a session reaches Lobby state; hides on game start / stop.
-    /// Layout: panel is 760x700; texts anchor to the panel top (negative y down), buttons to the
-    /// panel center (positive y up).
+    /// The player-facing PLAY ONLINE screens, styled after the game's own SETTINGS/prompt
+    /// screens (assets harvested by UiTheme — vanilla button clones with animator FX and
+    /// click/select sounds, placeholder-art frames, both menu fonts). Three panels on one
+    /// full-screen takeover:
+    ///   CONNECT       — HOST GAME / JOIN FROM CLIPBOARD / REJOIN LAST SESSION (liveness-gated)
+    ///   GAME SETTINGS — options-style rows: WORLD SEED (input + PASTE/RANDOM),
+    ///                   FRIENDLY FIRE and ENEMY HP SCALING as vanilla OFF/ON toggles
+    ///   LOBBY         — code + copy, 4 player rows, ship color, READY/START/INVITE
+    /// MKB and gamepad both fully drive it: explicit navigation grids (rewired on every
+    /// visibility change), Esc/B backs out one level, BACK/LEAVE swaps to a B-glyph hint
+    /// when a gamepad was used last. Auto-shows when a session reaches Lobby state; hides
+    /// on game start / stop.
     /// </summary>
     public sealed class LobbyScreen : MonoBehaviour
     {
-        private static readonly Color PanelBg = new Color(0.06f, 0.07f, 0.10f, 0.96f);
-        private static readonly Color RowBg = new Color(1f, 1f, 1f, 0.05f);
-        private static readonly Color ButtonBg = new Color(0.16f, 0.19f, 0.26f, 1f);
-        private static readonly Color ButtonHover = new Color(0.24f, 0.29f, 0.40f, 1f);
-        private static readonly Color Accent = new Color(0.98f, 0.55f, 0.18f);
+        private const float WindowW = 1240f;
+        private const float WindowH = 820f;
+        private const float ContentHalf = WindowW / 2f - 90f; // inner layout half-width
 
         private GameObject _canvasGo;
+        private GameObject _window;
         private GameObject _connectPanel;
         private GameObject _lobbyPanel;
         private GameObject _seedPanel;
-        private GameObject _resumeButton;
-        private TMP_InputField _seedInput;
-        private bool _seedSetupOpen;
+        private TMP_Text _title;
+        private TMP_Text _titleShadow;
         private TMP_Text _statusText;
-        private TMP_Text _versionText;
         private TMP_Text _codeText;
         private TMP_Text _copyChipLabel;
-        private RectTransform _copyChipRt;
+        private RectTransform _copyChipRoot;
         private Coroutine _copyFlash;
         private TMP_Text _seedText;
-        private TMP_Text _readyButtonLabel;
-        private GameObject _startButton;
-        private GameObject _inviteButton;
-        private readonly List<RowWidgets> _rows = new List<RowWidgets>();
-        private TMP_FontAsset _font;
+        private TMP_Text _readyLabel;
+        private TMP_Text _startLabel;
+        private TMP_Text _inviteLabel;
+        private TMP_Text _hostGameLabel;
+        private TMP_Text _joinLabel;
+        private TMP_Text _rejoinLabel;
+        private GameObject _rejoinNote;
+        private bool _rejoinAvailable;
+        private float _nextRejoinProbeAt;
+        private TMP_Text _backLabel;
+        private GameObject _padHint;
+        private TMP_Text _padHintLabel;
+        private TMP_InputField _seedInput;
+        private TMP_Text _pasteLabel;
+        private TMP_Text _randomLabel;
+        private TMP_Text _hostLobbyLabel;
+        private TMP_Text _ffOff, _ffOn, _hpOff, _hpOn;
+        private bool _seedSetupOpen;
+        private bool _friendlyFire;
+        private bool _hpScaling = true;
         private byte _localColor;
         private bool _localReady;
+        private bool _lastPadMode;
+
+        private readonly List<RowWidgets> _rows = new List<RowWidgets>();
+        private readonly List<SettingsRow> _settingsRows = new List<SettingsRow>();
+        private readonly List<Button> _swatches = new List<Button>();
+        private readonly List<Image> _swatchFrames = new List<Image>();
 
         private sealed class RowWidgets
         {
             public Image Swatch;
             public TMP_Text Name;
             public TMP_Text Status;
-            public GameObject Kick;
+            public TMP_Text KickLabel;
+        }
+
+        private sealed class SettingsRow
+        {
+            public RectTransform Root;
+            public TMP_Text Label;
         }
 
         public bool Visible => _canvasGo != null && _canvasGo.activeSelf;
@@ -97,10 +127,18 @@ namespace PunkMultiverse.UI
             Refresh();
         }
 
-        public void Show()
+        /// <summary>Build now (called from MainMenuInjection while the menu scene — and with it
+        /// every vanilla template — is loaded). Safe to call repeatedly.</summary>
+        public void EnsureBuilt()
         {
             if (_canvasGo == null) Build();
+        }
+
+        public void Show()
+        {
+            EnsureBuilt();
             _seedSetupOpen = false;
+            _nextRejoinProbeAt = 0f; // probe immediately on open
             _canvasGo.SetActive(true);
             SetMenuBlocked(true);
             Refresh();
@@ -113,18 +151,80 @@ namespace PunkMultiverse.UI
             RestoreMenuSelection();
         }
 
-        /// <summary>Select the first interactable button (or any selectable) under a panel so a
-        /// gamepad has something to navigate from. Prefers Buttons over the seed input / swatches
-        /// so focus lands somewhere sensible.</summary>
-        private static void SelectFirstIn(GameObject panel)
+        public void Toggle()
+        {
+            if (Visible) Hide(); else Show();
+        }
+
+        // ---------------------------------------------------------------- menu blocking
+
+        // The dim layer swallows mouse rays, but the menu BEHIND us still runs: keyboard/gamepad
+        // navigation could reach its buttons, and MainMenu.Update's own Esc handler would pop the
+        // exit prompt over our screen. Block its canvas AND the component.
+        private CanvasGroup _menuBlock;
+        private MainMenu _blockedMenu;
+
+        private void SetMenuBlocked(bool blocked)
+        {
+            try
+            {
+                if (blocked)
+                {
+                    if (_menuBlock == null) // also re-finds after a scene reload destroyed it
+                    {
+                        var selector = GameObject.Find("GameModeSelector");
+                        var canvas = selector != null ? selector.GetComponentInParent<Canvas>() : null;
+                        if (canvas != null)
+                        {
+                            _menuBlock = canvas.GetComponent<CanvasGroup>();
+                            if (_menuBlock == null) _menuBlock = canvas.gameObject.AddComponent<CanvasGroup>();
+                        }
+                    }
+                    if (_menuBlock != null) _menuBlock.interactable = false;
+                    if (_blockedMenu == null)
+                    {
+                        _blockedMenu = FindFirstObjectByType<MainMenu>();
+                        if (_blockedMenu != null) _blockedMenu.enabled = false; // kills its Esc/exit handler
+                    }
+                    // MainMenu.OnDisable hid the cursor — claim it back with our own handle.
+                    if (ServiceLocator.TryGet<CursorController>(out var cursor)) cursor.ShowCursor(this);
+                }
+                else
+                {
+                    if (_menuBlock != null) _menuBlock.interactable = true;
+                    if (_blockedMenu != null) { _blockedMenu.enabled = true; _blockedMenu = null; }
+                    if (ServiceLocator.TryGet<CursorController>(out var cursor)) cursor.HideCursor(this);
+                }
+            }
+            catch { }
+        }
+
+        // ---------------------------------------------------------------- focus management
+
+        /// <summary>Select the panel's primary action (falling back to its first nav-wired
+        /// selectable) so a gamepad has somewhere useful to navigate from. Nav-mode-None
+        /// elements (the click-to-copy code text) are mouse-only dead ends — never focus them.</summary>
+        private void SelectFirstIn(GameObject panel)
         {
             if (panel == null || !panel.activeInHierarchy) return;
             var es = UnityEngine.EventSystems.EventSystem.current;
             if (es == null) return;
+
+            var preferred = UiTheme.ButtonOf(
+                panel == _lobbyPanel ? _readyLabel
+                : panel == _seedPanel ? _pasteLabel
+                : _hostGameLabel);
+            if (preferred != null && preferred.gameObject.activeInHierarchy && preferred.IsInteractable())
+            {
+                es.SetSelectedGameObject(preferred.gameObject);
+                return;
+            }
+
             Selectable target = null;
             foreach (var s in panel.GetComponentsInChildren<Selectable>(false))
             {
                 if (s == null || !s.IsInteractable() || !s.gameObject.activeInHierarchy) continue;
+                if (s.navigation.mode == Navigation.Mode.None) continue;
                 if (s is Button) { target = s; break; }
                 if (target == null) target = s; // fallback: input field / color swatch
             }
@@ -150,50 +250,102 @@ namespace PunkMultiverse.UI
             es.SetSelectedGameObject(null);
         }
 
-        // The dim layer swallows mouse rays, but keyboard/gamepad NAVIGATION still reaches the
-        // menu behind — especially after a panel switch deactivates the selected button and the
-        // EventSystem re-grabs a menu selectable. Block the menu's interactivity outright.
-        private CanvasGroup _menuBlock;
+        // ---------------------------------------------------------------- per-frame input
 
-        private void SetMenuBlocked(bool blocked)
+        private bool _seedFocusGrace; // seed field was focused last frame
+
+        private void Update()
         {
-            try
+            if (!Visible) return;
+
+            // Esc / gamepad B backs out one level. Never while typing in the seed field — Esc
+            // there just unfocuses the input, and TMP may clear isFocused before we poll in the
+            // same frame, hence the one-frame grace.
+            bool back = false;
+            var kb = Keyboard.current;
+            if (kb != null && kb.escapeKey.wasPressedThisFrame) back = true;
+            var gp = Gamepad.current;
+            if (gp != null && gp.buttonEast.wasPressedThisFrame) back = true;
+            bool seedFocused = _seedInput != null && _seedInput.isFocused;
+            if (back && !seedFocused && !_seedFocusGrace)
             {
-                if (blocked)
+                _seedFocusGrace = false;
+                UiTheme.PlayClick();
+                BackAction();
+                return;
+            }
+            _seedFocusGrace = seedFocused;
+
+            // REJOIN liveness: while the connect panel is up, re-ask every few seconds whether
+            // the remembered session still exists — the button appears/disappears live. The
+            // Steam probe is async; "no reply" leaves the button hidden (the safe default).
+            if (_connectPanel != null && _connectPanel.activeSelf && Time.unscaledTime >= _nextRejoinProbeAt)
+            {
+                _nextRejoinProbeAt = Time.unscaledTime + 5f;
+                NetSession.Instance?.ProbeRejoinTarget(alive =>
                 {
-                    if (_menuBlock == null) // also re-finds after a scene reload destroyed it
-                    {
-                        var selector = GameObject.Find("GameModeSelector");
-                        var canvas = selector != null ? selector.GetComponentInParent<Canvas>() : null;
-                        if (canvas == null) return;
-                        _menuBlock = canvas.GetComponent<CanvasGroup>();
-                        if (_menuBlock == null) _menuBlock = canvas.gameObject.AddComponent<CanvasGroup>();
-                    }
-                    _menuBlock.interactable = false;
-                }
-                else if (_menuBlock != null)
+                    if (_rejoinAvailable == alive) return;
+                    _rejoinAvailable = alive;
+                    Refresh(); // visibility + nav rewire
+                });
+            }
+
+            // BACK button <-> B-glyph hint follows the last-used device, vanilla ButtonHint style.
+            bool pad = UiTheme.GamepadLastUsed && UiTheme.PadGlyphB != null;
+            if (pad != _lastPadMode)
+            {
+                _lastPadMode = pad;
+                ApplyPadHint();
+                WireNav();
+            }
+
+            // Keep gamepad focus alive: a mouse click on empty space (or a panel switch) clears
+            // the EventSystem selection and strands controller navigation.
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es != null)
+            {
+                var sel = es.currentSelectedGameObject;
+                var activePanel = ActivePanel();
+                bool selValid = sel != null && sel.activeInHierarchy && activePanel != null
+                    && (sel.transform.IsChildOf(activePanel.transform)
+                        || sel.transform.IsChildOf(_canvasGo.transform) && !sel.transform.IsChildOf(_window.transform));
+                if (!selValid) SelectFirstIn(activePanel);
+            }
+
+            // Options-style row highlight: the row owning the selection gets the accent label.
+            if (_seedPanel != null && _seedPanel.activeSelf)
+            {
+                var selected = es != null ? es.currentSelectedGameObject : null;
+                foreach (var row in _settingsRows)
                 {
-                    _menuBlock.interactable = true;
+                    bool inRow = selected != null && selected.transform.IsChildOf(row.Root);
+                    row.Label.color = inRow ? UiTheme.Accent : UiTheme.TextBody;
                 }
             }
-            catch { }
         }
 
-        public void Toggle()
+        private GameObject ActivePanel()
         {
-            if (Visible) Hide(); else Show();
+            if (_lobbyPanel != null && _lobbyPanel.activeSelf) return _lobbyPanel;
+            if (_seedPanel != null && _seedPanel.activeSelf) return _seedPanel;
+            return _connectPanel;
+        }
+
+        private void BackAction()
+        {
+            var session = NetSession.Instance;
+            bool inLobby = session != null
+                && (session.State == SessionState.Lobby || session.State == SessionState.Connecting);
+            if (inLobby) { Leave(); return; }
+            if (_seedSetupOpen) { _seedSetupOpen = false; Refresh(); return; }
+            Hide();
         }
 
         // ---------------------------------------------------------------- building
 
         private void Build()
         {
-            _font = TMP_Settings.defaultFontAsset;
-            if (_font == null)
-            {
-                var fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
-                if (fonts.Length > 0) _font = fonts[0];
-            }
+            UiTheme.Harvest(transform);
 
             _canvasGo = new GameObject("PunkMV_LobbyScreen");
             _canvasGo.transform.SetParent(transform, false);
@@ -203,176 +355,230 @@ namespace PunkMultiverse.UI
             var scaler = _canvasGo.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = new Vector2(1920, 1080);
+            scaler.matchWidthOrHeight = 1f; // match height: ultrawide gains width, not zoom
             _canvasGo.AddComponent<GraphicRaycaster>();
 
-            // Dim background that swallows clicks to the menu behind.
-            var dim = MakeImage(_canvasGo.transform, "Dim", new Color(0, 0, 0, 0.6f));
-            Stretch(dim.rectTransform);
+            // Near-opaque backdrop, vanilla prompt style (#000 @ 0.87 over the menu).
+            var dim = UiTheme.MakeImage(_canvasGo.transform, "Dim", new Color(0, 0, 0, 0.87f));
+            UiTheme.Stretch(dim.rectTransform);
 
-            // Center panel.
-            var panel = MakeImage(_canvasGo.transform, "Panel", PanelBg);
-            var prt = panel.rectTransform;
-            prt.anchorMin = prt.anchorMax = new Vector2(0.5f, 0.5f);
-            prt.pivot = new Vector2(0.5f, 0.5f);
-            prt.sizeDelta = new Vector2(760, 700);
+            // Big pixel title, top-left like the vanilla SETTINGS header — with the doubled
+            // offset copy that gives it the glitch look.
+            _titleShadow = UiTheme.MakeText(_canvasGo.transform, "TitleShadow", "PLAY ONLINE", 58,
+                new Color(0.14f, 0.14f, 0.14f, 1f), UiTheme.PixelFont);
+            PlaceTopLeft(_titleShadow.rectTransform, 74, -52, 900, 70);
+            _title = UiTheme.MakeText(_canvasGo.transform, "Title", "PLAY ONLINE", 58,
+                new Color(0.30f, 0.30f, 0.30f, 1f), UiTheme.PixelFont);
+            PlaceTopLeft(_title.rectTransform, 68, -46, 900, 70);
+            _title.alignment = _titleShadow.alignment = TextAlignmentOptions.TopLeft;
 
-            MakeText(panel.transform, "Title", "PUNK MULTIVERSE", 42, Accent, y: -10, height: 60);
-            _versionText = MakeText(panel.transform, "Version", $"mod v{Plugin.Version}", 16, new Color(1, 1, 1, 0.45f), y: -56, height: 22);
-            _statusText = MakeText(panel.transform, "Status", "", 20, new Color(1f, 0.55f, 0.45f), y: -660, height: 36);
+            var version = UiTheme.MakeText(_canvasGo.transform, "Version",
+                $"PUNK MULTIVERSE · MOD V{Plugin.Version}", 15, UiTheme.TextFaint);
+            PlaceTopLeft(version.rectTransform, 72, -122, 900, 22);
+            version.alignment = TextAlignmentOptions.TopLeft;
 
-            BuildConnectPanel(panel.transform);
-            BuildLobbyPanel(panel.transform);
-            BuildSeedPanel(panel.transform);
+            // Content window: the prompt panel frame over the dim.
+            var window = UiTheme.MakeImage(_canvasGo.transform, "Window",
+                UiTheme.PromptSprite != null ? new Color(0.34f, 0.34f, 0.34f, 1f) : new Color(0.06f, 0.07f, 0.10f, 0.96f),
+                UiTheme.PromptSprite);
+            var wrt = window.rectTransform;
+            wrt.anchorMin = wrt.anchorMax = new Vector2(0.5f, 0.5f);
+            wrt.pivot = new Vector2(0.5f, 0.5f);
+            wrt.anchoredPosition = new Vector2(0, -24);
+            wrt.sizeDelta = new Vector2(WindowW, WindowH);
+            _window = window.gameObject;
+
+            _statusText = UiTheme.MakeText(_window.transform, "Status", "", 18, UiTheme.Bad);
+            PlaceTop(_statusText.rectTransform, -(WindowH - 46), 30);
+
+            BuildConnectPanel(_window.transform);
+            BuildSeedPanel(_window.transform);
+            BuildLobbyPanel(_window.transform);
             _lobbyPanel.SetActive(false);
             _seedPanel.SetActive(false);
+
+            // Bottom-left BACK/LEAVE — mouse path; hidden for gamepad in favor of the B glyph.
+            _backLabel = UiTheme.MakeButton(_canvasGo.transform, "Btn_Back", "BACK",
+                Vector2.zero, new Vector2(250, 62), () => BackAction(), 26);
+            var backRt = (RectTransform)UiTheme.RootOf(_backLabel).transform;
+            backRt.anchorMin = backRt.anchorMax = new Vector2(0f, 0f);
+            backRt.pivot = new Vector2(0f, 0f);
+            backRt.anchoredPosition = new Vector2(96, 56);
+            BuildPadHint();
+
+            _canvasGo.SetActive(false);
+        }
+
+        /// <summary>Gamepad hint (chip + B glyph + action name), vanilla ButtonHint layout.</summary>
+        private void BuildPadHint()
+        {
+            _padHint = new GameObject("PadHint", typeof(RectTransform));
+            _padHint.transform.SetParent(_canvasGo.transform, false);
+            var rt = (RectTransform)_padHint.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, 0f);
+            rt.pivot = new Vector2(0f, 0f);
+            rt.anchoredPosition = new Vector2(96, 56);
+            rt.sizeDelta = new Vector2(250, 62);
+
+            var chip = UiTheme.MakeImage(_padHint.transform, "Chip", new Color(0.19f, 0.19f, 0.19f, 1f), UiTheme.ChipSprite);
+            var crt = chip.rectTransform;
+            crt.anchorMin = crt.anchorMax = new Vector2(0f, 0.5f);
+            crt.pivot = new Vector2(0f, 0.5f);
+            crt.anchoredPosition = new Vector2(0, 0);
+            crt.sizeDelta = new Vector2(58, 58);
+
+            if (UiTheme.PadGlyphB != null)
+            {
+                var glyph = UiTheme.MakeImage(chip.transform, "Glyph", Color.white);
+                glyph.sprite = UiTheme.PadGlyphB;
+                glyph.type = Image.Type.Simple;
+                glyph.preserveAspect = true;
+                var grt = glyph.rectTransform;
+                grt.anchorMin = grt.anchorMax = new Vector2(0.5f, 0.5f);
+                grt.pivot = new Vector2(0.5f, 0.5f);
+                grt.sizeDelta = new Vector2(34, 34);
+            }
+
+            _padHintLabel = UiTheme.MakeText(_padHint.transform, "Action", "BACK", 17, UiTheme.TextDim);
+            var art = _padHintLabel.rectTransform;
+            art.anchorMin = art.anchorMax = new Vector2(0f, 0.5f);
+            art.pivot = new Vector2(0f, 0.5f);
+            art.anchoredPosition = new Vector2(70, 0);
+            art.sizeDelta = new Vector2(180, 30);
+            _padHintLabel.alignment = TextAlignmentOptions.MidlineLeft;
+            _padHint.SetActive(false);
+        }
+
+        private void ApplyPadHint()
+        {
+            var backRoot = UiTheme.RootOf(_backLabel);
+            if (backRoot != null) backRoot.SetActive(!_lastPadMode);
+            if (_padHint != null) _padHint.SetActive(_lastPadMode);
         }
 
         private void BuildConnectPanel(Transform parent)
         {
             _connectPanel = MakeGroup(parent, "Connect");
-            MakeText(_connectPanel.transform, "Hint",
-                "Host a lobby and send the code to your friends,\nor copy their code and join from clipboard.",
-                22, Color.white, y: -140, height: 70);
-            MakeButton(_connectPanel.transform, "HOST LOBBY", new Vector2(0, 60), new Vector2(420, 64),
-                ShowSeedSetup); // seed screen first, then the lobby
-            MakeButton(_connectPanel.transform, "JOIN FROM CLIPBOARD", new Vector2(0, -20), new Vector2(420, 64),
-                () => NetSession.Instance.JoinByCode(null));
-            _resumeButton = ButtonRoot(MakeButton(_connectPanel.transform, "RESUME LAST RUN", new Vector2(0, -100),
-                new Vector2(420, 52), () => NetSession.Instance.HostResume()));
-            MakeButton(_connectPanel.transform, "BACK", new Vector2(0, -170), new Vector2(220, 52), Hide);
+            MakeHeader(_connectPanel.transform, "PUNK MULTIVERSE — ONLINE CO-OP");
+
+            var hint = UiTheme.MakeText(_connectPanel.transform, "Hint",
+                "HOST A LOBBY AND SEND THE CODE TO YOUR FRIENDS,\nOR COPY THEIR CODE AND JOIN FROM CLIPBOARD.",
+                19, UiTheme.TextBody);
+            PlaceTop(hint.rectTransform, -122, 60);
+
+            _hostGameLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Host", "HOST GAME",
+                new Vector2(0, 96), new Vector2(620, 92), ShowSeedSetup, 38);
+            _joinLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Join", "JOIN FROM CLIPBOARD",
+                new Vector2(0, -18), new Vector2(620, 92), () => NetSession.Instance.JoinByCode(null), 38);
+
+            // Only offered while a liveness probe says the remembered session still exists
+            // (disconnect / crash / mid-run quit); see RejoinMemory + ProbeRejoinTarget.
+            _rejoinLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Rejoin", "REJOIN LAST SESSION",
+                new Vector2(0, -124), new Vector2(620, 74), () => NetSession.Instance.RejoinLastSession(), 27);
+            var rejoinNote = UiTheme.MakeText(_connectPanel.transform, "RejoinNote",
+                "YOUR LAST SESSION IS STILL RUNNING — JUMP BACK IN", 14, UiTheme.TextFaint);
+            var nrt = rejoinNote.rectTransform;
+            nrt.anchorMin = nrt.anchorMax = new Vector2(0.5f, 0.5f);
+            nrt.pivot = new Vector2(0.5f, 0.5f);
+            nrt.anchoredPosition = new Vector2(0, -178);
+            nrt.sizeDelta = new Vector2(900, 22);
+            _rejoinNote = rejoinNote.gameObject;
         }
 
-        private void BuildLobbyPanel(Transform parent)
-        {
-            _lobbyPanel = MakeGroup(parent, "Lobby");
-
-            _codeText = MakeText(_lobbyPanel.transform, "Code", "", 24, Color.white, y: -74, height: 30);
-
-            // The code line copies itself: click anywhere on it, or the small COPY chip that
-            // rides at its right edge (positioned per-frame in Refresh — the code width varies).
-            var codeBtn = _codeText.gameObject.AddComponent<Button>();
-            codeBtn.targetGraphic = _codeText;
-            codeBtn.onClick.AddListener(CopyCodeWithFeedback);
-            _copyChipLabel = MakeButton(_codeText.transform, "COPY", Vector2.zero, new Vector2(84, 26),
-                CopyCodeWithFeedback);
-            _copyChipRt = (RectTransform)_copyChipLabel.transform.parent;
-            _copyChipRt.gameObject.SetActive(false);
-
-            // World seed: read-only here — it's chosen on the GAME SETTINGS screen before hosting.
-            _seedText = MakeText(_lobbyPanel.transform, "Seed", "", 20, new Color(1f, 1f, 1f, 0.85f), y: -106, height: 26);
-
-            MakeButton(_lobbyPanel.transform, "COPY CODE", new Vector2(-140, 186), new Vector2(240, 48),
-                CopyCodeWithFeedback);
-            _inviteButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "INVITE FRIENDS", new Vector2(140, 186),
-                new Vector2(240, 48), () => NetSession.Instance.Lobby?.OpenInviteOverlay()));
-
-            // Player rows: top-anchored band from y=-196 to y=-452.
-            for (int i = 0; i < NetSession.MaxPlayers; i++)
-            {
-                var row = new RowWidgets();
-                var bg = MakeImage(_lobbyPanel.transform, $"Row{i}", RowBg);
-                var rt = bg.rectTransform;
-                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 1f);
-                rt.pivot = new Vector2(0.5f, 1f);
-                rt.anchoredPosition = new Vector2(0, -196 - i * 66);
-                rt.sizeDelta = new Vector2(640, 58);
-
-                var swatch = MakeImage(bg.transform, "Swatch", Color.gray);
-                var srt = swatch.rectTransform;
-                srt.anchorMin = srt.anchorMax = new Vector2(0f, 0.5f);
-                srt.pivot = new Vector2(0f, 0.5f);
-                srt.anchoredPosition = new Vector2(14, 0);
-                srt.sizeDelta = new Vector2(34, 34);
-                row.Swatch = swatch;
-
-                row.Name = MakeText(bg.transform, "Name", "", 24, Color.white, y: 0, height: 58);
-                row.Name.alignment = TextAlignmentOptions.MidlineLeft;
-                StretchWithMargins(row.Name.rectTransform, 64, 200);
-
-                row.Status = MakeText(bg.transform, "RowStatus", "", 20, Color.white, y: 0, height: 58);
-                row.Status.alignment = TextAlignmentOptions.MidlineRight;
-                StretchWithMargins(row.Status.rectTransform, 64, 92); // leave room for KICK
-
-                int slotIndex = i;
-                row.Kick = ButtonRoot(MakeButton(bg.transform, "KICK", new Vector2(274, 0), new Vector2(64, 36),
-                    () => NetSession.Instance.KickPlayer((byte)slotIndex)));
-                row.Kick.SetActive(false);
-
-                _rows.Add(row);
-            }
-
-            MakeText(_lobbyPanel.transform, "ColorLabel", "SHIP COLOR", 18, new Color(1, 1, 1, 0.6f), y: -462, height: 26);
-            for (int c = 0; c < PlayerColors.All.Length; c++)
-            {
-                int colorIndex = c;
-                var label = MakeButton(_lobbyPanel.transform, "", new Vector2(-158 + c * 45, -160), new Vector2(38, 38),
-                    () => SetLocalColor((byte)colorIndex));
-                ButtonRoot(label).GetComponent<Image>().color = PlayerColors.Get(colorIndex);
-            }
-
-            _readyButtonLabel = MakeButton(_lobbyPanel.transform, "READY", new Vector2(-140, -216), new Vector2(240, 56),
-                ToggleReady);
-            _startButton = ButtonRoot(MakeButton(_lobbyPanel.transform, "START GAME", new Vector2(140, -216),
-                new Vector2(240, 56), StartGame));
-
-            MakeButton(_lobbyPanel.transform, "LEAVE", new Vector2(0, -282), new Vector2(180, 44), Leave);
-        }
-
-        // ---------------------------------------------------------------- seed setup (pre-lobby)
-
-        private TMP_Text _ffToggleLabel;
-        private TMP_Text _hpToggleLabel;
-        private bool _friendlyFire;
-        private bool _hpScaling = true;
+        // ---------------------------------------------------------------- game settings
 
         private void BuildSeedPanel(Transform parent)
         {
             _seedPanel = MakeGroup(parent, "GameSettings");
-            MakeText(_seedPanel.transform, "SetupTitle", "GAME SETTINGS", 28, Color.white, y: -130, height: 40);
-            MakeText(_seedPanel.transform, "SeedHint",
-                "WORLD SEED — type one, PASTE from clipboard, or leave empty for random.",
-                18, new Color(1f, 1f, 1f, 0.7f), y: -176, height: 30);
+            MakeHeader(_seedPanel.transform, "GAME SETTINGS — NEW ONLINE RUN");
 
-            _seedInput = MakeSeedInput(_seedPanel.transform, new Vector2(0, 70), new Vector2(420, 56));
+            // WORLD SEED row -----------------------------------------------------------
+            var seedRow = MakeSettingsRow(_seedPanel.transform, "WORLD SEED",
+                "TYPE ONE, PASTE, OR LEAVE ON RANDOM", 168);
+            _seedInput = MakeSeedInput(seedRow, new Vector2(42, 0), new Vector2(320, 58));
+            _pasteLabel = UiTheme.MakeButton(seedRow, "Btn_Paste", "PASTE",
+                new Vector2(291, 0), new Vector2(150, 54), PasteSeedIntoInput, 21);
+            _randomLabel = UiTheme.MakeButton(seedRow, "Btn_Random", "RANDOM",
+                new Vector2(455, 0), new Vector2(150, 54), () => { if (_seedInput != null) _seedInput.text = ""; }, 21);
 
-            MakeButton(_seedPanel.transform, "PASTE", new Vector2(-110, 0), new Vector2(200, 48), PasteSeedIntoInput);
-            MakeButton(_seedPanel.transform, "RANDOM", new Vector2(110, 0), new Vector2(200, 48),
-                () => { if (_seedInput != null) _seedInput.text = ""; });
+            // FRIENDLY FIRE row --------------------------------------------------------
+            var ffRow = MakeSettingsRow(_seedPanel.transform, "FRIENDLY FIRE",
+                "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS", 42);
+            _ffOff = UiTheme.MakeButton(ffRow, "Btn_FFOff", "OFF",
+                new Vector2(235, 0), new Vector2(190, 60), () => SetFriendlyFire(false), 26);
+            _ffOn = UiTheme.MakeButton(ffRow, "Btn_FFOn", "ON",
+                new Vector2(440, 0), new Vector2(190, 60), () => SetFriendlyFire(true), 26);
 
-            _ffToggleLabel = MakeButton(_seedPanel.transform, "FRIENDLY FIRE: OFF", new Vector2(0, -60),
-                new Vector2(420, 52), ToggleFriendlyFire);
-            _hpToggleLabel = MakeButton(_seedPanel.transform, "ENEMY HP SCALING: ON", new Vector2(0, -120),
-                new Vector2(420, 52), ToggleHpScaling);
+            // ENEMY HP SCALING row -----------------------------------------------------
+            var hpRow = MakeSettingsRow(_seedPanel.transform, "ENEMY HP SCALING",
+                "+25% ENEMY HEALTH PER PLAYER", -84);
+            _hpOff = UiTheme.MakeButton(hpRow, "Btn_HPOff", "OFF",
+                new Vector2(235, 0), new Vector2(190, 60), () => SetHpScaling(false), 26);
+            _hpOn = UiTheme.MakeButton(hpRow, "Btn_HPOn", "ON",
+                new Vector2(440, 0), new Vector2(190, 60), () => SetHpScaling(true), 26);
 
-            MakeButton(_seedPanel.transform, "HOST LOBBY", new Vector2(0, -190), new Vector2(420, 64), HostWithSeed);
-            MakeButton(_seedPanel.transform, "BACK", new Vector2(0, -255), new Vector2(220, 52),
-                () => { _seedSetupOpen = false; Refresh(); });
+            _hostLobbyLabel = UiTheme.MakeButton(_seedPanel.transform, "Btn_HostLobby", "HOST LOBBY",
+                new Vector2(0, -238), new Vector2(500, 92), HostWithSeed, 38);
+
+            SetFriendlyFire(false, silent: true);
+            SetHpScaling(true, silent: true);
         }
 
-        private void ToggleFriendlyFire()
+        /// <summary>Options-screen style row: label + faint sub-note on the left, controls
+        /// placed by the caller on the right. Returns the row transform (center-anchored).</summary>
+        private Transform MakeSettingsRow(Transform parent, string label, string note, float centerY)
         {
-            _friendlyFire = !_friendlyFire;
-            if (_ffToggleLabel == null) return;
-            _ffToggleLabel.text = _friendlyFire ? "FRIENDLY FIRE: ON" : "FRIENDLY FIRE: OFF";
-            _ffToggleLabel.color = _friendlyFire ? new Color(1f, 0.72f, 0.3f) : Color.white;
+            var go = new GameObject($"Row_{label}", typeof(RectTransform));
+            go.transform.SetParent(parent, false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = new Vector2(0, centerY);
+            rt.sizeDelta = new Vector2(WindowW - 120, 100);
+
+            var text = UiTheme.MakeText(go.transform, "Label", label, 24, UiTheme.TextBody);
+            var lrt = text.rectTransform;
+            lrt.anchorMin = new Vector2(0f, 0.5f);
+            lrt.anchorMax = new Vector2(0f, 0.5f);
+            lrt.pivot = new Vector2(0f, 0.5f);
+            lrt.anchoredPosition = new Vector2(10, 16);
+            lrt.sizeDelta = new Vector2(440, 30);
+            text.alignment = TextAlignmentOptions.MidlineLeft;
+
+            var noteText = UiTheme.MakeText(go.transform, "Note", note, 13, UiTheme.TextFaint);
+            var nrt = noteText.rectTransform;
+            nrt.anchorMin = nrt.anchorMax = new Vector2(0f, 0.5f);
+            nrt.pivot = new Vector2(0f, 0.5f);
+            nrt.anchoredPosition = new Vector2(10, -16);
+            nrt.sizeDelta = new Vector2(440, 22);
+            noteText.alignment = TextAlignmentOptions.MidlineLeft;
+
+            _settingsRows.Add(new SettingsRow { Root = rt, Label = text });
+            return go.transform;
+        }
+
+        private void SetFriendlyFire(bool on, bool silent = false)
+        {
+            _friendlyFire = on;
+            UiTheme.SetToggled(_ffOff, !on);
+            UiTheme.SetToggled(_ffOn, on);
         }
 
         // Base Health * (1 + (EnemyHealthScalePerPlayer * number of players)), counted at
         // START GAME; the per-player value (default 0.25) lives in config.cfg.
-        private void ToggleHpScaling()
+        private void SetHpScaling(bool on, bool silent = false)
         {
-            _hpScaling = !_hpScaling;
-            if (_hpToggleLabel == null) return;
-            _hpToggleLabel.text = _hpScaling ? "ENEMY HP SCALING: ON" : "ENEMY HP SCALING: OFF";
-            _hpToggleLabel.color = _hpScaling ? Color.white : new Color(1f, 0.72f, 0.3f);
+            _hpScaling = on;
+            UiTheme.SetToggled(_hpOff, !on);
+            UiTheme.SetToggled(_hpOn, on);
         }
 
         private void ShowSeedSetup()
         {
             _seedSetupOpen = true;
             if (_seedInput != null) _seedInput.text = "";
-            if (_friendlyFire) ToggleFriendlyFire(); // settings screen always opens at defaults
-            if (!_hpScaling) ToggleHpScaling();
+            SetFriendlyFire(false); // settings screen always opens at defaults
+            SetHpScaling(true);
             Refresh();
         }
 
@@ -405,7 +611,13 @@ namespace PunkMultiverse.UI
             rt.anchoredPosition = centerOffset;
             rt.sizeDelta = size;
             var bg = go.AddComponent<Image>();
-            bg.color = new Color(0.10f, 0.12f, 0.17f, 1f);
+            if (UiTheme.ChipSprite != null)
+            {
+                bg.sprite = UiTheme.ChipSprite;
+                bg.type = Image.Type.Sliced;
+                bg.color = new Color(0.19f, 0.19f, 0.19f, 1f);
+            }
+            else bg.color = new Color(0.10f, 0.12f, 0.17f, 1f);
 
             var areaGo = new GameObject("TextArea", typeof(RectTransform));
             areaGo.transform.SetParent(go.transform, false);
@@ -416,24 +628,11 @@ namespace PunkMultiverse.UI
             area.offsetMax = new Vector2(-16, -8);
             areaGo.AddComponent<RectMask2D>();
 
-            var textGo = new GameObject("Text", typeof(RectTransform));
-            textGo.transform.SetParent(areaGo.transform, false);
-            var text = textGo.AddComponent<TextMeshProUGUI>();
-            if (_font != null) text.font = _font;
-            text.fontSize = 26;
-            text.color = Color.white;
-            text.alignment = TextAlignmentOptions.Center;
-            Stretch(text.rectTransform);
+            var text = UiTheme.MakeText(areaGo.transform, "Text", "", 24, UiTheme.TextBright);
+            UiTheme.Stretch(text.rectTransform);
 
-            var phGo = new GameObject("Placeholder", typeof(RectTransform));
-            phGo.transform.SetParent(areaGo.transform, false);
-            var ph = phGo.AddComponent<TextMeshProUGUI>();
-            if (_font != null) ph.font = _font;
-            ph.fontSize = 26;
-            ph.color = new Color(1f, 1f, 1f, 0.3f);
-            ph.alignment = TextAlignmentOptions.Center;
-            ph.text = "RANDOM";
-            Stretch(ph.rectTransform);
+            var ph = UiTheme.MakeText(areaGo.transform, "Placeholder", "RANDOM", 24, new Color(1f, 1f, 1f, 0.28f));
+            UiTheme.Stretch(ph.rectTransform);
 
             var input = go.AddComponent<TMP_InputField>();
             input.targetGraphic = bg;
@@ -442,10 +641,174 @@ namespace PunkMultiverse.UI
             input.placeholder = ph;
             input.contentType = TMP_InputField.ContentType.IntegerNumber;
             input.characterLimit = 9;
+            input.caretColor = UiTheme.Accent;
+            input.customCaretColor = true;
+            input.selectionColor = new Color(UiTheme.Accent.r, UiTheme.Accent.g, UiTheme.Accent.b, 0.45f);
+            input.navigation = new Navigation { mode = Navigation.Mode.None };
+            go.AddComponent<UiSelectSfx>();
             return input;
         }
 
-        private static GameObject ButtonRoot(TMP_Text label) => label.transform.parent.gameObject;
+        // ---------------------------------------------------------------- lobby
+
+        private void BuildLobbyPanel(Transform parent)
+        {
+            _lobbyPanel = MakeGroup(parent, "Lobby");
+
+            _codeText = UiTheme.MakeText(_lobbyPanel.transform, "Code", "", 30, UiTheme.TextBright, UiTheme.PixelFont);
+            PlaceTop(_codeText.rectTransform, -34, 44);
+
+            // The code line copies itself: click it, or the COPY chip riding its right edge
+            // (positioned per-frame in Refresh — the code width varies).
+            var codeBtn = _codeText.gameObject.AddComponent<Button>();
+            codeBtn.targetGraphic = _codeText;
+            codeBtn.transition = Selectable.Transition.None;
+            codeBtn.navigation = new Navigation { mode = Navigation.Mode.None };
+            codeBtn.onClick.AddListener(CopyCodeWithFeedback);
+            codeBtn.onClick.AddListener(UiTheme.PlayClick);
+            _copyChipLabel = UiTheme.MakeButton(_codeText.transform, "Btn_Copy", "COPY",
+                Vector2.zero, new Vector2(110, 42), CopyCodeWithFeedback, 18);
+            _copyChipRoot = (RectTransform)UiTheme.RootOf(_copyChipLabel).transform;
+            _copyChipRoot.gameObject.SetActive(false);
+
+            UiTheme.MakeLine(_lobbyPanel.transform, -92, 46);
+
+            // World seed + rules: read-only here — chosen on GAME SETTINGS before hosting.
+            _seedText = UiTheme.MakeText(_lobbyPanel.transform, "Seed", "", 17, UiTheme.TextBody);
+            PlaceTop(_seedText.rectTransform, -106, 26);
+
+            // Player rows.
+            for (int i = 0; i < NetSession.MaxPlayers; i++)
+            {
+                var row = new RowWidgets();
+                var bg = UiTheme.MakeImage(_lobbyPanel.transform, $"Row{i}", new Color(1f, 1f, 1f, 0.045f));
+                var rt = bg.rectTransform;
+                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 1f);
+                rt.pivot = new Vector2(0.5f, 1f);
+                rt.anchoredPosition = new Vector2(0, -152 - i * 86);
+                rt.sizeDelta = new Vector2(WindowW - 120, 76);
+
+                var swatch = UiTheme.MakeImage(bg.transform, "Swatch", Color.gray);
+                var srt = swatch.rectTransform;
+                srt.anchorMin = srt.anchorMax = new Vector2(0f, 0.5f);
+                srt.pivot = new Vector2(0f, 0.5f);
+                srt.anchoredPosition = new Vector2(20, 0);
+                srt.sizeDelta = new Vector2(40, 40);
+                row.Swatch = swatch;
+
+                row.Name = UiTheme.MakeText(bg.transform, "Name", "", 26, UiTheme.TextBright, UiTheme.PixelFont);
+                row.Name.alignment = TextAlignmentOptions.MidlineLeft;
+                StretchWithMargins(row.Name.rectTransform, 84, 300);
+
+                row.Status = UiTheme.MakeText(bg.transform, "RowStatus", "", 17, UiTheme.TextBright);
+                row.Status.alignment = TextAlignmentOptions.MidlineRight;
+                StretchWithMargins(row.Status.rectTransform, 84, 130);
+
+                int slotIndex = i;
+                row.KickLabel = UiTheme.MakeButton(bg.transform, "Btn_Kick", "KICK",
+                    new Vector2((WindowW - 120) / 2f - 70, 0), new Vector2(96, 44),
+                    () => NetSession.Instance.KickPlayer((byte)slotIndex), 17);
+                UiTheme.RootOf(row.KickLabel).SetActive(false);
+
+                _rows.Add(row);
+            }
+
+            // Ship color: label left, the 8 swatch buttons to the right.
+            var colorLabel = UiTheme.MakeText(_lobbyPanel.transform, "ColorLabel", "SHIP COLOR", 20, UiTheme.TextBody);
+            var clrt = colorLabel.rectTransform;
+            clrt.anchorMin = clrt.anchorMax = new Vector2(0.5f, 0.5f);
+            clrt.pivot = new Vector2(0f, 0.5f);
+            clrt.anchoredPosition = new Vector2(-ContentHalf + 10, -134);
+            clrt.sizeDelta = new Vector2(260, 30);
+            colorLabel.alignment = TextAlignmentOptions.MidlineLeft;
+
+            for (int c = 0; c < PlayerColors.All.Length; c++)
+            {
+                int colorIndex = c;
+                var go = new GameObject($"Swatch{c}", typeof(RectTransform));
+                go.transform.SetParent(_lobbyPanel.transform, false);
+                var rt = (RectTransform)go.transform;
+                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+                rt.pivot = new Vector2(0.5f, 0.5f);
+                rt.anchoredPosition = new Vector2(-30 + c * 62, -134);
+                rt.sizeDelta = new Vector2(48, 48);
+
+                // Selection frame first (drawn under), color fill on top — the frame sprite has
+                // a filled center that would otherwise hide the color.
+                var frame = UiTheme.MakeImage(go.transform, "Frame", Color.white,
+                    UiTheme.FrameOnSprite != null ? UiTheme.FrameOnSprite : null);
+                var frt = frame.rectTransform;
+                frt.anchorMin = Vector2.zero;
+                frt.anchorMax = Vector2.one;
+                frt.offsetMin = new Vector2(-7, -7);
+                frt.offsetMax = new Vector2(7, 7);
+                frame.raycastTarget = false;
+                frame.gameObject.SetActive(false);
+                _swatchFrames.Add(frame);
+
+                var fill = UiTheme.MakeImage(go.transform, "Fill", PlayerColors.Get(c));
+                UiTheme.Stretch(fill.rectTransform);
+
+                var btn = go.AddComponent<Button>();
+                btn.targetGraphic = fill;
+                var colors = btn.colors;
+                colors.highlightedColor = new Color(1.25f, 1.25f, 1.25f, 1f);
+                colors.selectedColor = new Color(1.25f, 1.25f, 1.25f, 1f);
+                colors.pressedColor = Color.white;
+                btn.colors = colors;
+                btn.navigation = new Navigation { mode = Navigation.Mode.None };
+                btn.onClick.AddListener(() => { SetLocalColor((byte)colorIndex); UiTheme.PlayClick(); });
+                go.AddComponent<UiSelectSfx>();
+                _swatches.Add(btn);
+            }
+
+            _readyLabel = UiTheme.MakeButton(_lobbyPanel.transform, "Btn_Ready", "READY",
+                new Vector2(-320, -228), new Vector2(300, 80), ToggleReady, 32);
+            _startLabel = UiTheme.MakeButton(_lobbyPanel.transform, "Btn_Start", "START GAME",
+                new Vector2(0, -228), new Vector2(300, 80), StartGame, 32);
+            _inviteLabel = UiTheme.MakeButton(_lobbyPanel.transform, "Btn_Invite", "INVITE FRIENDS",
+                new Vector2(320, -228), new Vector2(300, 80), () => NetSession.Instance.Lobby?.OpenInviteOverlay(), 24);
+        }
+
+        private GameObject _startButton => UiTheme.RootOf(_startLabel);
+        private GameObject _inviteButton => UiTheme.RootOf(_inviteLabel);
+        private GameObject _rejoinButton => UiTheme.RootOf(_rejoinLabel);
+
+        // ---------------------------------------------------------------- shared widgets
+
+        private GameObject MakeGroup(Transform parent, string name)
+        {
+            var go = new GameObject(name, typeof(RectTransform));
+            go.transform.SetParent(parent, false);
+            UiTheme.Stretch((RectTransform)go.transform);
+            return go;
+        }
+
+        /// <summary>Faint header caption + full-width divider at the top of the window,
+        /// vanilla settings-window style.</summary>
+        private void MakeHeader(Transform parent, string caption)
+        {
+            var text = UiTheme.MakeText(parent, "Header", caption, 19, UiTheme.TextFaint);
+            PlaceTop(text.rectTransform, -30, 28);
+            UiTheme.MakeLine(parent, -64, 46);
+        }
+
+        private static void PlaceTop(RectTransform rt, float y, float height)
+        {
+            rt.anchorMin = new Vector2(0, 1);
+            rt.anchorMax = new Vector2(1, 1);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.anchoredPosition = new Vector2(0, y);
+            rt.sizeDelta = new Vector2(0, height);
+        }
+
+        private static void PlaceTopLeft(RectTransform rt, float x, float y, float w, float h)
+        {
+            rt.anchorMin = rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 1f);
+            rt.anchoredPosition = new Vector2(x, y);
+            rt.sizeDelta = new Vector2(w, h);
+        }
 
         private static void StretchWithMargins(RectTransform rt, float left, float right)
         {
@@ -462,6 +825,7 @@ namespace PunkMultiverse.UI
         {
             _localColor = color;
             NetSession.Instance.SetLocalPrefs(_localColor, _localReady);
+            RefreshSwatchFrames();
         }
 
         private void ToggleReady()
@@ -477,6 +841,10 @@ namespace PunkMultiverse.UI
 
         private void Leave()
         {
+            // Deliberately walking out of the lobby means "don't offer this session again" —
+            // unlike a mid-run disconnect/quit, which keeps the rejoin target.
+            Core.RejoinMemory.Clear();
+            _rejoinAvailable = false;
             NetSession.Instance.StopSession("left lobby");
             Refresh();
         }
@@ -493,10 +861,10 @@ namespace PunkMultiverse.UI
         private System.Collections.IEnumerator FlashCopied()
         {
             _copyChipLabel.text = "COPIED!";
-            _copyChipLabel.color = new Color(0.31f, 0.85f, 0.47f);
+            _copyChipLabel.color = UiTheme.Good;
             yield return new WaitForSecondsRealtime(1.2f);
             _copyChipLabel.text = "COPY";
-            _copyChipLabel.color = Color.white;
+            _copyChipLabel.color = UiTheme.TextBright;
             _copyFlash = null;
         }
 
@@ -508,42 +876,57 @@ namespace PunkMultiverse.UI
             var session = NetSession.Instance;
             bool inLobby = session.State == SessionState.Lobby || session.State == SessionState.Connecting;
             if (inLobby) _seedSetupOpen = false;
-            if (_resumeButton != null) _resumeButton.SetActive(Core.NetRunSave.Exists());
+            bool showRejoin = !inLobby && !_seedSetupOpen && _rejoinAvailable;
+            if (_rejoinButton != null) _rejoinButton.SetActive(showRejoin);
+            if (_rejoinNote != null) _rejoinNote.SetActive(showRejoin);
             _connectPanel.SetActive(!inLobby && !_seedSetupOpen);
             if (_seedPanel != null) _seedPanel.SetActive(!inLobby && _seedSetupOpen);
             _lobbyPanel.SetActive(inLobby);
 
-            // Keep gamepad focus inside the active panel. Panel switches deactivate the selected
-            // button (focus falls to null → controller can't navigate, and stray nav could drive
-            // the menu behind us). If the current selection isn't a live element of the active
-            // panel, grab its first button — but never yank focus off something the user already
-            // has selected here (e.g. mid-typing in the seed field).
-            var activePanel = _lobbyPanel.activeSelf ? _lobbyPanel
-                : (_seedPanel != null && _seedPanel.activeSelf ? _seedPanel : _connectPanel);
+            _title.text = _titleShadow.text =
+                inLobby ? "LOBBY" : _seedSetupOpen ? "GAME SETTINGS" : "PLAY ONLINE";
+            if (_backLabel != null) _backLabel.text = inLobby ? "LEAVE" : "BACK";
+            if (_padHintLabel != null) _padHintLabel.text = inLobby ? "LEAVE" : "BACK";
+
+            _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "CONNECTING…" : "");
+            _statusText.color = session.LastError != null ? UiTheme.Bad : UiTheme.Accent;
+
+            if (inLobby) RefreshLobby(session);
+
+            // Panel switches deactivate the selected button: keep gamepad focus inside the
+            // active panel (Update's guard does the per-frame policing).
             var es = UnityEngine.EventSystems.EventSystem.current;
             if (es != null)
             {
                 var sel = es.currentSelectedGameObject;
+                var activePanel = ActivePanel();
                 bool selValid = sel != null && sel.activeInHierarchy && activePanel != null
                     && sel.transform.IsChildOf(activePanel.transform);
                 if (!selValid) SelectFirstIn(activePanel);
             }
-            _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "Connecting…" : "");
 
-            if (!inLobby) return;
+            ApplyPadHint();
+            WireNav();
+        }
 
+        private void RefreshLobby(NetSession session)
+        {
             _codeText.text = session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
             bool hasCode = !string.IsNullOrEmpty(_codeText.text);
-            _copyChipRt.gameObject.SetActive(hasCode);
+            _copyChipRoot.gameObject.SetActive(hasCode);
             if (hasCode) // hug the right edge of the (centered, width-varying) code text
-                _copyChipRt.anchoredPosition = new Vector2(
-                    _codeText.GetPreferredValues(_codeText.text).x * 0.5f + 58f, 0f);
+                _copyChipRoot.anchoredPosition = new Vector2(
+                    _codeText.GetPreferredValues(_codeText.text).x * 0.5f + 78f, 0f);
             _seedText.text = $"WORLD SEED   {(session.ChosenSeed != 0 ? session.ChosenSeed.ToString() : "RANDOM")}"
-                + (session.FriendlyFire ? "   <color=#ffb84d>FRIENDLY FIRE ON</color>" : "");
+                + (session.FriendlyFire ? "   ·   <color=#f08c2e>FRIENDLY FIRE ON</color>" : "");
             _inviteButton.SetActive(session.UsingSteam);
             _startButton.SetActive(session.IsHost);
-            var startBtn = _startButton.GetComponent<Button>();
-            if (startBtn != null) startBtn.interactable = session.AllReady;
+            var startBtn = UiTheme.ButtonOf(_startLabel);
+            if (startBtn != null)
+            {
+                startBtn.interactable = session.AllReady;
+                _startLabel.color = session.AllReady ? UiTheme.TextBright : UiTheme.TextFaint;
+            }
 
             var me = session.LocalPlayer;
             if (me != null)
@@ -551,7 +934,9 @@ namespace PunkMultiverse.UI
                 _localColor = me.ColorIndex;
                 _localReady = me.Ready;
             }
-            _readyButtonLabel.text = _localReady ? "UNREADY" : "READY";
+            _readyLabel.text = _localReady ? "UNREADY" : "READY";
+            UiTheme.SetToggled(_readyLabel, _localReady);
+            RefreshSwatchFrames();
 
             for (int i = 0; i < _rows.Count; i++)
             {
@@ -560,102 +945,67 @@ namespace PunkMultiverse.UI
                 if (p == null)
                 {
                     row.Swatch.color = new Color(1, 1, 1, 0.08f);
-                    row.Name.text = "<color=#666666>WAITING FOR PLAYER…</color>";
+                    row.Name.text = "<color=#4d4d4d>WAITING FOR PLAYER…</color>";
                     row.Status.text = "";
-                    row.Kick.SetActive(false);
+                    UiTheme.RootOf(row.KickLabel).SetActive(false);
                     continue;
                 }
-                row.Kick.SetActive(session.IsHost && !p.IsLocal && session.State == SessionState.Lobby);
+                UiTheme.RootOf(row.KickLabel).SetActive(session.IsHost && !p.IsLocal && session.State == SessionState.Lobby);
                 row.Swatch.color = PlayerColors.Get(p.ColorIndex);
                 string tags = p.Slot == session.HostSlot ? "  <color=#f08c2e>HOST</color>" : "";
-                if (p.IsLocal) tags += "  <color=#888888>(YOU)</color>";
+                if (p.IsLocal) tags += "  <color=#717171>(YOU)</color>";
                 if (p.ModsMismatch) tags += "  <color=#ffb84d>[!] MODS</color>";
                 row.Name.text = p.Name + tags;
-                string rtt = p.IsLocal || p.RttMs < 0 ? "" : $"<color=#888888>{p.RttMs} ms</color>  ";
+                string rtt = p.IsLocal || p.RttMs < 0 ? "" : $"<color=#717171>{p.RttMs} MS</color>  ";
                 row.Status.text = !p.Connected
                     ? "<color=#ff7070>OFFLINE</color>"
-                    : rtt + (p.Ready ? "<color=#50d878>READY</color>" : "<color=#aaaaaa>not ready</color>");
+                    : rtt + (p.Ready ? "<color=#50d878>READY</color>" : "<color=#717171>NOT READY</color>");
             }
         }
 
-        // ---------------------------------------------------------------- widget factory
-
-        private GameObject MakeGroup(Transform parent, string name)
+        private void RefreshSwatchFrames()
         {
-            var go = new GameObject(name, typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            Stretch((RectTransform)go.transform);
-            return go;
+            for (int i = 0; i < _swatchFrames.Count; i++)
+                _swatchFrames[i].gameObject.SetActive(i == _localColor);
         }
 
-        private static void Stretch(RectTransform rt)
+        // ---------------------------------------------------------------- controller nav
+
+        /// <summary>Explicit navigation for whichever panel is live. Called on every visibility
+        /// change (panel switch, roster change, device switch) so the chains always match what's
+        /// actually on screen.</summary>
+        private void WireNav()
         {
-            rt.anchorMin = Vector2.zero;
-            rt.anchorMax = Vector2.one;
-            rt.offsetMin = Vector2.zero;
-            rt.offsetMax = Vector2.zero;
-        }
+            if (_canvasGo == null || !_canvasGo.activeSelf) return;
+            var grid = new List<Selectable[]>();
+            var back = UiTheme.ButtonOf(_backLabel);
 
-        private Image MakeImage(Transform parent, string name, Color color)
-        {
-            var go = new GameObject(name, typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            var img = go.AddComponent<Image>();
-            img.color = color;
-            return img;
-        }
+            if (_connectPanel.activeSelf)
+            {
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_hostGameLabel) });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_joinLabel) });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_rejoinLabel) });
+                grid.Add(new Selectable[] { back });
+            }
+            else if (_seedPanel != null && _seedPanel.activeSelf)
+            {
+                grid.Add(new Selectable[] { _seedInput, UiTheme.ButtonOf(_pasteLabel), UiTheme.ButtonOf(_randomLabel) });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_ffOff), UiTheme.ButtonOf(_ffOn) });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_hpOff), UiTheme.ButtonOf(_hpOn) });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_hostLobbyLabel) });
+                grid.Add(new Selectable[] { back });
+            }
+            else if (_lobbyPanel.activeSelf)
+            {
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_copyChipLabel) });
+                foreach (var row in _rows)
+                    grid.Add(new Selectable[] { UiTheme.ButtonOf(row.KickLabel) });
+                grid.Add(_swatches.ToArray());
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_readyLabel), UiTheme.ButtonOf(_startLabel), UiTheme.ButtonOf(_inviteLabel) });
+                grid.Add(new Selectable[] { back });
+            }
 
-        private TMP_Text MakeText(Transform parent, string name, string text, float size, Color color,
-            float y, float height)
-        {
-            var go = new GameObject(name, typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            var tmp = go.AddComponent<TextMeshProUGUI>();
-            if (_font != null) tmp.font = _font;
-            tmp.text = text;
-            tmp.fontSize = size;
-            tmp.color = color;
-            tmp.alignment = TextAlignmentOptions.Center;
-            tmp.richText = true;
-            var rt = tmp.rectTransform;
-            rt.anchorMin = new Vector2(0, 1);
-            rt.anchorMax = new Vector2(1, 1);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.anchoredPosition = new Vector2(0, y);
-            rt.sizeDelta = new Vector2(0, height);
-            return tmp;
-        }
-
-        /// <summary>Builds a button; returns its label (button root = label.transform.parent).</summary>
-        private TMP_Text MakeButton(Transform parent, string label, Vector2 centerOffset, Vector2 size,
-            UnityEngine.Events.UnityAction onClick)
-        {
-            var go = new GameObject($"Btn_{label}", typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            var rt = (RectTransform)go.transform;
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.anchoredPosition = centerOffset;
-            rt.sizeDelta = size;
-
-            var img = go.AddComponent<Image>();
-            img.color = ButtonBg;
-            var btn = go.AddComponent<Button>();
-            btn.targetGraphic = img;
-            var colors = btn.colors;
-            colors.highlightedColor = ButtonHover;
-            colors.pressedColor = Accent;
-            btn.colors = colors;
-            btn.onClick.AddListener(onClick);
-
-            var text = MakeText(go.transform, "Label", label, Mathf.Min(26f, size.y * 0.45f), Color.white, 0, size.y);
-            var trt = text.rectTransform;
-            trt.anchorMin = Vector2.zero;
-            trt.anchorMax = Vector2.one;
-            trt.offsetMin = Vector2.zero;
-            trt.offsetMax = Vector2.zero;
-            text.alignment = TextAlignmentOptions.Center;
-            return text;
+            UiTheme.WireGrid(grid);
         }
     }
 }

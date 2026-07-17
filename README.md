@@ -79,12 +79,12 @@ The one you're most likely to touch:
 - **Join:** copy the code your host sent → PLAY ONLINE → JOIN FROM CLIPBOARD. Works while the
   run is already going: you'll spawn at the party's latest unlocked station, caught up to the
   world's state.
-- **Reconnect:** crashed or dropped? JOIN FROM CLIPBOARD with the same code — your build,
-  vault, and gold come back with you, and you spawn at the latest unlocked station.
-- **Stop and play later:** net runs auto-save continuously on every machine (the pause menu
-  says EXIT — no manual save needed). Whoever hosts next can RESUME LAST RUN from the PLAY
-  ONLINE screen: same world, terrain damage, kills, and unlocks; everyone rejoins with the
-  code, gets their build back, and spawns at the checkpoint.
+- **Reconnect:** crashed, dropped, or quit while the others kept playing? PLAY ONLINE shows a
+  REJOIN LAST SESSION button whenever your last session is verified still running — one click
+  puts you back in; your build, vault, and gold come back with you, and you spawn at the latest
+  unlocked station. (JOIN FROM CLIPBOARD with the same code works too.) The button hides itself
+  the moment the session no longer exists, and never appears after a kick or after deliberately
+  leaving from the lobby.
 - **Host leaving:** the run keeps going — a remaining player becomes the host (a banner names
   them), the lobby code stays the same, and the old host can rejoin with it.
 - **When you die:** the camera follows an alive teammate; **Q/E** switch between them.

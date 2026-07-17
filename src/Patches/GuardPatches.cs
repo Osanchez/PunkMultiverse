@@ -73,10 +73,11 @@ namespace PunkMultiverse.Patches
             }
         }
 
-        // In a net run the suspend-save is blocked (below) but the run auto-saves through
-        // NetRunSave — so the pause menu's "Save & Exit" would lie in both directions. While
-        // networking is live it reads just EXIT (localization stripped from that one label). The
-        // RESTART button is removed entirely — retry belongs on the game-over screen.
+        // In a net run the suspend-save is blocked (below) and there is no single-player save
+        // to come back to — the pause menu's "Save & Exit" would lie. While networking is live
+        // it reads just EXIT (localization stripped from that one label); rejoining a still-live
+        // session is offered on the PLAY ONLINE screen instead. The RESTART button is removed
+        // entirely — retry belongs on the game-over screen.
         [HarmonyPatch(typeof(PauseScreen), "Open")]
         internal static class NetRunPauseButtons
         {
