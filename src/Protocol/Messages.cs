@@ -265,6 +265,7 @@ namespace PunkMultiverse.Protocol
         public float HpFraction;
         public float ShieldFraction;
         public float BurnLevel;
+        public float FuelFraction; // -1 sentinel: ship has no fuel tank (don't apply on the puppet)
 
         public void Write(NetWriter w)
         {
@@ -283,6 +284,7 @@ namespace PunkMultiverse.Protocol
             w.WriteHalf(HpFraction);
             w.WriteHalf(ShieldFraction);
             w.WriteHalf(BurnLevel);
+            w.WriteHalf(FuelFraction);
         }
 
         public static ShipStateMsg Read(NetReader r)
@@ -304,6 +306,7 @@ namespace PunkMultiverse.Protocol
             msg.HpFraction = r.ReadHalf();
             msg.ShieldFraction = r.ReadHalf();
             msg.BurnLevel = r.ReadHalf();
+            msg.FuelFraction = r.ReadHalf();
             return msg;
         }
     }
@@ -1272,6 +1275,12 @@ namespace PunkMultiverse.Protocol
         }
     }
 
+    public struct LootEntry
+    {
+        public string Id;
+        public int Count;
+    }
+
     public struct EntityKilledMsg
     {
         public int NetId;
@@ -1280,6 +1289,9 @@ namespace PunkMultiverse.Protocol
         public byte KillerSlot;
         public bool HasPosition;
         public UnityEngine.Vector2 Position;
+        // Loot the killer actually rolled. Delivered to peers where the entity isn't resident
+        // (their death chain never runs, so they'd otherwise get nothing). Null/empty = no payload.
+        public LootEntry[] Loot;
 
         public void Write(NetWriter w)
         {
@@ -1290,6 +1302,13 @@ namespace PunkMultiverse.Protocol
             w.WriteByte(KillerSlot);
             w.WriteBool(HasPosition);
             if (HasPosition) w.WritePosition(Position);
+            int lootCount = Loot?.Length ?? 0;
+            w.WriteVarUInt((uint)lootCount);
+            for (int i = 0; i < lootCount; i++)
+            {
+                w.WriteString(Loot[i].Id);
+                w.WriteVarUInt((uint)Loot[i].Count);
+            }
         }
 
         public static EntityKilledMsg Read(NetReader r)
@@ -1303,6 +1322,10 @@ namespace PunkMultiverse.Protocol
                 HasPosition = r.ReadBool(),
             };
             if (msg.HasPosition) msg.Position = r.ReadPosition();
+            int lootCount = (int)r.ReadVarUInt();
+            msg.Loot = lootCount > 0 ? new LootEntry[lootCount] : System.Array.Empty<LootEntry>();
+            for (int i = 0; i < lootCount; i++)
+                msg.Loot[i] = new LootEntry { Id = r.ReadString(), Count = (int)r.ReadVarUInt() };
             return msg;
         }
     }
@@ -1400,6 +1423,34 @@ namespace PunkMultiverse.Protocol
             BodyPos = r.ReadPosition(),
             TargetSlot = r.ReadByte(),
             Seed = r.ReadInt(),
+        };
+    }
+
+    /// <summary>Owner announces a real projectile's detonation so peers consume their visual copy of
+    /// the same pellet (SourceSlot+ShotId+Ordinal) at the true blast point instead of letting it fly
+    /// through a host-cleared block and explode again downrange.</summary>
+    public struct ProjectileDetonateMsg
+    {
+        public byte SourceSlot;
+        public uint ShotId;
+        public ushort Ordinal;
+        public UnityEngine.Vector2 Pos;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ProjectileDetonate);
+            w.WriteByte(SourceSlot);
+            w.WriteUInt(ShotId);
+            w.WriteVarUInt(Ordinal);
+            w.WritePosition(Pos);
+        }
+
+        public static ProjectileDetonateMsg Read(NetReader r) => new ProjectileDetonateMsg
+        {
+            SourceSlot = r.ReadByte(),
+            ShotId = r.ReadUInt(),
+            Ordinal = (ushort)r.ReadVarUInt(),
+            Pos = r.ReadPosition(),
         };
     }
 

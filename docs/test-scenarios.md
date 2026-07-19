@@ -279,6 +279,100 @@ free, AI/fire live), so batches stay geometric, `fire ... at <netId>` always con
 and mobile types can't scatter or chase ships across the map. `god` also grants infinite
 weapon resource, so `fire 30 at <id>` bursts never run dry.
 
+## 18. loot-distance (distant teammate still gets loot) — VERIFIED 2026-07-18 (ingredients)
+
+Distant teammates must still receive per-player loot, and a far kill must NOT spawn
+uncollectable pickup piles at the death site (the old distance gate suppressed drops
+outright, starving far players — see economy-loot).
+
+- Both live, `god off` + `knockback off` on BOTH, `[Diag] SyncDiagnostics = true`.
+- `H> spawn Box_Money rel 8 0` (host owns+simulates). netId `1048576` = first host spawn.
+- `C> tp rel 400 0`; confirm `C> sync 1048576` shows `live=False` (not resident there).
+- `H> poke 1048576 9999`.
+- PASS: host `[Diag:Loot] #1048576 ... dropped loot (instanced)` (killer dropped locally);
+  a FAR receiver logs `local drop SUPPRESSED — too far; granted at ship via payload` and NO
+  local `dropped loot` for that netId; a non-resident receiver logs
+  `[Loot] granted remote loot +N <id>` (Vault credit). No double-drop (shared
+  `TryMarkLootDropped` latch). Verify a plant fruit (NippleFruit — Ingredient) as the
+  positive grant case.
+- KNOWN GAP: only Ingredient/resource drops ride the payload. Prefab-type drops
+  (`Box_Money` coins / "gold") are captured as nothing and NOT granted at distance yet —
+  the `DropCapture` postfix only handles `DroppabbleType.Ingedient`. Extending to
+  Prefab/coin currency is a follow-up.
+
+## 19. authchurn-hysteresis (RC1 interest convergence + RC2 lease hysteresis) — VERIFIED 2026-07-18
+
+Lease churn and interest-baseline "not ready" storms must stay near zero at steady state
+(the field-log pathology was 5–20 flips/s sustained, 641 `BaselineRoster not ready`, 101
+`coordinator-cache fallback`, and a 42 s `Transport.Poll` freeze).
+
+- Both live; separate ships (`C> tp rel 400 0`), soak ~30 s, then some combat.
+- PASS: `[Profile] authChurn` steady-state ≈ **0.0 flips/s** (brief spikes ONLY during
+  instantaneous large `tp` jumps — they cross many segments at once and are not the flicker
+  hysteresis targets); `BaselineRoster not ready` in low single digits, not hundreds;
+  `coordinator-cache fallback` = 0; zero `[Hitch] ... ongoing` (no freeze — the dormant-claim
+  drain no longer self-feeds). `ResidencyGraceSeconds` (Authority config, default 1.0) tunes
+  the RC2 grace window.
+
+## 20. loot-gold-currency (distant teammate gets GOLD) — VERIFIED 2026-07-19
+
+The Ingredient path (#18) doesn't cover money — `Box_Money` drops a `DroppabbleType.Prefab`
+coin carrying a `ResourcePickup{resource,amount}` (shared `Resource`). Captured as a reserved
+`$res:<Resource.Id>` LootEntry and granted by charging the far player's shared tank.
+
+- Both live, **god ON** (loot still drops; god only shields the ship — keeps ships alive so no
+  party-wipe reset), `[Diag] SyncDiagnostics = true`.
+- `H> spawn Box_Money rel 8 0`; `C> tp rel 400 0`; `H> poke <id> 9999`.
+- PASS: far client logs `[Loot] ... granted remote currency +<N> <Resource> (entity not
+  resident here)` (verified: `+400 Resource Money`); no double (dedup latch). Run with god ON
+  so god-off ship deaths can't wipe the run mid-test.
+
+## 21. shop-invuln (safe while shopping in co-op) — VERIFIED 2026-07-19
+
+Vanilla pauses the world in the shop; co-op can't, so damage to a shopping player's own ship
+is dropped at the routing chokepoints instead (extends the god-shield).
+
+- `C> god off` + `C> shop on` (harness override for ShipMenuToggler.isOpen).
+- `C> spawn Enemy_Turret_Sniper rel 14 0 pin` (client-owned), `C> poke <id> 3` to aggro.
+- PASS: client `[CombatHit] ... applied=False hp=N->N` for the sniper's shots while shopping,
+  ship survives (no `local ship died`). Contrast: `shop off` → same source lands damage.
+  Confirm god is OFF in the devout echo sequence so the shield is attributable to shop, not god.
+
+## 22. drone-hp-scaling (allied minions unscaled on viewers) — VERIFIED 2026-07-19
+
+Per-player enemy HP scaling must NOT inflate an allied minion's max-HP on remote machines
+(ENTITY_SPAWNED creates+scales the replica before MINION_SPAWNED marks it fixed; the revert
+fixes it). Requires ENEMY HP SCALING on (`enemy HP x1.50 (2 players)` in the log).
+
+- `H> equip <SpawnMinionModule id> act1` then `H> useactive 1` (repeat ≥5s until
+  `[Spawns] runtime spawn 'Ally_Drone'`).
+- `H> entities` and `C> entities`, compare the drone's `maxHp`.
+- PASS: owner `maxHp` == viewer `maxHp` (verified both `50`) — NOT `×1.5`. Cross-check an
+  ENEMY (e.g. `Enemy_Turret_Laser` `maxHp=60`) which SHOULD stay scaled.
+
+## 23. explosive-detonate-dedup (no double explosions) — VERIFIED 2026-07-19
+
+An explosive's detonation is now authoritative: the owner broadcasts it and peers consume
+their visual copy at the true blast point instead of over-travelling a host-cleared block and
+re-exploding.
+
+- Both live, **god ON**, `knockback off`, `SyncDiagnostics = true`.
+- `H> equip <rocket weapon id>` (e.g. Weapon_Rocket_Rookie, primary), wait ≥8s (grid
+  broadcast — confirm via `H> loadout` `pri=Weapon Rocket Rookie`), `H> fire 3 dir 1 0`.
+- PASS: host `[Diag:Detonate] broadcast shot=N`; client `[Diag:Detonate] applied shot=N
+  firstHere=True consumedCopy=True` (consumes its copy) and any repeat as `firstHere=False`
+  (duplicate deduped — no second boom). Zero exceptions / party-wipe.
+
+## 24. fuel-sync (puppet fuel tracks owner) — partial harness support 2026-07-19
+
+Ship fuel is now in `ShipStateMsg` (mirrors shield/burn). `fuel` devcmd reports local + nearby
+ship-puppet fuel fractions. Host→client direction verified (`fuel puppet P2=1.00`); the
+client-side puppet lookup is flaky when the owner has just moved (the `fuel` command's
+`FindObjectsOfType<Ship>` can miss a transitional puppet — prefer sampling with both ships
+colocated and stationary). Fuel also passively regens / god tops it, so drain via `autofly`
+then read immediately with both ships parked. Full respawn-refuel path is best checked
+manually (god OFF — god tops fuel and masks it).
+
 ---
 
 ### Cadence

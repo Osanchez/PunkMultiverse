@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using HarmonyLib;
 using PunkMultiverse.Core;
+using PunkMultiverse.Protocol;
 using PunkMultiverse.Sync;
 using UnityEngine;
 
@@ -25,6 +27,158 @@ namespace PunkMultiverse.Patches
     /// </summary>
     internal static class LootDiag
     {
+        // ---- distant-teammate loot payload ------------------------------------------------
+        // On the killer/authority machine the vanilla death chain runs LootDropper.DropLoot and
+        // spawns per-player pickups locally. A teammate for whom the entity isn't resident never
+        // runs that chain and would get NOTHING. We record exactly what the killer's DropLoot rolled
+        // (keyed by the entity's netId) so BroadcastEntityDeath can ship it on EntityKilledMsg;
+        // receivers that didn't drop locally grant each player their own copy straight into the
+        // (per-player, never-synced) Vault. Only Ingredient drops travel this path — that covers the
+        // resource/"gold" starvation the fix targets; Consumable/Module/Prefab stay resident-only.
+        private static readonly Dictionary<int, Dictionary<string, int>> CapturedLoot
+            = new Dictionary<int, Dictionary<string, int>>();
+
+        private static void CaptureIngredientDrop(int netId, string id)
+        {
+            if (!CapturedLoot.TryGetValue(netId, out var byId))
+                CapturedLoot[netId] = byId = new Dictionary<string, int>();
+            byId.TryGetValue(id, out int n);
+            byId[id] = n + 1; // each Ingredient pickup is worth 1 (IngredientPickup.OnPickedUp adds 1)
+        }
+
+        // Reserved LootEntry.Id prefix marking a SHARED-currency (money/gold) amount rather than an
+        // Ingredient id. Suffix is the Resource.Id; Count carries the currency VALUE (not a count).
+        // Kept in the same CapturedLoot map so it ships on the existing EntityKilledMsg.Loot payload
+        // with no wire-format change.
+        internal const string CurrencyIdPrefix = "$res:";
+
+        private static void CaptureResourceDrop(int netId, string resourceId, int amount)
+        {
+            if (!CapturedLoot.TryGetValue(netId, out var byId))
+                CapturedLoot[netId] = byId = new Dictionary<string, int>();
+            string key = CurrencyIdPrefix + resourceId;
+            byId.TryGetValue(key, out int n);
+            byId[key] = n + amount; // accumulate the coin's currency VALUE
+        }
+
+        /// <summary>Read and clear the loot rolled for netId as a wire payload. Empty when nothing
+        /// ingredient-typed was rolled (or this machine didn't simulate the death).</summary>
+        internal static LootEntry[] ConsumeCapturedLoot(int netId)
+        {
+            if (!CapturedLoot.TryGetValue(netId, out var byId) || byId.Count == 0)
+                return System.Array.Empty<LootEntry>();
+            CapturedLoot.Remove(netId);
+            var entries = new LootEntry[byId.Count];
+            int i = 0;
+            foreach (var kv in byId) entries[i++] = new LootEntry { Id = kv.Key, Count = kv.Value };
+            return entries;
+        }
+
+        internal static void DiscardCapturedLoot(int netId) => CapturedLoot.Remove(netId);
+
+        internal static void ResetCapturedLoot() => CapturedLoot.Clear();
+
+        /// <summary>Grant a received loot payload to the LOCAL player when the entity wasn't resident
+        /// here (its death chain never dropped locally). Per-player: goes straight to this player's
+        /// Vault, which is never synced, so it can't inflate anyone else. Gated on the SAME
+        /// one-drop-per-machine latch as the local drop so a machine that dropped locally never also
+        /// grants.</summary>
+        internal static void GrantRemoteLoot(int netId, LootEntry[] loot)
+        {
+            if (loot == null || loot.Length == 0) return;
+            if (!EnemySync.TryMarkLootDropped(netId)) return; // already dropped/granted here
+
+            Vault vault = null;
+            IngredientRegistry registry = null;
+            RunData runData = null;
+            ResourceRegistry resources = null;
+            try { vault = ServiceLocator.Get<Vault>(); } catch { }
+            try { registry = ServiceLocator.Get<IngredientRegistry>(); } catch { }
+            try { runData = ServiceLocator.Get<RunData>(); } catch { }
+            try { resources = ServiceLocator.Get<ResourceRegistry>(); } catch { }
+
+            foreach (var entry in loot)
+            {
+                if (string.IsNullOrEmpty(entry.Id) || entry.Count <= 0) continue;
+
+                // Shared currency (money/gold): charge the local player's shared resource tank
+                // directly — no physical coin (avoids re-replicating a pickup). The tank is the same
+                // object the ship reads, so the money HUD updates as a real pickup would. Per-machine,
+                // never synced — can't inflate anyone else's wallet.
+                if (entry.Id.StartsWith(CurrencyIdPrefix, System.StringComparison.Ordinal))
+                {
+                    if (runData == null || resources == null) continue;
+                    string resId = entry.Id.Substring(CurrencyIdPrefix.Length);
+                    var res = resources.Get(resId);
+                    ResourceTank tank = null;
+                    if (res != null)
+                        foreach (var t in runData.SharedResourceTanks)
+                            if (t != null && t.resource == res) { tank = t; break; }
+                    if (tank == null)
+                    {
+                        if (NetDiag.Enabled)
+                            NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} remote currency '{resId}' — no shared tank, skipped");
+                        continue;
+                    }
+                    tank.Charge(entry.Count);
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} granted remote currency +{entry.Count} {resId} (entity not resident here)");
+                    continue;
+                }
+
+                // Ingredient: per-player Vault.
+                if (vault == null || registry == null) continue;
+                var ingredient = registry.Get(entry.Id);
+                if (ingredient == null)
+                {
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} remote loot '{entry.Id}' x{entry.Count} — unknown id, skipped");
+                    continue;
+                }
+                vault.Add(ingredient, entry.Count);
+                if (NetDiag.Enabled)
+                    NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} granted remote loot +{entry.Count} {entry.Id} (entity not resident here)");
+            }
+        }
+
+        // Records each Ingredient the killer's DropLoot actually spawned, keyed by the entity's
+        // netId. Runs inside DamagableResource.Die() (onDeath -> DropLoot -> Drop), synchronously
+        // before the death is broadcast, so ConsumeCapturedLoot is ready when BroadcastEntityDeath
+        // (a Die Postfix) reads it. Entries from a resident receiver's re-kill are cleared by
+        // DiscardCapturedLoot in ApplyEntityKilled.
+        [HarmonyPatch(typeof(LootDropper), "Drop")]
+        internal static class DropCapture
+        {
+            private static void Postfix(LootDropper __instance, DroppabbleItem __0)
+            {
+                if (!NetSession.Active) return;
+                if (!EnemySync.TryGetNetId(__instance, out int netId)) return;
+
+                // Ingredient == item pickup granted per-player into the Vault.
+                if (__0.droppableType == DroppabbleType.Ingedient)
+                {
+                    var ingredient = __0.ingredient;
+                    if (ingredient == null || string.IsNullOrEmpty(ingredient.id)) return;
+                    CaptureIngredientDrop(netId, ingredient.id);
+                    return;
+                }
+
+                // Prefab coin == shared currency (money/gold). The coin GameObject carries a
+                // ResourcePickup whose serialized `amount` charges the collector's shared resource
+                // tank. The value is known here at drop time. Only SHARED resources travel this path.
+                if (__0.droppableType == DroppabbleType.Prefab)
+                {
+                    var prefab = __0.prefab;
+                    if (prefab == null || !prefab.TryGetComponent<ResourcePickup>(out var coin)) return;
+                    var res = coin.resource;
+                    if (res == null || !res.isShared) return;
+                    int amount = Mathf.RoundToInt(coin.amount);
+                    if (amount <= 0) return;
+                    CaptureResourceDrop(netId, res.Id, amount);
+                }
+            }
+        }
+
         [HarmonyPatch(typeof(LootDropper), "DropLoot")]
         internal static class DropLootGuard
         {
@@ -39,21 +193,20 @@ namespace PunkMultiverse.Patches
                 bool isPlantFruit = EnemySync.TryGetPlantFruitIdentity(__instance,
                     out int plantNetId, out int fruitId);
 
-                // Instanced, but only where a player can actually reach it. The killer always gets
-                // their copy; so does any player standing near the death. A teammate across the
-                // (loaded) map does NOT spawn a copy they'll never collect — those uncollected
-                // pickups piled up and tanked the frame rate on distant clients. Checked BEFORE the
-                // de-dup so a far death doesn't burn the one-drop-per-machine slot.
+                // Instanced per player, but only where the local player can actually COLLECT it. The
+                // killer and anyone near the death drop a real pickup at the death site. A player too
+                // far to reach that pickup must NOT spawn an uncollectable pile there — instead they
+                // get a collectable copy straight into their Vault via the EntityKilledMsg loot
+                // payload (EnemySync.ApplyEntityKilled -> GrantRemoteLoot). Suppress the far local
+                // drop here WITHOUT marking the de-dup latch, so the grant path is free to fire.
                 byte local = (byte)session.LocalSlot;
                 byte killer = EnemySync.SuppressLocalDeathEffects
                     ? EnemySync.RemoteKillerSlot
                     : DamageSync.LastKiller(netId);
                 if (killer != local && !NearLocalShip(__instance))
                 {
-                    // Throttled per netId: a corpse in a damage field re-runs Die() (and this
-                    // suppression) every frame — unthrottled, that's 60 log lines/sec of one entity.
                     NetDiag.Throttled($"loot-far-{netId}", 10f, "Loot",
-                        () => $"{NetDiag.Describe(netId)} drop SUPPRESSED — too far to collect (not my kill)");
+                        () => $"{NetDiag.Describe(netId)} local drop SUPPRESSED — too far; granted at ship via payload");
                     NoteRepeat(netId, __instance);
                     return false;
                 }
@@ -87,7 +240,7 @@ namespace PunkMultiverse.Patches
             private static void Postfix(DeterministicGeneration.Scope __state)
                 => DeterministicGeneration.End(__state);
 
-            // A drop is worth spawning here only if the local player is close enough to collect it.
+            // A drop is collectable here only if the local player is close enough to reach it.
             private const float LootReachRadius = 55f;
 
             private static bool NearLocalShip(Component c)

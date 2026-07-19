@@ -3,6 +3,8 @@ using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using PunkMultiverse.Core;
+using PunkMultiverse.Sync;
+using UnityEngine.InputSystem;
 
 namespace PunkMultiverse.Patches
 {
@@ -87,8 +89,28 @@ namespace PunkMultiverse.Patches
                 {
                     if (!NetSession.Active) return; // single-player pause unchanged
                     LayoutMenuColumn(__instance, hideRestart: true, relabelSaveQuitAsExit: true);
+                    KeepShipControllableWhilePaused();
                 }
                 catch { }
+            }
+
+            // Co-op pause is a non-freezing overlay (PausePolicy suppresses the world-freeze).
+            // Vanilla UIScreen.Open also switches the local ship OFF its ShipControlActionMap, which
+            // kills movement/aim and — because Ship.Update ties crosshair.Visible to that map's
+            // Enabled state — hides the crosshair, leaving the player helpless in a live world.
+            // Re-enable the map so gameplay controls and the crosshair survive the overlay; the menu
+            // map stays enabled too, so the EXIT/Report buttons remain navigable.
+            private static void KeepShipControllableWhilePaused()
+            {
+                var ship = ShipSync.LocalShip;
+                if (ship == null) return;
+                foreach (var shipInput in ship.GetComponentsInChildren<ShipInput>(true))
+                {
+                    var t = Traverse.Create(shipInput);
+                    var map = (t.Property("ShipControlActionMap").GetValue()
+                               ?? t.Field("ShipControlActionMap").GetValue()) as InputActionMap;
+                    if (map != null && !map.enabled) map.Enable();
+                }
             }
         }
 

@@ -281,12 +281,12 @@ namespace PunkMultiverse.Core
                         // a sub-part and read hp=-1.00 with the root-only lookup.
                         var dr = unit.GetComponent<DamagableResource>();
                         if (dr == null) dr = unit.GetComponentInChildren<DamagableResource>(true);
-                        float hp = -1f;
-                        try { if (dr != null && dr.MaxHealth > 0) hp = dr.CurrentHealth / dr.MaxHealth; } catch { }
+                        float hp = -1f, maxHp = -1f;
+                        try { if (dr != null && dr.MaxHealth > 0) { hp = dr.CurrentHealth / dr.MaxHealth; maxHp = dr.MaxHealth; } } catch { }
                         byte fire = UnitStatus.ReadFireState(unit);
                         Out($"entity #{netId} {type} pos={pos.x:0.0},{pos.y:0.0} dist={dist:0.0} " +
                             $"owner={(owner == 255 ? "dormant" : "P" + (owner + 1))}{(puppet ? " puppet" : "")} " +
-                            $"hp={hp:0.00} fire={fire}");
+                            $"hp={hp:0.00} maxHp={maxHp:0} fire={fire}");
                     }
                     if (reported == 0) Out($"entities: none within {radius:0}");
                     return;
@@ -553,6 +553,32 @@ namespace PunkMultiverse.Core
                         && (parts[1].Equals("off", StringComparison.OrdinalIgnoreCase) || parts[1] == "0");
                     KnockbackDisabled = off;
                     Out($"knockback: {(off ? "OFF (projectiles push nothing on this machine)" : "on (vanilla)")}");
+                    return;
+                }
+                case "fuel":
+                {
+                    // Fuel-sync assertion: the local ship's fuel fraction plus every nearby ship
+                    // PUPPET's — a viewer's puppet must track its owner (esp. after a respawn refuel).
+                    var ship = ShipSync.LocalShip;
+                    if (ship == null) { Out("fuel: no local ship"); return; }
+                    Out($"fuel local P{session.LocalSlot + 1}={UnitStatus.ReadFuelFraction(ship):0.00}");
+                    foreach (var s in UnityEngine.Object.FindObjectsOfType<Ship>())
+                    {
+                        if (s == null || s == ship) continue;
+                        var rp = s.GetComponent<RemotePuppet>();
+                        if (rp == null) continue;
+                        Out($"fuel puppet P{rp.Slot + 1}={UnitStatus.ReadFuelFraction(s):0.00}");
+                    }
+                    return;
+                }
+                case "shop":
+                {
+                    // Harness: simulate the local player having the shop/ship-menu open so routed
+                    // damage to their ship should be shielded (co-op shop-invulnerability).
+                    bool on = parts.Length >= 2
+                        && (parts[1].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[1] == "1");
+                    Sync.DamageSync.ShopMenuTestOverride = on;
+                    Out($"shop: local player treated as {(on ? "IN SHOP (routed damage shielded)" : "not shopping")}");
                     return;
                 }
                 case "stall":

@@ -333,14 +333,36 @@ namespace PunkMultiverse.Sync
             }
         }
 
-        /// <summary>Dev-sweep god shield: blocks damage to the LOCAL ship only, and only while
-        /// the `god` dev command armed it. Sits after the audit capture, so every blocked hit
-        /// still logs [CombatHit] applied=False with full source attribution.</summary>
+        /// <summary>Blocks damage to the LOCAL ship only: while the `god` dev command is armed, OR
+        /// while this player has the shop / ship-menu open. Vanilla pauses the whole world when you
+        /// shop (so nothing can hit you); a shared co-op sim can't freeze, so we drop damage to the
+        /// shopper's own ship instead — same "safe while shopping" contract. Sits after the audit
+        /// capture, so every blocked hit still logs [CombatHit] applied=False with full attribution.</summary>
         private static bool IsGodShieldedLocalShip(Component victim)
         {
-            if (!Core.DevTools.GodMode) return false;
             var local = ShipSync.LocalShip;
-            return local != null && victim != null && victim.GetComponentInParent<Ship>() == local;
+            if (local == null || victim == null || victim.GetComponentInParent<Ship>() != local) return false;
+            return Core.DevTools.GodMode || LocalShopMenuOpen();
+        }
+
+        private static System.Reflection.FieldInfo _shipMenuIsOpen;
+        // Harness only: the `shop on` devcmd sets this to exercise shop-invulnerability without a
+        // real station interaction (which the harness can't drive). OR-ed with the live signal.
+        internal static bool ShopMenuTestOverride;
+        /// <summary>True while the LOCAL player has the shop / ship-menu open (ShipMenuToggler.isOpen,
+        /// the same state vanilla protects by pausing). Read via reflection; failure-safe to false.</summary>
+        internal static bool LocalShopMenuOpen()
+        {
+            if (ShopMenuTestOverride) return true;
+            try
+            {
+                var toggler = ServiceLocator.Get<ShipMenuToggler>();
+                if (toggler == null) return false;
+                if (_shipMenuIsOpen == null)
+                    _shipMenuIsOpen = AccessTools.Field(typeof(ShipMenuToggler), "isOpen");
+                return _shipMenuIsOpen != null && (bool)_shipMenuIsOpen.GetValue(toggler);
+            }
+            catch { return false; }
         }
 
         private static void SendDamageRequest(bool isEntity, byte targetSlot, int targetNetId, Damage damage)
@@ -440,6 +462,12 @@ namespace PunkMultiverse.Sync
                     // (they have it spawned; their shot just landed on it).
                     if (session.IsHost)
                     {
+                        // A REPLAY that STILL can't materialize here means the host owns an entity
+                        // no machine can simulate (world-database divergence). Re-queuing it would
+                        // re-feed the dormant-claim drain that just replayed it, and the drain would
+                        // spin at dispatch speed forever — the main thread never leaves Transport.Poll
+                        // (the 42s host freeze). Drop it; the TTL/pin machinery handles the divergence.
+                        if (pendingReplay) { Core.InstrumentationCounters.DormantClaimDropped(); return; }
                         QueueDormantClaim(msg);
                     }
                     else
@@ -460,6 +488,7 @@ namespace PunkMultiverse.Sync
             else
             {
                 if (msg.TargetSlot != session.LocalSlot) return; // host routing delivers only ours here
+                if (LocalShopMenuOpen()) return; // shopping = safe (vanilla freezes the world; co-op can't)
                 dr = ShipSync.LocalShip != null ? ShipSync.LocalShip.GetComponent<DamagableResource>() : null;
             }
             if (dr == null) return;
@@ -514,6 +543,10 @@ namespace PunkMultiverse.Sync
         {
             var session = NetSession.Instance;
             if (session == null || !session.IsHost || !msg.IsEntity) return;
+            // A claim on an already-killed entity can never find a simulator — queuing it only
+            // feeds the dormant-claim churn (a killed #1420 claim immediately preceded the observed
+            // host freeze). Drop it up front.
+            if (EnemySync.IsKilled(msg.TargetNetId)) return;
             if (!Core.NetIds.LifetimeMatches(msg.TargetNetId, msg.TargetLifetime))
             {
                 Core.InstrumentationCounters.StaleLifetimeDropped();
@@ -550,23 +583,14 @@ namespace PunkMultiverse.Sync
         internal static void OnEntityAssigned(int netId, byte owner, NetSession session)
         {
             if (session == null || !session.IsHost || PendingDormantDamage.Count == 0) return;
-            ulong peer = 0;
-            foreach (var p in session.Players)
-                if (p != null && p.Connected && p.Slot == owner) { peer = p.PeerId; break; }
-            for (int i = 0; i < PendingDormantDamage.Count;)
+            List<DamageRequestMsg> drained = null;
+            for (int i = PendingDormantDamage.Count - 1; i >= 0; i--)
             {
-                var msg = PendingDormantDamage[i].msg;
-                if (msg.TargetNetId != netId) { i++; continue; }
+                if (PendingDormantDamage[i].msg.TargetNetId != netId) continue;
+                (drained ??= new List<DamageRequestMsg>()).Add(PendingDormantDamage[i].msg);
                 PendingDormantDamage.RemoveAt(i);
-                if (owner == session.LocalSlot) ApplyDamageRequest(msg, true);
-                else if (peer != 0)
-                {
-                    msg.Replay = true; // every peer already saw the original RequestId
-                    Writer.Reset(); msg.Write(Writer);
-                    session.SendToPeer(peer, NetChannel.Combat, Writer.ToSegment(), reliable: true);
-                }
-                Core.InstrumentationCounters.DormantDamageReplayed();
             }
+            ReplayDrainedClaims(drained, owner, session);
         }
 
         /// <summary>Host: an owner reported it cannot serve a damage claim (no live object).
@@ -604,17 +628,35 @@ namespace PunkMultiverse.Sync
         {
             var session = NetSession.Instance;
             if (session == null || !session.IsHost || PendingDormantDamage.Count == 0) return;
+            List<DamageRequestMsg> drained = null;
+            for (int i = PendingDormantDamage.Count - 1; i >= 0; i--)
+            {
+                var msg = PendingDormantDamage[i].msg;
+                if (!AuthorityManager.TrySegmentOf(msg.TargetNetId, out var key) || !key.Equals(segment)) continue;
+                (drained ??= new List<DamageRequestMsg>()).Add(msg);
+                PendingDormantDamage.RemoveAt(i);
+            }
+            ReplayDrainedClaims(drained, owner, session);
+        }
+
+        /// <summary>Apply/forward a set of dormant claims drained from PendingDormantDamage. The
+        /// caller MUST have already removed them from the shared list and passed a private snapshot:
+        /// ApplyDamageRequest can re-queue onto PendingDormantDamage when the host owns an entity it
+        /// can't materialize, and iterating the live list would then re-feed itself forever (main
+        /// thread wedged in Transport.Poll — the host freeze). A re-queue lands on the shared list
+        /// for a later real commit, never on this snapshot, so the drain always terminates.</summary>
+        private static void ReplayDrainedClaims(List<DamageRequestMsg> drained, byte owner, NetSession session)
+        {
+            if (drained == null) return;
             ulong peer = 0;
             foreach (var p in session.Players)
                 if (p != null && p.Connected && p.Slot == owner) { peer = p.PeerId; break; }
-            for (int i = 0; i < PendingDormantDamage.Count;)
+            foreach (var claim in drained)
             {
-                var msg = PendingDormantDamage[i].msg;
-                if (!AuthorityManager.TrySegmentOf(msg.TargetNetId, out var key) || !key.Equals(segment)) { i++; continue; }
-                PendingDormantDamage.RemoveAt(i);
-                if (owner == session.LocalSlot) ApplyDamageRequest(msg, true);
+                if (owner == session.LocalSlot) ApplyDamageRequest(claim, true);
                 else if (peer != 0)
                 {
+                    var msg = claim;
                     msg.Replay = true; // every peer already saw the original RequestId (see Replay)
                     Writer.Reset(); msg.Write(Writer);
                     session.SendToPeer(peer, NetChannel.Combat, Writer.ToSegment(), reliable: true);

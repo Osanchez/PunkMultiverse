@@ -612,7 +612,12 @@ namespace PunkMultiverse.Core
                         : _lastJoinAddress);
             }
             catch { }
-            if (NetConfig.AutoFly.Value > 0f)
+            // Scripted flight is a test-harness aid — only auto-arm it for auto-launched runs.
+            // Otherwise a leftover AutoFlySeconds in a dev's config hijacks a real hosted session:
+            // the ship thrusts up-right on its own for the first several seconds on entry. The
+            // on-demand harness path (RearmAutoFly via the 'autofly' devcmd / command file) is
+            // unaffected, and scripted tests set AutoLaunchRun=true so they still get it.
+            if (NetConfig.AutoFly.Value > 0f && NetConfig.AutoLaunchRun.Value)
                 _autoFlyUntil = Time.unscaledTime + 3f + NetConfig.AutoFly.Value;
         }
 
@@ -1666,6 +1671,13 @@ namespace PunkMultiverse.Core
                     Sync.ProjectileSync.ReplayFire(fire);
                     break;
                 }
+                case MsgType.ProjectileDetonate:
+                {
+                    var det = ProjectileDetonateMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: true);
+                    Sync.ProjectileSync.ApplyDetonate(det);
+                    break;
+                }
                 case MsgType.ShipDash:
                 {
                     var dash = ShipDashMsg.Read(_reader);
@@ -2177,21 +2189,26 @@ namespace PunkMultiverse.Core
 
         private void HandleRejoin(ulong peer, HelloMsg hello, NetPlayer reserved)
         {
-            if (reserved.NeedsStationRespawn && reserved.RespawnStationNetId == 0)
-            {
-                _writer.Reset();
-                new RejectMsg
-                {
-                    Reason = "Your disconnected ship was destroyed. Rejoin after the party unlocks its next station."
-                }.Write(_writer);
-                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
-                Plugin.Log.LogInfo($"[Session] rejoin for P{reserved.Slot + 1} deferred — awaiting next station");
-                return;
-            }
-
+            // Respawn at the station assigned when we dropped, else the party's latest checkpoint.
+            // (Previously this rejected outright unless a NEW station was unlocked AFTER the
+            // disconnect — RespawnStationNetId != 0 — which stranded a returning player on
+            // "your ship was destroyed" for the rest of the run whenever the party hadn't since
+            // reached another station, even though LatestStationNetId is a perfectly good respawn.)
             int respawnStation = reserved.RespawnStationNetId != 0
                 ? reserved.RespawnStationNetId
                 : Sync.ProgressionSync.LatestStationNetId;
+            if (reserved.NeedsStationRespawn && respawnStation == 0)
+            {
+                // Genuinely nowhere to respawn yet — no station reached this run.
+                _writer.Reset();
+                new RejectMsg
+                {
+                    Reason = "No checkpoint reached yet — rejoin once the party unlocks a station."
+                }.Write(_writer);
+                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+                Plugin.Log.LogInfo($"[Session] rejoin for P{reserved.Slot + 1} deferred — no station checkpoint yet");
+                return;
+            }
             reserved.PeerId = peer;
             if (hello.SteamId != 0) reserved.IdentityId = hello.SteamId;
             reserved.Connected = true;

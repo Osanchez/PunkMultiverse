@@ -483,6 +483,7 @@ namespace PunkMultiverse.Sync
                 HpFraction = hp,
                 ShieldFraction = UnitStatus.ReadShieldFraction(LocalShip),
                 BurnLevel = UnitStatus.ReadBurnLevel(LocalShip),
+                FuelFraction = UnitStatus.ReadFuelFraction(LocalShip),
             };
             Writer.Reset();
             msg.Write(Writer);
@@ -638,6 +639,7 @@ namespace PunkMultiverse.Sync
             puppet.SetHovering((msg.Flags & ShipFlags.Hover) != 0);
             UnitStatus.WriteShieldFraction(ship, msg.ShieldFraction);
             UnitStatus.WriteBurnLevel(ship, msg.BurnLevel);
+            UnitStatus.WriteFuelFraction(ship, msg.FuelFraction);
 
             try
             {

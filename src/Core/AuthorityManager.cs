@@ -72,6 +72,14 @@ namespace PunkMultiverse.Core
         private static readonly Dictionary<byte, HashSet<SegmentKey>> ResidentSets
             = new Dictionary<byte, HashSet<SegmentKey>>();
         private static readonly Dictionary<byte, uint> ResidencyRevs = new Dictionary<byte, uint>();
+        // A segment that just left an owner's residency set stays "grace-resident" until this time,
+        // so one-frame streaming flicker at a segment boundary doesn't ping-pong the lease (the RC2
+        // authChurn storm). Keyed (slot, segment); consulted only to RETAIN the current owner when
+        // NO peer is strictly resident — never to grant a new lease.
+        private static readonly Dictionary<(byte slot, SegmentKey key), float> ResidentGraceUntil
+            = new Dictionary<(byte, SegmentKey), float>();
+        private static readonly List<(byte slot, SegmentKey key)> _graceScratch
+            = new List<(byte, SegmentKey)>();
         // Segments whose owner stopped being resident and whose dormancy commit hasn't arrived.
         private static readonly Dictionary<SegmentKey, float> PendingDormancy = new Dictionary<SegmentKey, float>();
         // Dormancy commits that arrived while another peer still looked resident: the transition
@@ -107,6 +115,7 @@ namespace PunkMultiverse.Core
             UnreadyUntil.Clear();
             ResidentSets.Clear();
             ResidencyRevs.Clear();
+            ResidentGraceUntil.Clear();
             PendingDormancy.Clear();
             DeferredDormancyCommits.Clear();
             _nextScanAt = 0;
@@ -253,25 +262,50 @@ namespace PunkMultiverse.Core
                 // Event-driven readiness retry: a target that just became resident no longer
                 // needs to sit out the blind post-NACK backoff.
                 UnreadyUntil.Remove((key, slot));
+                ResidentGraceUntil.Remove((slot, key)); // strictly resident now — grace unneeded
                 // The committed-and-left owner is streaming the segment again: it resumes
                 // simulating, so its old final-state commit no longer describes the future.
                 if (DeferredDormancyCommits.TryGetValue(key, out byte committedBy) && committedBy == slot)
                     DeferredDormancyCommits.Remove(key);
+                // Newly resident: issue any interest baseline that was deferred while this peer
+                // hadn't streamed the segment, instead of waiting for the next distance poll (RC1).
+                if (!previous.Contains(key)) EnemySync.OnTargetResident(slot, key);
             }
+            float graceWindow = NetConfig.ResidencyGraceSeconds.Value;
             foreach (var key in previous)
             {
                 if (set.Contains(key)) continue;
-                // The peer unloaded this segment. If it owns the lease, its dormancy commit is
-                // owed; give it a grace window before the coordinator-cache fallback.
+                // The peer unloaded this segment. Keep it grace-resident briefly so a one-frame
+                // report flicker (the game still has the segment loaded) doesn't flip the lease.
+                if (graceWindow > 0f) ResidentGraceUntil[(slot, key)] = Time.unscaledTime + graceWindow;
+                // If it owns the lease, its dormancy commit is owed; give it a grace window before
+                // the coordinator-cache fallback.
                 if (Leases.TryGetValue(key, out var lease) && lease.Owner == slot
                     && !PendingDormancy.ContainsKey(key))
                     PendingDormancy[key] = Time.unscaledTime + DormancyCommitGrace;
             }
+            // Drop expired grace entries so the map can't grow unbounded across a long run.
+            if (ResidentGraceUntil.Count > 0)
+            {
+                _graceScratch.Clear();
+                float nowT = Time.unscaledTime;
+                foreach (var kv in ResidentGraceUntil) if (kv.Value <= nowT) _graceScratch.Add(kv.Key);
+                foreach (var k in _graceScratch) ResidentGraceUntil.Remove(k);
+            }
             _nextScanAt = 0; // residency changed — react promptly
         }
 
-        private static bool IsResident(byte slot, SegmentKey key) =>
+        public static bool IsResident(byte slot, SegmentKey key) =>
             ResidentSets.TryGetValue(slot, out var set) && set.Contains(key);
+
+        // Resident, OR we have no residency report from this peer yet — used to gate interest
+        // baselines (don't withhold the very first baseline before the peer has ever reported).
+        public static bool IsResidentOrUnknown(byte slot, SegmentKey key) =>
+            !ResidentSets.TryGetValue(slot, out var set) || set.Contains(key);
+
+        // Within the post-drop grace window (RC2). Only ever used to retain the current owner.
+        private static bool IsInResidencyGrace(byte slot, SegmentKey key) =>
+            ResidentGraceUntil.TryGetValue((slot, key), out float until) && Time.unscaledTime < until;
         public static void OnDormantHit(int netId, byte attackerSlot)
         {
             var session = NetSession.Instance;
@@ -518,6 +552,15 @@ namespace PunkMultiverse.Core
                 int d = Chebyshev(key, s.segment);
                 if (d < bestDistance || (d == bestDistance && s.slot < best)) { bestDistance = d; best = s.slot; }
             }
+            // No peer is strictly resident this instant. Rather than flip away from (or dormant-ize)
+            // the current owner on a one-frame streaming flicker, keep it while it's inside its
+            // residency grace window. This RETAINS the current owner only — a new owner is still
+            // only ever a strictly-resident peer (loop above) — so "leases only within reported
+            // residency" holds for grants; grace merely defers the release for sub-second boundary
+            // flicker (RC2 authChurn). A genuinely-present closer peer above wins immediately.
+            if (best == DormantOwner && current != null && current.Owner != DormantOwner
+                && IsInResidencyGrace(current.Owner, key))
+                return current.Owner;
             return best;
         }
 

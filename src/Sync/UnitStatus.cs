@@ -78,6 +78,68 @@ namespace PunkMultiverse.Sync
             catch { }
         }
 
+        /// <summary>Undo enemy HP scaling wrongly applied to a replica that turned out to be an
+        /// allied minion: ENTITY_SPAWNED creates+scales the replica before MINION_SPAWNED marks its
+        /// netId a FixedOwner, so ApplyEnemyHpScale's minion exemption missed it. Cosmetic (HP
+        /// replicates as a fraction) but the puppet's max-HP number otherwise reads inflated.</summary>
+        public static void RevertEnemyHpScale(Component root, int instanceId)
+        {
+            try
+            {
+                if (!HpScaledInstances.Remove(instanceId)) return; // never scaled — nothing to undo
+                var session = NetSession.Instance;
+                float mult = session != null ? session.EnemyHpMult : 1f;
+                if (mult <= 1.0001f) return;
+                var unit = root != null ? root.GetComponentInParent<Unit>() : null;
+                var dr = unit != null ? unit.GetComponent<DamagableResource>() : null;
+                var tank = dr != null ? dr.Tank : null;
+                if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return;
+                float fraction = tank.Value / tank.Capacity;
+                tank.Capacity /= mult;
+                tank.Value = tank.Capacity * fraction;
+            }
+            catch { }
+        }
+
+        // ---------------------------------------------------------------- fuel
+
+        // Ship fuel is a ResourceTank keyed by ShipMovement.fuelResource on the ship's Unit. The Ship
+        // component is NOT neutered on puppets, so its fuel warning/recharge audio reads this tank —
+        // replicating the fraction makes a puppet's fuel (and post-respawn refuel) track its owner.
+        // -1 = the ship has no fuel tank; the writer treats it as "leave the puppet's fuel alone".
+        public static float ReadFuelFraction(Ship ship)
+        {
+            try
+            {
+                var m = ship != null ? ship.GetComponentInChildren<ShipMovement>(true) : null;
+                var res = m != null ? m.fuelResource : null;
+                var unit = m != null ? m.owner : null;
+                if (res == null || unit == null || !unit.HasTank(res)) return -1f;
+                var tank = unit.GetTank(res);
+                if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return -1f;
+                return Mathf.Clamp01(tank.Value / tank.Capacity);
+            }
+            catch { return -1f; }
+        }
+
+        public static void WriteFuelFraction(Ship ship, float fraction)
+        {
+            if (fraction < 0f) return; // sentinel: source ship has no fuel tank
+            try
+            {
+                var m = ship != null ? ship.GetComponentInChildren<ShipMovement>(true) : null;
+                var res = m != null ? m.fuelResource : null;
+                var unit = m != null ? m.owner : null;
+                if (res == null || unit == null || !unit.HasTank(res)) return;
+                var tank = unit.GetTank(res);
+                if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return;
+                float target = fraction * tank.Capacity;
+                // Only write on a meaningful delta so we don't spam the tank's ValueChanged events.
+                if (Mathf.Abs(tank.Value - target) > tank.Capacity * 0.01f) tank.Value = target;
+            }
+            catch { }
+        }
+
         // ---------------------------------------------------------------- weapon audio state
 
         // Warmup/continuous weapon sounds (charge-up telegraphs, beam loops) are driven by

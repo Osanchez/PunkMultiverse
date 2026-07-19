@@ -181,9 +181,14 @@ namespace PunkMultiverse.Sync
             try
             {
                 // The generic ENTITY_SPAWNED may have created the replica already — just re-own it.
-                if (NetIds.TryGetInstanceId(msg.NetId, out _) && NetIds.LifetimeMatches(msg.NetId, msg.Lifetime))
+                if (NetIds.TryGetInstanceId(msg.NetId, out int minst) && NetIds.LifetimeMatches(msg.NetId, msg.Lifetime))
                 {
                     EnemySync.Owners[msg.NetId] = msg.OwnerSlot;
+                    // ENTITY_SPAWNED created+HP-scaled the replica before we knew it was an allied
+                    // minion (FixedOwners is only set just above). Undo that eager scaling.
+                    var egm = ServiceLocator.Get<EntityGameObjectManager>();
+                    if (egm != null && egm.TryGetSavableEntity(minst, out var mse) && mse != null)
+                        UnitStatus.RevertEnemyHpScale(mse, minst);
                     WireMinionOwner(msg.NetId, msg.OwnerSlot);
                     return;
                 }

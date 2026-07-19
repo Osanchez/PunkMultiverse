@@ -81,6 +81,9 @@
         SegmentRosterAudit = 80,     // owner -> host -> all: periodic identity roster for an
                                      // owned segment; receivers detect and heal world-database
                                      // divergence (entity data missing behind a live identity)
+        ProjectileDetonate = 81,     // owner -> all: a real projectile exploded (identity + pos);
+                                     // peers consume their visual copy so it can't fly through a
+                                     // host-cleared block and detonate a second time downrange
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

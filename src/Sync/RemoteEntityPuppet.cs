@@ -220,10 +220,24 @@ namespace PunkMultiverse.Sync
                     beam.Warmup(Time.deltaTime); // reach warmed state so OnBarrelMoved shows Firing
                     beam.OnBarrelMoved(barrel.Position, barrel.Direction);
                 }
+                else if (_fireState == 1)
+                {
+                    // Warmup telegraph: the owner reports fire=1 while the trigger is pulled but the
+                    // weapon isn't yet warmed (UnitStatus.ReadFireState). Hold the muted weapon at
+                    // IsWarmingUp && !IsWarmedUp so OnBarrelMoved lights the warm-up aim sprite
+                    // (the pre-fire warning laser) WITHOUT the damaging beam — OnBarrelMoved never
+                    // deals damage (that's FireSingle), so this is safe. Half of WarmupTime is
+                    // strictly inside (0, WarmupTime), keeping IsWarmingUp true / IsWarmedUp false.
+                    beam.IsTriggerPulled = true;
+                    beam.CoolDown(); // clear progress accumulated by a prior fire cycle
+                    beam.Warmup(beam.WarmupTime > 0f ? beam.WarmupTime * 0.5f : 0.001f);
+                    beam.OnBarrelMoved(barrel.Position, barrel.Direction);
+                }
                 else if (beam.IsTriggerPulled)
                 {
                     beam.IsTriggerPulled = false;
-                    beam.OnBarrelMoved(barrel.Position, barrel.Direction); // clears the beam visual
+                    beam.CoolDown(); // don't leave stale warmup progress for the next cycle
+                    beam.OnBarrelMoved(barrel.Position, barrel.Direction); // clears both visuals
                 }
             }
             catch { }

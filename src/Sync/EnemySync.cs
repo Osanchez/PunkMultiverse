@@ -176,6 +176,7 @@ namespace PunkMultiverse.Sync
             _plantFruitAnnounced = _plantFruitApplied = _plantFruitMissing = 0;
             DeathEffectsDone.Clear();
             DroppedLootNetIds.Clear();
+            PunkMultiverse.Patches.LootDiag.ResetCapturedLoot();
             RemoteKillerSlot = 255;
             LastSentPos.Clear();
             LastSentAt.Clear();
@@ -1485,14 +1486,24 @@ namespace PunkMultiverse.Sync
         {
             var segment = new AuthorityManager.SegmentKey(group.SegmentX, group.SegmentY);
             var key = (targetSlot, segment);
+            // Only request/retry an interest baseline once the target has actually streamed the
+            // segment (or hasn't reported residency yet). A not-yet-resident target NACKs
+            // 'segment-inactive' and can't bind the baseline anyway, so an ungated request spins the
+            // blind 1.5s retry forever while the owner's snapshots get dropped for that peer — the
+            // frozen/absent-enemy desync. When the target later reports residency,
+            // AuthorityManager.ApplyResidencySet -> OnTargetResident issues the baseline at once.
+            bool targetResident = AuthorityManager.IsResidentOrUnknown(targetSlot, segment);
             if (!InterestRoutes.TryGetValue(key, out var route) || route.Owner != sourceSlot)
             {
                 if (route != null && route.Owner != session.LocalSlot)
                     SendDirectRoute(session, route.Owner, targetSlot, segment, route.Epoch, false);
                 route = new InterestRoute { Owner = sourceSlot, Epoch = group.Epoch };
+                route.LastInterestedAt = Time.unscaledTime; // keep the route alive so the residency
+                                                            // wake (or next poll) can issue it
                 InterestRoutes[key] = route;
-                BeginRuntimeBaseline(session, sourceSlot, targetSlot, segment, group.Epoch, group.Epoch,
-                    RuntimeBaselinePurpose.Interest, route);
+                if (targetResident)
+                    BeginRuntimeBaseline(session, sourceSlot, targetSlot, segment, group.Epoch, group.Epoch,
+                        RuntimeBaselinePurpose.Interest, route);
                 return false;
             }
             if (route.Epoch != group.Epoch)
@@ -1505,10 +1516,23 @@ namespace PunkMultiverse.Sync
                     SendDirectRoute(session, route.Owner, targetSlot, segment, group.Epoch, true);
             }
             route.LastInterestedAt = Time.unscaledTime;
-            if (!route.Ready && Time.unscaledTime - route.RequestedAt >= 1.5f)
+            if (!route.Ready && targetResident && Time.unscaledTime - route.RequestedAt >= 1.5f)
                 BeginRuntimeBaseline(session, sourceSlot, targetSlot, segment, group.Epoch, group.Epoch,
                     RuntimeBaselinePurpose.Interest, route);
             return route.Ready;
+        }
+
+        // Host: a peer just reported it streamed <segment>. Issue any interest baseline that was
+        // deferred while it wasn't resident, so materialization converges on the residency event
+        // instead of waiting for the next distance poll (RC1). No-op if the route is already ready
+        // or was never opened.
+        internal static void OnTargetResident(byte targetSlot, AuthorityManager.SegmentKey segment)
+        {
+            var session = NetSession.Instance;
+            if (session == null || !session.IsHost) return;
+            if (!InterestRoutes.TryGetValue((targetSlot, segment), out var route) || route.Ready) return;
+            BeginRuntimeBaseline(session, route.Owner, targetSlot, segment, route.Epoch, route.Epoch,
+                RuntimeBaselinePurpose.Interest, route);
         }
 
         private static void PruneInterestRoutes(NetSession session)
@@ -3194,6 +3218,7 @@ namespace PunkMultiverse.Sync
                     KillerSlot = killer,
                     HasPosition = true,
                     Position = __instance.transform.position,
+                    Loot = PunkMultiverse.Patches.LootDiag.ConsumeCapturedLoot(netId),
                 }.Write(Writer);
                 session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             }
@@ -3269,9 +3294,21 @@ namespace PunkMultiverse.Sync
             if (!KilledNetIds.Add(msg.NetId)) return false;
             NetStats.AddKill(msg.KillerSlot);
             RemoteKillerSlot = msg.KillerSlot; // so the DropLoot guard credits the killer
-            if (!NetIds.TryGetInstanceId(msg.NetId, out int instanceId)) return true;
-            if (msg.HasPosition) ApplyAuthoritativeDeathPosition(instanceId, msg.NetId, msg.Position);
-            KillInstance(instanceId, msg.NetId);
+
+            if (NetIds.TryGetInstanceId(msg.NetId, out int instanceId))
+            {
+                if (msg.HasPosition) ApplyAuthoritativeDeathPosition(instanceId, msg.NetId, msg.Position);
+                KillInstance(instanceId, msg.NetId); // resident+near: runs the local death chain -> DropLoot
+            }
+
+            // Loot the killer rolled. GrantRemoteLoot self-gates on the SAME one-drop-per-machine
+            // latch (TryMarkLootDropped) as the local drop, so it only fires when THIS machine did NOT
+            // drop locally: the entity wasn't resident here, OR our player was too far to collect the
+            // death-site pickup (DropLootGuard suppresses that far local drop without taking the
+            // latch). Either way the player gets a collectable per-player copy in its Vault. A machine
+            // that dropped locally (resident + near) already took the latch, so this is a no-op there.
+            PunkMultiverse.Patches.LootDiag.GrantRemoteLoot(msg.NetId, msg.Loot);
+            PunkMultiverse.Patches.LootDiag.DiscardCapturedLoot(msg.NetId);
             return true;
         }
 
@@ -3524,6 +3561,7 @@ namespace PunkMultiverse.Sync
                     KillerSlot = KillerOf(netId, session),
                     HasPosition = true,
                     Position = __instance.transform.position,
+                    Loot = PunkMultiverse.Patches.LootDiag.ConsumeCapturedLoot(netId),
                 }.Write(Writer);
                 session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             }

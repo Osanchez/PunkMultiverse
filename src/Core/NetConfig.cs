@@ -39,6 +39,7 @@ namespace PunkMultiverse
         public static ConfigEntry<float> AuthorityRadius;
         public static ConfigEntry<float> TransferRadius;
         public static ConfigEntry<float> InterestRadius;
+        public static ConfigEntry<float> ResidencyGraceSeconds;
 
         public static ConfigEntry<bool> SyncDiagnostics;
         public static ConfigEntry<bool> ProfileFrames;
@@ -136,6 +137,13 @@ namespace PunkMultiverse
                 "Beyond this distance authority may hand off to a closer player (25% hysteresis).");
             InterestRadius = cfg.Bind("Authority", "InterestRadius", 70f,
                 "Entities farther than this from every player go dormant. Keep <= 75 (segment streaming radius).");
+            ResidencyGraceSeconds = cfg.Bind("Authority", "ResidencyGraceSeconds", 1.0f,
+                new ConfigDescription("Keep a segment's CURRENT owner considered resident for this " +
+                    "many seconds after its residency report drops the segment, so one-frame " +
+                    "streaming flicker at segment boundaries doesn't ping-pong the lease (the " +
+                    "authChurn storm). Only ever retains the current owner — never grants a new " +
+                    "lease. 0 disables the grace.",
+                    new AcceptableValueRange<float>(0f, 5f)));
 
             SyncDiagnostics = cfg.Bind("Diag", "SyncDiagnostics", false,
                 "Verbose sync/authority diagnostics: per-entity ownership assigns, releases, deny " +

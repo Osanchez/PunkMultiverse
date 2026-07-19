@@ -30,6 +30,19 @@ namespace PunkMultiverse.Sync
         internal static int VisualProjectileCount => VisualProjectiles.Count;
         private static int _replayDepth;
         private static readonly NetWriter Writer = new NetWriter(64);
+        // Peer-side index of live visual projectiles by identity, so an owner's authoritative
+        // detonate event can find and consume the exact copy before it over-travels a host-cleared
+        // block and explodes again. Value goes (fake-)null when Unity destroys the projectile.
+        private static readonly Dictionary<(byte slot, uint shot, ushort ord), Component> VisualByIdentity
+            = new Dictionary<(byte, uint, ushort), Component>();
+        // Identities whose owner-authoritative detonation we've already accounted for (via the event
+        // or a first local boom); a second boom for the same pellet is suppressed — the "explodes
+        // twice" symptom when a peer copy flies through a host-cleared block and detonates downrange.
+        private static readonly HashSet<(byte slot, uint shot, ushort ord)> DetonatedIdentities
+            = new HashSet<(byte, uint, ushort)>();
+        private static readonly Queue<(byte slot, uint shot, ushort ord)> DetonatedOrder
+            = new Queue<(byte, uint, ushort)>();
+        private const int RecentDetonatedLimit = 4096;
         private static uint _shotSequence;
         private sealed class PendingShipFire
         {
@@ -130,6 +143,9 @@ namespace PunkMultiverse.Sync
         public static void Reset()
         {
             VisualProjectiles.Clear();
+            VisualByIdentity.Clear();
+            DetonatedIdentities.Clear();
+            DetonatedOrder.Clear();
             EntityWeapons.Clear();
             UnresolvedRetryAt.Clear();
             DisposeReplayWeapons();
@@ -879,6 +895,7 @@ namespace PunkMultiverse.Sync
                 StampProjectile(__instance);
                 if (_replayDepth <= 0) return;
                 VisualProjectiles.Add(__instance.gameObject.GetInstanceID());
+                IndexVisualByIdentity(__instance);
                 ReplaySpawned.Add(__instance);
                 InstrumentationCounters.VisualProjectileSpawned();
             }
@@ -899,6 +916,7 @@ namespace PunkMultiverse.Sync
                 StampProjectile(__instance);
                 if (_replayDepth <= 0) return;
                 VisualProjectiles.Add(__instance.gameObject.GetInstanceID());
+                IndexVisualByIdentity(__instance);
                 ReplaySpawned.Add(__instance);
                 InstrumentationCounters.VisualProjectileSpawned();
             }
@@ -1258,7 +1276,21 @@ namespace PunkMultiverse.Sync
             private static bool Prefix(object __instance)
             {
                 if (!NetSession.Active) return true;
-                if (!IsVisual(__instance)) return true;
+                if (!IsVisual(__instance))
+                {
+                    BroadcastDetonate(__instance); // owner's real explosion — tell peers where it died
+                    return true;
+                }
+                // Peer visual copy: if this pellet's detonation was already accounted for (the
+                // authoritative event, or a prior local boom), suppress the duplicate and consume the
+                // copy so it stops traveling.
+                if (!MarkFirstDetonation(__instance))
+                {
+                    if (NetSession.Active && Core.NetDiag.Enabled)
+                        Core.NetDiag.Throttled("detdup", 0.5f, "Detonate", () => "suppressed duplicate boom (over-travel)");
+                    DestroyProjectile(__instance);
+                    return false;
+                }
                 TrySpawnHarmlessExplosion(__instance);
                 return false;
             }
@@ -1319,6 +1351,93 @@ namespace PunkMultiverse.Sync
             {
                 // Visual-only nicety; correctness path (skip) already happened.
             }
+        }
+
+        private static void IndexVisualByIdentity(Component projectile)
+        {
+            var id = projectile != null ? projectile.GetComponent<NetworkProjectileIdentity>() : null;
+            if (id != null) VisualByIdentity[(id.SourceSlot, id.ShotId, id.Ordinal)] = projectile;
+        }
+
+        // The owner's real projectile just exploded — announce it (identity + true blast point) so
+        // peers consume their visual twin there instead of letting it fly on and re-detonate.
+        private static void BroadcastDetonate(object projectile)
+        {
+            var session = NetSession.Instance;
+            var comp = projectile as Component;
+            var id = comp != null ? comp.GetComponent<NetworkProjectileIdentity>() : null;
+            if (session == null || id == null) return;
+            Writer.Reset();
+            new ProjectileDetonateMsg
+            {
+                SourceSlot = id.SourceSlot, ShotId = id.ShotId, Ordinal = id.Ordinal,
+                Pos = comp.transform.position,
+            }.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            if (Core.NetDiag.Enabled)
+                Core.NetDiag.Throttled($"det{id.SourceSlot}:{id.ShotId}", 0.5f, "Detonate",
+                    () => $"broadcast shot={id.ShotId} pellet={id.Ordinal}");
+        }
+
+        // Peer side: an owner's detonation arrived. Show the boom at the owner's true point (once)
+        // and consume our visual copy so it can't over-travel a host-cleared block and re-explode.
+        public static void ApplyDetonate(ProjectileDetonateMsg msg)
+        {
+            var key = (msg.SourceSlot, msg.ShotId, msg.Ordinal);
+            bool firstHere = MarkDetonatedReturningFirst(key);
+            bool consumed = false;
+            if (VisualByIdentity.TryGetValue(key, out var comp))
+            {
+                VisualByIdentity.Remove(key);
+                if (comp != null)
+                {
+                    if (firstHere) SpawnHarmlessExplosionAt(comp, msg.Pos);
+                    DestroyProjectile(comp);
+                    consumed = true;
+                }
+            }
+            if (Core.NetDiag.Enabled)
+                Core.NetDiag.Log("Detonate", $"applied shot={msg.ShotId} pellet={msg.Ordinal} firstHere={firstHere} consumedCopy={consumed}");
+        }
+
+        // True if this is the first detonation seen for the pellet (caller shows the boom); false if
+        // already detonated (suppress the duplicate). No identity => always first (can't dedup).
+        private static bool MarkFirstDetonation(object projectile)
+        {
+            var id = projectile is Component c && c != null ? c.GetComponent<NetworkProjectileIdentity>() : null;
+            if (id == null) return true;
+            return MarkDetonatedReturningFirst((id.SourceSlot, id.ShotId, id.Ordinal));
+        }
+
+        private static bool MarkDetonatedReturningFirst((byte slot, uint shot, ushort ord) key)
+        {
+            if (!DetonatedIdentities.Add(key)) return false;
+            DetonatedOrder.Enqueue(key);
+            if (DetonatedOrder.Count > RecentDetonatedLimit)
+                DetonatedIdentities.Remove(DetonatedOrder.Dequeue());
+            return true;
+        }
+
+        private static void DestroyProjectile(object projectile)
+        {
+            try { if (projectile is Component c && c != null) Object.Destroy(c.gameObject); }
+            catch { }
+        }
+
+        // Spawn the sanitized cosmetic boom at an explicit position (the owner's blast point) rather
+        // than wherever our drifting copy happened to be.
+        private static void SpawnHarmlessExplosionAt(Component projectile, Vector2 pos)
+        {
+            try
+            {
+                object boxed = Traverse.Create(projectile).Field("explosion").GetValue();
+                if (boxed == null) return;
+                ZeroExplosionFields(boxed);
+                var manager = ServiceLocator.Get<ExplosionManager>();
+                AccessTools.Method(typeof(ExplosionManager), "SpawnExplosion")
+                    .Invoke(manager, new object[] { pos, boxed });
+            }
+            catch { }
         }
     }
 }
