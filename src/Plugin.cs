@@ -60,6 +60,12 @@ namespace PunkMultiverse
             Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F9 = net overlay, F10 = sync diagnostics. Logs auto-send to the webhook on game close (if [Diag] LogWebhookUrl is set); F8 sends now.");
         }
 
+        // Spike-only pump (PUNKMV_STEAMSERVER_SPIKE=1): anonymous game-server logon + P2P echo test.
+        private void Update()
+        {
+            if (SteamServerSpike.Enabled) SteamServerSpike.Tick();
+        }
+
         // Hot-reload teardown contract: kill the runtime object (stops the session + transport via
         // NetSession.OnDestroy) and remove every Harmony patch so a reload doesn't double-hook.
         private void OnDestroy()

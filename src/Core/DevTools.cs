@@ -569,6 +569,18 @@ namespace PunkMultiverse.Core
                     }
                     return;
                 }
+                case "steamconnect":
+                {
+                    // SPIKE A phase 2: user-side NetworkingSockets ConnectP2P to an anonymous
+                    // game-server identity (the id printed by the coordinator's A1 PASS line).
+                    if (parts.Length < 2 || !ulong.TryParse(parts[1], out ulong serverId))
+                    {
+                        Out("steamconnect <serverSteamID64> — id comes from the coordinator's A1 PASS log line");
+                        return;
+                    }
+                    Out(SteamServerSpike.ClientConnect(serverId));
+                    return;
+                }
                 case "linkhealth":
                 {
                     // WS7.2 harness: force the score this machine ADVERTISES (its receive quality)

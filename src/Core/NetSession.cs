@@ -49,11 +49,19 @@ namespace PunkMultiverse.Core
         private SteamLobbyController _lobby;
         public SteamLobbyController Lobby => _lobby;
         // True while this session runs against a locally-spawned sidecar coordinator: the join is
-        // forced onto loopback for THIS session even when the configured transport is Steam.
+        // forced onto the local transport for THIS session even when the config says Steam.
         private bool _sidecarSession;
 
-        public bool UsingSteam => !NetConfig.IsCoordinator && !_sidecarSession
-            && !NetConfig.Transport.Value.Equals("Loopback", StringComparison.OrdinalIgnoreCase);
+        /// <summary>The single point where a session's transport is decided. Adding a transport is
+        /// ONE config value + ONE case in CreateTransport: "Steam" (user P2P via Steam networking),
+        /// "Loopback" (dev/LAN UDP). Planned: "Udp" (LiteNetLib — sidecar/Docker/WAN), and
+        /// "SteamServer" (anonymous game-server identity) if the spike proves the appid routes it.
+        /// Coordinator processes and sidecar sessions resolve to the local transport regardless of
+        /// config — a coordinator can never be a Steam USER endpoint.</summary>
+        internal string ResolvedTransport =>
+            NetConfig.IsCoordinator || _sidecarSession ? "Loopback" : NetConfig.Transport.Value;
+
+        public bool UsingSteam => ResolvedTransport.Equals("Steam", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>Pasteable code for the current Steam lobby, or the loopback address.</summary>
         public string CurrentLobbyCode =>
@@ -1036,11 +1044,15 @@ namespace PunkMultiverse.Core
         private ITransport CreateTransport()
         {
             LastError = null;
-            // UsingSteam already folds in coordinator mode (never Steam — no second identity) and
-            // sidecar sessions (loopback to the local coordinator regardless of configured transport).
-            return UsingSteam
-                ? (ITransport)new SteamMessagesTransport()
-                : new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value);
+            switch (ResolvedTransport.ToLowerInvariant())
+            {
+                case "loopback":
+                    return new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value);
+                // case "udp":         planned — LiteNetLib (sidecar/Docker/WAN), see server-sidecar plan
+                // case "steamserver": pending — anonymous game-server identity, gated on spike A verdict
+                default:
+                    return new SteamMessagesTransport();
+            }
         }
 
         private void WireTransport()
