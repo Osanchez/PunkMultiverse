@@ -114,7 +114,8 @@ namespace PunkMultiverse.Core
             var launchLobby = SteamLobbyController.ParseLaunchArgs();
 
             // DEV: config-driven autostart so two-instance loopback tests need no clicks.
-            var mode = NetConfig.AutoStart.Value;
+            // A dedicated coordinator always hosts — that's its entire job.
+            var mode = NetConfig.IsCoordinator ? "Host" : NetConfig.AutoStart.Value;
             if (launchLobby.HasValue)
             {
                 yield return new WaitForSecondsRealtime(3f);
@@ -830,8 +831,9 @@ namespace PunkMultiverse.Core
                 Slot = 0,
                 PeerId = _transport.LocalPeerId,
                 IdentityId = LocalIdentityId(),
-                Name = LocalName(),
+                Name = LocalDisplayName(),
                 IsLocal = true,
+                IsCoordinator = NetConfig.IsCoordinator, // shipless server slot — clients spawn no puppet
             };
             HostSlot = 0;
             ChosenSeed = _pendingHostSeed; // settings picked on the pre-lobby screen
@@ -1018,6 +1020,8 @@ namespace PunkMultiverse.Core
             return Environment.UserName;
         }
 
+        private static string LocalDisplayName() => NetConfig.IsCoordinator ? "SERVER" : LocalName();
+
         private ulong LocalIdentityId()
         {
             // Steam's transport address is already a durable account identity. Loopback peer IDs
@@ -1138,9 +1142,15 @@ namespace PunkMultiverse.Core
                     SendLevelReady();
 
                 // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
-                if (State == SessionState.Lobby && NetConfig.AutoReady.Value && LocalPlayer != null && !LocalPlayer.Ready)
+                // A coordinator implies both — it has no UI — but only launches once at least one
+                // REAL player is in and ready (a shipless solo run would be an empty world).
+                bool autoReady = NetConfig.AutoReady.Value || NetConfig.IsCoordinator;
+                bool autoLaunch = NetConfig.AutoLaunchRun.Value || NetConfig.IsCoordinator;
+                if (State == SessionState.Lobby && autoReady && LocalPlayer != null && !LocalPlayer.Ready)
                     SetLocalPrefs(LocalPlayer.ColorIndex != 0 ? LocalPlayer.ColorIndex : (byte)LocalSlot, true);
-                if (State == SessionState.Lobby && NetConfig.AutoLaunchRun.Value && IsHost && AllReady)
+                if (State == SessionState.Lobby && autoLaunch && IsHost && AllReady
+                    && (!NetConfig.IsCoordinator
+                        || _players.Any(p => p != null && p.Connected && !p.IsLocal)))
                     StartRun();
 
                 if (State >= SessionState.Lobby && Time.unscaledTime >= _nextPingAt)
@@ -1373,7 +1383,7 @@ namespace PunkMultiverse.Core
                     ModVersion = Plugin.Version,
                     GameVersion = Application.version,
                     SteamId = LocalIdentityId(),
-                    Name = LocalName(),
+                    Name = LocalDisplayName(),
                     Resuming = _reattaching,
                     Mods = ModManifest.Local,
                 };
@@ -2592,6 +2602,7 @@ namespace PunkMultiverse.Core
                         NeedsStationRespawn = p.NeedsStationRespawn,
                         RespawnStationNetId = p.RespawnStationNetId,
                         ModsMismatch = p.ModsMismatch,
+                        IsCoordinator = p.IsCoordinator,
                     });
             return roster;
         }
@@ -2698,6 +2709,7 @@ namespace PunkMultiverse.Core
                     NeedsStationRespawn = e.NeedsStationRespawn,
                     RespawnStationNetId = e.RespawnStationNetId,
                     ModsMismatch = e.ModsMismatch,
+                    IsCoordinator = e.IsCoordinator,
                     RttMs = oldRtt.TryGetValue(e.IdentityId, out var rtt) ? rtt : -1,
                 };
             }

@@ -51,6 +51,7 @@ namespace PunkMultiverse.Protocol
         public bool NeedsStationRespawn;
         public int RespawnStationNetId;
         public bool ModsMismatch; // joiner's plugin set differs from the host's (Warn policy)
+        public bool IsCoordinator; // dedicated shipless server slot: clients spawn no puppet for it
 
         public void Write(NetWriter w)
         {
@@ -64,6 +65,7 @@ namespace PunkMultiverse.Protocol
             w.WriteBool(NeedsStationRespawn);
             w.WriteVarUInt((uint)RespawnStationNetId);
             w.WriteBool(ModsMismatch);
+            w.WriteBool(IsCoordinator);
         }
 
         public static RosterEntry Read(NetReader r) => new RosterEntry
@@ -78,6 +80,7 @@ namespace PunkMultiverse.Protocol
             NeedsStationRespawn = r.ReadBool(),
             RespawnStationNetId = (int)r.ReadVarUInt(),
             ModsMismatch = r.ReadBool(),
+            IsCoordinator = r.ReadBool(),
         };
     }
 

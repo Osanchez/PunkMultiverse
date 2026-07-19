@@ -43,6 +43,18 @@ namespace PunkMultiverse
 
         public static ConfigEntry<bool> SyncDiagnostics;
         public static ConfigEntry<bool> SummaryHeal;
+        public static ConfigEntry<bool> CoordinatorMode;
+
+        /// <summary>True when this process is a dedicated coordinator (a shipless host that plays
+        /// nobody): hosts the session, runs the correctness plane (leases, sequencer, terrain, fog,
+        /// canonical stores), owns no world simulation, and auto-drives the lobby with no UI. Set
+        /// via config or the PUNKMV_COORDINATOR environment variable (how a spawned sidecar or a
+        /// container enables it without touching config files).</summary>
+        public static bool IsCoordinator =>
+            (CoordinatorMode != null && CoordinatorMode.Value) || EnvCoordinator;
+        internal static readonly bool EnvCoordinator =
+            System.Environment.GetEnvironmentVariable("PUNKMV_COORDINATOR") is string v
+            && (v == "1" || v.Equals("true", System.StringComparison.OrdinalIgnoreCase));
         public static ConfigEntry<bool> ProfileFrames;
         public static ConfigEntry<bool> HitchWatchdog;
         public static ConfigEntry<int> HitchThresholdMs;
@@ -151,6 +163,12 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
+            CoordinatorMode = cfg.Bind("Session", "CoordinatorMode", false,
+                "EXPERIMENTAL (server sidecar): run this process as a dedicated shipless coordinator " +
+                "— it hosts and runs the correctness plane but plays nobody and simulates nothing. " +
+                "Implies AutoStart=Host/AutoReady/AutoLaunchRun (waits for at least one real player). " +
+                "Intended for headless use (-batchmode -nographics); can also be forced with the " +
+                "PUNKMV_COORDINATOR=1 environment variable.");
             SummaryHeal = cfg.Bind("Diag", "SummaryHeal", false,
                 "EXPERIMENTAL (WS9.1): let segment identity-summary mismatches actively trigger " +
                 "targeted roster audits (echo + repair). Off = summaries still run as detection " +

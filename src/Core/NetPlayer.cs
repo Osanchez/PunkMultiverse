@@ -16,6 +16,7 @@
         public bool NeedsStationRespawn;
         public int RespawnStationNetId;
         public bool ModsMismatch;  // plugin set differs from the host's (Warn policy marker)
+        public bool IsCoordinator; // dedicated shipless server slot: no ship, no puppet, plays nobody
         public int RttMs = -1;     // -1 = unknown
 
         /// <summary>Set once in-game: the Ship this player controls (local) or their puppet (remote).</summary>

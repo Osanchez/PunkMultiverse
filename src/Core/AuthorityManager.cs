@@ -77,6 +77,7 @@ namespace PunkMultiverse.Core
         // peer. Sticky-grab and "leases only within residency" are untouched.
         private static readonly Dictionary<byte, byte> PeerLoads = new Dictionary<byte, byte>();
         private static readonly Dictionary<byte, int> ScanOwnedCounts = new Dictionary<byte, int>();
+        private static readonly HashSet<Vector2Int> EmptySegments = new HashSet<Vector2Int>();
         private static float _frameMsEma = 16.7f;
         private const byte OverloadThreshold = 160;   // ≈ 25 fps sustained
         private const int OverloadedSegmentCap = 6;   // grants stop here while overloaded
@@ -248,6 +249,11 @@ namespace PunkMultiverse.Core
             if (Time.unscaledTime < _nextResidencyReportAt) return;
             var active = EnemySync.TryGetActiveSegments();
             if (active == null) return;
+            // A dedicated coordinator is resident NOWHERE by definition — even if the engine
+            // streams segments around the camera/origin, reporting them would let the scan grant
+            // this shipless process leases it can never meaningfully simulate. Empty residency +
+            // "leases only within residency" = the coordinator structurally owns nothing.
+            if (NetConfig.IsCoordinator && active.Count > 0) active = EmptySegments;
             ulong hash = 0;
             foreach (var s in active) hash ^= ElementHash(s.x, s.y);
             hash ^= (ulong)active.Count << 56; // distinguish ∅ from an unluckily-cancelling set
