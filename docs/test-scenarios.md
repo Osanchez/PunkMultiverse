@@ -430,6 +430,27 @@ all three logs) land in `%TEMP%\punkmv-soak\<stamp>`.
 - Refuses to start if any Punk.exe is already running; only kills its own PIDs;
   restores the host install config byte-for-byte on exit.
 
+## 29. server-sidecar (host player's game dies, session survives) — VERIFIED 2026-07-19
+
+`[Session] HostViaSidecar = true`: hosting spawns a headless coordinator process from the
+same install (env `PUNKMV_COORDINATOR=1`, `DOORSTOP_*` scrubbed from the child env or it
+boots as a vanilla zombie); the hosting player's game joins it via loopback (forced for
+that session even on a Steam-configured install). Sidecar's log = `BepInEx/LogOutput.1.log`
+(BepInEx's numbered fallback for the second instance).
+
+- Launch the host-install game with HostViaSidecar=true + AutoStart=Host; launch the
+  client install (Join, loopback) ~25s later.
+- PASS: three processes; sidecar log shows `hosting as P1 'SERVER'` + shipless marker;
+  player log shows `[Sidecar] coordinator spawned pid=` → `sent HELLO` → GO LIVE
+  (player is slot ≥1, host=False); 3-way checksum parity; all leases to real players.
+- THE gate: `Stop-Process` the PLAYER's game mid-run → coordinator logs `dropped — slot
+  reserved` + `suspended puppet`; the OTHER client stays `state=InGame` with NO
+  `promoted to host` and no session teardown. (rxBundles=0/s afterward is correct — the
+  sole remaining player owns everything near it; nobody is left to stream to it.)
+- Limits: local/LAN only until the direct-UDP transport (Steam identity: a sidecar can't
+  be a Steam endpoint); pre-lobby seed/settings don't reach the coordinator yet
+  (party-leader forwarding); coordinator occupies slot 0.
+
 ---
 
 ### Cadence

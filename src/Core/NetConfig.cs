@@ -44,6 +44,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> SyncDiagnostics;
         public static ConfigEntry<bool> SummaryHeal;
         public static ConfigEntry<bool> CoordinatorMode;
+        public static ConfigEntry<bool> HostViaSidecar;
 
         /// <summary>True when this process is a dedicated coordinator (a shipless host that plays
         /// nobody): hosts the session, runs the correctness plane (leases, sequencer, terrain, fog,
@@ -163,6 +164,13 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
+            HostViaSidecar = cfg.Bind("Session", "HostViaSidecar", false,
+                "EXPERIMENTAL (server sidecar, LOCAL/LAN only): hosting spawns a headless dedicated " +
+                "coordinator process from this install and joins it as a regular player — your game " +
+                "crashing or stalling no longer takes the session down. The sidecar is loopback-only " +
+                "until the direct-UDP transport lands, so remote friends cannot join a sidecar " +
+                "session yet. Your pre-lobby seed/settings choices do not reach the sidecar yet " +
+                "(coordinator uses defaults).");
             CoordinatorMode = cfg.Bind("Session", "CoordinatorMode", false,
                 "EXPERIMENTAL (server sidecar): run this process as a dedicated shipless coordinator " +
                 "— it hosts and runs the correctness plane but plays nobody and simulates nothing. " +

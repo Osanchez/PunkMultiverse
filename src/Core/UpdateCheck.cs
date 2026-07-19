@@ -76,7 +76,10 @@ namespace PunkMultiverse.Core
                 yield break;
             }
 
-            if (UpdateAvailable == null || !NetConfig.AutoUpdate.Value) yield break;
+            // A coordinator (sidecar shares this install with the player's game) never stages
+            // updates: two processes writing the same plugin folder is a corruption race, and the
+            // player's own instance handles updating for both.
+            if (UpdateAvailable == null || !NetConfig.AutoUpdate.Value || NetConfig.IsCoordinator) yield break;
 
             string url = null;
             try

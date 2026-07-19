@@ -48,7 +48,12 @@ namespace PunkMultiverse.Core
 
         private SteamLobbyController _lobby;
         public SteamLobbyController Lobby => _lobby;
-        public bool UsingSteam => !NetConfig.Transport.Value.Equals("Loopback", StringComparison.OrdinalIgnoreCase);
+        // True while this session runs against a locally-spawned sidecar coordinator: the join is
+        // forced onto loopback for THIS session even when the configured transport is Steam.
+        private bool _sidecarSession;
+
+        public bool UsingSteam => !NetConfig.IsCoordinator && !_sidecarSession
+            && !NetConfig.Transport.Value.Equals("Loopback", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>Pasteable code for the current Steam lobby, or the loopback address.</summary>
         public string CurrentLobbyCode =>
@@ -201,6 +206,22 @@ namespace PunkMultiverse.Core
         /// once the session is up.</summary>
         public void HostOnline(int chosenSeed = 0, bool friendlyFire = false, bool enemyHpScaling = true)
         {
+            // Server sidecar (local/LAN only): hosting spawns a dedicated coordinator process and
+            // this game joins it as a regular player. Falls back to classic in-process hosting if
+            // the sidecar can't start. Seed/settings forwarding to the coordinator is not built
+            // yet (party-leader protocol) — the coordinator uses defaults; say so.
+            if (NetConfig.HostViaSidecar.Value && !NetConfig.IsCoordinator)
+            {
+                if (SidecarLauncher.LaunchIfNeeded(out string sidecarError))
+                {
+                    if (chosenSeed != 0 || friendlyFire)
+                        Plugin.Log.LogWarning("[Sidecar] chosen seed/settings do not reach the sidecar yet — coordinator uses defaults");
+                    LastError = null;
+                    StartCoroutine(JoinSidecarWhenUp());
+                    return;
+                }
+                Plugin.Log.LogWarning($"[Sidecar] could not spawn coordinator ({sidecarError}) — hosting in-process instead");
+            }
             try
             {
                 LastError = null;
@@ -215,6 +236,39 @@ namespace PunkMultiverse.Core
             {
                 Fail($"Host failed: {e.Message}");
                 Plugin.Log.LogError(e);
+            }
+        }
+
+        /// <summary>Join the freshly-spawned sidecar coordinator, retrying while it boots (a cold
+        /// Punk.exe takes 10-25s to reach hosting). Each attempt uses the normal join path with its
+        /// own connect timeout; the coordinator's lobby appears to this player exactly like any
+        /// remote host's.</summary>
+        private System.Collections.IEnumerator JoinSidecarWhenUp()
+        {
+            _sidecarSession = true;
+            float deadline = Time.unscaledTime + 90f;
+            string address = $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}";
+            Plugin.Log.LogInfo($"[Sidecar] waiting for the coordinator, then joining {address}");
+            while (Time.unscaledTime < deadline)
+            {
+                if (State >= SessionState.Lobby) yield break; // connected — lobby reached
+                if (State == SessionState.Offline)
+                {
+                    if (!SidecarLauncher.IsRunning)
+                    {
+                        _sidecarSession = false;
+                        Fail("Sidecar coordinator exited before the session came up.");
+                        yield break;
+                    }
+                    _sidecarSession = true; // StopSession clears it after each failed attempt
+                    JoinSession(address);   // Connecting; its own timeout returns us to Offline on failure
+                }
+                yield return new WaitForSecondsRealtime(3f);
+            }
+            if (State < SessionState.Lobby)
+            {
+                _sidecarSession = false;
+                Fail("Sidecar coordinator did not come up within 90s.");
             }
         }
 
@@ -876,6 +930,7 @@ namespace PunkMultiverse.Core
         public void StopSession(string reason)
         {
             bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
+            _sidecarSession = false; // future sessions choose their transport from config again
 
             // Tell everyone this is a deliberate end, not a connection hiccup, while the
             // transport is still up (host only — a quitting client just drops and gets its
@@ -981,9 +1036,11 @@ namespace PunkMultiverse.Core
         private ITransport CreateTransport()
         {
             LastError = null;
-            return NetConfig.Transport.Value.Equals("Loopback", StringComparison.OrdinalIgnoreCase)
-                ? new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value)
-                : (ITransport)new SteamMessagesTransport();
+            // UsingSteam already folds in coordinator mode (never Steam — no second identity) and
+            // sidecar sessions (loopback to the local coordinator regardless of configured transport).
+            return UsingSteam
+                ? (ITransport)new SteamMessagesTransport()
+                : new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value);
         }
 
         private void WireTransport()
