@@ -39,8 +39,20 @@ namespace PunkMultiverse.Sync
         private static float _nextFullHashAt;
         private static ulong _cachedFullHash;
         private static uint _cachedFullHashRevision;
-        private static uint _fullMismatchRevision;   // client: revision at which a full-array mismatch was first seen
+        private static long _fullMismatchRevision = -1; // client: revision of the first-seen full-array
+                                                        // mismatch. -1 sentinel, NOT 0: revision 0 is a
+                                                        // real early-run value, and a 0 default made the
+                                                        // confirm-twice filter confirm on FIRST sighting
+                                                        // at rev 0 (caught live by the coordinator test)
         private const float FullHashInterval = 30f;
+        // Fog cells live in cellTypes but evolve through the game's own gas sim — an uncaptured,
+        // un-ledgered mutation path that is only CONSISTENT between peers running comparable fog
+        // sims (a headless coordinator, or a throttled/minimized host, is not). The full-array
+        // backstop therefore hashes with fog-type bytes masked to 0 on BOTH sides: it verifies
+        // exactly the terrain the diff/ledger system owns, nothing the fog sim owns.
+        private static byte _fogCellId;
+        private static bool _fogIdResolved;
+        private static bool _fogIdWarned;
 
         internal static int PendingCount => Pending.Count;
 
@@ -65,7 +77,10 @@ namespace PunkMultiverse.Sync
             _nextFullHashAt = 0;
             _cachedFullHash = 0;
             _cachedFullHashRevision = 0;
-            _fullMismatchRevision = 0;
+            _fullMismatchRevision = -1;
+            _fogCellId = 0;
+            _fogIdResolved = false;
+            _fogIdWarned = false;
         }
 
         internal static uint Revision => _revision;
@@ -239,6 +254,57 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        /// <summary>Full-array FNV over cellTypes with fog-type bytes masked to 0 — the backstop
+        /// verifies the terrain the diff/ledger system owns, never the fog sim's cells (which evolve
+        /// through an uncaptured engine path and are only symmetric between peers running comparable
+        /// sims — a throttled or minimized host is not). Returns 0 (checks skip, fail-safe) until the
+        /// fog id resolves; a level with no FogManager hashes unmasked — no fog, no asymmetry.</summary>
+        private static ulong ComputeMaskedLevelHash()
+        {
+            var level = Level;
+            if (level == null) return 0;
+            if (!_fogIdResolved)
+            {
+                try
+                {
+                    var mgr = UnityEngine.Object.FindAnyObjectByType<FogManager>();
+                    if (mgr != null)
+                    {
+                        var fogCellType = Traverse.Create(mgr).Field("fogCellType").GetValue() as CellType;
+                        if (fogCellType == null)
+                        {
+                            if (!_fogIdWarned)
+                            {
+                                _fogIdWarned = true;
+                                Plugin.Log.LogWarning("[World] fogCellType unreadable — full-array backstop disabled");
+                            }
+                            return 0;
+                        }
+                        _fogCellId = fogCellType.id;
+                    }
+                    else _fogCellId = 0; // no fog system on this level: 0 is never a maskable type here
+                    _fogIdResolved = true;
+                }
+                catch { return 0; }
+            }
+            try
+            {
+                var cells = Traverse.Create(level).Field("cellTypes").GetValue();
+                if (!(cells is Unity.Collections.NativeArray<byte> native) || !native.IsCreated) return 0;
+                ulong hash = 14695981039346656037UL;
+                byte fogId = _fogCellId;
+                for (int i = 0; i < native.Length; i++)
+                {
+                    byte b = native[i];
+                    if (fogId != 0 && b == fogId) b = 0;
+                    hash ^= b;
+                    hash *= 1099511628211UL;
+                }
+                return hash == 0 ? 1UL : hash; // 0 is the "not computed" sentinel on the wire
+            }
+            catch { return 0; }
+        }
+
         private static byte ReadCellType(Level level, int index)
         {
             try
@@ -364,10 +430,15 @@ namespace PunkMultiverse.Sync
                 // Refresh the whole-array checksum on its slow cadence, stamped with the revision it
                 // was taken at; only advertise it when that still matches the live revision (else the
                 // ledgers-agree comparison on the client would race an in-flight change).
-                if (Pending.Count == 0 && Time.unscaledTime >= _nextFullHashAt)
+                // The ApplyQueue guard is NOT optional: remote cells are ledgered (revision++) on
+                // receipt but applied to the array over budgeted frames — hashing while any are
+                // queued stamps a PRE-burst array with a POST-burst revision, and every viewer then
+                // "confirms" a phantom silent divergence (found live: the coordinator, where ALL
+                // combat cells arrive as remote bursts, kept the race window essentially open).
+                if (Pending.Count == 0 && ApplyQueue.Count == 0 && Time.unscaledTime >= _nextFullHashAt)
                 {
                     _nextFullHashAt = Time.unscaledTime + FullHashInterval;
-                    _cachedFullHash = RunStarter.ChecksumLevel(Level);
+                    _cachedFullHash = ComputeMaskedLevelHash();
                     _cachedFullHashRevision = _revision;
                 }
                 ulong fullHash = _cachedFullHashRevision == _revision ? _cachedFullHash : 0UL;
@@ -384,7 +455,7 @@ namespace PunkMultiverse.Sync
             bool ledgerAgrees = msg.Revision == _revision && msg.Hash == _ledgerHash && msg.Count == Ledger.Count;
             if (!ledgerAgrees)
             {
-                _fullMismatchRevision = 0;
+                _fullMismatchRevision = -1;
                 InstrumentationCounters.TerrainMismatch();
                 Plugin.Log.LogWarning($"[World] TERRAIN LEDGER MISMATCH local={_revision}/{_ledgerHash:X16}/{Ledger.Count} host={msg.Revision}/{msg.Hash:X16}/{msg.Count}; requesting repair");
                 RequestTerrainRepair(session, fullReset: false);
@@ -393,9 +464,10 @@ namespace PunkMultiverse.Sync
             // Ledgers agree — check the full array for a silently-diverged cell (one a reactive cascade
             // wrote while _applying, dropped from the ledger). Only act when the whole array is quiescent
             // (nothing queued or batched) and confirm across two consecutive digests to filter transients.
-            if (msg.FullHash == 0UL || ApplyQueue.Count > 0 || Pending.Count > 0) { _fullMismatchRevision = 0; return; }
-            ulong localFull = RunStarter.ChecksumLevel(Level);
-            if (localFull == msg.FullHash) { _fullMismatchRevision = 0; return; }
+            if (msg.FullHash == 0UL || ApplyQueue.Count > 0 || Pending.Count > 0) { _fullMismatchRevision = -1; return; }
+            ulong localFull = ComputeMaskedLevelHash();
+            if (localFull == 0UL) { _fullMismatchRevision = -1; return; } // fog id not resolvable yet
+            if (localFull == msg.FullHash) { _fullMismatchRevision = -1; return; }
             if (_fullMismatchRevision != msg.Revision)
             {
                 // First sighting — remember it; a genuine divergence persists to the next digest.
@@ -403,7 +475,7 @@ namespace PunkMultiverse.Sync
                 Plugin.Log.LogWarning($"[World] terrain full-array mismatch (ledgers agree) local={localFull:X16} host={msg.FullHash:X16} rev={msg.Revision}; confirming next digest");
                 return;
             }
-            _fullMismatchRevision = 0;
+            _fullMismatchRevision = -1;
             InstrumentationCounters.TerrainMismatch();
             Plugin.Log.LogWarning($"[World] TERRAIN SILENT DIVERGENCE confirmed (ledgers agree, arrays differ) local={localFull:X16} host={msg.FullHash:X16}; full resync");
             RequestTerrainRepair(session, fullReset: true);
