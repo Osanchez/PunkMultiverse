@@ -73,7 +73,9 @@ namespace PunkMultiverse.Sync
         }
 
         private readonly List<Snap> _buffer = new List<Snap>(16);
-        private readonly AdaptiveSnapshotTiming _timing = new AdaptiveSnapshotTiming(0.045f, 0.18f, 0.05f);
+        // Max raised 0.18 -> 0.25: the distant tier's 100ms cadence needs peak-gap headroom
+        // (1.2x peak + jitter) or its delay pins at the ceiling and still underruns.
+        private readonly AdaptiveSnapshotTiming _timing = new AdaptiveSnapshotTiming(0.045f, 0.25f, 0.05f);
         private readonly List<Behaviour> _muted = new List<Behaviour>();
         private Rigidbody2D _rb;
         private BarrelTransform[] _barrels;
@@ -362,7 +364,19 @@ namespace PunkMultiverse.Sync
         {
             _buffer.Clear();
             _timing.Reset();
+            _visualError = Vector2.zero;
+            _wasExtrapolating = false;
         }
+
+        // Presentation smoothing: a decaying offset between where the puppet is DRAWN and where
+        // the snapshot timeline says it IS. When an underrun resolves (extrapolated ahead, then
+        // real data arrived elsewhere), the residual becomes _visualError and melts away over
+        // ~150ms instead of being stepped out in one fixed update — the classic error-decay
+        // pattern. Correctness is untouched: damage, targeting, and authority all key on synced
+        // state, never on the drawn offset.
+        private Vector2 _visualError;
+        private bool _wasExtrapolating;
+        private const float VisualErrorTau = 0.06f; // ~10% left after 140ms
 
         private void FixedUpdate()
         {
@@ -389,27 +403,63 @@ namespace PunkMultiverse.Sync
             }
             float span = Mathf.Max(0.0001f, b.Time - a.Time);
             float t = Mathf.Clamp01((renderTime - a.Time) / span);
-            Vector2 target = Vector2.LerpUnclamped(a.Pos, b.Pos, t);
-            if (renderTime > b.Time)
+            bool extrapolating = renderTime > b.Time;
+            Vector2 target;
+            if (extrapolating)
             {
                 _timing.NoteUnderrun();
                 target = b.Pos + b.Vel * Mathf.Min(renderTime - b.Time, 0.3f);
             }
+            else
+            {
+                // Cubic Hermite through the snapshot velocities: piecewise-LINEAR interpolation
+                // turns every curved flight into a 20Hz polygon with a velocity kink at each
+                // snapshot — the "marionette" look. The tangents were already on the wire.
+                target = HermitePoint(a.Pos, a.Vel, b.Pos, b.Vel, span, t);
+            }
+
+            // Underrun resolved: the drawn position sits on the abandoned extrapolated path.
+            // Capture the residual and decay it instead of yanking the body across in one step.
+            if (_wasExtrapolating && !extrapolating)
+                _visualError = Vector2.ClampMagnitude(_rb.position - target, HardSnapDistance * 0.5f);
+            _wasExtrapolating = extrapolating;
+            _visualError *= Mathf.Exp(-Time.fixedDeltaTime / VisualErrorTau);
+            if (_visualError.sqrMagnitude < 0.0001f) _visualError = Vector2.zero;
 
             float correction = Vector2.Distance(_rb.position, target);
             if (correction > HardSnapDistance)
             {
                 TeleportWithChildren(_rb, target);
+                _visualError = Vector2.zero; // a cut is a cut — no residual to glide off
                 Core.InstrumentationCounters.EntityHardSnap();
             }
             else
             {
                 // Direct rb.position writes bypass Rigidbody2D's render interpolation and show
                 // every fixed-step edge. MovePosition/MoveRotation preserve smooth presentation.
-                _rb.MovePosition(target);
+                _rb.MovePosition(target + _visualError);
             }
             _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);
             _rb.MoveRotation(Mathf.LerpAngle(a.Rot, b.Rot, t));
+        }
+
+        /// <summary>Cubic Hermite between two snapshots using their velocities as tangents —
+        /// C1-continuous motion through the sample points. Degrades to plain lerp when the span
+        /// is too long to trust the tangents (gappy stream) or a tangent is wildly inconsistent
+        /// with the segment (stale velocity across a pause), so it can never overshoot worse
+        /// than the data. Shared by entity and ship puppets.</summary>
+        internal static Vector2 HermitePoint(Vector2 p0, Vector2 v0, Vector2 p1, Vector2 v1,
+            float span, float t)
+        {
+            if (span > 0.25f) return Vector2.LerpUnclamped(p0, p1, t);
+            float segment = Vector2.Distance(p0, p1);
+            float tangentCap = segment * 3f + 0.5f;
+            Vector2 m0 = v0 * span, m1 = v1 * span;
+            if (m0.sqrMagnitude > tangentCap * tangentCap) m0 = m0.normalized * tangentCap;
+            if (m1.sqrMagnitude > tangentCap * tangentCap) m1 = m1.normalized * tangentCap;
+            float t2 = t * t, t3 = t2 * t;
+            return (2f * t3 - 3f * t2 + 1f) * p0 + (t3 - 2f * t2 + t) * m0
+                 + (-2f * t3 + 3f * t2) * p1 + (t3 - t2) * m1;
         }
 
         /// <summary>Hard-move a root body AND its articulated child bodies by the same delta.
