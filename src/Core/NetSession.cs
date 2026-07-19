@@ -75,6 +75,9 @@ namespace PunkMultiverse.Core
         private readonly NetWriter _writer = new NetWriter(8 * 1024);
         private readonly NetReader _reader = new NetReader();
         private float _nextPingAt;
+        private float _nextSeqCheckpointAt;                 // WS8.2 host: next checkpoint stamp
+        private readonly float[] _nextGapReportAt = new float[4];   // WS8.2 client: per-channel rate limit
+        private readonly Dictionary<ulong, float> _nextGapCatchUpAt = new Dictionary<ulong, float>(); // host: per-peer
         private float _connectDeadline;
         private ulong _localIdentityId;
 
@@ -405,6 +408,10 @@ namespace PunkMultiverse.Core
             NetDiag.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            NetSeq.Reset();
+            _nextSeqCheckpointAt = 0;
+            for (int i = 0; i < _nextGapReportAt.Length; i++) _nextGapReportAt[i] = 0;
+            _nextGapCatchUpAt.Clear();
             NetProfiler.Reset();
             RuntimeInstrumentation.ResetRun();
             ClockSync.Reset();
@@ -666,6 +673,42 @@ namespace PunkMultiverse.Core
             }
         }
 
+        /// <summary>Host relay with one favored recipient: unreliable on <paramref name="channel"/> to
+        /// everyone except the sender, but reliable+no-nagle on <paramref name="reliableChannel"/> to
+        /// <paramref name="reliableToSlot"/>. Used for entity fire aimed at a specific victim — the one
+        /// player the shot can damage always sees it, without re-inflating the broadcast for the rest.</summary>
+        private void RelayToOthers(ulong senderPeer, NetChannel channel, byte reliableToSlot, NetChannel reliableChannel)
+        {
+            if (!IsHost) return;
+            foreach (var p in _players)
+            {
+                if (p == null || p.IsLocal || p.PeerId == senderPeer) continue;
+                if (p.Slot == reliableToSlot) SendReliable(p.PeerId, reliableChannel, _lastPayload);
+                else _transport.Send(p.PeerId, channel, _lastPayload, reliable: false);
+            }
+        }
+
+        /// <summary>Broadcast an entity-fire payload with victim-favored reliability: reliable+no-nagle
+        /// to the aimed slot, unreliable to everyone else. A client simulator sends one unreliable copy
+        /// to the host, which completes the victim guarantee on relay. Replay dedups on (netId, shotId),
+        /// so any overlap between the reliable and unreliable copies is harmless.</summary>
+        public void SendEntityFire(ArraySegment<byte> data, byte targetSlot)
+        {
+            if (_transport == null || !_transport.IsRunning) return;
+            if (!IsHost)
+            {
+                if (_players[HostSlot] != null)
+                    _transport.Send(_players[HostSlot].PeerId, NetChannel.State, data, reliable: false);
+                return;
+            }
+            foreach (var p in _players)
+            {
+                if (p == null || p.IsLocal || !p.Connected) continue;
+                if (p.Slot == targetSlot) SendReliable(p.PeerId, NetChannel.Combat, data);
+                else _transport.Send(p.PeerId, NetChannel.State, data, reliable: false);
+            }
+        }
+
         // ------------------------------------------------ reliable outbox
         //
         // "Reliable" at the transport only means reliable ONCE ACCEPTED — a full send buffer
@@ -884,6 +927,10 @@ namespace PunkMultiverse.Core
             NetDiag.Reset();
             NetIds.Reset();
             NetStats.Reset();
+            NetSeq.Reset();
+            _nextSeqCheckpointAt = 0;
+            for (int i = 0; i < _nextGapReportAt.Length; i++) _nextGapReportAt[i] = 0;
+            _nextGapCatchUpAt.Clear();
             NetProfiler.Reset();
             RuntimeInstrumentation.ResetRun();
             ClockSync.Reset();
@@ -1093,6 +1140,25 @@ namespace PunkMultiverse.Core
                     ping.Write(_writer, pong: false);
                     ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.State, _writer.ToSegment(), reliable: false));
                 }
+
+                // WS8.2: the host stamps each correctness channel with a periodic sequence
+                // checkpoint. Ordered delivery makes it a barrier — a client holding fewer
+                // messages at its arrival lost something silently and requests catch-up.
+                if (IsHost && State >= SessionState.Loading && Time.unscaledTime >= _nextSeqCheckpointAt)
+                {
+                    _nextSeqCheckpointAt = Time.unscaledTime + 2f;
+                    foreach (var p in _players)
+                    {
+                        if (p == null || p.IsLocal || !p.Connected || p.PeerId == 0) continue;
+                        foreach (var ch in new[] { NetChannel.Events, NetChannel.Combat })
+                        {
+                            _writer.Reset();
+                            new EventSeqCheckpointMsg { Channel = (byte)ch, Count = NetSeq.SentTo(p.PeerId, ch) }
+                                .Write(_writer);
+                            SendReliable(p.PeerId, ch, _writer.ToSegment());
+                        }
+                    }
+                }
             }
             finally
             {
@@ -1275,6 +1341,7 @@ namespace PunkMultiverse.Core
 
         private void OnPeerConnected(ulong peer)
         {
+            NetSeq.ResetPeer(peer); // peer ids can be reused (loopback) — stale counts would misfire
             if (!IsHost && (State == SessionState.Connecting || _reattaching))
             {
                 // Connected to the host: introduce ourselves.
@@ -1464,6 +1531,15 @@ namespace PunkMultiverse.Core
                 local.Connected = true;
                 local.RttMs = 0;
             }
+            // Capture the segments the departing peers owned BEFORE OnPeerLost flips them Dormant, so
+            // we can seed their last-known entity states to every surviving peer (WS4.2). A HashSet
+            // dedups (a segment has a single owner, but be defensive).
+            var orphanedSegments = new HashSet<AuthorityManager.SegmentKey>();
+            foreach (var p in _players)
+                if (p != null && !p.IsLocal)
+                    foreach (var seg in AuthorityManager.SegmentsOwnedBy(p.Slot))
+                        orphanedSegments.Add(seg);
+
             // Everyone else is disconnected from ME right now — reserve their slots; their
             // resume-HELLOs (or full rejoins) bring them back.
             foreach (var p in _players)
@@ -1481,6 +1557,11 @@ namespace PunkMultiverse.Core
             // Registrar fallback ownership changed immediately. Re-arm local/puppet components
             // before the next state tick; explicit segment leases converge on the next scan.
             Sync.EnemySync.ApplyAllOwnership();
+            // Seed every surviving peer with the ex-host's last-known entity states for its orphaned
+            // segments, from our own FullState cache — BEFORE the scan re-grants ownership, so entities
+            // resume from a canonical baseline instead of a slow/lossy grace fallback (WS4.2).
+            foreach (var seg in orphanedSegments)
+                Sync.EnemySync.SeedMigrationDormancyCommit(seg, this);
             // Fog is host-authoritative: this machine now resumes the sim, but as a former client
             // its fogLevels is stale (see FogHostAuthority). Reconcile it with current terrain
             // before the next tick, or fog snaps back toward its gen-time layout.
@@ -1526,6 +1607,8 @@ namespace PunkMultiverse.Core
         {
             Sync.WorldSync.CancelStream(peer); // a rejoin restarts it from scratch
             ClearOutboxFor(peer);              // rejoin catch-up re-serves everything anyway
+            NetSeq.ResetPeer(peer);            // WS8.2: counts are per-connection
+            _nextGapCatchUpAt.Remove(peer);
             _peersAwaitingRejoinState.Remove(peer);
             _nextGoLiveRecoveryAt.Remove(peer);
             if (IsHost)
@@ -1542,7 +1625,7 @@ namespace PunkMultiverse.Core
                     player.RespawnStationNetId = 0;
                     player.RttMs = -1;
                     player.PeerId = 0; // transport routes are not durable reconnect identities
-                    Sync.ShipSync.RemoveRemoteShip(player.Slot, "peer disconnected");
+                    Sync.ShipSync.SuspendRemoteShip(player.Slot, "peer disconnected"); // hide + 60s reclaim (WS4.1)
                     AuthorityManager.OnPeerLost(player.Slot); // no holds/denies for a gone machine
                     Sync.EnemySync.ReassignFixedOwners(player.Slot, HostSlot);
                 }
@@ -1571,6 +1654,8 @@ namespace PunkMultiverse.Core
         private void OnData(ulong peer, NetChannel channel, ArraySegment<byte> payload)
         {
             _lastPayload = payload;
+            NetSeq.NoteReceived(peer, channel); // WS8.2: count BEFORE parsing — the checkpoint barrier
+                                                // must include malformed/unknown messages too
             _reader.Assign(payload);
             MsgType type;
             try { type = _reader.ReadMsgType(); }
@@ -1588,6 +1673,10 @@ namespace PunkMultiverse.Core
 
         private void Dispatch(ulong peer, NetChannel channel, MsgType type)
         {
+            // Publish the handler about to run so a hitch inside Transport.Poll names its message type
+            // (a disp# frozen across "ongoing" lines is the wedged handler).
+            RuntimeInstrumentation.SetDispatchHandler(type);
+
             // Gameplay traffic can only be applied while a world exists (Loading covers rejoin
             // catch-up). After a run ends, in-flight kills/fire/cells from peers would land on
             // a destroyed level — drop them. Ping/Pong keep the lobby RTT alive.
@@ -1678,6 +1767,13 @@ namespace PunkMultiverse.Core
                     Sync.ProjectileSync.ApplyDetonate(det);
                     break;
                 }
+                case MsgType.ProjectileState:
+                {
+                    var pstate = ProjectileStateMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: false);
+                    Sync.ProjectileSync.ApplyProjectileState(pstate);
+                    break;
+                }
                 case MsgType.ShipDash:
                 {
                     var dash = ShipDashMsg.Read(_reader);
@@ -1738,6 +1834,62 @@ namespace PunkMultiverse.Core
                     var reporter = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
                     if (reporter != null && reporter.Slot == report.Slot)
                         AuthorityManager.ApplyResidencyReport(report, this);
+                    break;
+                }
+                case MsgType.LinkHealth:
+                {
+                    var health = LinkHealthMsg.Read(_reader);
+                    if (IsHost)
+                    {
+                        var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                        if (sender == null || sender.Slot != health.Slot) break;
+                        // Every peer that streams state to this viewer needs its budget (WS7.2):
+                        // the host applies it for its own fanout and relays for direct-route owners.
+                        RelayToOthers(peer, NetChannel.Events, reliable: true);
+                    }
+                    else if (_players[HostSlot] == null || _players[HostSlot].PeerId != peer) break;
+                    if (health.Slot != LocalSlot) Sync.EnemySync.ApplyLinkHealth(health.Slot, health.Score);
+                    break;
+                }
+                case MsgType.SegmentStateSummary:
+                {
+                    var summary = SegmentStateSummaryMsg.Read(_reader);
+                    if (IsHost)
+                        RelayToOthers(peer, channel, reliable: channel != NetChannel.State);
+                    else if (_players[HostSlot] == null || _players[HostSlot].PeerId != peer) break;
+                    Sync.EnemySync.ApplySegmentStateSummary(summary, this);
+                    break;
+                }
+                case MsgType.EventSeqCheckpoint when !IsHost:
+                {
+                    var checkpoint = EventSeqCheckpointMsg.Read(_reader);
+                    if (_players[HostSlot] == null || _players[HostSlot].PeerId != peer) break;
+                    if (checkpoint.Channel != (byte)channel) break; // a barrier only on its own channel
+                    // OnData counted this checkpoint too — messages before it = received - 1.
+                    uint before = NetSeq.ReceivedFrom(peer, channel) - 1;
+                    if (before >= checkpoint.Count) break;
+                    int ch = checkpoint.Channel & 3;
+                    if (Time.unscaledTime < _nextGapReportAt[ch]) break;
+                    _nextGapReportAt[ch] = Time.unscaledTime + 30f;
+                    Plugin.Log.LogError($"[Seq] GAP on channel {channel}: host sent {checkpoint.Count} " +
+                        $"messages before this checkpoint, we hold {before} — " +
+                        $"{checkpoint.Count - before} lost silently; requesting catch-up");
+                    _writer.Reset();
+                    new EventGapReportMsg { Channel = checkpoint.Channel, Expected = checkpoint.Count, Received = before }
+                        .Write(_writer);
+                    SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+                    break;
+                }
+                case MsgType.EventGapReport when IsHost:
+                {
+                    var gap = EventGapReportMsg.Read(_reader);
+                    var victim = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (victim == null) break;
+                    if (_nextGapCatchUpAt.TryGetValue(peer, out float nextAt) && Time.unscaledTime < nextAt) break;
+                    _nextGapCatchUpAt[peer] = Time.unscaledTime + 30f;
+                    Plugin.Log.LogWarning($"[Seq] {victim} reports a channel-{gap.Channel} gap " +
+                        $"({gap.Received}/{gap.Expected}) — replaying event catch-up");
+                    SendEventCatchUp(peer);
                     break;
                 }
                 case MsgType.SegmentDormancyCommit:
@@ -1874,7 +2026,11 @@ namespace PunkMultiverse.Core
                         }
                     }
                     if (IsHost) AuthorityManager.NoteAggro(efire.NetId, efire.TargetSlot);
-                    RelayToOthers(peer, channel, reliable: false);
+                    // Aimed fire: reliable to the one victim it can damage, unreliable to the rest.
+                    if (efire.TargetSlot != 255)
+                        RelayToOthers(peer, channel, efire.TargetSlot, NetChannel.Combat);
+                    else
+                        RelayToOthers(peer, channel, reliable: false);
                     Sync.ProjectileSync.ReplayEntityFire(efire);
                     break;
                 }
@@ -2467,7 +2623,7 @@ namespace PunkMultiverse.Core
                 if (old != null && old.Connected
                     && (!incoming.TryGetValue(old.Slot, out var next) || !next.Connected))
                 {
-                    Sync.ShipSync.RemoveRemoteShip(old.Slot, "roster disconnected");
+                    Sync.ShipSync.SuspendRemoteShip(old.Slot, "roster disconnected"); // hide + 60s reclaim (WS4.1)
                     Sync.EnemySync.ReassignFixedOwners(old.Slot, HostSlot);
                 }
 

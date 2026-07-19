@@ -346,11 +346,15 @@ namespace PunkMultiverse.Sync
         }
 
         private static System.Reflection.FieldInfo _shipMenuIsOpen;
+        private static System.Reflection.FieldInfo _shipMenuStation;
         // Harness only: the `shop on` devcmd sets this to exercise shop-invulnerability without a
         // real station interaction (which the harness can't drive). OR-ed with the live signal.
         internal static bool ShopMenuTestOverride;
-        /// <summary>True while the LOCAL player has the shop / ship-menu open (ShipMenuToggler.isOpen,
-        /// the same state vanilla protects by pausing). Read via reflection; failure-safe to false.</summary>
+        /// <summary>True while the LOCAL player has a STATION SHOP open — ShipMenuToggler.isOpen AND
+        /// currentStation != null (2.5, Omar's call: station shops only). The plain ship menu opened
+        /// mid-fight does NOT shield: vanilla protects it by pausing, but in co-op that would be free
+        /// facetank leverage — popping inventory to eat a volley. currentStation is reassigned on
+        /// every Open (null away from stations), so the pair is race-free. Failure-safe to false.</summary>
         internal static bool LocalShopMenuOpen()
         {
             if (ShopMenuTestOverride) return true;
@@ -360,7 +364,12 @@ namespace PunkMultiverse.Sync
                 if (toggler == null) return false;
                 if (_shipMenuIsOpen == null)
                     _shipMenuIsOpen = AccessTools.Field(typeof(ShipMenuToggler), "isOpen");
-                return _shipMenuIsOpen != null && (bool)_shipMenuIsOpen.GetValue(toggler);
+                if (_shipMenuStation == null)
+                    _shipMenuStation = AccessTools.Field(typeof(ShipMenuToggler), "currentStation");
+                if (_shipMenuIsOpen == null || !(bool)_shipMenuIsOpen.GetValue(toggler)) return false;
+                if (_shipMenuStation == null) return false;
+                var station = _shipMenuStation.GetValue(toggler) as UnityEngine.Object;
+                return station != null; // Unity operator: also false for a destroyed (fake-null) station
             }
             catch { return false; }
         }

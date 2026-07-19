@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using PunkMultiverse.Protocol;
 using PunkMultiverse.Sync;
 using UnityEngine;
 
@@ -60,6 +61,7 @@ namespace PunkMultiverse.Core
         private static long _lastCellChanges;
         private static long _lastVisualSpawns;
         private static long _lastStateBundlesSent, _lastStateGroupsSent, _lastStateEntriesSent, _lastStateBytesSent;
+        private static long _lastBytesOutCorrectness, _lastBytesOutPresentation;
         private static long _lastStateBundlesReceived, _lastStateGroupsReceived, _lastStateEntriesReceived;
         private static long _lastStateGroupsFiltered, _lastStateEntriesFiltered;
         private static int _lastFirstLifetimes, _lastReenteredLifetimes, _lastOverlappingLifetimes, _lastRetiredLifetimes;
@@ -113,6 +115,8 @@ namespace PunkMultiverse.Core
             _lastStateGroupsSent = InstrumentationCounters.StateGroupsSent;
             _lastStateEntriesSent = InstrumentationCounters.StateEntriesSent;
             _lastStateBytesSent = InstrumentationCounters.StateBytesSent;
+            _lastBytesOutCorrectness = NetStats.BytesOutCorrectness;
+            _lastBytesOutPresentation = NetStats.BytesOutPresentation;
             _lastStateBundlesReceived = InstrumentationCounters.StateBundlesReceived;
             _lastStateGroupsReceived = InstrumentationCounters.StateGroupsReceived;
             _lastStateEntriesReceived = InstrumentationCounters.StateEntriesReceived;
@@ -161,6 +165,11 @@ namespace PunkMultiverse.Core
             _currentPhase = (int)phase;
             MainThreadWatchdog.Phase(_currentPhase);
         }
+
+        // Names the message handler the dispatch loop is entering. Published to the watchdog so a
+        // hitch inside Transport.Poll — otherwise a managed-stack blind spot — prints the culprit
+        // message type and a monotonic dispatch counter.
+        internal static void SetDispatchHandler(MsgType type) => MainThreadWatchdog.SetHandler((int)type);
 
         internal static int EnterPatchPhase(PatchId id)
         {
@@ -440,6 +449,23 @@ namespace PunkMultiverse.Core
                 txBundles > 0 ? txEntries / (double)txBundles : 0,
                 txBytes / elapsed / 1024.0, rxBundles / elapsed, rxGroups / elapsed,
                 rxEntries / elapsed, filteredGroups / elapsed, filteredEntries / elapsed));
+
+            // Byte-plane split of ALL outbound traffic (not just state bundles): correctness plane
+            // (reliable Control/Events/Combat — must arrive) vs presentation plane (droppable State
+            // snapshots). This is the accounting a receiver byte budget (WS7.2) sheds against —
+            // presentation share climbing toward the link ceiling is the shed trigger.
+            long correctnessBytes = Delta(NetStats.BytesOutCorrectness, ref _lastBytesOutCorrectness);
+            long presentationBytes = Delta(NetStats.BytesOutPresentation, ref _lastBytesOutPresentation);
+            long totalPlaneBytes = correctnessBytes + presentationBytes;
+            double presentationShare = totalPlaneBytes > 0 ? presentationBytes / (double)totalPlaneBytes : 0.0;
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[BytePlanes] mono={0:0.000}s correctness={1:0.0}KB/s presentation={2:0.0}KB/s total={3:0.0}KB/s presentationShare={4:0.00} budgetDrops={5} summaries=tx{6}/chk{7}/miss{8}",
+                mono, correctnessBytes / elapsed / 1024.0, presentationBytes / elapsed / 1024.0,
+                totalPlaneBytes / elapsed / 1024.0, presentationShare,
+                InstrumentationCounters.StateEntriesBudgetDroppedCount,
+                InstrumentationCounters.StateSummariesSent,
+                InstrumentationCounters.StateSummariesChecked,
+                InstrumentationCounters.StateSummaryMismatches));
         }
 
         private static void ReportPopulation(double mono, double elapsed)
@@ -609,6 +635,8 @@ namespace PunkMultiverse.Core
         private static long _stateBundlesSent, _stateGroupsSent, _stateEntriesSent, _stateBytesSent;
         private static long _stateBundlesReceived, _stateGroupsReceived, _stateEntriesReceived;
         private static long _stateGroupsFiltered, _stateEntriesFiltered;
+        private static long _stateEntriesBudgetDropped;                       // WS7.1/7.2
+        private static long _stateSummariesSent, _stateSummariesChecked, _stateSummaryMismatches; // WS9.1
         private static long _entityCorrectionCount, _entityCorrectionMillimeters, _entityCorrectionMaxMillimeters;
         private static readonly long[] EntityCorrectionBuckets = new long[9];
         private static readonly long[] EntityCorrectionBucketLimitsMm = { 10, 25, 50, 100, 250, 500, 1000, 4000, long.MaxValue };
@@ -678,6 +706,14 @@ namespace PunkMultiverse.Core
         internal static long StateEntriesReceived => Interlocked.Read(ref _stateEntriesReceived);
         internal static long StateGroupsFiltered => Interlocked.Read(ref _stateGroupsFiltered);
         internal static long StateEntriesFiltered => Interlocked.Read(ref _stateEntriesFiltered);
+        internal static long StateEntriesBudgetDroppedCount => Interlocked.Read(ref _stateEntriesBudgetDropped);
+        internal static long StateSummariesSent => Interlocked.Read(ref _stateSummariesSent);
+        internal static long StateSummariesChecked => Interlocked.Read(ref _stateSummariesChecked);
+        internal static long StateSummaryMismatches => Interlocked.Read(ref _stateSummaryMismatches);
+        internal static void StateEntriesBudgetDropped(int entries) => Interlocked.Add(ref _stateEntriesBudgetDropped, entries);
+        internal static void StateSummarySent() => Interlocked.Increment(ref _stateSummariesSent);
+        internal static void StateSummaryChecked() => Interlocked.Increment(ref _stateSummariesChecked);
+        internal static void StateSummaryMismatch() => Interlocked.Increment(ref _stateSummaryMismatches);
         internal static long EntityCorrectionCount => Interlocked.Read(ref _entityCorrectionCount);
         internal static double EntityCorrectionAverage => EntityCorrectionCount > 0
             ? Interlocked.Read(ref _entityCorrectionMillimeters) / 1000.0 / EntityCorrectionCount : 0.0;

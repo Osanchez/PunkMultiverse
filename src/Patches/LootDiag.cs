@@ -33,8 +33,10 @@ namespace PunkMultiverse.Patches
         // runs that chain and would get NOTHING. We record exactly what the killer's DropLoot rolled
         // (keyed by the entity's netId) so BroadcastEntityDeath can ship it on EntityKilledMsg;
         // receivers that didn't drop locally grant each player their own copy straight into the
-        // (per-player, never-synced) Vault. Only Ingredient drops travel this path — that covers the
-        // resource/"gold" starvation the fix targets; Consumable/Module/Prefab stay resident-only.
+        // (per-player, never-synced) Vault. Ingredient, shared-currency, and Consumable drops travel
+        // this path (all have a clean per-player inventory grant); Module drops stay resident-only —
+        // they are physical ModulePickup GameObjects with no inventory-add API, so there is nothing to
+        // grant remotely without spawning a position-based pickup (a different mechanism, WS5.1).
         private static readonly Dictionary<int, Dictionary<string, int>> CapturedLoot
             = new Dictionary<int, Dictionary<string, int>>();
 
@@ -59,6 +61,19 @@ namespace PunkMultiverse.Patches
             string key = CurrencyIdPrefix + resourceId;
             byId.TryGetValue(key, out int n);
             byId[key] = n + amount; // accumulate the coin's currency VALUE
+        }
+
+        // Reserved prefix marking a Consumable id (vs an Ingredient id). Suffix is the Consumable.id;
+        // Count is the number of that consumable, granted per-player via Vault.Add(Consumable,int).
+        internal const string ConsumableIdPrefix = "$con:";
+
+        private static void CaptureConsumableDrop(int netId, string id)
+        {
+            if (!CapturedLoot.TryGetValue(netId, out var byId))
+                CapturedLoot[netId] = byId = new Dictionary<string, int>();
+            string key = ConsumableIdPrefix + id;
+            byId.TryGetValue(key, out int n);
+            byId[key] = n + 1; // each Consumable pickup is worth 1
         }
 
         /// <summary>Read and clear the loot rolled for netId as a wire payload. Empty when nothing
@@ -126,6 +141,25 @@ namespace PunkMultiverse.Patches
                     continue;
                 }
 
+                // Consumable: per-player Vault, same pattern as ingredients (WS5.1).
+                if (entry.Id.StartsWith(ConsumableIdPrefix, System.StringComparison.Ordinal))
+                {
+                    if (vault == null) continue;
+                    string conId = entry.Id.Substring(ConsumableIdPrefix.Length);
+                    Consumable consumable = null;
+                    try { consumable = ServiceLocator.Get<IRegistry<Consumable, string>>()?.Get(conId); } catch { }
+                    if (consumable == null)
+                    {
+                        if (NetDiag.Enabled)
+                            NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} remote consumable '{conId}' — unknown id, skipped");
+                        continue;
+                    }
+                    vault.Add(consumable, entry.Count);
+                    if (NetDiag.Enabled)
+                        NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} granted remote consumable +{entry.Count} {conId} (entity not resident here)");
+                    continue;
+                }
+
                 // Ingredient: per-player Vault.
                 if (vault == null || registry == null) continue;
                 var ingredient = registry.Get(entry.Id);
@@ -160,6 +194,15 @@ namespace PunkMultiverse.Patches
                     var ingredient = __0.ingredient;
                     if (ingredient == null || string.IsNullOrEmpty(ingredient.id)) return;
                     CaptureIngredientDrop(netId, ingredient.id);
+                    return;
+                }
+
+                // Consumable == item pickup granted per-player into the Vault (WS5.1).
+                if (__0.droppableType == DroppabbleType.Consumable)
+                {
+                    var consumable = __0.consumable;
+                    if (consumable == null || string.IsNullOrEmpty(consumable.id)) return;
+                    CaptureConsumableDrop(netId, consumable.id);
                     return;
                 }
 

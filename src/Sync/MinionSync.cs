@@ -272,9 +272,16 @@ namespace PunkMultiverse.Sync
                     // window is recoverable, a missing entity is a permanent divergence.
                     prefabGo.SetActive(prefabWasActive);
                     Plugin.Log.LogWarning($"[Spawns] inactive replica bind failed for '{entityId}' " +
-                        $"({(bindFailure.InnerException ?? bindFailure).GetType().Name}) — retrying active");
-                    created = AccessTools.Method(typeof(EntityGameObjectManager), "CreateEntity")
-                        .Invoke(egm, new object[] { prefab, pos });
+                        $"({(bindFailure.InnerException ?? bindFailure).GetType().Name}) — retrying active (fire suppressed)");
+                    // The active instantiation runs OnEnable with prefab-active shooters live; suppress
+                    // any burst they fire in the one-frame window before MuteNow() (WS2.4).
+                    ProjectileSync.BeginReplicaBindSuppression();
+                    try
+                    {
+                        created = AccessTools.Method(typeof(EntityGameObjectManager), "CreateEntity")
+                            .Invoke(egm, new object[] { prefab, pos });
+                    }
+                    finally { ProjectileSync.EndReplicaBindSuppression(); }
                 }
                 finally
                 {

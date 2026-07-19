@@ -430,7 +430,16 @@ namespace PunkMultiverse.Sync
             root.transform.position = new Vector3(target.x, target.y, t.z);
             if (delta.sqrMagnitude < 0.0001f) return;
             foreach (var child in root.GetComponentsInChildren<Rigidbody2D>(true))
-                if (child != null && child != root) child.position += delta;
+            {
+                if (child == null || child == root) continue;
+                child.position += delta;
+                // Carrying position alone leaves each part the velocity it had chasing the joint
+                // across the gap — it springs back the moment physics resumes. Settle the parts at
+                // the carried rest pose (fresh-spawn semantics: a just-spawned body has no velocity),
+                // so a 50u correction lands the whole chain still instead of whipping it (WS3.1).
+                child.linearVelocity = Vector2.zero;
+                child.angularVelocity = 0f;
+            }
         }
     }
 }

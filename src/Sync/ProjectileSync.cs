@@ -16,6 +16,12 @@ namespace PunkMultiverse.Sync
         internal uint ShotId;
         internal ushort Ordinal;
         internal bool Replayed;
+
+        // Fires exactly when Unity destroys the projectile (detonation, vanilla lifetime, scene
+        // teardown) — the one moment we can incrementally clean the tracking sets. Without it,
+        // VisualProjectiles grows all run and, worse, a reused instanceId flags a fresh object as
+        // visual. The TTL sweep is only a backstop for entries this never reaches.
+        private void OnDestroy() => ProjectileSync.OnProjectileDestroyed(this);
     }
 
     /// <summary>
@@ -35,6 +41,42 @@ namespace PunkMultiverse.Sync
         // block and explodes again. Value goes (fake-)null when Unity destroys the projectile.
         private static readonly Dictionary<(byte slot, uint shot, ushort ord), Component> VisualByIdentity
             = new Dictionary<(byte, uint, ushort), Component>();
+        // Idle-expiry per visual copy: a copy whose detonate event was lost would otherwise fly until
+        // vanilla lifetime (or forever, for a deployed mine). Refreshed on spawn and on every 1.1 flight
+        // update; a copy idle past the TTL (no spawn, no stream, no detonate) is culled. Also GCs entries
+        // for copies that self-destroyed at vanilla lifetime without a detonate event (bounds the map).
+        private static readonly Dictionary<(byte slot, uint shot, ushort ord), float> VisualExpiry
+            = new Dictionary<(byte, uint, ushort), float>();
+        private static readonly List<(byte slot, uint shot, ushort ord)> _visualSweepScratch
+            = new List<(byte, uint, ushort)>();
+        private static float _nextVisualSweepAt;
+        // Longer than any normal bullet flight; heavy ordnance refreshes it via 1.1 streaming, so this
+        // only ever culls genuinely-stranded copies.
+        private const float VisualProjectileTtlSeconds = 10f;
+
+        // WS1.1 — heavy-ordnance flight streaming (owner side). Every owner-real (non-replayed)
+        // projectile is tracked until it either dies fast (a bullet — never streamed) or proves heavy
+        // by longevity/slowness, at which point the owner streams its position+velocity so peers snap
+        // their visual copy to the true path. Classified by OBSERVED behavior (alive past a window, or
+        // moving slowly) rather than fragile per-type field reflection.
+        private sealed class OwnedProjectile
+        {
+            internal Component Comp;
+            internal (byte slot, uint shot, ushort ord) Key;
+            internal float SpawnTime;
+            internal Vector2 LastPos;
+            internal float LastPosTime;
+            internal Vector2 Velocity;
+            internal bool Streaming;
+            internal float NextSendAt;
+        }
+        private static readonly List<OwnedProjectile> OwnedProjectiles = new List<OwnedProjectile>();
+        private const float HeavyOrdnancePromoteSeconds = 1.5f;  // outlived the fast-bullet window
+        private const float HeavyOrdnanceStreamHz = 12f;         // dead-reckons well between updates; keeps <2KB/s/shooter at 4p
+        private const int MaxStreamedProjectiles = 24;           // bandwidth backstop (mine spam)
+        private static int _streamedProjectileCount;
+        private static float _nextStreamOverflowWarnAt;
+        internal static int StreamedProjectileCount => _streamedProjectileCount;
         // Identities whose owner-authoritative detonation we've already accounted for (via the event
         // or a first local boom); a second boom for the same pellet is suppressed — the "explodes
         // twice" symptom when a peer copy flies through a host-cleared block and detonates downrange.
@@ -140,10 +182,24 @@ namespace PunkMultiverse.Sync
 
         public static bool IsReplaying => _replayDepth > 0;
 
+        // WS2.4 — bind-window suppression. When a replica must be instantiated ACTIVE (its Shield et al.
+        // NRE on inactive bind), the prefab's OnEnable can fire a burst before MuteNow() lands. Bracket
+        // that CreateEntity in this scope: the same guard the replay path uses makes any projectile
+        // spawned in the window visual-only (no damage) and stops it from being captured/broadcast, so
+        // the one-frame active window produces no unsynced orphan shot.
+        internal static void BeginReplicaBindSuppression() => _replayDepth++;
+        internal static void EndReplicaBindSuppression() => _replayDepth--;
+
         public static void Reset()
         {
             VisualProjectiles.Clear();
             VisualByIdentity.Clear();
+            VisualExpiry.Clear();
+            _visualSweepScratch.Clear();
+            _nextVisualSweepAt = 0f;
+            OwnedProjectiles.Clear();
+            _streamedProjectileCount = 0;
+            _nextStreamOverflowWarnAt = 0f;
             DetonatedIdentities.Clear();
             DetonatedOrder.Clear();
             EntityWeapons.Clear();
@@ -561,7 +617,11 @@ namespace PunkMultiverse.Sync
                           (targetSlot != 255 ? $" at {Core.NetDiag.Owner(targetSlot)}" : ""));
             Writer.Reset();
             msg.Write(Writer);
-            session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+            // Victim-favored delivery: the targeted player gets this reliably (an attack that can
+            // damage them is never silently invisible under load), everyone else unreliable. Safe
+            // post-RC1/RC2 now that entity-fire churn ≈ 0. TargetSlot==255 falls back to plain
+            // unreliable broadcast inside SendEntityFire.
+            session.SendEntityFire(Writer.ToSegment(), targetSlot);
         }
 
         private static (SavableEntity, int) ResolveEntityWeapon(WeaponBase weapon, IBarrel barrel)
@@ -640,6 +700,9 @@ namespace PunkMultiverse.Sync
                 return;
             }
             if (EnemySync.IsKilled(msg.NetId)) return; // dead here — nothing to anchor the replay to
+            // Remember who this enemy is shooting at, on every viewer — so if we later take over its
+            // simulation (handoff/migration) its AI re-engages the same player instead of cold-starting (WS3.2).
+            Core.AuthorityManager.NoteAggro(msg.NetId, msg.TargetSlot);
             var segment = new AuthorityManager.SegmentKey(msg.SegmentX, msg.SegmentY);
             if (!AuthorityManager.SegmentOf(msg.BodyPos).Equals(segment)
                 || !AuthorityManager.IsStateAuthority(msg.NetId, segment, msg.SourceSlot, msg.Epoch))
@@ -802,6 +865,8 @@ namespace PunkMultiverse.Sync
                 PendingShipFires.RemoveAt(i);
                 ReplayFireNow(pending.Msg);
             }
+            TickHeavyOrdnanceStream(now);
+            SweepStaleVisuals(now);
         }
 
         private static void ReplayFireNow(FireEventMsg msg)
@@ -933,6 +998,102 @@ namespace PunkMultiverse.Sync
             identity.ShotId = _currentShot.ShotId;
             identity.Ordinal = _currentShot.NextOrdinal++;
             identity.Replayed = _currentShot.Replayed;
+            // Owner-real projectiles (not peer replays) are candidates for heavy-ordnance flight
+            // streaming — the tick decides which prove heavy and start streaming (WS1.1).
+            if (!identity.Replayed)
+                OwnedProjectiles.Add(new OwnedProjectile
+                {
+                    Comp = projectile,
+                    Key = (identity.SourceSlot, identity.ShotId, identity.Ordinal),
+                    SpawnTime = Time.unscaledTime,
+                    LastPos = projectile.transform.position,
+                    LastPosTime = Time.unscaledTime,
+                });
+        }
+
+        // WS1.1 owner tick: measure each owner-real projectile, promote heavy ones, stream their
+        // flight. Reaps entries once Unity destroys the projectile (detonation/lifetime).
+        private static void TickHeavyOrdnanceStream(float now)
+        {
+            if (OwnedProjectiles.Count == 0) return;
+            var session = NetSession.Instance;
+            bool canSend = session != null && session.State == SessionState.InGame;
+            float sendInterval = 1f / HeavyOrdnanceStreamHz;
+            for (int i = OwnedProjectiles.Count - 1; i >= 0; i--)
+            {
+                var op = OwnedProjectiles[i];
+                if (op.Comp == null)
+                {
+                    if (op.Streaming) _streamedProjectileCount--;
+                    OwnedProjectiles.RemoveAt(i);
+                    continue;
+                }
+                Vector2 pos = op.Comp.transform.position;
+                float dt = now - op.LastPosTime;
+                if (dt > 0.0001f)
+                {
+                    op.Velocity = (pos - op.LastPos) / dt;
+                    op.LastPos = pos;
+                    op.LastPosTime = now;
+                }
+                if (!op.Streaming)
+                {
+                    // Promote purely on observed longevity: anything still alive past the fast-bullet
+                    // window is heavy ordnance (rocket/mine/bomb) worth streaming. A pure speed test
+                    // over-promotes — the owner simulates every enemy, and slow-but-short-lived enemy
+                    // bullets would flood the streamer to its cap for no benefit (they die before a
+                    // second update would matter). Longevity alone still captures mines (sit forever),
+                    // rockets and bombs (fly/arc > 1.5s), and excludes every short-lived bullet.
+                    bool longLived = (now - op.SpawnTime) >= HeavyOrdnancePromoteSeconds;
+                    if (longLived)
+                    {
+                        if (_streamedProjectileCount >= MaxStreamedProjectiles)
+                        {
+                            if (now >= _nextStreamOverflowWarnAt)
+                            {
+                                _nextStreamOverflowWarnAt = now + 5f;
+                                Plugin.Log.LogWarning($"[Projectile] heavy-ordnance stream cap {MaxStreamedProjectiles} " +
+                                    "reached; extra copies stay re-simulated (bandwidth backstop)");
+                            }
+                        }
+                        else
+                        {
+                            op.Streaming = true;
+                            _streamedProjectileCount++;
+                            op.NextSendAt = 0f; // stream immediately on promotion
+                        }
+                    }
+                }
+                if (op.Streaming && canSend && now >= op.NextSendAt)
+                {
+                    op.NextSendAt = now + sendInterval;
+                    Writer.Reset();
+                    new ProjectileStateMsg
+                    {
+                        SourceSlot = op.Key.slot, ShotId = op.Key.shot, Ordinal = op.Key.ord,
+                        Pos = pos, Vel = op.Velocity,
+                    }.Write(Writer);
+                    session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+                }
+            }
+        }
+
+        // Peer side (WS1.1): snap our visual copy to the authority's streamed flight and dead-reckon
+        // on the streamed velocity between updates. Refreshes the TTL so an actively-streamed copy is
+        // never culled. Ignored once we've seen this pellet's detonation, or before its copy exists.
+        public static void ApplyProjectileState(ProjectileStateMsg msg)
+        {
+            var key = (msg.SourceSlot, msg.ShotId, msg.Ordinal);
+            if (DetonatedIdentities.Contains(key)) return;
+            if (!VisualByIdentity.TryGetValue(key, out var comp) || comp == null) return;
+            comp.transform.position = msg.Pos;
+            var rb = comp.GetComponent<Rigidbody2D>();
+            if (rb != null)
+            {
+                rb.position = msg.Pos;
+                rb.linearVelocity = msg.Vel;
+            }
+            VisualExpiry[key] = Time.unscaledTime + VisualProjectileTtlSeconds;
         }
 
         // ---------------------------------------------------------------- damage suppression
@@ -1353,10 +1514,49 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // Called from NetworkProjectileIdentity.OnDestroy: drop this projectile from every tracking
+        // set the instant Unity destroys it, so VisualProjectileCount tracks live copies (drops to ~0
+        // at a cease-fire) and a reused instanceId can never be mistaken for a live visual. Ordinals
+        // are unique per (slot,shot), so the key removal targets exactly this projectile.
+        internal static void OnProjectileDestroyed(NetworkProjectileIdentity id)
+        {
+            if (id == null) return;
+            VisualProjectiles.Remove(id.gameObject.GetInstanceID());
+            var key = (id.SourceSlot, id.ShotId, id.Ordinal);
+            VisualByIdentity.Remove(key);
+            VisualExpiry.Remove(key);
+        }
+
         private static void IndexVisualByIdentity(Component projectile)
         {
             var id = projectile != null ? projectile.GetComponent<NetworkProjectileIdentity>() : null;
-            if (id != null) VisualByIdentity[(id.SourceSlot, id.ShotId, id.Ordinal)] = projectile;
+            if (id == null) return;
+            var key = (id.SourceSlot, id.ShotId, id.Ordinal);
+            VisualByIdentity[key] = projectile;
+            VisualExpiry[key] = Time.unscaledTime + VisualProjectileTtlSeconds;
+        }
+
+        // TTL sweep (1.2): cull visual copies stranded past their idle window and GC map entries for
+        // copies Unity already destroyed. Amortized to ~1 Hz; the TTL is coarse by design.
+        private static void SweepStaleVisuals(float now)
+        {
+            if (now < _nextVisualSweepAt) return;
+            _nextVisualSweepAt = now + 1f;
+            _visualSweepScratch.Clear();
+            foreach (var kv in VisualExpiry)
+                if (now >= kv.Value) _visualSweepScratch.Add(kv.Key);
+            for (int i = 0; i < _visualSweepScratch.Count; i++)
+            {
+                var key = _visualSweepScratch[i];
+                VisualExpiry.Remove(key);
+                if (!VisualByIdentity.TryGetValue(key, out var comp)) continue;
+                VisualByIdentity.Remove(key);
+                if (comp != null)
+                {
+                    VisualProjectiles.Remove(comp.gameObject.GetInstanceID());
+                    DestroyProjectile(comp);
+                }
+            }
         }
 
         // The owner's real projectile just exploded — announce it (identity + true blast point) so
@@ -1386,6 +1586,7 @@ namespace PunkMultiverse.Sync
             var key = (msg.SourceSlot, msg.ShotId, msg.Ordinal);
             bool firstHere = MarkDetonatedReturningFirst(key);
             bool consumed = false;
+            VisualExpiry.Remove(key);
             if (VisualByIdentity.TryGetValue(key, out var comp))
             {
                 VisualByIdentity.Remove(key);

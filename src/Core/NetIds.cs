@@ -199,10 +199,23 @@ namespace PunkMultiverse.Core
             }
         }
 
+        // Generation manifests hold a few thousand entities; runtime spawns use a separate high netId
+        // space (>= 1<<20) and never arrive as manifest chunks. Anything past this cap is a corrupt or
+        // hostile StartIndex — the fill loop below would otherwise grow LastManifest unboundedly and
+        // wedge the main thread (latent freeze/DoS).
+        private const int MaxManifestNetId = 1 << 20;
+
         /// <summary>Client: apply one manifest chunk; instanceIds arrive in netId order.</summary>
         public static void ApplyChunk(ManifestMsg msg)
         {
             if (_localFps == null) PrepareLocal();
+            long maxNetId = (long)msg.StartIndex + (msg.Fps?.Length ?? 0);
+            if (msg.StartIndex < 0 || maxNetId > MaxManifestNetId)
+            {
+                Plugin.Log.LogWarning($"[Ids] rejected manifest chunk: StartIndex={msg.StartIndex} " +
+                    $"count={msg.Fps?.Length ?? 0} exceeds bound {MaxManifestNetId}");
+                return;
+            }
             _expectedTotal = msg.Total;
             for (int i = 0; i < msg.Fps.Length; i++)
             {

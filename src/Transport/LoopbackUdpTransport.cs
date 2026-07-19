@@ -175,14 +175,16 @@ namespace PunkMultiverse.Transport
                 frame[1] = (byte)channel;
                 Buffer.BlockCopy(data.Array, data.Offset, frame, 2, data.Count);
                 _pacedReliable.Enqueue(new PendingSend { EndPoint = ep, Frame = frame });
-                Core.NetStats.AddOut(data.Count);
+                Core.NetStats.AddOut(channel, data.Count);
+                Core.NetSeq.NoteSent(peer, channel);
                 return true;
             }
             _sendBuf[0] = FrameData;
             _sendBuf[1] = (byte)channel;
             Buffer.BlockCopy(data.Array, data.Offset, _sendBuf, 2, data.Count);
             SendRaw(ep, _sendBuf, data.Count + 2);
-            Core.NetStats.AddOut(data.Count);
+            Core.NetStats.AddOut(channel, data.Count);
+            Core.NetSeq.NoteSent(peer, channel);
             return true;
         }
 

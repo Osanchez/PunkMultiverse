@@ -1024,10 +1024,13 @@ namespace PunkMultiverse.Protocol
     public struct TerrainDigestMsg
     {
         public uint Revision;
-        public ulong Hash;
+        public ulong Hash;      // ledger hash (cells changed from baseline)
         public int Count;
-        public void Write(NetWriter w) { w.WriteMsgType(MsgType.TerrainDigest); w.WriteUInt(Revision); w.WriteULong(Hash); w.WriteInt(Count); }
-        public static TerrainDigestMsg Read(NetReader r) => new TerrainDigestMsg { Revision = r.ReadUInt(), Hash = r.ReadULong(), Count = r.ReadInt() };
+        public ulong FullHash;  // WS2.1: full-array FNV over every cell; 0 = not computed this digest.
+                                // Catches divergence a reactive cascade wrote while _applying (dropped
+                                // from the ledger) — both ledgers agree while the arrays differ.
+        public void Write(NetWriter w) { w.WriteMsgType(MsgType.TerrainDigest); w.WriteUInt(Revision); w.WriteULong(Hash); w.WriteInt(Count); w.WriteULong(FullHash); }
+        public static TerrainDigestMsg Read(NetReader r) => new TerrainDigestMsg { Revision = r.ReadUInt(), Hash = r.ReadULong(), Count = r.ReadInt(), FullHash = r.ReadULong() };
     }
 
     public struct TerrainRepairRequestMsg
@@ -1085,6 +1088,9 @@ namespace PunkMultiverse.Protocol
     {
         public byte Slot;
         public uint Rev;
+        public byte Load; // WS10.1: frame-time load factor (0 idle .. 255 saturated); the lease
+                          // coordinator uses it as a tiebreak among resident candidates and as a
+                          // soft cap so a struggling PC stops accumulating segments
         public System.Collections.Generic.List<UnityEngine.Vector2Int> Segments;
 
         public void Write(NetWriter w)
@@ -1092,6 +1098,7 @@ namespace PunkMultiverse.Protocol
             w.WriteMsgType(MsgType.ResidencyReport);
             w.WriteByte(Slot);
             w.WriteUInt(Rev);
+            w.WriteByte(Load);
             int count = Segments?.Count ?? 0;
             w.WriteVarUInt((uint)count);
             for (int i = 0; i < count; i++)
@@ -1103,7 +1110,7 @@ namespace PunkMultiverse.Protocol
 
         public static ResidencyReportMsg Read(NetReader r)
         {
-            var msg = new ResidencyReportMsg { Slot = r.ReadByte(), Rev = r.ReadUInt() };
+            var msg = new ResidencyReportMsg { Slot = r.ReadByte(), Rev = r.ReadUInt(), Load = r.ReadByte() };
             int count = (int)r.ReadVarUInt();
             msg.Segments = new System.Collections.Generic.List<UnityEngine.Vector2Int>(count);
             for (int i = 0; i < count; i++)
@@ -1451,6 +1458,146 @@ namespace PunkMultiverse.Protocol
             ShotId = r.ReadUInt(),
             Ordinal = (ushort)r.ReadVarUInt(),
             Pos = r.ReadPosition(),
+        };
+    }
+
+    /// <summary>Owner streams a heavy/long-lived projectile's flight (rocket, mine, bomb) so peers snap
+    /// their visual copy of the same pellet (SourceSlot+ShotId+Ordinal) to the authority's real path and
+    /// dead-reckon on Vel between updates, instead of free-flying an independent re-simulation that
+    /// diverges over distance/terrain. Fast bullets are never streamed (bandwidth cliff) — WS1.1.</summary>
+    public struct ProjectileStateMsg
+    {
+        public byte SourceSlot;
+        public uint ShotId;
+        public ushort Ordinal;
+        public UnityEngine.Vector2 Pos;
+        public UnityEngine.Vector2 Vel;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ProjectileState);
+            w.WriteByte(SourceSlot);
+            w.WriteUInt(ShotId);
+            w.WriteVarUInt(Ordinal);
+            w.WritePosition(Pos);
+            w.WriteVector2Half(Vel);
+        }
+
+        public static ProjectileStateMsg Read(NetReader r) => new ProjectileStateMsg
+        {
+            SourceSlot = r.ReadByte(),
+            ShotId = r.ReadUInt(),
+            Ordinal = (ushort)r.ReadVarUInt(),
+            Pos = r.ReadPosition(),
+            Vel = r.ReadVector2Half(),
+        };
+    }
+
+    /// <summary>A viewer's receive-quality score (0 = clean .. 255 = starving), computed from its own
+    /// interpolation underruns, chunk gaps, and jitter. Owners map it to that viewer's presentation-plane
+    /// byte budget with slow-start probing: grow on clean, halve on backlog (WS7.2). Correctness traffic
+    /// is never budgeted — a congested viewer gets a choppier world, never a divergent one.</summary>
+    public struct LinkHealthMsg
+    {
+        public byte Slot;
+        public byte Score;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.LinkHealth);
+            w.WriteByte(Slot);
+            w.WriteByte(Score);
+        }
+
+        public static LinkHealthMsg Read(NetReader r) => new LinkHealthMsg
+        {
+            Slot = r.ReadByte(),
+            Score = r.ReadByte(),
+        };
+    }
+
+    /// <summary>WS9.1 Merkle-lite: an owner's cheap identity summary for one owned segment — an
+    /// order-independent hash over (netId, lifetime) plus the roster count, published at ~0.2 Hz per
+    /// segment. Viewers hash their own view of the segment; on a CONFIRMED mismatch they echo the
+    /// summary back (EchoSlot set) and the owner answers with a targeted SegmentRosterAudit — the
+    /// existing, proven repair arm. Bounds detection time for every identity-class desync (ghost,
+    /// zombie, lost spawn, missed kill) to ~2 summary cycles instead of "whenever an audit notices".</summary>
+    public struct SegmentStateSummaryMsg
+    {
+        public byte OwnerSlot;
+        public byte EchoSlot;   // 255 = owner broadcast; else the mismatching viewer's slot
+        public int SegmentX, SegmentY;
+        public uint Epoch;
+        public int Count;
+        public ulong Hash;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SegmentStateSummary);
+            w.WriteByte(OwnerSlot);
+            w.WriteByte(EchoSlot);
+            w.WriteInt(SegmentX);
+            w.WriteInt(SegmentY);
+            w.WriteUInt(Epoch);
+            w.WriteVarUInt((uint)Count);
+            w.WriteULong(Hash);
+        }
+
+        public static SegmentStateSummaryMsg Read(NetReader r) => new SegmentStateSummaryMsg
+        {
+            OwnerSlot = r.ReadByte(),
+            EchoSlot = r.ReadByte(),
+            SegmentX = r.ReadInt(),
+            SegmentY = r.ReadInt(),
+            Epoch = r.ReadUInt(),
+            Count = (int)r.ReadVarUInt(),
+            Hash = r.ReadULong(),
+        };
+    }
+
+    /// <summary>WS8.2: the host's per-channel sequence checkpoint. Count = messages accepted for this
+    /// peer on this channel BEFORE this checkpoint. Reliable channels are ordered, so on arrival the
+    /// receiver must hold at least Count messages — any deficit is silent loss.</summary>
+    public struct EventSeqCheckpointMsg
+    {
+        public byte Channel;
+        public uint Count;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EventSeqCheckpoint);
+            w.WriteByte(Channel);
+            w.WriteUInt(Count);
+        }
+
+        public static EventSeqCheckpointMsg Read(NetReader r) => new EventSeqCheckpointMsg
+        {
+            Channel = r.ReadByte(),
+            Count = r.ReadUInt(),
+        };
+    }
+
+    /// <summary>WS8.2: a client detected a checkpoint deficit and asks for the idempotent event
+    /// catch-up replay. Expected/Received are diagnostic (they name the size of the hole).</summary>
+    public struct EventGapReportMsg
+    {
+        public byte Channel;
+        public uint Expected;
+        public uint Received;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.EventGapReport);
+            w.WriteByte(Channel);
+            w.WriteUInt(Expected);
+            w.WriteUInt(Received);
+        }
+
+        public static EventGapReportMsg Read(NetReader r) => new EventGapReportMsg
+        {
+            Channel = r.ReadByte(),
+            Expected = r.ReadUInt(),
+            Received = r.ReadUInt(),
         };
     }
 

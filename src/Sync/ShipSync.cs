@@ -31,11 +31,22 @@ namespace PunkMultiverse.Sync
         private static Level _level;
         private static float _nextLateSpawnAt;
 
+        // WS4.1 — rejoin ship-reclaim. On disconnect a remote puppet is HIDDEN (not destroyed) and
+        // parked here for a reclaim window; a rejoin within it reactivates the same object (no visible
+        // statue, no destroy/respawn churn, near-instant reconnect). After the window it despawns as
+        // before. Slot lives here XOR in ShipsBySlot, never both.
+        private sealed class SuspendedShip { internal Ship Ship; internal float DespawnAt; }
+        private static readonly Dictionary<byte, SuspendedShip> SuspendedShips = new Dictionary<byte, SuspendedShip>();
+        private static readonly List<byte> _suspendSweepScratch = new List<byte>();
+        private const float ShipReclaimWindowSeconds = 60f;
+
         public static void Reset()
         {
             ShipsBySlot.Clear();
             ViewSlotByPlayer.Clear();
             LastShipStateMs.Clear();
+            SuspendedShips.Clear();
+            _suspendSweepScratch.Clear();
             LocalShip = null;
             _localAimer = null;
             _shipManager = null;
@@ -137,12 +148,116 @@ namespace PunkMultiverse.Sync
                 if (p == null || !p.Connected || p.IsLocal || ShipsBySlot.ContainsKey(p.Slot)) continue;
                 try
                 {
+                    // A rejoiner still within its reclaim window reuses the hidden puppet instead of
+                    // a fresh spawn (WS4.1); only fall through to SpawnPuppet if the parked object is
+                    // gone or the window elapsed.
+                    if (SuspendedShips.ContainsKey((byte)p.Slot) && ReclaimRemoteShip((byte)p.Slot))
+                    {
+                        ApplyThemes(_shipManager, session);
+                        continue;
+                    }
                     if (SpawnPuppet(p.Slot)) ApplyThemes(_shipManager, session);
                 }
                 catch (Exception e)
                 {
                     Plugin.Log.LogError($"[Ships] late puppet spawn failed for slot {p.Slot}: {e}");
                 }
+            }
+        }
+
+        /// <summary>Locate a slot's remote puppet ship, tolerating a lost dictionary entry (disconnect
+        /// is rare, so an exhaustive scan is preferable to leaving a frozen prop in the scene).</summary>
+        private static Ship FindRemoteShip(byte slot)
+        {
+            if (ShipsBySlot.TryGetValue(slot, out var ship) && ship != null) return ship;
+            if (_shipManager != null)
+            {
+                ship = _shipManager.Ships.FirstOrDefault(candidate => candidate != null
+                    && candidate.GetComponent<RemotePuppet>()?.Slot == slot);
+                if (ship != null) return ship;
+            }
+            return UnityEngine.Object.FindObjectsByType<RemotePuppet>(FindObjectsSortMode.None)
+                .FirstOrDefault(candidate => candidate != null && candidate.Slot == slot)
+                ?.GetComponent<Ship>();
+        }
+
+        /// <summary>Disconnect handling (WS4.1): hide the puppet and park it for a reclaim window instead
+        /// of destroying it outright. Removes the "his ship is still there" confusion (it vanishes at
+        /// once, no targetable statue) while a rejoin within the window reactivates the very same object.</summary>
+        public static void SuspendRemoteShip(byte slot, string reason)
+        {
+            var session = NetSession.Instance;
+            if (session != null && slot == session.LocalSlot) return;
+            if (SuspendedShips.ContainsKey(slot)) return; // already parked
+            LastShipStateMs.Remove(slot);
+            ShipsBySlot.Remove((int)slot);
+            var ship = FindRemoteShip(slot);
+            if (session != null && slot < session.Players.Count && session.Players[slot] != null)
+                session.Players[slot].Ship = null;
+            if (ship == null)
+            {
+                Plugin.Log.LogInfo($"[Ships] disconnect cleanup P{slot + 1}: no live puppet remained ({reason})");
+                return;
+            }
+            try
+            {
+                RemotePuppet.ScrubInteractions(ship);
+                // SetActive(false) hides renderers, disables colliders, and stops the RemotePuppet's
+                // FixedUpdate in one move — no statue, no drift, non-targetable. The object and its
+                // ShipManager registration stay intact so reclaim is a single SetActive(true).
+                ship.gameObject.SetActive(false);
+                SuspendedShips[slot] = new SuspendedShip { Ship = ship, DespawnAt = Time.unscaledTime + ShipReclaimWindowSeconds };
+                Plugin.Log.LogInfo($"[Ships] suspended puppet P{slot + 1} for {ShipReclaimWindowSeconds:0}s reclaim ({reason})");
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Ships] suspend failed for P{slot + 1}: {e.Message}; destroying");
+                DestroyShipObject(ship, slot, reason);
+            }
+        }
+
+        /// <summary>Rejoin fast-path (WS4.1): reactivate a parked puppet instead of destroy+respawn.
+        /// Incoming snapshots re-bind position/HP/fuel within a frame or two. Returns false (and drops
+        /// the entry) if the parked object is gone, so the caller falls back to a fresh spawn.</summary>
+        public static bool ReclaimRemoteShip(byte slot)
+        {
+            if (!SuspendedShips.TryGetValue(slot, out var parked)) return false;
+            SuspendedShips.Remove(slot);
+            var ship = parked.Ship;
+            if (ship == null) return false;
+            try
+            {
+                ship.gameObject.SetActive(true);
+                var puppet = ship.GetComponent<RemotePuppet>();
+                if (puppet != null) puppet.ResetForReclaim();
+                ShipsBySlot[slot] = ship;
+                var session = NetSession.Instance;
+                if (session != null && slot < session.Players.Count && session.Players[slot] != null)
+                    session.Players[slot].Ship = ship;
+                Plugin.Log.LogInfo($"[Ships] reclaimed puppet P{slot + 1} (fast rejoin)");
+                return true;
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Ships] reclaim failed for P{slot + 1}: {e.Message}; destroying");
+                DestroyShipObject(ship, slot, "reclaim failed");
+                return false;
+            }
+        }
+
+        // Retire parked puppets whose reclaim window elapsed — the player did not come back in time.
+        private static void TickSuspendedShips(float now)
+        {
+            if (SuspendedShips.Count == 0) return;
+            _suspendSweepScratch.Clear();
+            foreach (var kv in SuspendedShips)
+                if (now >= kv.Value.DespawnAt) _suspendSweepScratch.Add(kv.Key);
+            for (int i = 0; i < _suspendSweepScratch.Count; i++)
+            {
+                byte slot = _suspendSweepScratch[i];
+                if (!SuspendedShips.TryGetValue(slot, out var parked)) continue;
+                SuspendedShips.Remove(slot);
+                DestroyShipObject(parked.Ship, slot, "reclaim window elapsed");
             }
         }
 
@@ -156,25 +271,22 @@ namespace PunkMultiverse.Sync
             LastShipStateMs.Remove(slot);
             ShipsBySlot.TryGetValue(slot, out var ship);
             ShipsBySlot.Remove(slot);
+            if (session != null && slot < session.Players.Count && session.Players[slot] != null)
+                session.Players[slot].Ship = null;
+            if (ship == null) ship = FindRemoteShip(slot);
+            if (ship == null)
+            {
+                Plugin.Log.LogInfo($"[Ships] disconnect cleanup P{slot + 1}: no live puppet remained ({reason})");
+                return;
+            }
+            DestroyShipObject(ship, slot, reason);
+        }
 
+        private static void DestroyShipObject(Ship ship, byte slot, string reason)
+        {
+            if (ship == null) return;
             try
             {
-                if (session != null && slot < session.Players.Count && session.Players[slot] != null)
-                    session.Players[slot].Ship = null;
-                // Recover from a lost dictionary entry too. Disconnect is rare, so an exhaustive
-                // lookup is preferable to leaving a frozen, targetable ship prop in the scene.
-                if (ship == null && _shipManager != null)
-                    ship = _shipManager.Ships.FirstOrDefault(candidate => candidate != null
-                        && candidate.GetComponent<RemotePuppet>()?.Slot == slot);
-                if (ship == null)
-                    ship = UnityEngine.Object.FindObjectsByType<RemotePuppet>(FindObjectsSortMode.None)
-                        .FirstOrDefault(candidate => candidate != null && candidate.Slot == slot)
-                        ?.GetComponent<Ship>();
-                if (ship == null)
-                {
-                    Plugin.Log.LogInfo($"[Ships] disconnect cleanup P{slot + 1}: no live puppet remained ({reason})");
-                    return;
-                }
                 RemotePuppet.ScrubInteractions(ship);
                 try
                 {
@@ -421,6 +533,7 @@ namespace PunkMultiverse.Sync
         public static void Tick(NetSession session)
         {
             EnsureLatePuppets(session);
+            TickSuspendedShips(Time.unscaledTime);
             SweepDistantCameraTargets();
             SweepPuppetOverlaps();
             SweepPuppetHudGate();

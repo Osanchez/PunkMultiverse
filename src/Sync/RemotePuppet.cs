@@ -265,6 +265,17 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // WS4.1: called when a suspended puppet is reclaimed (reactivated after a rejoin). Drop the
+        // pre-suspend snapshot tail so the puppet binds to fresh state instead of interpolating across
+        // the disconnect gap, and undo any stale-freeze so gravity/motion resume once snapshots arrive.
+        public void ResetForReclaim()
+        {
+            _buffer.Clear();
+            if (_frozenStale && _rb != null) _rb.gravityScale = _savedGravityScale;
+            _frozenStale = false;
+            _timing.Reset();
+        }
+
         public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot, Vector2 aim)
         {
             _timing.Observe(time);

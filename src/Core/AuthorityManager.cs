@@ -72,6 +72,14 @@ namespace PunkMultiverse.Core
         private static readonly Dictionary<byte, HashSet<SegmentKey>> ResidentSets
             = new Dictionary<byte, HashSet<SegmentKey>>();
         private static readonly Dictionary<byte, uint> ResidencyRevs = new Dictionary<byte, uint>();
+        // WS10.1 — capability-weighted placement. Load factor per peer (0..255, from frame-time EMA);
+        // used ONLY to re-rank eligible resident candidates and to soft-cap grants to a struggling
+        // peer. Sticky-grab and "leases only within residency" are untouched.
+        private static readonly Dictionary<byte, byte> PeerLoads = new Dictionary<byte, byte>();
+        private static readonly Dictionary<byte, int> ScanOwnedCounts = new Dictionary<byte, int>();
+        private static float _frameMsEma = 16.7f;
+        private const byte OverloadThreshold = 160;   // ≈ 25 fps sustained
+        private const int OverloadedSegmentCap = 6;   // grants stop here while overloaded
         // A segment that just left an owner's residency set stays "grace-resident" until this time,
         // so one-frame streaming flicker at a segment boundary doesn't ping-pong the lease (the RC2
         // authChurn storm). Keyed (slot, segment); consulted only to RETAIN the current owner when
@@ -118,6 +126,10 @@ namespace PunkMultiverse.Core
             ResidentGraceUntil.Clear();
             PendingDormancy.Clear();
             DeferredDormancyCommits.Clear();
+            AggroTargets.Clear();
+            PeerLoads.Clear();
+            ScanOwnedCounts.Clear();
+            _frameMsEma = 16.7f;
             _nextScanAt = 0;
             _nextEpoch = 1;
             _nextLedgerAt = 0;
@@ -173,6 +185,17 @@ namespace PunkMultiverse.Core
             return Leases.TryGetValue(key, out var lease) ? lease.Owner : DormantOwner;
         }
 
+        /// <summary>Segments currently leased to <paramref name="slot"/>. Used at host-migration time to
+        /// capture the departing host's segments BEFORE OnPeerLost flips them Dormant, so the new host
+        /// can seed their last-known entity states to every surviving peer (WS4.2).</summary>
+        internal static List<SegmentKey> SegmentsOwnedBy(byte slot)
+        {
+            var result = new List<SegmentKey>();
+            foreach (var pair in Leases)
+                if (pair.Value.Owner == slot) result.Add(pair.Key);
+            return result;
+        }
+
         internal static uint EpochOf(SegmentKey key) => Leases.TryGetValue(key, out var lease) ? lease.Epoch : 0;
 
         internal static bool CanApplyRuntimeBaseline(SegmentKey key, uint targetEpoch,
@@ -193,7 +216,20 @@ namespace PunkMultiverse.Core
         }
 
         public static void NoteCombat(int netId) { }
-        public static void NoteAggro(int netId, byte targetSlot) { }
+
+        // WS3.2 — handoff aggro memory. Every enemy shot already advertises its target slot
+        // (EntityFireMsg.TargetSlot); recording it on EVERY receiver means a peer that later takes
+        // over the entity's simulation (lease handoff, migration) inherits its aggro instead of the
+        // AI cold-starting and losing the player it was fighting. Only real targets are remembered
+        // (255 = "no target this shot" keeps the last one), so a brief LOS break doesn't erase it.
+        private static readonly Dictionary<int, byte> AggroTargets = new Dictionary<int, byte>();
+        public static void NoteAggro(int netId, byte targetSlot)
+        {
+            if (targetSlot != 255) AggroTargets[netId] = targetSlot;
+        }
+        internal static bool TryGetAggro(int netId, out byte targetSlot) => AggroTargets.TryGetValue(netId, out targetSlot);
+        internal static void ForgetAggro(int netId) => AggroTargets.Remove(netId);
+
         public static void OnReleased(int netId, byte releasingSlot) { }
 
         // ---------------------------------------------------------------- residency
@@ -203,12 +239,19 @@ namespace PunkMultiverse.Core
         /// semantics are idempotent — a lost report is healed by the next one.</summary>
         public static void TickResidency(NetSession session)
         {
-            if (session == null || Time.unscaledTime < _nextResidencyReportAt) return;
+            if (session == null) return;
+            // WS10.1: frame-time load factor. EMA of the real frame delta, scaled so 60 fps ≈ 67
+            // and 25 fps ≈ 160 (the overload threshold). Updated every tick regardless of the
+            // report debounce, so the next report always carries a current value.
+            _frameMsEma = Mathf.Lerp(_frameMsEma, Time.unscaledDeltaTime * 1000f, 0.05f);
+            byte load = (byte)Mathf.Clamp(_frameMsEma * 4f, 0f, 255f);
+            if (Time.unscaledTime < _nextResidencyReportAt) return;
             var active = EnemySync.TryGetActiveSegments();
             if (active == null) return;
             ulong hash = 0;
             foreach (var s in active) hash ^= ElementHash(s.x, s.y);
             hash ^= (ulong)active.Count << 56; // distinguish ∅ from an unluckily-cancelling set
+            hash ^= (ulong)(load / 32) * 0x9E3779B97F4A7C15UL; // a load-bucket change re-reports too
             if (hash == _lastResidencyHash) return;
             _lastResidencyHash = hash;
             _nextResidencyReportAt = Time.unscaledTime + ResidencyReportDebounce;
@@ -218,11 +261,12 @@ namespace PunkMultiverse.Core
             InstrumentationCounters.ResidencyReportSent(segments.Count);
             if (session.IsHost)
             {
+                PeerLoads[(byte)session.LocalSlot] = load;
                 ApplyResidencySet((byte)session.LocalSlot, _localResidencyRev, segments, session);
                 return;
             }
             Writer.Reset();
-            new ResidencyReportMsg { Slot = (byte)session.LocalSlot, Rev = _localResidencyRev, Segments = segments }
+            new ResidencyReportMsg { Slot = (byte)session.LocalSlot, Rev = _localResidencyRev, Load = load, Segments = segments }
                 .Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
         }
@@ -241,6 +285,7 @@ namespace PunkMultiverse.Core
         internal static void ApplyResidencyReport(ResidencyReportMsg msg, NetSession session)
         {
             if (!session.IsHost) return;
+            PeerLoads[msg.Slot] = msg.Load; // WS10.1: lease tiebreak + soft cap input
             ApplyResidencySet(msg.Slot, msg.Rev, msg.Segments, session);
         }
 
@@ -325,6 +370,7 @@ namespace PunkMultiverse.Core
             var session = NetSession.Instance;
             ResidentSets.Remove(slot);
             ResidencyRevs.Remove(slot);
+            PeerLoads.Remove(slot);
             _lostScratch.Clear();
             foreach (var pair in Leases)
             {
@@ -421,6 +467,15 @@ namespace PunkMultiverse.Core
                     Interested.Add(key);
             foreach (var kv in Leases)
                 if (kv.Value.Owner != DormantOwner || kv.Value.Pending) Interested.Add(kv.Key);
+
+            // WS10.1: owned-segment counts for the soft cap, one pass per scan (not per segment).
+            ScanOwnedCounts.Clear();
+            foreach (var kv in Leases)
+            {
+                if (kv.Value.Owner == DormantOwner) continue;
+                ScanOwnedCounts.TryGetValue(kv.Value.Owner, out int n);
+                ScanOwnedCounts[kv.Value.Owner] = n + 1;
+            }
 
             _claims.Clear();
             foreach (var key in Interested)
@@ -546,11 +601,31 @@ namespace PunkMultiverse.Core
                 return current.Owner;
             byte best = DormantOwner;
             int bestDistance = int.MaxValue;
-            foreach (var s in sims)
+            byte bestLoad = byte.MaxValue;
+            // WS10.1: two passes. Pass 0 skips candidates that are overloaded AND already at their
+            // segment cap; pass 1 (only if pass 0 found nobody) ignores the cap — a struggling
+            // resident peer still beats artificial dormancy (frozen enemies are the worse failure).
+            // Among equals, lower load wins before the slot-number tiebreak.
+            for (int pass = 0; pass < 2 && best == DormantOwner; pass++)
             {
-                if (!IsResident(s.slot, key)) continue;
-                int d = Chebyshev(key, s.segment);
-                if (d < bestDistance || (d == bestDistance && s.slot < best)) { bestDistance = d; best = s.slot; }
+                foreach (var s in sims)
+                {
+                    if (!IsResident(s.slot, key)) continue;
+                    if (pass == 0
+                        && PeerLoads.TryGetValue(s.slot, out byte candidateLoad) && candidateLoad >= OverloadThreshold
+                        && ScanOwnedCounts.TryGetValue(s.slot, out int owned) && owned >= OverloadedSegmentCap)
+                        continue;
+                    int d = Chebyshev(key, s.segment);
+                    byte load = PeerLoads.TryGetValue(s.slot, out byte l) ? l : (byte)0;
+                    if (d < bestDistance
+                        || (d == bestDistance && load < bestLoad)
+                        || (d == bestDistance && load == bestLoad && s.slot < best))
+                    {
+                        bestDistance = d;
+                        bestLoad = load;
+                        best = s.slot;
+                    }
+                }
             }
             // No peer is strictly resident this instant. Rather than flip away from (or dormant-ize)
             // the current owner on a one-frame streaming flicker, keep it while it's inside its

@@ -30,6 +30,8 @@ namespace PunkMultiverse.Core
         private static int _captureStack = 1;
         private static int _shutdown;
         private static int _hitchId;
+        private static int _handler = -1;
+        private static long _dispatchSeq;
 
         private static Thread _captureWorker;
         private static volatile bool _captureDone;
@@ -100,6 +102,15 @@ namespace PunkMultiverse.Core
         }
 
         internal static int CurrentPhase => Volatile.Read(ref _phase);
+
+        // The message-dispatch loop publishes the handler it's about to run plus a monotonic counter,
+        // so a hitch inside Transport.Poll names its handler. A disp# frozen across "ongoing" lines is
+        // the wedged handler; an advancing disp# means the stall is elsewhere.
+        internal static void SetHandler(int msgType)
+        {
+            Volatile.Write(ref _handler, msgType);
+            Interlocked.Increment(ref _dispatchSeq);
+        }
 
         internal static void Shutdown()
         {
@@ -183,10 +194,15 @@ namespace PunkMultiverse.Core
         private static string Format(int id, string kind, double ageMs, int state, long heartbeat)
         {
             long now = Stopwatch.GetTimestamp();
+            int handler = Volatile.Read(ref _handler);
+            string handlerStr = handler >= 0
+                ? string.Format(CultureInfo.InvariantCulture, " handler={0} disp#={1}",
+                    ((PunkMultiverse.Protocol.MsgType)handler).ToString(), Interlocked.Read(ref _dispatchSeq))
+                : "";
             return string.Format(CultureInfo.InvariantCulture,
-                "[Hitch] id={0} {1} age={2:0}ms mono={3:0.000}s state={4} phase={5} heartbeat={6}",
+                "[Hitch] id={0} {1} age={2:0}ms mono={3:0.000}s state={4} phase={5} heartbeat={6}{7}",
                 id, kind, ageMs, now / (double)Stopwatch.Frequency,
-                ((SessionState)state).ToString(), RuntimeInstrumentation.PhaseName(Volatile.Read(ref _phase)), heartbeat);
+                ((SessionState)state).ToString(), RuntimeInstrumentation.PhaseName(Volatile.Read(ref _phase)), heartbeat, handlerStr);
         }
 
         private static void StartStackCapture(int hitchId)

@@ -84,6 +84,19 @@
         ProjectileDetonate = 81,     // owner -> all: a real projectile exploded (identity + pos);
                                      // peers consume their visual copy so it can't fly through a
                                      // host-cleared block and detonate a second time downrange
+        ProjectileState = 82,        // owner -> all: heavy-ordnance (rocket/mine/bomb) flight state
+                                     // (identity + pos + vel); peers snap their visual copy to the
+                                     // authority's path and dead-reckon between updates (WS1.1)
+        LinkHealth = 83,             // viewer -> host -> all: 1-byte receive-quality score; owners
+                                     // map it to that viewer's presentation byte budget (WS7.2)
+        SegmentStateSummary = 84,    // owner -> all: cheap per-segment identity hash at 0.2 Hz;
+                                     // a viewer echoes it back on confirmed mismatch and the owner
+                                     // answers with a targeted roster audit (WS9.1 Merkle-lite)
+        EventSeqCheckpoint = 85,     // host -> client, per reliable channel: "N messages preceded
+                                     // this one" — ordered delivery makes it a barrier; a deficit
+                                     // at arrival is silent loss (outbox drop, migration gap) (WS8.2)
+        EventGapReport = 86,         // client -> host: checkpoint deficit detected; host answers
+                                     // with the idempotent SendEventCatchUp state replay (WS8.2)
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

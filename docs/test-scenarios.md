@@ -373,6 +373,47 @@ colocated and stationary). Fuel also passively regens / god tops it, so drain vi
 then read immediately with both ships parked. Full respawn-refuel path is best checked
 manually (god OFF — god tops fuel and masks it).
 
+## 25. summary-heal (WS9.1 Merkle-lite detection) — telemetry-only 2026-07-19
+
+Owners publish per-segment identity summaries (data-level netId+lifetime hash, 0.2 Hz).
+Shipped as DETECTION TELEMETRY: the echo->targeted-audit repair arm exists but is gated
+behind `[Diag] SummaryHeal = false` — position-based membership false-positives for
+entities outside a viewer's interest radius (stale data.position); see GAP_CLOSURE_SPEC
+9.1 notes for the v2 viewer-targeted predicate design.
+
+- Both live, soak >=60s.
+- PASS: `[BytePlanes] ... summaries=txN/chkM/missK` with N,M growing; K may grow slowly
+  (the known wander/fringe class — benign while SummaryHeal=off) but there must be ZERO
+  `[Heal]` lines and zero echo traffic with SummaryHeal at its default (off).
+- With `SummaryHeal = true` (experimental): mismatches echo and the owner answers with a
+  targeted roster audit — expect false-positive audits on fringe segments until v2.
+
+## 26. link-throttle (WS7.1/7.2 elastic presentation) — harness-supported 2026-07-19
+
+A starved viewer must get a *choppy* world, never a *divergent* one: budgets shape WHAT is
+sent (priority fill), correctness traffic never degrades.
+
+- Both live, enemies streaming (spawn a handful near the host if quiet).
+- `C> linkhealth 200` (client advertises distress every 2s).
+- PASS: host `[Diag:Budget] viewer P2 link score=200 -> budget ...` halving toward the 400B
+  floor (needs SyncDiagnostics); host `budgetDrops` climbing while the client KEEPS receiving
+  state (its `[StateFlow] rx...` stays >0); `kills`/`leases`/`terrainMismatch` identical on
+  both sides (correctness untouched); after 30s the client shows the CONNECTION DEGRADED
+  toast + `[Budget] link degraded` log.
+- `C> linkhealth auto` → budget regrows ×1.25 per clean report; `[Budget] link recovered`.
+- `H> netbudget 400` / `netbudget auto` exercises the owner-side cap directly (bypasses the
+  advertise path).
+- Regression gate: with BOTH at auto in a quiet 2-4 player session, `budgetDrops` must stay
+  ~flat after go-live (keyframes are phase-staggered per netId; a steadily climbing count
+  means the burst alignment came back).
+
+## 27. seq-gap (WS8.2 sequencer) — passive gate 2026-07-19
+
+The host stamps Events/Combat with per-channel checkpoints; ordered delivery makes them
+barriers. Any `[Seq] GAP` on a healthy loopback run is a real silent-loss bug (outbox drop,
+counting drift) — investigate, never ignore. Positive-path fault injection needs an
+outbox-overflow harness (future: a devcmd that drops N reliable sends deliberately).
+
 ---
 
 ### Cadence

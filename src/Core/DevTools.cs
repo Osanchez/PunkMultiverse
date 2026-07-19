@@ -557,18 +557,41 @@ namespace PunkMultiverse.Core
                 }
                 case "fuel":
                 {
-                    // Fuel-sync assertion: the local ship's fuel fraction plus every nearby ship
-                    // PUPPET's — a viewer's puppet must track its owner (esp. after a respawn refuel).
-                    var ship = ShipSync.LocalShip;
-                    if (ship == null) { Out("fuel: no local ship"); return; }
-                    Out($"fuel local P{session.LocalSlot + 1}={UnitStatus.ReadFuelFraction(ship):0.00}");
-                    foreach (var s in UnityEngine.Object.FindObjectsOfType<Ship>())
+                    // Fuel-sync assertion: every ship's fuel fraction by slot, from the authoritative
+                    // ShipsBySlot map (FindObjectsOfType missed a puppet mid-transition). A viewer's
+                    // puppet fuel must track its owner (esp. after a respawn refuel).
+                    if (ShipSync.ShipsBySlot.Count == 0) { Out("fuel: no ships"); return; }
+                    foreach (var kv in ShipSync.ShipsBySlot)
                     {
-                        if (s == null || s == ship) continue;
-                        var rp = s.GetComponent<RemotePuppet>();
-                        if (rp == null) continue;
-                        Out($"fuel puppet P{rp.Slot + 1}={UnitStatus.ReadFuelFraction(s):0.00}");
+                        if (kv.Value == null) continue;
+                        string who = kv.Key == session.LocalSlot ? "local" : "puppet";
+                        Out($"fuel P{kv.Key + 1}({who})={UnitStatus.ReadFuelFraction(kv.Value):0.00}");
                     }
+                    return;
+                }
+                case "linkhealth":
+                {
+                    // WS7.2 harness: force the score this machine ADVERTISES (its receive quality)
+                    // so a throttle test can drive owners' budgets through the real message path.
+                    // "linkhealth 200" = pretend we're starving; "linkhealth auto" = measured again.
+                    if (parts.Length >= 2 && byte.TryParse(parts[1], out byte forced) && forced != 255)
+                        Sync.EnemySync.ForcedLinkScore = forced;
+                    else Sync.EnemySync.ForcedLinkScore = 255;
+                    Out(Sync.EnemySync.ForcedLinkScore == 255
+                        ? "linkhealth: AUTO (measured underruns/gaps/jitter)"
+                        : $"linkhealth: FORCED score={Sync.EnemySync.ForcedLinkScore} (advertised every 2s)");
+                    return;
+                }
+                case "netbudget":
+                {
+                    // WS7.1 harness: hard-cap the per-viewer presentation byte budget on THIS
+                    // machine (the owner side), or print current budgets. "netbudget 400" caps;
+                    // "netbudget auto" returns control to link-health adaptation.
+                    if (parts.Length >= 2 && float.TryParse(parts[1], out float cap) && cap > 0f)
+                        Sync.EnemySync.ForcedViewerBudget = cap;
+                    else if (parts.Length >= 2) Sync.EnemySync.ForcedViewerBudget = 0f;
+                    Out($"netbudget: {(Sync.EnemySync.ForcedViewerBudget > 0f ? $"FORCED {Sync.EnemySync.ForcedViewerBudget:0}B/tick for every viewer" : "auto (link-health adaptive)")}"
+                        + $" budgetDrops={InstrumentationCounters.StateEntriesBudgetDroppedCount}");
                     return;
                 }
                 case "shop":

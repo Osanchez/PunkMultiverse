@@ -60,6 +60,12 @@ sync <netId>                # one line of sync truth for one entity on THIS mach
                             # Run on BOTH sides to bisect owner-vs-viewer in one step.
 knockback off|on            # suppress projectile impulses ON THIS MACHINE — fire tests
                             # stop shoving ships off their marks (send to BOTH instances)
+linkhealth <0-254|auto>     # WS7.2: force the receive-quality score THIS machine advertises
+                            # (2s cadence). 200 = pretend starving -> owners halve our budget
+                            # through the real path; auto = measured underruns/gaps/jitter
+netbudget <bytes|auto>      # WS7.1: hard-cap the per-viewer presentation byte budget on THIS
+                            # machine (owner side), print current budgetDrops. 400 = floor-level
+                            # throttle for shed tests; auto = link-health adaptive
 god [on|off]                # dev shield: local ship damage blocks at the routing
                             # chokepoints (every hit still audits as [CombatHit]
                             # applied=False with source) AND weapon resource is

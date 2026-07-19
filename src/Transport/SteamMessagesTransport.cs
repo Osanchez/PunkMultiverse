@@ -130,7 +130,8 @@ namespace PunkMultiverse.Transport
                 if (result == EResult.k_EResultOK)
                 {
                     _knownPeers.Add(peer); // includes host-approved direct state mesh routes
-                    Core.NetStats.AddOut(data.Count);
+                    Core.NetStats.AddOut(channel, data.Count);
+                    Core.NetSeq.NoteSent(peer, channel);
                 }
                 return result == EResult.k_EResultOK;
             }

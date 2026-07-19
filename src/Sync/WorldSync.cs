@@ -32,6 +32,15 @@ namespace PunkMultiverse.Sync
         private static ulong _ledgerHash;
         private static float _nextDigestAt;
         private static bool _repairInProgress;
+        // WS2.1 full-array backstop. Host caches a whole-array checksum on a slow cadence (it is O(cells))
+        // and only advertises it while it still matches the live revision. Client confirms a mismatch
+        // across two consecutive digests before repairing, so a one-frame in-flight difference can't
+        // trigger a spurious resync.
+        private static float _nextFullHashAt;
+        private static ulong _cachedFullHash;
+        private static uint _cachedFullHashRevision;
+        private static uint _fullMismatchRevision;   // client: revision at which a full-array mismatch was first seen
+        private const float FullHashInterval = 30f;
 
         internal static int PendingCount => Pending.Count;
 
@@ -53,6 +62,10 @@ namespace PunkMultiverse.Sync
             _ledgerHash = 0;
             _nextDigestAt = 0;
             _repairInProgress = false;
+            _nextFullHashAt = 0;
+            _cachedFullHash = 0;
+            _cachedFullHashRevision = 0;
+            _fullMismatchRevision = 0;
         }
 
         internal static uint Revision => _revision;
@@ -186,6 +199,13 @@ namespace PunkMultiverse.Sync
         // simulates the whole cascade and replicates every destroyed cell, so a receiver's copy
         // must stay inert. This is the double-cascade suppression the class summary always claimed
         // but never actually had — extend the vanilla skip-list to include ChangeSourceNet.
+        // WS2.1(b): this list is VERIFIED EXHAUSTIVE, not a guess. A decompile of Punk.Main finds
+        // exactly five OnCellChanged(Level.CellChange) handlers — AutoPopper, CellRegrower, FogManager,
+        // LevelChangeBuffer, CellInfoManager — and only the first two MUTATE cells (auto-pop cascade /
+        // deferred regrow). The other three touch fog metadata, a change buffer, and visual overlays;
+        // suppressing them for replicated changes would drop legitimate reactions, so they stay live.
+        // The remaining silent-divergence tail (e.g. RNG-timed cascades) is caught by the full-array
+        // digest backstop in ApplyDigest, not by adding speculative entries here.
         [HarmonyPatch]
         internal static class SuppressNetCellCascade
         {
@@ -341,8 +361,18 @@ namespace PunkMultiverse.Sync
             if (session.IsHost && Time.unscaledTime >= _nextDigestAt)
             {
                 _nextDigestAt = Time.unscaledTime + 10f;
+                // Refresh the whole-array checksum on its slow cadence, stamped with the revision it
+                // was taken at; only advertise it when that still matches the live revision (else the
+                // ledgers-agree comparison on the client would race an in-flight change).
+                if (Pending.Count == 0 && Time.unscaledTime >= _nextFullHashAt)
+                {
+                    _nextFullHashAt = Time.unscaledTime + FullHashInterval;
+                    _cachedFullHash = RunStarter.ChecksumLevel(Level);
+                    _cachedFullHashRevision = _revision;
+                }
+                ulong fullHash = _cachedFullHashRevision == _revision ? _cachedFullHash : 0UL;
                 Writer.Reset();
-                new TerrainDigestMsg { Revision = _revision, Hash = _ledgerHash, Count = Ledger.Count }.Write(Writer);
+                new TerrainDigestMsg { Revision = _revision, Hash = _ledgerHash, Count = Ledger.Count, FullHash = fullHash }.Write(Writer);
                 session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
                 InstrumentationCounters.TerrainDigestSent();
             }
@@ -351,13 +381,60 @@ namespace PunkMultiverse.Sync
         public static void ApplyDigest(TerrainDigestMsg msg, NetSession session)
         {
             if (session.IsHost || _repairInProgress || msg.Revision > _revision) return; // ordered event lane will catch up first
-            if (msg.Revision == _revision && msg.Hash == _ledgerHash && msg.Count == Ledger.Count) return;
+            bool ledgerAgrees = msg.Revision == _revision && msg.Hash == _ledgerHash && msg.Count == Ledger.Count;
+            if (!ledgerAgrees)
+            {
+                _fullMismatchRevision = 0;
+                InstrumentationCounters.TerrainMismatch();
+                Plugin.Log.LogWarning($"[World] TERRAIN LEDGER MISMATCH local={_revision}/{_ledgerHash:X16}/{Ledger.Count} host={msg.Revision}/{msg.Hash:X16}/{msg.Count}; requesting repair");
+                RequestTerrainRepair(session, fullReset: false);
+                return;
+            }
+            // Ledgers agree — check the full array for a silently-diverged cell (one a reactive cascade
+            // wrote while _applying, dropped from the ledger). Only act when the whole array is quiescent
+            // (nothing queued or batched) and confirm across two consecutive digests to filter transients.
+            if (msg.FullHash == 0UL || ApplyQueue.Count > 0 || Pending.Count > 0) { _fullMismatchRevision = 0; return; }
+            ulong localFull = RunStarter.ChecksumLevel(Level);
+            if (localFull == msg.FullHash) { _fullMismatchRevision = 0; return; }
+            if (_fullMismatchRevision != msg.Revision)
+            {
+                // First sighting — remember it; a genuine divergence persists to the next digest.
+                _fullMismatchRevision = msg.Revision;
+                Plugin.Log.LogWarning($"[World] terrain full-array mismatch (ledgers agree) local={localFull:X16} host={msg.FullHash:X16} rev={msg.Revision}; confirming next digest");
+                return;
+            }
+            _fullMismatchRevision = 0;
             InstrumentationCounters.TerrainMismatch();
-            Plugin.Log.LogWarning($"[World] TERRAIN LEDGER MISMATCH local={_revision}/{_ledgerHash:X16}/{Ledger.Count} host={msg.Revision}/{msg.Hash:X16}/{msg.Count}; requesting repair");
+            Plugin.Log.LogWarning($"[World] TERRAIN SILENT DIVERGENCE confirmed (ledgers agree, arrays differ) local={localFull:X16} host={msg.FullHash:X16}; full resync");
+            RequestTerrainRepair(session, fullReset: true);
+        }
+
+        // A full-array divergence can include a cell in neither ledger (a client-only phantom), which a
+        // ledger-only repair can't reach. Reset every non-baseline cell to baseline first; the host's
+        // repair then re-applies its canonical ledger on top, reconstructing the array exactly.
+        private static void RequestTerrainRepair(NetSession session, bool fullReset)
+        {
+            if (fullReset) RestoreToBaseline();
             _repairInProgress = true;
             Writer.Reset();
             new TerrainRepairRequestMsg { Revision = _revision, Hash = _ledgerHash }.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+        }
+
+        private static void RestoreToBaseline()
+        {
+            if (_baseline == null || Level == null) return;
+            try
+            {
+                var cells = Traverse.Create(Level).Field("cellTypes").GetValue();
+                if (!(cells is Unity.Collections.NativeArray<byte> native) || !native.IsCreated) return;
+                int n = Math.Min(native.Length, _baseline.Length);
+                for (int i = 0; i < n; i++)
+                    if (native[i] != _baseline[i]) ApplyQueue.Enqueue((i, _baseline[i]));
+                Ledger.Clear();
+                _ledgerHash = 0;
+            }
+            catch (Exception e) { Plugin.Log.LogWarning($"[World] baseline restore failed: {e.Message}"); }
         }
 
         public static void SendRepair(NetSession session, ulong peer, TerrainRepairRequestMsg request)

@@ -37,6 +37,32 @@ namespace PunkMultiverse.Sync
         private static readonly Dictionary<int, Vector2> LastSentPos = new Dictionary<int, Vector2>();
         private static readonly Dictionary<int, float> LastSentAt = new Dictionary<int, float>();
         private static readonly Dictionary<int, EntityStateEntry> LastSentState = new Dictionary<int, EntityStateEntry>();
+        // WS7.1 stage A: per-entity sampling accumulator (see TryCollectEntry). 1.0 of accrual = due.
+        private static readonly Dictionary<int, float> SendPriority = new Dictionary<int, float>();
+        // WS7.1 stage B / WS7.2: per-viewer presentation byte budget (bytes per send tick), adapted
+        // from that viewer's advertised link health. Presentation-plane only — correctness traffic
+        // (leases, kills, cells) never passes through this.
+        private static readonly Dictionary<byte, float> ViewerBudgetBytes = new Dictionary<byte, float>();
+        private static readonly Dictionary<byte, byte> LastLinkScore = new Dictionary<byte, byte>();
+        // (netId, viewer) -> unscaled time of the last entry actually sent to that viewer; the
+        // staleness input to per-viewer priority. Only maintained while a viewer is under budget
+        // pressure; LastSentAt is the fallback for unseen pairs.
+        private static readonly Dictionary<long, float> LastSentToViewerAt = new Dictionary<long, float>();
+        private const float DefaultViewerBudgetBytes = 12000f; // per-TICK cap. Average load is a few
+                                                               // hundred bytes, but keyframes align on
+                                                               // the 0.5s cadence into ~6KB single-tick
+                                                               // bursts — the default must clear those
+                                                               // (452 drops/min at 3000 in a QUIET
+                                                               // 2-player session) while still capping
+                                                               // pathological storms
+        private const float MinViewerBudgetBytes = 400f;       // ~12 KB/s presentation floor
+        private const float MaxViewerBudgetBytes = 16000f;
+        internal static float ForcedViewerBudget = 0f;         // devcmd override for throttle tests (0 = off)
+        internal static byte ForcedLinkScore = 255;            // 255 = auto (devcmd override for tests)
+        private static float _nextLinkHealthAt;
+        private static long _lastUnderrunsSample, _lastMissingChunksSample;
+        private static float _linkDistressSince;       // WS7.3: continuous-distress episode start
+        private static bool _linkDistressAnnounced;
         private static readonly Dictionary<int, EntityStateEntry> FullState = new Dictionary<int, EntityStateEntry>();
         // Provenance of each FullState entry. Absent = Live (real simulator output — snapshots,
         // boundary handoffs, our own collection). Baseline applies record weaker origins so the
@@ -181,6 +207,19 @@ namespace PunkMultiverse.Sync
             LastSentPos.Clear();
             LastSentAt.Clear();
             LastSentState.Clear();
+            SendPriority.Clear();
+            ViewerBudgetBytes.Clear();
+            LastLinkScore.Clear();
+            LastSentToViewerAt.Clear();
+            ForcedViewerBudget = 0f;
+            ForcedLinkScore = 255;
+            _nextLinkHealthAt = 0;
+            _lastUnderrunsSample = _lastMissingChunksSample = 0;
+            _linkDistressSince = 0f;
+            _linkDistressAnnounced = false;
+            SummaryMismatchStreaks.Clear();
+            NextSummaryAuditAt.Clear();
+            _nextSummaryAt = 0;
             FullState.Clear();
             FullStateOrigins.Clear();
             FirstSnapshotDeadlines.Clear();
@@ -769,6 +808,10 @@ namespace PunkMultiverse.Sync
                 // subscription events while inactive) — the "boss animates shooting but fires
                 // nothing anywhere" class. Cheap no-op for already-armed entities.
                 ProjectileSync.ArmShootersForLocalSimulation(se, netId);
+                // Inherit the aggro this machine observed while it was a viewer, so the just-woken AI
+                // re-engages the same player instead of cold-starting (handoff amnesia, WS3.2).
+                if (AuthorityManager.TryGetAggro(netId, out byte aggroSlot))
+                    ApplyRememberedAggro(se, aggroSlot);
             }
             else
             {
@@ -780,6 +823,23 @@ namespace PunkMultiverse.Sync
                 puppet.NetId = netId;
             }
             UnitStatus.ApplyEnemyHpScale(se, instanceId, netId);
+        }
+
+        // WS3.2: point a just-woken enemy's AI at the player it was last seen fighting. Only when the
+        // AI hasn't already re-acquired on its own (don't override a fresh, visible target), and only
+        // for a live ship. If the remembered player isn't visible the AI will re-search from here — the
+        // point is it heads for the right player instead of idling.
+        private static void ApplyRememberedAggro(SavableEntity se, byte targetSlot)
+        {
+            try
+            {
+                if (!ShipSync.ShipsBySlot.TryGetValue(targetSlot, out var ship) || ship == null || ship.IsDead) return;
+                var agent = se.GetComponentInChildren<AIAgent>(true);
+                if (agent == null || agent.HasTarget) return;
+                var targetUnit = ship.Unit;
+                if (targetUnit != null) agent.SetTarget(targetUnit);
+            }
+            catch { }
         }
 
         internal static void ApplySegmentOwnership(AuthorityManager.SegmentKey segment)
@@ -912,6 +972,35 @@ namespace PunkMultiverse.Sync
             Writer.Reset(); msg.Write(Writer);
             session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
             if (session.IsHost) ApplySegmentDormancyCommit(msg, session);
+        }
+
+        /// <summary>Host-migration seeding (WS4.2): the just-promoted host publishes a segment's
+        /// last-known entity states — drawn from its own FullState cache (the states it received while
+        /// it was a client viewing the now-dead host) — so EVERY surviving peer holds a canonical
+        /// baseline, not just the peers that happened to be viewing those entities. Unlike a normal
+        /// commit this bypasses the owner gate (the real owner is gone) and skips segments we hold no
+        /// state for (those genuinely cannot be reconstructed and stay Dormant until someone re-enters).
+        /// Must run before the rescan re-grants ownership so the "freeze live copies" only touches
+        /// puppets/viewers, never a peer that has already re-claimed the segment.</summary>
+        internal static void SeedMigrationDormancyCommit(AuthorityManager.SegmentKey key, NetSession session)
+        {
+            if (session == null || session.State != SessionState.InGame || !NetIds.ManifestComplete) return;
+            BuildRuntimeBaselineRoster(key, session, out var entries, out _, out var entryFlags);
+            if (entries.Count == 0) return;
+            var msg = new SegmentDormancyCommitMsg
+            {
+                Slot = (byte)session.LocalSlot,
+                SegmentX = key.X, SegmentY = key.Y,
+                Epoch = AuthorityManager.EpochOf(key),
+                Entries = entries, EntryFlags = entryFlags,
+                RosterDigest = ComputeRosterDigest(entries, null, entryFlags),
+            };
+            InstrumentationCounters.DormancyCommitSent(entries.Count);
+            Writer.Reset(); msg.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            ApplySegmentDormancyCommit(msg, session);
+            if (NetDiag.Enabled)
+                NetDiag.Log("Lease", $"migration seed for segment {key}: {entries.Count} entity baseline(s) broadcast");
         }
 
         /// <summary>Install an owner's final segment states into the canonical cache (every
@@ -1087,31 +1176,209 @@ namespace PunkMultiverse.Sync
             owned.Sort((a, b) => a.x != b.x ? a.x.CompareTo(b.x) : a.y.CompareTo(b.y)); // stable cycle
             int audits = Mathf.Min(RosterAuditSegmentsPerTick, owned.Count);
             for (int n = 0; n < audits; n++)
+                SendRosterAudit(session, em, owned[_rosterAuditCursor++ % owned.Count]);
+        }
+
+        /// <summary>Broadcast the canonical identity roster for one owned segment. Round-robin from
+        /// TickRosterAudit (the continuous floor) and on demand from a WS9.1 summary mismatch echo
+        /// (the targeted repair).</summary>
+        private static void SendRosterAudit(NetSession session, EntityManager em, Vector2Int seg)
+        {
+            var key = new AuthorityManager.SegmentKey(seg.x, seg.y);
+            var entries = new List<(int netId, uint lifetime, string entityType, Vector2 pos)>();
+            foreach (var data in em.GetEntitiesInSegment(seg))
             {
-                var seg = owned[_rosterAuditCursor++ % owned.Count];
-                var key = new AuthorityManager.SegmentKey(seg.x, seg.y);
-                var entries = new List<(int netId, uint lifetime, string entityType, Vector2 pos)>();
-                foreach (var data in em.GetEntitiesInSegment(seg))
+                if (data == null || !NetIds.TryGetNetId(data.instanceId, out int netId)) continue;
+                if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
+                if (!AuthorityManager.SegmentOf(data.position).Equals(key)) continue;
+                // Mirror the roster rule: bespoke-system entities only count while concrete.
+                if (!data.isUnloadable && !LiveEntities.ContainsKey(netId)) continue;
+                entries.Add((netId, NetIds.LifetimeOf(netId), data.entityId ?? string.Empty, data.position));
+            }
+            var msg = new SegmentRosterAuditMsg
+            {
+                Slot = (byte)session.LocalSlot,
+                SegmentX = seg.x, SegmentY = seg.y,
+                Epoch = AuthorityManager.EpochOf(key),
+                Entries = entries,
+            };
+            InstrumentationCounters.RosterAuditSent(entries.Count);
+            Writer.Reset();
+            msg.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+        }
+
+        // ---------------------------------------------------------------- WS9.1 state summaries
+
+        // (segment) -> (owner, epoch, consecutive mismatches) on the viewer side; confirm-twice
+        // filters transient skew (an entity mid-boundary-crossing, a snapshot in flight).
+        private static readonly Dictionary<AuthorityManager.SegmentKey, (byte owner, uint epoch, int count)>
+            SummaryMismatchStreaks = new Dictionary<AuthorityManager.SegmentKey, (byte, uint, int)>();
+        // Owner-side rate limit: at most one echo-triggered audit per segment per window.
+        private static readonly Dictionary<AuthorityManager.SegmentKey, float> NextSummaryAuditAt
+            = new Dictionary<AuthorityManager.SegmentKey, float>();
+        private static float _nextSummaryAt;
+        private const float StateSummaryInterval = 5f;   // 0.2 Hz per segment, ALL owned segments per cycle
+        private const float SummaryAuditCooldown = 5f;
+
+        /// <summary>Order-independent identity hash for one segment: XOR of FNV-mixed (netId,
+        /// lifetime), PURE data-level — EntityData presence + the killed set, both synced invariants
+        /// (deterministic generation + reliable spawn/kill messages; positions kept fresh on viewers
+        /// by the snapshot apply path's MoveTo). Deliberately EXCLUDES pose/hp (interpolation skew)
+        /// AND the audit's "live object" clause (materialization is residency-dependent — including
+        /// it made every owner-live/viewer-not-yet-materialized entity a permanent false mismatch,
+        /// seen live as repeating un-healable [Heal] loops on segments like count 0-vs-2). A
+        /// conservative hash that catches every data-class desync with zero false positives beats a
+        /// rich one that fires repairs on skew.</summary>
+        private static ulong ComputeSegmentIdentityHash(EntityManager em, Vector2Int seg,
+            AuthorityManager.SegmentKey key, out int count)
+        {
+            ulong hash = 0;
+            count = 0;
+            foreach (var data in em.GetEntitiesInSegment(seg))
+            {
+                if (data == null || !NetIds.TryGetNetId(data.instanceId, out int netId)) continue;
+                if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
+                // Bucket by the WIRE-rounded position (what viewers actually hold after MoveTo) —
+                // the owner's raw float pos can sit on the other side of a segment edge from the
+                // 1/32u-rounded value, splitting one entity into a mismatch PAIR across adjacent
+                // segments (seen live: identical element hash in (43,39) owner-side / (43,40)
+                // viewer-side). And exclude a boundary band entirely: an entity in transit flips
+                // buckets at slightly different times on each peer — those stay covered by the
+                // round-robin roster audits instead of false-positive-ing the summaries.
+                var wirePos = new Vector2(Mathf.RoundToInt(data.position.x * 32f) / 32f,
+                    Mathf.RoundToInt(data.position.y * 32f) / 32f);
+                if (!AuthorityManager.SegmentOf(wirePos).Equals(key)) continue;
+                if (DistanceToSegmentEdge(wirePos, key) < 2f) continue;
+                unchecked
                 {
-                    if (data == null || !NetIds.TryGetNetId(data.instanceId, out int netId)) continue;
-                    if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
-                    if (!AuthorityManager.SegmentOf(data.position).Equals(key)) continue;
-                    // Mirror the roster rule: bespoke-system entities only count while concrete.
-                    if (!data.isUnloadable && !LiveEntities.ContainsKey(netId)) continue;
-                    entries.Add((netId, NetIds.LifetimeOf(netId), data.entityId ?? string.Empty, data.position));
+                    ulong h = 14695981039346656037UL;
+                    h = (h ^ (uint)netId) * 1099511628211UL;
+                    h = (h ^ NetIds.LifetimeOf(netId)) * 1099511628211UL;
+                    hash ^= h;
                 }
-                var msg = new SegmentRosterAuditMsg
+                count++;
+            }
+            return hash;
+        }
+
+        // Distance (world units) from a position to the nearest edge of its containing segment.
+        // Mirrors AuthorityManager.SegmentOf's floor semantics (key * size = lower edge).
+        private static float DistanceToSegmentEdge(Vector2 pos, AuthorityManager.SegmentKey key)
+        {
+            float size = Level.SegmentSize > 0 ? Level.SegmentSize : 25f;
+            float localX = pos.x - key.X * size;
+            float localY = pos.y - key.Y * size;
+            return Mathf.Min(Mathf.Min(localX, size - localX), Mathf.Min(localY, size - localY));
+        }
+
+        /// <summary>WS9.1 owner side: publish a summary for EVERY owned active segment each cycle —
+        /// O(active segments), independent of entity and player count. Unreliable: a lost summary
+        /// only delays detection by one cycle.</summary>
+        private static void TickStateSummaries(NetSession session)
+        {
+            if (Time.unscaledTime < _nextSummaryAt || !NetIds.ManifestComplete) return;
+            _nextSummaryAt = Time.unscaledTime + StateSummaryInterval;
+            var active = TryGetActiveSegments();
+            if (active == null || active.Count == 0) return;
+            EntityManager em;
+            try { em = ServiceLocator.Get<EntityManager>(); }
+            catch { return; }
+            if (em == null) return;
+            foreach (var seg in active)
+            {
+                var key = new AuthorityManager.SegmentKey(seg.x, seg.y);
+                if (AuthorityManager.OwnerOf(key) != session.LocalSlot) continue;
+                ulong hash = ComputeSegmentIdentityHash(em, seg, key, out int count);
+                var msg = new SegmentStateSummaryMsg
                 {
-                    Slot = (byte)session.LocalSlot,
+                    OwnerSlot = (byte)session.LocalSlot, EchoSlot = 255,
                     SegmentX = seg.x, SegmentY = seg.y,
                     Epoch = AuthorityManager.EpochOf(key),
-                    Entries = entries,
+                    Count = count, Hash = hash,
                 };
-                InstrumentationCounters.RosterAuditSent(entries.Count);
+                InstrumentationCounters.StateSummarySent();
                 Writer.Reset();
                 msg.Write(Writer);
-                session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+                session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
             }
+        }
+
+        /// <summary>Viewer: compare an owner's summary against our own view of the segment; on the
+        /// second consecutive mismatch, echo it back so the owner sends a targeted roster audit.
+        /// Owner: a mismatch echo arrived — answer with the audit (rate-limited per segment).</summary>
+        internal static void ApplySegmentStateSummary(SegmentStateSummaryMsg msg, NetSession session)
+        {
+            var key = new AuthorityManager.SegmentKey(msg.SegmentX, msg.SegmentY);
+            if (msg.EchoSlot != 255)
+            {
+                // Echo path: only the summary's owner reacts, and only while it still owns the lease.
+                if (!NetConfig.SummaryHeal.Value) return; // detection-only mode: never answer echoes
+                if (msg.OwnerSlot != session.LocalSlot || AuthorityManager.OwnerOf(key) != session.LocalSlot) return;
+                float now = Time.unscaledTime;
+                if (NextSummaryAuditAt.TryGetValue(key, out float nextAt) && now < nextAt) return;
+                NextSummaryAuditAt[key] = now + SummaryAuditCooldown;
+                EntityManager em;
+                try { em = ServiceLocator.Get<EntityManager>(); }
+                catch { return; }
+                if (em == null) return;
+                Plugin.Log.LogWarning($"[Heal] segment {key} summary mismatch reported by P{msg.EchoSlot + 1} " +
+                    $"(theirs {msg.Hash:X16}/{msg.Count}) — sending targeted roster audit");
+                SendRosterAudit(session, em, new Vector2Int(key.X, key.Y));
+                return;
+            }
+
+            // Owner broadcast: check it against our local view. Only for segments we actually
+            // stream (LiveEntities parity holds there); non-resident peers legitimately hold no
+            // concrete objects for bespoke-system entities and would false-positive.
+            if (msg.OwnerSlot == session.LocalSlot) return;
+            if (AuthorityManager.OwnerOf(key) != msg.OwnerSlot) return; // stale — lease moved on
+            var active = TryGetActiveSegments();
+            if (active == null || !active.Contains(new Vector2Int(key.X, key.Y))) return;
+            EntityManager em2;
+            try { em2 = ServiceLocator.Get<EntityManager>(); }
+            catch { return; }
+            if (em2 == null) return;
+            InstrumentationCounters.StateSummaryChecked();
+            ulong localHash = ComputeSegmentIdentityHash(em2, new Vector2Int(key.X, key.Y), key, out int localCount);
+            if (localHash == msg.Hash && localCount == msg.Count)
+            {
+                SummaryMismatchStreaks.Remove(key);
+                return;
+            }
+            if (!SummaryMismatchStreaks.TryGetValue(key, out var streak)
+                || streak.owner != msg.OwnerSlot || streak.epoch != msg.Epoch)
+                streak = (msg.OwnerSlot, msg.Epoch, 0);
+            streak.count++;
+            if (streak.count < 2)
+            {
+                SummaryMismatchStreaks[key] = streak;
+                return;
+            }
+            SummaryMismatchStreaks.Remove(key); // counted — restart confirmation for the next round
+            InstrumentationCounters.StateSummaryMismatch();
+            if (!NetConfig.SummaryHeal.Value)
+            {
+                // Detection-only mode (default): bounded-time VISIBILITY without repair traffic.
+                // Known benign class until the v2 viewer-targeted predicate: entities that wandered
+                // outside this viewer's interest leave stale data positions → membership skew.
+                if (NetDiag.Enabled)
+                    NetDiag.Throttled($"summiss{key.X},{key.Y}", 30f, "Summary",
+                        () => $"segment {key} summary diverged from P{msg.OwnerSlot + 1} " +
+                              $"(local {localHash:X16}/{localCount} vs {msg.Hash:X16}/{msg.Count}) — detection only");
+                return;
+            }
+            Plugin.Log.LogWarning($"[Heal] segment {key} identity summary diverged from owner P{msg.OwnerSlot + 1} " +
+                $"(local {localHash:X16}/{localCount} vs owner {msg.Hash:X16}/{msg.Count}) — requesting audit");
+            var echo = msg;
+            echo.EchoSlot = (byte)session.LocalSlot;
+            echo.Hash = localHash;
+            echo.Count = localCount;
+            Writer.Reset();
+            echo.Write(Writer);
+            // Client: reaches the host, which relays to the owner. Host: reaches every client
+            // directly, including the owner.
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
         }
 
         /// <summary>Compare an owner's roster against this machine's world. Two divergence
@@ -1215,6 +1482,8 @@ namespace PunkMultiverse.Sync
             SweepFirstSnapshotDeadlines(session);
             SweepPendingLeaseAcceptance(session);
             TickRosterAudit(session);
+            TickLinkHealth(session);        // WS7.2: advertise our receive quality
+            TickStateSummaries(session);    // WS9.1: publish identity summaries for owned segments
             if (session.IsHost) PruneInterestRoutes(session);
             NetProfiler.Mark("EnemySync.Watchdogs");
 
@@ -1293,7 +1562,12 @@ namespace PunkMultiverse.Sync
             {
                 if (player == null || player.IsLocal || !player.Connected) continue;
                 SelectInterestedGroups(player.Slot, slot, stateGroups, TargetGroups, out int droppedGroups, out int droppedEntries);
-                SendBundleToPeer(session, player.PeerId, slot, timeMs, tick, TargetGroups, droppedGroups, droppedEntries);
+                // WS7.1/7.2: fill this viewer's byte budget highest-priority first. Under budget
+                // (the normal case) this is a byte estimate and nothing more.
+                var toSend = ApplyViewerBudget(player.Slot, TargetGroups, out bool budgeted, out int budgetDropped);
+                if (budgetDropped > 0) InstrumentationCounters.StateEntriesBudgetDropped(budgetDropped);
+                SendBundleToPeer(session, player.PeerId, slot, timeMs, tick, toSend, droppedGroups, droppedEntries);
+                if (budgeted) ReturnBudgetScratch();
             }
             NetProfiler.Mark("EnemySync.Send");
         }
@@ -1419,6 +1693,181 @@ namespace PunkMultiverse.Sync
             int count = 0;
             foreach (var group in groups) count += group.Entries?.Count ?? 0;
             return count;
+        }
+
+        // ---------------------------------------------------------------- WS7.1/7.2 viewer budgets
+
+        internal static float GetViewerBudget(byte slot)
+        {
+            if (ForcedViewerBudget > 0f) return ForcedViewerBudget;
+            return ViewerBudgetBytes.TryGetValue(slot, out float b) ? b : DefaultViewerBudgetBytes;
+        }
+
+        /// <summary>WS7.2 owner side: map a viewer's advertised link health to its presentation byte
+        /// budget with slow-start probing — halve on distress, grow multiplicatively on clean. The
+        /// budget only shapes WHAT is sent (highest priority first), never whether correctness
+        /// traffic flows.</summary>
+        internal static void ApplyLinkHealth(byte slot, byte score)
+        {
+            LastLinkScore[slot] = score;
+            float budget = GetViewerBudget(slot);
+            if (score >= 48) budget = Mathf.Max(MinViewerBudgetBytes, budget * 0.5f);
+            else if (score < 16) budget = Mathf.Min(MaxViewerBudgetBytes, budget * 1.25f);
+            ViewerBudgetBytes[slot] = budget;
+            if (NetDiag.Enabled && score >= 48)
+                NetDiag.Throttled($"linkhealth{slot}", 5f, "Budget",
+                    () => $"viewer P{slot + 1} link score={score} -> budget {budget:0}B/tick");
+        }
+
+        /// <summary>WS7.2 viewer side: measure our own receive quality and advertise it (2s cadence).
+        /// Signals: interpolation underruns (buffer ran dry), missing snapshot chunks, adaptive
+        /// jitter. 0 = clean; owners grow our budget. High = starving; owners halve it and their
+        /// priority fill keeps the firefight and sheds the background — choppy, never divergent.</summary>
+        private static void TickLinkHealth(NetSession session)
+        {
+            if (Time.unscaledTime < _nextLinkHealthAt) return;
+            _nextLinkHealthAt = Time.unscaledTime + 2f;
+            long underruns = InstrumentationCounters.InterpolationUnderruns;
+            long missing = InstrumentationCounters.SnapshotChunksMissingCount;
+            long underrunsDelta = Math.Max(0, underruns - _lastUnderrunsSample);
+            long missingDelta = Math.Max(0, missing - _lastMissingChunksSample);
+            _lastUnderrunsSample = underruns;
+            _lastMissingChunksSample = missing;
+            byte score;
+            if (ForcedLinkScore != 255) score = ForcedLinkScore;
+            else
+            {
+                // Congestion signals only: chunk gaps (real loss) and jitter above the healthy
+                // baseline (~11ms measured on loopback). Interpolation underruns are deliberately
+                // EXCLUDED — they run ~800/s as per-puppet-per-FixedUpdate background noise
+                // (entity-count-proportional), and scoring them pinned every healthy client at 254
+                // and crashed its budget to the floor (measured).
+                float jitterPenalty = Mathf.Max(0f, (float)InstrumentationCounters.AdaptiveJitterAverageMs - 15f) * 3f;
+                score = (byte)Mathf.Clamp(missingDelta * 10 + (int)jitterPenalty, 0, 254);
+                _ = underrunsDelta; // sampled for future use; see comment above
+            }
+            // WS7.3: a persistently starved link becomes an explicit, VISIBLE state instead of
+            // mystery desync. 30s of continuous distress -> tell the player their world is being
+            // rate-reduced (correctness traffic is unaffected; the world is choppy, not wrong).
+            if (score >= 48)
+            {
+                if (_linkDistressSince == 0f) _linkDistressSince = Time.unscaledTime;
+                else if (!_linkDistressAnnounced && Time.unscaledTime - _linkDistressSince >= 30f)
+                {
+                    _linkDistressAnnounced = true;
+                    Plugin.Log.LogWarning($"[Budget] link degraded for 30s (score={score}) — presentation rate reduced, correctness unaffected");
+                    UI.Toast.Show("CONNECTION DEGRADED — WORLD UPDATES REDUCED", 6f);
+                }
+            }
+            else
+            {
+                if (_linkDistressAnnounced && _linkDistressSince != 0f)
+                    Plugin.Log.LogInfo("[Budget] link recovered — presentation rate restoring");
+                _linkDistressSince = 0f;
+                _linkDistressAnnounced = false;
+            }
+            if (session.IsHost)
+            {
+                // The host's own feed comes complete from each client (canonical); its score is
+                // not consumed by anyone today, so only clients advertise.
+                return;
+            }
+            Writer.Reset();
+            new LinkHealthMsg { Slot = (byte)session.LocalSlot, Score = score }.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+        }
+
+        // Budget-fill scratch (parallel lists to avoid per-tick allocations).
+        private static readonly List<EntityStateGroup> BudgetGroupScratch = new List<EntityStateGroup>(8);
+        private static readonly List<(int group, int index, float prio, int bytes)> BudgetCandidates
+            = new List<(int, int, float, int)>(128);
+        private const int MaxViewerPairEntries = 8192; // staleness map cap; clearing just resets
+                                                       // everyone to "very stale" for one tick
+
+        /// <summary>WS7.1 stage B: if this viewer's tick exceeds its byte budget, keep the
+        /// highest-priority entries (staleness × proximity-to-viewer × fire, fixed-owner minions
+        /// always kept) and drop the rest — they keep accruing staleness and win later, so nothing
+        /// starves. Returns the group list to SEND: either <paramref name="groups"/> untouched
+        /// (under budget — the common case, zero allocation) or <see cref="BudgetGroupScratch"/>
+        /// holding rented entry lists the CALLER must return via ReturnBudgetScratch after sending.</summary>
+        private static List<EntityStateGroup> ApplyViewerBudget(byte targetSlot, List<EntityStateGroup> groups,
+            out bool budgeted, out int droppedEntries)
+        {
+            budgeted = false;
+            droppedEntries = 0;
+            float budget = GetViewerBudget(targetSlot);
+            int estBytes = 18;
+            for (int g = 0; g < groups.Count; g++)
+            {
+                estBytes += 13;
+                var entries = groups[g].Entries;
+                for (int i = 0; i < entries.Count; i++) estBytes += entries[i].EstimatedWireBytes;
+            }
+            if (estBytes <= budget) return groups; // common case: no pressure, send as-is
+
+            budgeted = true;
+            float now = Time.unscaledTime;
+            bool hasViewPos = ShipSync.TryGetViewPosition(targetSlot, out Vector2 viewPos);
+            BudgetCandidates.Clear();
+            for (int g = 0; g < groups.Count; g++)
+            {
+                var entries = groups[g].Entries;
+                for (int i = 0; i < entries.Count; i++)
+                {
+                    var entry = entries[i];
+                    float prio;
+                    if (FixedOwners.Contains(entry.NetId)) prio = float.MaxValue; // minions: always
+                    else
+                    {
+                        long pairKey = ((long)entry.NetId << 2) | (uint)(targetSlot & 3);
+                        float lastSent = LastSentToViewerAt.TryGetValue(pairKey, out float pairAt) ? pairAt
+                            : LastSentAt.TryGetValue(entry.NetId, out float ownAt) ? ownAt : now - 1f;
+                        float staleness = Mathf.Max(0.033f, now - lastSent);
+                        float dist = hasViewPos
+                            ? ((entry.Pos - viewPos).sqrMagnitude <= 25f * 25f ? 4f
+                                : (entry.Pos - viewPos).sqrMagnitude <= 60f * 60f ? 2f : 1f)
+                            : 2f;
+                        float fireBoost = entry.Fire != 0 ? 4f : 1f;
+                        prio = staleness * dist * fireBoost;
+                    }
+                    BudgetCandidates.Add((g, i, prio, entry.EstimatedWireBytes));
+                }
+            }
+            BudgetCandidates.Sort((a, b) => b.prio.CompareTo(a.prio));
+
+            // Fill the budget highest-priority first, preserving (segment, epoch) group structure.
+            BudgetGroupScratch.Clear();
+            var outputByGroup = new EntityStateGroup[groups.Count];
+            int bytes = 18;
+            for (int c = 0; c < BudgetCandidates.Count; c++)
+            {
+                var (g, i, _, entryBytes) = BudgetCandidates[c];
+                bool needGroup = outputByGroup[g].Entries == null;
+                int addition = entryBytes + (needGroup ? 13 : 0);
+                if (bytes + addition > budget && bytes > 18) { droppedEntries++; continue; }
+                if (needGroup)
+                {
+                    var src = groups[g];
+                    outputByGroup[g] = new EntityStateGroup
+                    {
+                        SegmentX = src.SegmentX, SegmentY = src.SegmentY,
+                        Epoch = src.Epoch, Entries = RentEntryList(),
+                    };
+                    BudgetGroupScratch.Add(outputByGroup[g]);
+                }
+                var sent = groups[g].Entries[i];
+                outputByGroup[g].Entries.Add(sent);
+                bytes += addition;
+                if (LastSentToViewerAt.Count >= MaxViewerPairEntries) LastSentToViewerAt.Clear();
+                LastSentToViewerAt[((long)sent.NetId << 2) | (uint)(targetSlot & 3)] = now;
+            }
+            return BudgetGroupScratch;
+        }
+
+        private static void ReturnBudgetScratch()
+        {
+            for (int i = 0; i < BudgetGroupScratch.Count; i++) ReturnEntryList(BudgetGroupScratch[i].Entries);
+            BudgetGroupScratch.Clear();
         }
 
         private static void SelectInterestedGroups(byte targetSlot, byte sourceSlot, List<EntityStateGroup> source,
@@ -2204,8 +2653,13 @@ namespace PunkMultiverse.Sync
                     if (group.SegmentX == route.Key.segment.X && group.SegmentY == route.Key.segment.Y
                         && group.Epoch == route.Value) selected.Add(group);
                 if (selected.Count == 0) continue;
-                SendBundleToPeer(session, peer, slot, timeMs, tick, selected, 0, 0);
-                InstrumentationCounters.DirectSnapshotSent(CountEntries(selected));
+                // Direct owner->viewer fanout honors the same per-viewer budget as the host relay
+                // (the host bypasses relaying these groups, so this is the viewer's only source).
+                var toSend = ApplyViewerBudget(route.Key.target, selected, out bool budgeted, out int budgetDropped);
+                if (budgetDropped > 0) InstrumentationCounters.StateEntriesBudgetDropped(budgetDropped);
+                SendBundleToPeer(session, peer, slot, timeMs, tick, toSend, 0, 0);
+                InstrumentationCounters.DirectSnapshotSent(CountEntries(toSend));
+                if (budgeted) ReturnBudgetScratch();
             }
         }
 
@@ -2862,12 +3316,34 @@ namespace PunkMultiverse.Sync
                 for (int i = 0; i < ships.Count; i++)
                     nearestSq = Mathf.Min(nearestSq, (ships[i] - pos).sqrMagnitude);
                 fire = UnitStatus.ReadFireState(unit);
-                float hz = fire != 0 || nearestSq <= 35f * 35f
-                    ? NetConfig.CombatStateHz.Value
+                // WS7.1 stage A — priority accumulator instead of three hard Hz tiers. Each send
+                // tick an entity accrues WEIGHT (1.0 = every tick); it is sampled when the accrual
+                // reaches 1. At default config this reproduces the old Combat/State/Distant rates
+                // exactly (weights = tierHz / tickHz), but staleness is now inherent (an entity
+                // skipped for any reason keeps accruing and wins later — nothing starves forever),
+                // fractional debt carries across ticks for smoother average rates, and factors
+                // compose multiplicatively instead of via cliff-edged tiers.
+                float tickHz = Mathf.Max(1f, Mathf.Max(NetConfig.StateHz.Value, NetConfig.CombatStateHz.Value));
+                float weight = fire != 0 || nearestSq <= 35f * 35f
+                    ? NetConfig.CombatStateHz.Value / tickHz
                     : nearestSq <= NetConfig.InterestRadius.Value * NetConfig.InterestRadius.Value
-                        ? NetConfig.StateHz.Value : NetConfig.DistantStateHz.Value;
-                if (!forceFull && LastSentAt.TryGetValue(netId, out float sentAt) && now - sentAt < 1f / Mathf.Max(1f, hz))
+                        ? NetConfig.StateHz.Value / tickHz
+                        : NetConfig.DistantStateHz.Value / tickHz;
+                // Fast movers never drop to the distant rate: stale extrapolation looks worst on
+                // an entity crossing the world, and boundary handoffs need fresh history.
+                float speedSq = rb != null ? rb.linearVelocity.sqrMagnitude : 0f;
+                float midWeight = NetConfig.StateHz.Value / tickHz;
+                if (speedSq > 100f && weight < midWeight) weight = midWeight;
+                SendPriority.TryGetValue(netId, out float accrued);
+                accrued += weight;
+                if (accrued < 1f && !forceFull)
+                {
+                    SendPriority[netId] = accrued;
                     return false;
+                }
+                // Carry the fractional remainder; cap the backlog so a long-skipped entity catches
+                // up with one extra send, not a burst.
+                SendPriority[netId] = Mathf.Min(accrued - 1f, 1f);
             }
             LastSentPos[netId] = pos;
             LastSentAt[netId] = now;
@@ -2923,7 +3399,18 @@ namespace PunkMultiverse.Sync
             }
             else
             {
-                LastKeyframeAt[netId] = now;
+                // De-phase keyframe cadences: seeding every entity's clock at the same instant
+                // (go-live) locks their 0.5s keyframes into a single aligned burst tick (~370 full
+                // entries at once — the burst that overflowed viewer budgets in QUIET sessions).
+                // Seed a stable netId-derived phase offset ON THE FIRST keyframe ONLY, then keep
+                // the exact interval — offsetting every keyframe shrinks the period itself (up to
+                // ~40% extra keyframe volume, measured as accelerating budget drops).
+                if (!LastKeyframeAt.ContainsKey(netId))
+                {
+                    float phase = ((uint)(netId * 2654435761u) % 1000u) / 1000f * (StateKeyframeInterval * 0.6f);
+                    LastKeyframeAt[netId] = now - phase;
+                }
+                else LastKeyframeAt[netId] = now;
                 InstrumentationCounters.SnapshotKeyframeSent();
             }
             LastSentState[netId] = full;
