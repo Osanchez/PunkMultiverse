@@ -414,6 +414,22 @@ barriers. Any `[Seq] GAP` on a healthy loopback run is a real silent-loss bug (o
 counting drift) — investigate, never ignore. Positive-path fault injection needs an
 outbox-overflow harness (future: a devcmd that drops N reliable sends deliberately).
 
+## 28. release-soak (the pre-release regression net) — `soak.ps1`
+
+One scripted ~10-minute two-instance run through everything at once: wander (segment
+streaming/lease waves), combat rounds (projectiles/damage/loot), one `stall 15`
+(reconnect-in-place), one client kill+rejoin (catch-up + WS4.1 reclaim), ceasefire drain.
+Run `powershell -File soak.ps1` from the repo before every release; artifacts (report +
+all three logs) land in `%TEMP%\punkmv-soak\<stamp>`.
+
+- Gates (exit 0 = ship): go-live checksum parity; stall reconnects WITHOUT
+  self-promotion; rejoin lands (+ puppet suspended, reclaim-or-fresh-spawn); zero
+  exceptions/replica failures across all three logs; `[Seq]=0`; `[Heal]=0`;
+  `terrainMismatch=0` both; zero coordinator-cache fallbacks; `budgetDrops<300`;
+  no `[Hitch]` outside the deliberate stall window.
+- Refuses to start if any Punk.exe is already running; only kills its own PIDs;
+  restores the host install config byte-for-byte on exit.
+
 ---
 
 ### Cadence

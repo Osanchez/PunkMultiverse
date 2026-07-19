@@ -78,6 +78,15 @@ namespace PunkMultiverse.Core
         private float _nextSeqCheckpointAt;                 // WS8.2 host: next checkpoint stamp
         private readonly float[] _nextGapReportAt = new float[4];   // WS8.2 client: per-channel rate limit
         private readonly Dictionary<ulong, float> _nextGapCatchUpAt = new Dictionary<ulong, float>(); // host: per-peer
+        // WS8.2 client: previous checkpoint baseline per channel. Gap detection compares GROWTH
+        // between consecutive checkpoints (sentDelta vs receivedDelta), never absolute counts —
+        // a reconnect-in-place resets the client's receive counters while the host (which never
+        // saw a disconnect) keeps counting, and an absolute comparison then reports a huge frozen
+        // phantom deficit forever (caught by the release soak: "2395 lost" repeating). The first
+        // checkpoint after any reset only re-baselines.
+        private readonly uint[] _seqBaselineSent = new uint[4];
+        private readonly uint[] _seqBaselineReceived = new uint[4];
+        private readonly bool[] _seqBaselined = new bool[4];
         private float _connectDeadline;
         private ulong _localIdentityId;
 
@@ -412,6 +421,7 @@ namespace PunkMultiverse.Core
             _nextSeqCheckpointAt = 0;
             for (int i = 0; i < _nextGapReportAt.Length; i++) _nextGapReportAt[i] = 0;
             _nextGapCatchUpAt.Clear();
+            ResetSeqBaselines();
             NetProfiler.Reset();
             RuntimeInstrumentation.ResetRun();
             ClockSync.Reset();
@@ -931,6 +941,7 @@ namespace PunkMultiverse.Core
             _nextSeqCheckpointAt = 0;
             for (int i = 0; i < _nextGapReportAt.Length; i++) _nextGapReportAt[i] = 0;
             _nextGapCatchUpAt.Clear();
+            ResetSeqBaselines();
             NetProfiler.Reset();
             RuntimeInstrumentation.ResetRun();
             ClockSync.Reset();
@@ -1167,6 +1178,16 @@ namespace PunkMultiverse.Core
             }
         }
 
+        private void ResetSeqBaselines()
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                _seqBaselined[i] = false;
+                _seqBaselineSent[i] = 0;
+                _seqBaselineReceived[i] = 0;
+            }
+        }
+
         private void ForEachRemotePeer(Action<ulong> send)
         {
             if (IsHost)
@@ -1342,6 +1363,7 @@ namespace PunkMultiverse.Core
         private void OnPeerConnected(ulong peer)
         {
             NetSeq.ResetPeer(peer); // peer ids can be reused (loopback) — stale counts would misfire
+            ResetSeqBaselines();    // growth comparison restarts at the next checkpoint
             if (!IsHost && (State == SessionState.Connecting || _reattaching))
             {
                 // Connected to the host: introduce ourselves.
@@ -1608,6 +1630,7 @@ namespace PunkMultiverse.Core
             Sync.WorldSync.CancelStream(peer); // a rejoin restarts it from scratch
             ClearOutboxFor(peer);              // rejoin catch-up re-serves everything anyway
             NetSeq.ResetPeer(peer);            // WS8.2: counts are per-connection
+            ResetSeqBaselines();
             _nextGapCatchUpAt.Remove(peer);
             _peersAwaitingRejoinState.Remove(peer);
             _nextGoLiveRecoveryAt.Remove(peer);
@@ -1867,15 +1890,28 @@ namespace PunkMultiverse.Core
                     if (checkpoint.Channel != (byte)channel) break; // a barrier only on its own channel
                     // OnData counted this checkpoint too — messages before it = received - 1.
                     uint before = NetSeq.ReceivedFrom(peer, channel) - 1;
-                    if (before >= checkpoint.Count) break;
                     int ch = checkpoint.Channel & 3;
+                    if (!_seqBaselined[ch])
+                    {
+                        // First checkpoint since a (re)connect: absolute counts are not comparable
+                        // across a reset — record the pair and only compare growth from here on.
+                        _seqBaselined[ch] = true;
+                        _seqBaselineSent[ch] = checkpoint.Count;
+                        _seqBaselineReceived[ch] = before;
+                        break;
+                    }
+                    uint sentDelta = checkpoint.Count - _seqBaselineSent[ch];
+                    uint recvDelta = before - _seqBaselineReceived[ch];
+                    _seqBaselineSent[ch] = checkpoint.Count;
+                    _seqBaselineReceived[ch] = before;
+                    if (recvDelta >= sentDelta) break;
                     if (Time.unscaledTime < _nextGapReportAt[ch]) break;
                     _nextGapReportAt[ch] = Time.unscaledTime + 30f;
-                    Plugin.Log.LogError($"[Seq] GAP on channel {channel}: host sent {checkpoint.Count} " +
-                        $"messages before this checkpoint, we hold {before} — " +
-                        $"{checkpoint.Count - before} lost silently; requesting catch-up");
+                    Plugin.Log.LogError($"[Seq] GAP on channel {channel}: host sent {sentDelta} " +
+                        $"messages since the last checkpoint, we received {recvDelta} — " +
+                        $"{sentDelta - recvDelta} lost silently; requesting catch-up");
                     _writer.Reset();
-                    new EventGapReportMsg { Channel = checkpoint.Channel, Expected = checkpoint.Count, Received = before }
+                    new EventGapReportMsg { Channel = checkpoint.Channel, Expected = sentDelta, Received = recvDelta }
                         .Write(_writer);
                     SendReliable(peer, NetChannel.Control, _writer.ToSegment());
                     break;

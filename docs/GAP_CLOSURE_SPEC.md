@@ -371,6 +371,11 @@ Phases 2-4 are worth shipping to playtesters before starting phase 5; phases 5-6
   report). `SelectOwner`: load is a tiebreak at equal distance; overloaded (≥160 ≈ 25 fps)
   peers at ≥6 owned segments are skipped ONLY when another resident candidate exists —
   never creates artificial dormancy, sticky-grab and residency invariants untouched.
+  **Follow-up (10.1b, from the bad-connection review)**: lease placement currently weighs
+  FRAME load only — a strong-PC/bad-NET client can still own segments, and its uplink lag
+  makes its enemies choppy for viewers (starved-puppet promotion backstops the worst case).
+  The host already holds every peer's link-health score (WS7.2): fold it into the same
+  tiebreak/soft-cap as load. Small, well-defined; do after playtest data confirms it matters.
 
 ## Non-goals (accepted limitations of the architecture)
 
