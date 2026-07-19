@@ -274,6 +274,8 @@ namespace PunkMultiverse.Sync
             if (_frozenStale && _rb != null) _rb.gravityScale = _savedGravityScale;
             _frozenStale = false;
             _timing.Reset();
+            _visualError = Vector2.zero;
+            _wasExtrapolating = false;
         }
 
         public void PushSnapshot(float time, Vector2 pos, Vector2 vel, float rot, Vector2 aim)
@@ -328,19 +330,40 @@ namespace PunkMultiverse.Sync
 
             float span = Mathf.Max(0.0001f, b.Time - a.Time);
             float t = Mathf.Clamp01((renderTime - a.Time) / span);
-            Vector2 targetPos = Vector2.LerpUnclamped(a.Pos, b.Pos, t);
-            if (renderTime > b.Time) // extrapolate briefly on late packets
+            bool extrapolating = renderTime > b.Time;
+            Vector2 targetPos;
+            if (extrapolating) // extrapolate briefly on late packets
             {
                 _timing.NoteUnderrun();
                 targetPos = b.Pos + b.Vel * Mathf.Min(renderTime - b.Time, 0.25f);
             }
+            else
+            {
+                // Hermite through snapshot velocities — same smoothing as entity puppets;
+                // ships curve constantly, so linear segments read as thruster stutter.
+                targetPos = RemoteEntityPuppet.HermitePoint(a.Pos, a.Vel, b.Pos, b.Vel, span, t);
+            }
+
+            // Error decay: melt the residual from an abandoned extrapolated path over ~150ms
+            // instead of stepping it out in one fixed update (see RemoteEntityPuppet).
+            if (_wasExtrapolating && !extrapolating)
+                _visualError = Vector2.ClampMagnitude(_rb.position - targetPos, HardSnapDistance * 0.5f);
+            _wasExtrapolating = extrapolating;
+            _visualError *= Mathf.Exp(-Time.fixedDeltaTime / 0.06f);
+            if (_visualError.sqrMagnitude < 0.0001f) _visualError = Vector2.zero;
 
             if (Vector2.Distance(_rb.position, targetPos) > HardSnapDistance)
+            {
                 RemoteEntityPuppet.TeleportWithChildren(_rb, targetPos);
+                _visualError = Vector2.zero;
+            }
             else
-                _rb.MovePosition(targetPos);
+                _rb.MovePosition(targetPos + _visualError);
             _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);
             _rb.MoveRotation(Mathf.LerpAngle(a.Rot, b.Rot, t));
         }
+
+        private Vector2 _visualError;
+        private bool _wasExtrapolating;
     }
 }
