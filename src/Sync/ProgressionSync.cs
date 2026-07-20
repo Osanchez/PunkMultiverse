@@ -197,6 +197,11 @@ namespace PunkMultiverse.Sync
                 {
                     // Same effect as a successful purchase, minus the cost.
                     data.Install(upgrade);
+                    // Price parity (tester report 2026-07-20): vanilla registers the purchase only
+                    // on the BUYER's machine (Station.TryInstallUpgrade -> RunData), and repeat
+                    // prices scale off that count — so everyone else kept seeing base prices and
+                    // upgrade availability drifted per machine. Register remote installs too.
+                    try { ServiceLocator.Get<RunData>()?.RegisterStationUpgradePurchase(upgrade.id); } catch { }
                 }
                 finally
                 {
