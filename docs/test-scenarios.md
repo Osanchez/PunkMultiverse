@@ -447,9 +447,13 @@ that session even on a Steam-configured install). Sidecar's log = `BepInEx/LogOu
   reserved` + `suspended puppet`; the OTHER client stays `state=InGame` with NO
   `promoted to host` and no session teardown. (rxBundles=0/s afterward is correct — the
   sole remaining player owns everything near it; nobody is left to stream to it.)
-- Limits: local/LAN only until the direct-UDP transport (Steam identity: a sidecar can't
-  be a Steam endpoint); pre-lobby seed/settings don't reach the coordinator yet
-  (party-leader forwarding); coordinator occupies slot 0.
+- Limits: loopback flavor is local/LAN only (see #30 for the remote-capable transport).
+- Since the session-admin change: the coordinator NO LONGER auto-launches by itself — the
+  first joiner is promoted to session admin (`[Admin] ... is now session admin`) and drives
+  start. Harness: either keep `AutoLaunchRun=true` in the host install's config (the sidecar
+  inherits it and still auto-starts) or send the `start` devcmd to the ADMIN's instance.
+  Parity now in: leader's seed/settings forwarded (`PartyLeaderSettings`), coordinator sits
+  in reserved slot 4 (players are slots 0-3).
 
 ## 30. steamserver-sidecar (remote-capable dedicated server) — VERIFIED 2026-07-19
 
@@ -469,6 +473,13 @@ prefix, so the WS8.2 barriers still see per-channel reliable ordering.
   peer ... lane down (Timeout)` + `slot reserved` + `suspended puppet`; the other player
   stays `state=InGame`, no `promoted to host`, no teardown.
 - Devcmd `join <address|steamid64>` drives an explicit join (harness needs it — no lobby).
+  NOTE: once the leader's discovery lobby exists and its membership has been relayed, a
+  code-join from a SteamID that is NOT a lobby member is REFUSED (`refused HELLO ... not a
+  discovery-lobby member`) — that's parity #2 working, not a bug. Same-machine harness runs
+  aren't affected (all processes share one SteamID, which is a member). `[Transport]
+  AcceptAnySteamSession=true` is the accept-gate escape hatch for a listen-server host.
+- Start: same as #29 — coordinator no longer auto-launches; use AutoLaunchRun=true (host
+  install config, inherited by the sidecar) or the `start` devcmd on the admin instance.
 - Limits: same-machine SDR adds a few ms; lane-timeout drop detection ~13s (Steam default,
   not loopback-fast). T2 (Combat-vs-bulk isolation measurement) and T3 (real remote friend)
   still open — see STEAMSERVER_TRANSPORT_SPEC §7.

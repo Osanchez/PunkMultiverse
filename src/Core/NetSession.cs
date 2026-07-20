@@ -67,6 +67,7 @@ namespace PunkMultiverse.Core
         // SteamServer even though their config says "Steam".
         private string _lobbyServerTransport; // non-null on a friend who joined a SteamServer discovery lobby
         private bool _serverLobbyRequested;   // the invite-owner asked Steam to create the discovery lobby
+        private float _nextServerLobbyRetryAt; // backoff after a failed discovery-lobby creation
         private bool _allowlistDirty;         // discovery-lobby membership changed; re-relay to the coordinator
         // Coordinator side of #2: the SteamID64s the party leader says are lobby members. Null until the
         // first relay arrives (accept-all bootstrap); once set, a HELLO from a non-member is refused.
@@ -77,6 +78,8 @@ namespace PunkMultiverse.Core
         private int _adminSlot = -1;      // coordinator: slot of the current admin, -1 = none
         private ulong _adminToken;        // coordinator: capability token issued to the admin
         private ulong _localAdminToken;   // client: my token when I'm the admin (0 = not admin)
+        private float _nextAdminGrantResendAt; // periodic re-grant: heals an admin whose game restarted
+                                               // (roster flag survives the rejoin; the token didn't)
 
         /// <summary>The single point where a session's transport is decided. Adding a transport is
         /// ONE config value + ONE case in CreateTransport:
@@ -357,6 +360,7 @@ namespace PunkMultiverse.Core
             if (_lobby == null || !_lobby.InLobby)
             {
                 if (_serverLobbyRequested) return; // creation already in flight
+                if (Time.unscaledTime < _nextServerLobbyRetryAt) return; // backoff after a failure
                 _serverLobbyRequested = true;
                 EnsureLobbyController();
                 _lobby.CreateServerLobby(serverId);
@@ -438,6 +442,11 @@ namespace PunkMultiverse.Core
         {
             try
             {
+                // Leave any live session BEFORE entering the lobby (the overlay path already does).
+                // If it happened inside LobbyJoined->JoinSession instead, StopSession would leave the
+                // lobby we JUST joined (breaking the host's IsMember gate) and clear the discovery
+                // lobby's SteamServer transport override before CreateTransport reads it.
+                if (State != SessionState.Offline) StopSession("joining another lobby");
                 LastError = null;
                 EnsureLobbyController();
                 _lobby.JoinLobby(lobbyId); // -> LobbyJoined -> JoinSession(hostId)
@@ -505,6 +514,17 @@ namespace PunkMultiverse.Core
             if (current != null && current.Connected && !current.IsCoordinator)
             {
                 if (!current.IsAdmin) { current.IsAdmin = true; BroadcastLobbyState(); RosterChanged?.Invoke(); }
+                // Re-send the SAME grant on a slow cadence: an admin whose game restarted keeps the
+                // roster flag through the rejoin but lost the token with the process (on SteamServer
+                // its peer id is the same SteamID64, so a route change can't be detected). Idempotent
+                // — the client just overwrites its copy with the identical value.
+                if (Time.unscaledTime >= _nextAdminGrantResendAt)
+                {
+                    _nextAdminGrantResendAt = Time.unscaledTime + 5f;
+                    _writer.Reset();
+                    new AdminGrantMsg { Token = _adminToken }.Write(_writer);
+                    SendReliable(current.PeerId, NetChannel.Control, _writer.ToSegment());
+                }
                 return; // admin still valid
             }
 
@@ -519,6 +539,7 @@ namespace PunkMultiverse.Core
             next.IsAdmin = true;
             _adminSlot = next.Slot;
             _adminToken = NewCapabilityToken();
+            _nextAdminGrantResendAt = Time.unscaledTime + 5f;
             _writer.Reset();
             new AdminGrantMsg { Token = _adminToken }.Write(_writer);
             SendReliable(next.PeerId, NetChannel.Control, _writer.ToSegment());
@@ -568,7 +589,14 @@ namespace PunkMultiverse.Core
                 JoinSession(hostId.ToString());
             };
             _lobby.MembershipChanged += () => _allowlistDirty = true;
-            _lobby.LobbyError += err => { LastError = err; Plugin.Log.LogWarning($"[Session] {err}"); };
+            _lobby.LobbyError += err =>
+            {
+                LastError = err;
+                // A failed DISCOVERY-lobby creation must be retryable — otherwise one transient Steam
+                // hiccup means no invites (and for a listen-server host, no joins) all session.
+                if (_serverLobbyRequested) { _serverLobbyRequested = false; _nextServerLobbyRetryAt = Time.unscaledTime + 10f; }
+                Plugin.Log.LogWarning($"[Session] {err}");
+            };
             _lobby.JoinRequested += lobbyId =>
             {
                 Plugin.Log.LogInfo($"[Session] overlay join requested -> {lobbyId.m_SteamID}");
@@ -905,7 +933,11 @@ namespace PunkMultiverse.Core
             // or quits mid-run, the CONNECT screen can offer REJOIN while the session lives.
             try
             {
-                if (UsingSteam && _lobby != null && _lobby.InLobby)
+                // A SteamServer discovery lobby is remembered like a Steam lobby: rejoin re-enters the
+                // lobby, reads the server id from its metadata, and reconnects over SteamServer. The
+                // old `!UsingSteam` fallback would have stored the server id as a LOOPBACK address —
+                // unjoinable after a restart (config transport is Steam).
+                if (_lobby != null && _lobby.InLobby && (UsingSteam || _lobby.IsServerLobby))
                     RejoinMemory.Remember(steam: true, _lobby.CurrentLobby.m_SteamID, null);
                 else if (!UsingSteam)
                     RejoinMemory.Remember(steam: false, 0, IsHost
@@ -2302,6 +2334,7 @@ namespace PunkMultiverse.Core
                 case MsgType.AdminGrant when !IsHost:
                 {
                     var grant = AdminGrantMsg.Read(_reader);
+                    if (grant.Token == _localAdminToken) break; // periodic idempotent re-send
                     _localAdminToken = grant.Token;
                     Plugin.Log.LogInfo("[Admin] granted session-admin controls by the server");
                     RosterChanged?.Invoke(); // surface the host UI once the roster flag lands too
@@ -2647,7 +2680,12 @@ namespace PunkMultiverse.Core
             // Before the first relay arrives (_allowedPeers == null) it's accept-all — the leader's own
             // connection bootstraps the session. A SteamServer peer id IS the connecting user's
             // SteamID64, matching the relayed lobby-member ids.
-            if (NetConfig.IsCoordinator && _allowedPeers != null && !_allowedPeers.Contains(peer))
+            // A peer whose identity already holds a seat (connected or reserved-for-rejoin) was
+            // admitted once — always let it back in, even if the CURRENT allowlist is stale (e.g. the
+            // leader re-hosted and opened a fresh discovery lobby the old friend hasn't re-entered).
+            bool seatedIdentity = _players.Any(p => p != null && !p.IsLocal
+                && (hello.SteamId != 0 ? p.IdentityId == hello.SteamId : p.Name == hello.Name));
+            if (NetConfig.IsCoordinator && _allowedPeers != null && !seatedIdentity && !_allowedPeers.Contains(peer))
             {
                 Plugin.Log.LogWarning($"[Coordinator] refused HELLO from {peer}: not a discovery-lobby member");
                 _writer.Reset();
