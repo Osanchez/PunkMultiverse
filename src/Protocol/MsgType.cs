@@ -97,6 +97,9 @@
                                      // at arrival is silent loss (outbox drop, migration gap) (WS8.2)
         EventGapReport = 86,         // client -> host: checkpoint deficit detected; host answers
                                      // with the idempotent SendEventCatchUp state replay (WS8.2)
+        PartyLeaderSettings = 87,    // party leader -> coordinator (in lobby): the run seed +
+                                     // friendly-fire + hp-scaling the hosting player chose, so a
+                                     // shipless coordinator hosts the world THEY picked (sidecar parity)
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

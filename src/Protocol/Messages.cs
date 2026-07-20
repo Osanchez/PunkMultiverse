@@ -1604,6 +1604,31 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    /// <summary>Sidecar parity: the hosting player (party leader) tells a shipless coordinator which
+    /// world to host — the seed and game-settings they chose on the pre-lobby screen. Sent once on
+    /// reaching the coordinator's lobby; the coordinator adopts it before StartRun.</summary>
+    public struct PartyLeaderSettingsMsg
+    {
+        public int Seed;
+        public bool FriendlyFire;
+        public bool HpScaling;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.PartyLeaderSettings);
+            w.WriteInt(Seed);
+            w.WriteBool(FriendlyFire);
+            w.WriteBool(HpScaling);
+        }
+
+        public static PartyLeaderSettingsMsg Read(NetReader r) => new PartyLeaderSettingsMsg
+        {
+            Seed = r.ReadInt(),
+            FriendlyFire = r.ReadBool(),
+            HpScaling = r.ReadBool(),
+        };
+    }
+
     public struct InstrumentUsedMsg
     {
         public int NetId;

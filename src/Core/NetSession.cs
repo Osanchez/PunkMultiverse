@@ -52,6 +52,10 @@ namespace PunkMultiverse.Core
         // the launcher-chosen transport (below) for THIS session, not the player's config value.
         private bool _sidecarSession;
         private string _sidecarTransport = "Loopback"; // set at spawn from SidecarLauncher.ChosenTransport
+        // Sidecar parity (#1): the settings the hosting player picked on the Host screen, forwarded
+        // to the shipless coordinator once we reach its lobby so it hosts THEIR world, not defaults.
+        private bool _haveLeaderSettings, _leaderSettingsSent, _leaderFriendlyFire, _leaderHpScaling;
+        private int _leaderSeed;
 
         /// <summary>The single point where a session's transport is decided. Adding a transport is
         /// ONE config value + ONE case in CreateTransport:
@@ -228,8 +232,13 @@ namespace PunkMultiverse.Core
             {
                 if (SidecarLauncher.LaunchIfNeeded(out string sidecarError))
                 {
-                    if (chosenSeed != 0 || friendlyFire)
-                        Plugin.Log.LogWarning("[Sidecar] chosen seed/settings do not reach the sidecar yet — coordinator uses defaults");
+                    // Carry the host player's world choice to the coordinator (#1). Sent when we
+                    // reach its lobby (see Update); the coordinator adopts it before StartRun.
+                    _leaderSeed = chosenSeed;
+                    _leaderFriendlyFire = friendlyFire;
+                    _leaderHpScaling = enemyHpScaling;
+                    _haveLeaderSettings = true;
+                    _leaderSettingsSent = false;
                     LastError = null;
                     _sidecarTransport = SidecarLauncher.ChosenTransport;
                     StartCoroutine(JoinSidecarWhenUp());
@@ -988,6 +997,7 @@ namespace PunkMultiverse.Core
         {
             bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
             _sidecarSession = false; // future sessions choose their transport from config again
+            _haveLeaderSettings = false; _leaderSettingsSent = false;
 
             // Tell everyone this is a deliberate end, not a connection hiccup, while the
             // transport is still up (host only — a quitting client just drops and gets its
@@ -1263,6 +1273,22 @@ namespace PunkMultiverse.Core
                 if (State == SessionState.Loading && !IsHost && _hasLocalLevelChecksum
                     && Time.unscaledTime >= _nextLevelReadyRetryAt)
                     SendLevelReady();
+
+                // Sidecar parity (#1): once in the coordinator's lobby, forward the world settings
+                // the host player picked so the coordinator hosts THEIR world. Send before readying
+                // (below) so it lands before the coordinator can auto-launch.
+                if (_haveLeaderSettings && !_leaderSettingsSent && !IsHost
+                    && State == SessionState.Lobby && _players[HostSlot] != null)
+                {
+                    _leaderSettingsSent = true;
+                    _writer.Reset();
+                    new PartyLeaderSettingsMsg
+                    {
+                        Seed = _leaderSeed, FriendlyFire = _leaderFriendlyFire, HpScaling = _leaderHpScaling,
+                    }.Write(_writer);
+                    SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
+                    Plugin.Log.LogInfo($"[Sidecar] sent world choice to coordinator (seed={_leaderSeed}, ff={_leaderFriendlyFire}, hp={_leaderHpScaling})");
+                }
 
                 // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
                 // A coordinator implies both — it has no UI — but only launches once at least one
@@ -2059,6 +2085,21 @@ namespace PunkMultiverse.Core
                     Plugin.Log.LogWarning($"[Seq] {victim} reports a channel-{gap.Channel} gap " +
                         $"({gap.Received}/{gap.Expected}) — replaying event catch-up");
                     SendEventCatchUp(peer);
+                    break;
+                }
+                case MsgType.PartyLeaderSettings when IsHost:
+                {
+                    var settings = PartyLeaderSettingsMsg.Read(_reader);
+                    // Only a coordinator adopts a leader's world choice, and only before the run
+                    // starts (a normal player-host already owns its own settings).
+                    if (!NetConfig.IsCoordinator || State != SessionState.Lobby) break;
+                    var leader = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (leader == null) break;
+                    ChosenSeed = settings.Seed;
+                    FriendlyFire = settings.FriendlyFire;
+                    HpScaling = settings.HpScaling;
+                    Plugin.Log.LogInfo($"[Coordinator] adopted {leader}'s world: seed={settings.Seed} ff={settings.FriendlyFire} hp={settings.HpScaling}");
+                    BroadcastLobbyState(); // so every lobby screen shows the chosen seed/FF
                     break;
                 }
                 case MsgType.SegmentDormancyCommit:
