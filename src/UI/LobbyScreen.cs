@@ -930,7 +930,7 @@ namespace PunkMultiverse.UI
                     _codeText.GetPreferredValues(_codeText.text).x * 0.5f + 78f, 0f);
             _seedText.text = $"WORLD SEED   {(session.ChosenSeed != 0 ? session.ChosenSeed.ToString() : "RANDOM")}"
                 + (session.FriendlyFire ? "   ·   <color=#f08c2e>FRIENDLY FIRE ON</color>" : "");
-            _inviteButton.SetActive(session.UsingSteam);
+            _inviteButton.SetActive(session.CanInvite); // Steam P2P or a SteamServer discovery lobby
             _startButton.SetActive(session.IsHost);
             var startBtn = UiTheme.ButtonOf(_startLabel);
             if (startBtn != null)

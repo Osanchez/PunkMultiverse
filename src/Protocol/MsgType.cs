@@ -100,6 +100,10 @@
         PartyLeaderSettings = 87,    // party leader -> coordinator (in lobby): the run seed +
                                      // friendly-fire + hp-scaling the hosting player chose, so a
                                      // shipless coordinator hosts the world THEY picked (sidecar parity)
+        LobbyMembers = 88,           // party leader -> coordinator: the SteamID64 set of the discovery
+                                     // lobby's current members. A shipless coordinator can't see the
+                                     // Steam lobby, so the leader relays membership; the coordinator
+                                     // gates incoming HELLOs against it (sidecar lobby-gated joins #2)
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

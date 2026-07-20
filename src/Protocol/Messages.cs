@@ -1631,6 +1631,31 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    /// <summary>Sidecar lobby-gated joins (#2): the party leader relays the discovery lobby's current
+    /// member SteamID64s to the shipless coordinator, which can't query the Steam lobby itself. The
+    /// coordinator admits a HELLO only from a peer in this set (once it has ever received one). Re-sent
+    /// whenever lobby membership changes, so a freshly-invited friend is admitted within a lobby tick.</summary>
+    public struct LobbyMembersMsg
+    {
+        public ulong[] Members;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.LobbyMembers);
+            var m = Members ?? System.Array.Empty<ulong>();
+            w.WriteByte((byte)System.Math.Min(m.Length, byte.MaxValue));
+            for (int i = 0; i < m.Length && i < byte.MaxValue; i++) w.WriteULong(m[i]);
+        }
+
+        public static LobbyMembersMsg Read(NetReader r)
+        {
+            int n = r.ReadByte();
+            var ids = new ulong[n];
+            for (int i = 0; i < n; i++) ids[i] = r.ReadULong();
+            return new LobbyMembersMsg { Members = ids };
+        }
+    }
+
     public struct InstrumentUsedMsg
     {
         public int NetId;

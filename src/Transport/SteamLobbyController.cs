@@ -16,6 +16,11 @@ namespace PunkMultiverse.Transport
         public const string KeyModVersion = "pmvver";
         public const string KeyGameVersion = "gamebuild";
         public const string KeyHostId = "host";
+        // Discovery-lobby keys (SteamServer sessions): the lobby is only a meet-up point that carries
+        // the anonymous game-server's SteamID64, so friends join-by-invite and connect to the server
+        // instead of to the lobby owner. Absent on ordinary user-P2P lobbies.
+        public const string KeyTransport = "xport";   // "SteamServer" marks a discovery lobby
+        public const string KeyServerId = "srvid";     // the coordinator / listen-server SteamID64
 
         private CallResult<LobbyCreated_t> _lobbyCreated;
         private CallResult<LobbyEnter_t> _lobbyEntered;
@@ -34,6 +39,8 @@ namespace PunkMultiverse.Transport
         public event Action<string> LobbyError;
         /// <summary>Fired when a Steam overlay invite / "join game" asks us to join.</summary>
         public event Action<CSteamID> JoinRequested;
+        /// <summary>Fired when a member joins/leaves the lobby we own (discovery-lobby allowlist relay).</summary>
+        public event Action MembershipChanged;
 
         public SteamLobbyController()
         {
@@ -100,11 +107,25 @@ namespace PunkMultiverse.Transport
 
         // ---------------------------------------------------------------- host
 
+        private ulong _pendingServerId; // non-zero => the lobby being created is a SteamServer discovery lobby
+
         public void CreateLobby()
         {
+            _pendingServerId = 0;
             var call = SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, Core.NetSession.MaxPlayers);
             _lobbyCreated.Set(call);
             Plugin.Log.LogInfo("[Lobby] creating Steam lobby…");
+        }
+
+        /// <summary>Create a discovery lobby for a SteamServer session: same friends-only lobby, but its
+        /// metadata carries the anonymous server's SteamID64 so members connect to the server, not to
+        /// us. Used by a listen-server host and by the player that launched a sidecar coordinator.</summary>
+        public void CreateServerLobby(ulong serverId)
+        {
+            _pendingServerId = serverId;
+            var call = SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, Core.NetSession.MaxPlayers);
+            _lobbyCreated.Set(call);
+            Plugin.Log.LogInfo($"[Lobby] creating SteamServer discovery lobby for server {serverId}…");
         }
 
         private void OnLobbyCreated(LobbyCreated_t result, bool ioFailure)
@@ -118,8 +139,33 @@ namespace PunkMultiverse.Transport
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyModVersion, Plugin.Version);
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyGameVersion, UnityEngine.Application.version);
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyHostId, SteamUser.GetSteamID().m_SteamID.ToString());
-            Plugin.Log.LogInfo($"[Lobby] created {CurrentLobby.m_SteamID}, code {EncodeLobbyCode(CurrentLobby)}");
+            if (_pendingServerId != 0)
+            {
+                SteamMatchmaking.SetLobbyData(CurrentLobby, KeyTransport, "SteamServer");
+                SteamMatchmaking.SetLobbyData(CurrentLobby, KeyServerId, _pendingServerId.ToString());
+            }
+            Plugin.Log.LogInfo($"[Lobby] created {CurrentLobby.m_SteamID}, code {EncodeLobbyCode(CurrentLobby)}"
+                + (_pendingServerId != 0 ? $" (SteamServer -> {_pendingServerId})" : ""));
             LobbyCreated?.Invoke(CurrentLobby);
+        }
+
+        /// <summary>True when the lobby we're in is a SteamServer discovery lobby (carries a server id).</summary>
+        public bool IsServerLobby =>
+            InLobby && SteamMatchmaking.GetLobbyData(CurrentLobby, KeyTransport) == "SteamServer";
+
+        /// <summary>The anonymous game-server SteamID64 this discovery lobby points at, or 0.</summary>
+        public ulong LobbyServerId =>
+            InLobby && ulong.TryParse(SteamMatchmaking.GetLobbyData(CurrentLobby, KeyServerId), out var id) ? id : 0;
+
+        /// <summary>SteamID64s of the lobby's current members (for the coordinator allowlist relay).</summary>
+        public ulong[] MemberIds()
+        {
+            if (!InLobby) return Array.Empty<ulong>();
+            int n = SteamMatchmaking.GetNumLobbyMembers(CurrentLobby);
+            var ids = new ulong[n];
+            for (int i = 0; i < n; i++)
+                ids[i] = SteamMatchmaking.GetLobbyMemberByIndex(CurrentLobby, i).m_SteamID;
+            return ids;
         }
 
         // ---------------------------------------------------------------- client
@@ -202,6 +248,7 @@ namespace PunkMultiverse.Transport
             // Membership changes are interesting for the session gate only; roster truth is P2P.
             var change = (EChatMemberStateChange)update.m_rgfChatMemberStateChange;
             Plugin.Log.LogDebug($"[Lobby] member {update.m_ulSteamIDUserChanged}: {change}");
+            MembershipChanged?.Invoke(); // discovery-lobby owner re-relays the allowlist to its coordinator
         }
 
         /// <summary>Scan launch args for "+connect_lobby &lt;id&gt;" (Steam adds this on cold-start joins).</summary>

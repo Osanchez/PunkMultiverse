@@ -61,6 +61,15 @@ namespace PunkMultiverse.Core
         // to the shipless coordinator once we reach its lobby so it hosts THEIR world, not defaults.
         private bool _haveLeaderSettings, _leaderSettingsSent, _leaderFriendlyFire, _leaderHpScaling;
         private int _leaderSeed;
+        // Sidecar parity (#2/#3): a SteamServer session's discovery lobby. A remote friend who enters
+        // it connects to the server id (not the lobby owner), so their transport must resolve to
+        // SteamServer even though their config says "Steam".
+        private string _lobbyServerTransport; // non-null on a friend who joined a SteamServer discovery lobby
+        private bool _serverLobbyRequested;   // the invite-owner asked Steam to create the discovery lobby
+        private bool _allowlistDirty;         // discovery-lobby membership changed; re-relay to the coordinator
+        // Coordinator side of #2: the SteamID64s the party leader says are lobby members. Null until the
+        // first relay arrives (accept-all bootstrap); once set, a HELLO from a non-member is refused.
+        private HashSet<ulong> _allowedPeers;
 
         /// <summary>The single point where a session's transport is decided. Adding a transport is
         /// ONE config value + ONE case in CreateTransport:
@@ -74,9 +83,13 @@ namespace PunkMultiverse.Core
         internal string ResolvedTransport =>
             NetConfig.IsCoordinator ? NetConfig.EnvCoordinatorTransport
             : _sidecarSession ? _sidecarTransport
-            : NetConfig.Transport.Value;
+            : _lobbyServerTransport ?? NetConfig.Transport.Value;
 
         public bool UsingSteam => ResolvedTransport.Equals("Steam", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>The INVITE FRIENDS button lights up whenever we hold a Steam lobby — an ordinary
+        /// user-P2P lobby OR a SteamServer discovery lobby (listen-server host or sidecar leader).</summary>
+        public bool CanInvite => _lobby != null && _lobby.InLobby;
 
         /// <summary>Pasteable code for the current Steam lobby, or the loopback address.</summary>
         public string CurrentLobbyCode =>
@@ -313,6 +326,49 @@ namespace PunkMultiverse.Core
             }
         }
 
+        /// <summary>Keep a SteamServer session's discovery lobby open and its allowlist fresh (#2/#3).
+        /// The invite OWNER — a listen-server host, or the player that launched a sidecar coordinator —
+        /// holds a Steam lobby stamped with the server id so friends join-by-invite; the same player
+        /// relays lobby membership to a shipless coordinator so it can gate joins. Remote friends and
+        /// the coordinator itself skip all of this.</summary>
+        private void MaintainServerLobby()
+        {
+            bool inviteOwner = !NetConfig.IsCoordinator
+                && State >= SessionState.Lobby
+                && ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase)
+                && (IsHost || (_sidecarSession && _haveLeaderSettings)); // not a plain lobby-joined friend
+            if (!inviteOwner) return;
+
+            ulong serverId = SteamServerCode; // 0 until the server id is known (welcome / logon)
+            if (serverId == 0) return;
+
+            if (_lobby == null || !_lobby.InLobby)
+            {
+                if (_serverLobbyRequested) return; // creation already in flight
+                _serverLobbyRequested = true;
+                EnsureLobbyController();
+                _lobby.CreateServerLobby(serverId);
+                return;
+            }
+
+            // Coordinator sessions only: push the current member set when it changed. A listen-server
+            // host gates at accept via IsMember and needs no relay.
+            if (!IsHost && _allowlistDirty && _players[HostSlot] != null)
+            {
+                _allowlistDirty = false;
+                SendAllowlistToCoordinator();
+            }
+        }
+
+        private void SendAllowlistToCoordinator()
+        {
+            var ids = _lobby.MemberIds();
+            _writer.Reset();
+            new LobbyMembersMsg { Members = ids }.Write(_writer);
+            SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogInfo($"[Sidecar] relayed {ids.Length} lobby member(s) to the coordinator");
+        }
+
         /// <summary>Join: Steam = decode lobby code (null = clipboard); loopback = address (null = config default).</summary>
         public void JoinByCode(string codeOrAddress)
         {
@@ -360,7 +416,9 @@ namespace PunkMultiverse.Core
             {
                 if (!ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase)) return 0;
                 if (IsHost) return _transport?.LocalPeerId ?? 0;                 // listen-server host
-                return HostSlot < MaxPlayers ? (_players[HostSlot]?.PeerId ?? 0) : 0; // player of a coordinator
+                // A coordinator sits in the reserved slot (CoordinatorSlot == MaxPlayers), so the
+                // upper bound is inclusive — the pre-#4 `< MaxPlayers` guard read the server id as 0.
+                return HostSlot <= MaxPlayers ? (_players[HostSlot]?.PeerId ?? 0) : 0; // player of a coordinator
             }
         }
 
@@ -408,8 +466,27 @@ namespace PunkMultiverse.Core
         {
             if (_lobby != null) return;
             _lobby = new SteamLobbyController();
-            _lobby.LobbyCreated += _ => HostSession();
-            _lobby.LobbyJoined += (_, hostId) => JoinSession(hostId.ToString());
+            _lobby.LobbyCreated += _ =>
+            {
+                // A discovery lobby (SteamServer) is opened AFTER the session is already up — it must
+                // not (re)host. An ordinary Steam lobby's creation IS the cue to open the host socket.
+                if (_serverLobbyRequested) { _allowlistDirty = true; return; }
+                HostSession();
+            };
+            _lobby.LobbyJoined += (_, hostId) =>
+            {
+                // SteamServer discovery lobby: connect to the anonymous server it points at, forcing
+                // this session onto the SteamServer transport regardless of our own config value.
+                if (_lobby.IsServerLobby && _lobby.LobbyServerId != 0)
+                {
+                    _lobbyServerTransport = "SteamServer";
+                    Plugin.Log.LogInfo($"[Session] discovery lobby -> joining server {_lobby.LobbyServerId}");
+                    JoinSession(_lobby.LobbyServerId.ToString());
+                    return;
+                }
+                JoinSession(hostId.ToString());
+            };
+            _lobby.MembershipChanged += () => _allowlistDirty = true;
             _lobby.LobbyError += err => { LastError = err; Plugin.Log.LogWarning($"[Session] {err}"); };
             _lobby.JoinRequested += lobbyId =>
             {
@@ -1005,6 +1082,8 @@ namespace PunkMultiverse.Core
             bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
             _sidecarSession = false; // future sessions choose their transport from config again
             _haveLeaderSettings = false; _leaderSettingsSent = false;
+            _lobbyServerTransport = null; _serverLobbyRequested = false; _allowlistDirty = false;
+            _allowedPeers = null;
 
             // Tell everyone this is a deliberate end, not a connection hiccup, while the
             // transport is still up (host only — a quitting client just drops and gets its
@@ -1129,6 +1208,12 @@ namespace PunkMultiverse.Core
             _transport.DataReceived += OnData;
             if (_transport is SteamMessagesTransport steam)
                 steam.AllowPeer = id => _lobby != null && _lobby.IsMember(id);
+            else if (_transport is SteamServerTransport ss && !NetConfig.IsCoordinator)
+                // A listen-server host owns its discovery lobby in-process, so it can gate at accept —
+                // race-free, since a friend is a lobby member before they connect. A shipless
+                // coordinator has no lobby; it stays accept-all here and gates HELLOs against the
+                // relayed allowlist instead (see the LobbyMembers handler).
+                ss.AllowPeer = id => _lobby != null && _lobby.InLobby && _lobby.IsMember(id);
         }
 
         private void Fail(string error)
@@ -1296,6 +1381,10 @@ namespace PunkMultiverse.Core
                     SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
                     Plugin.Log.LogInfo($"[Sidecar] sent world choice to coordinator (seed={_leaderSeed}, ff={_leaderFriendlyFire}, hp={_leaderHpScaling})");
                 }
+
+                // Sidecar parity (#2/#3): the invite owner opens/refreshes the SteamServer discovery
+                // lobby, and (coordinator sessions) relays its membership so joins are lobby-gated.
+                MaintainServerLobby();
 
                 // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
                 // A coordinator implies both — it has no UI — but only launches once at least one
@@ -2109,6 +2198,18 @@ namespace PunkMultiverse.Core
                     BroadcastLobbyState(); // so every lobby screen shows the chosen seed/FF
                     break;
                 }
+                case MsgType.LobbyMembers when IsHost:
+                {
+                    var msg = LobbyMembersMsg.Read(_reader);
+                    // Only a shipless coordinator gates on a relayed lobby (a normal host owns the
+                    // lobby directly). Trust the relay only from a seated, connected player.
+                    if (!NetConfig.IsCoordinator) break;
+                    var relay = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (relay == null) break;
+                    _allowedPeers = new HashSet<ulong>(msg.Members);
+                    Plugin.Log.LogInfo($"[Coordinator] lobby allowlist now {_allowedPeers.Count} member(s) (via {relay})");
+                    break;
+                }
                 case MsgType.SegmentDormancyCommit:
                 {
                     var commit = SegmentDormancyCommitMsg.Read(_reader);
@@ -2416,6 +2517,20 @@ namespace PunkMultiverse.Core
             var hello = HelloMsg.Read(_reader);
             string reject = null;
             bool midRun = State != SessionState.Lobby;
+
+            // Sidecar lobby-gated joins (#2): a shipless coordinator can't see the Steam lobby, so it
+            // admits a peer only once the party leader has relayed a membership set that includes it.
+            // Before the first relay arrives (_allowedPeers == null) it's accept-all — the leader's own
+            // connection bootstraps the session. A SteamServer peer id IS the connecting user's
+            // SteamID64, matching the relayed lobby-member ids.
+            if (NetConfig.IsCoordinator && _allowedPeers != null && !_allowedPeers.Contains(peer))
+            {
+                Plugin.Log.LogWarning($"[Coordinator] refused HELLO from {peer}: not a discovery-lobby member");
+                _writer.Reset();
+                new RejectMsg { Reason = "This server is invite-only — ask the host for a Steam invite." }.Write(_writer);
+                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+                return;
+            }
 
             // Other installed mods can change gameplay rules or conflict with the netcode's
             // patches — the host's ModManifestPolicy decides how strict to be.
