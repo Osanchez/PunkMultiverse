@@ -303,6 +303,22 @@ namespace PunkMultiverse.Core
         public void JoinByCode(string codeOrAddress)
         {
             LastError = null;
+            // SteamServer join code = the server's SteamID64. A remote friend pastes it (the host
+            // shares it via the SERVER CODE display / `servercode` devcmd). Read the clipboard when
+            // the button passes null, exactly like the Steam lobby-code path.
+            if (ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase))
+            {
+                var raw = string.IsNullOrWhiteSpace(codeOrAddress) ? GUIUtility.systemCopyBuffer : codeOrAddress;
+                raw = raw?.Trim();
+                if (!ulong.TryParse(raw, out ulong serverId) || serverId == 0)
+                {
+                    LastError = "Paste a server code (17-digit ID) to join a dedicated server.";
+                    Plugin.Log.LogWarning($"[Session] {LastError}");
+                    return;
+                }
+                JoinSession(serverId.ToString());
+                return;
+            }
             if (!UsingSteam)
             {
                 JoinSession(string.IsNullOrWhiteSpace(codeOrAddress)
@@ -318,6 +334,20 @@ namespace PunkMultiverse.Core
                 return;
             }
             JoinLobbyId(lobbyId);
+        }
+
+        /// <summary>The join code to SHARE for the current SteamServer session (the coordinator's
+        /// server SteamID64), or 0 when this isn't a SteamServer session. A sidecar/remote player
+        /// shares the host slot's id; a listen-server host shares its own. Remote friends paste it
+        /// into Join.</summary>
+        public ulong SteamServerCode
+        {
+            get
+            {
+                if (!ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase)) return 0;
+                if (IsHost) return _transport?.LocalPeerId ?? 0;                 // listen-server host
+                return HostSlot < MaxPlayers ? (_players[HostSlot]?.PeerId ?? 0) : 0; // player of a coordinator
+            }
         }
 
         public void JoinLobbyId(Steamworks.CSteamID lobbyId)

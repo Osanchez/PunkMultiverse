@@ -569,6 +569,15 @@ namespace PunkMultiverse.Core
                     }
                     return;
                 }
+                case "servercode":
+                {
+                    // Print + copy the SteamServer join code to share with a remote friend.
+                    ulong code = session.SteamServerCode;
+                    if (code == 0) { Out("servercode: not a SteamServer session"); return; }
+                    try { UnityEngine.GUIUtility.systemCopyBuffer = code.ToString(); } catch { }
+                    Out($"servercode: {code} (copied to clipboard — friend pastes into Join)");
+                    return;
+                }
                 case "join":
                 {
                     // Harness: drive a join to an explicit address/code (loopback "ip:port",

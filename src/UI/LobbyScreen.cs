@@ -858,7 +858,9 @@ namespace PunkMultiverse.UI
 
         private void CopyCodeWithFeedback()
         {
-            NetSession.Instance.CopyLobbyCodeToClipboard();
+            ulong serverCode = NetSession.Instance.SteamServerCode;
+            if (serverCode != 0) { try { GUIUtility.systemCopyBuffer = serverCode.ToString(); } catch { } }
+            else NetSession.Instance.CopyLobbyCodeToClipboard();
             if (_copyFlash != null) StopCoroutine(_copyFlash);
             _copyFlash = StartCoroutine(FlashCopied());
         }
@@ -916,7 +918,11 @@ namespace PunkMultiverse.UI
 
         private void RefreshLobby(NetSession session)
         {
-            _codeText.text = session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
+            // SteamServer sessions have no Steam lobby — surface the server join code (the SteamID64
+            // a remote friend pastes into Join) in the same slot, copyable the same way.
+            ulong serverCode = session.SteamServerCode;
+            _codeText.text = serverCode != 0 ? $"SERVER CODE   {serverCode}"
+                : session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
             bool hasCode = !string.IsNullOrEmpty(_codeText.text);
             _copyChipRoot.gameObject.SetActive(hasCode);
             if (hasCode) // hug the right edge of the (centered, width-varying) code text
