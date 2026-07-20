@@ -87,6 +87,7 @@ namespace PunkMultiverse.Protocol
     public struct WelcomeMsg
     {
         public byte Slot;
+        public byte HostSlot; // where the host sits — 4 for a dedicated coordinator, 0 for a player-host
         public string HostModVersion;
         public List<RosterEntry> Roster;
 
@@ -94,6 +95,7 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteMsgType(MsgType.Welcome);
             w.WriteByte(Slot);
+            w.WriteByte(HostSlot);
             w.WriteString(HostModVersion);
             w.WriteByte((byte)(Roster?.Count ?? 0));
             if (Roster != null) foreach (var e in Roster) e.Write(w);
@@ -101,7 +103,7 @@ namespace PunkMultiverse.Protocol
 
         public static WelcomeMsg Read(NetReader r)
         {
-            var m = new WelcomeMsg { Slot = r.ReadByte(), HostModVersion = r.ReadString(), Roster = new List<RosterEntry>() };
+            var m = new WelcomeMsg { Slot = r.ReadByte(), HostSlot = r.ReadByte(), HostModVersion = r.ReadString(), Roster = new List<RosterEntry>() };
             int n = r.ReadByte();
             for (int i = 0; i < n; i++) m.Roster.Add(RosterEntry.Read(r));
             return m;

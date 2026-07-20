@@ -24,6 +24,11 @@ namespace PunkMultiverse.Core
     {
         public const int ProtocolVersion = 12;
         public const int MaxPlayers = 4;
+        /// <summary>Reserved slot for a dedicated coordinator — OUTSIDE the 0..MaxPlayers-1 player
+        /// range, so a shipless server never consumes one of the four player/ship slots. Only ever
+        /// occupied in a coordinator session; always null in normal play (which leaves every
+        /// "for i &lt; MaxPlayers" player loop untouched).</summary>
+        public const int CoordinatorSlot = MaxPlayers; // = 4
         private const float PingInterval = 1f;
         private const float ConnectTimeout = 15f;
 
@@ -39,7 +44,7 @@ namespace PunkMultiverse.Core
         public byte HostSlot { get; private set; }
         public string LastError { get; private set; }
 
-        private readonly NetPlayer[] _players = new NetPlayer[MaxPlayers];
+        private readonly NetPlayer[] _players = new NetPlayer[MaxPlayers + 1]; // +1 = CoordinatorSlot
         public IReadOnlyList<NetPlayer> Players => _players;
         public NetPlayer LocalPlayer => LocalSlot >= 0 ? _players[LocalSlot] : null;
 
@@ -464,7 +469,7 @@ namespace PunkMultiverse.Core
 
             // Enemy health scaling is fixed for the whole run at start:
             // Base Health * (1 + (EnemyHealthScalePerPlayer * number of players)).
-            int playerCount = _players.Count(p => p != null && p.Connected);
+            int playerCount = _players.Count(p => p != null && p.Connected && !p.IsCoordinator);
             EnemyHpMult = HpScaling
                 ? 1f + Mathf.Max(0f, NetConfig.EnemyHealthScalePerPlayer.Value) * playerCount
                 : 1f;
@@ -945,17 +950,19 @@ namespace PunkMultiverse.Core
                 Fail($"Host failed: {e.Message}");
                 return;
             }
-            LocalSlot = 0;
-            _players[0] = new NetPlayer
+            // A coordinator seats itself in the reserved slot (4), leaving all four player slots
+            // (0-3) for real players. A normal host is player slot 0 as always.
+            LocalSlot = NetConfig.IsCoordinator ? CoordinatorSlot : 0;
+            _players[LocalSlot] = new NetPlayer
             {
-                Slot = 0,
+                Slot = (byte)LocalSlot,
                 PeerId = _transport.LocalPeerId,
                 IdentityId = LocalIdentityId(),
                 Name = LocalDisplayName(),
                 IsLocal = true,
                 IsCoordinator = NetConfig.IsCoordinator, // shipless server slot — clients spawn no puppet
             };
-            HostSlot = 0;
+            HostSlot = (byte)LocalSlot;
             ChosenSeed = _pendingHostSeed; // settings picked on the pre-lobby screen
             FriendlyFire = _pendingFriendlyFire;
             HpScaling = _pendingHpScaling;
@@ -964,7 +971,7 @@ namespace PunkMultiverse.Core
             _pendingHpScaling = false;
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
-            Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
+            Plugin.Log.LogInfo($"[Session] hosting as {_players[LocalSlot]}");
         }
 
         private string _lastJoinAddress; // loopback rejoin target (Steam rejoins use the lobby id)
@@ -1030,7 +1037,7 @@ namespace PunkMultiverse.Core
                 _transport.Dispose();
                 _transport = null;
             }
-            for (int i = 0; i < MaxPlayers; i++) _players[i] = null;
+            for (int i = 0; i <= MaxPlayers; i++) _players[i] = null;
             LocalSlot = -1;
             HostSlot = 0;
             _migrating = false;
@@ -2459,7 +2466,7 @@ namespace PunkMultiverse.Core
                 // Lobby state: the same identity may still be seated (stale route, or a ghost
                 // reservation that outlived its run) — release it so one identity never holds
                 // two slots. The joiner then seats normally, often into the freed slot.
-                for (int i = 1; i < MaxPlayers; i++)
+                for (int i = 0; i < MaxPlayers; i++)
                 {
                     var p = _players[i];
                     if (p == null || p.IsLocal) continue;
@@ -2477,7 +2484,7 @@ namespace PunkMultiverse.Core
             int slot = -1;
             if (reject == null)
             {
-                for (int i = 1; i < MaxPlayers; i++)
+                for (int i = 0; i < MaxPlayers; i++)
                     if (_players[i] == null) { slot = i; break; }
                 if (slot < 0) reject = "Lobby is full.";
             }
@@ -2542,7 +2549,7 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Session] {reserved} reattached after host migration");
 
             _writer.Reset();
-            new WelcomeMsg { Slot = reserved.Slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
+            new WelcomeMsg { Slot = reserved.Slot, HostSlot = HostSlot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             BroadcastLobbyState();
             RosterChanged?.Invoke();
@@ -2584,7 +2591,7 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Session] {reserved} REJOINED — replaying run seed {CurrentRunSeed}");
 
             _writer.Reset();
-            new WelcomeMsg { Slot = reserved.Slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
+            new WelcomeMsg { Slot = reserved.Slot, HostSlot = HostSlot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             BroadcastLobbyState();
             RosterChanged?.Invoke();
@@ -2791,9 +2798,9 @@ namespace PunkMultiverse.Core
                 _players[LocalSlot].IsLocal = true;
                 _players[LocalSlot].IdentityId = LocalIdentityId();
             }
-            // The host is whoever we connected to — after a migration that isn't slot 0.
-            var hostPlayer = _players.FirstOrDefault(p => p != null && _joinTargetPeerId != 0 && p.PeerId == _joinTargetPeerId);
-            HostSlot = wasReattaching ? _joinTargetHostSlot : hostPlayer != null ? hostPlayer.Slot : (byte)0;
+            // The host tells us its own slot (a coordinator sits at slot 4, not 0). Reattach keeps
+            // the slot it migrated to. Authoritative — no peer-id inference (loopback has peer 0).
+            HostSlot = wasReattaching ? _joinTargetHostSlot : welcome.HostSlot;
             if (wasReattaching)
             {
                 _reattaching = false;
@@ -2858,7 +2865,7 @@ namespace PunkMultiverse.Core
             foreach (var p in _players)
                 if (p != null && !oldRtt.ContainsKey(p.IdentityId))
                     oldRtt[p.IdentityId] = p.RttMs;
-            for (int i = 0; i < MaxPlayers; i++) _players[i] = null;
+            for (int i = 0; i <= MaxPlayers; i++) _players[i] = null;
             foreach (var e in roster)
             {
                 _players[e.Slot] = new NetPlayer
