@@ -18,6 +18,11 @@ namespace PunkMultiverse.Core
         private static Process _sidecar;
         private static bool _quitHooked;
 
+        /// <summary>Transport the last spawn chose for the coordinator (and thus for this player's
+        /// join). SteamServer when the player's own transport is Steam (so remote friends can reach
+        /// the sidecar over SDR), else Loopback (local-only). The player's join must match this.</summary>
+        internal static string ChosenTransport { get; private set; } = "Loopback";
+
         internal static bool IsRunning
         {
             get { try { return _sidecar != null && !_sidecar.HasExited; } catch { return false; } }
@@ -45,6 +50,12 @@ namespace PunkMultiverse.Core
                     UseShellExecute = false, // required for environment variables
                 };
                 psi.EnvironmentVariables["PUNKMV_COORDINATOR"] = "1";
+                // Match the coordinator's transport to this player's capability: a Steam-configured
+                // host gets a SteamServer coordinator (remote friends reachable over SDR); anything
+                // else stays Loopback (local-only). The player's own join reads ChosenTransport.
+                ChosenTransport = NetConfig.Transport.Value.Equals("Steam", StringComparison.OrdinalIgnoreCase)
+                    ? "SteamServer" : "Loopback";
+                psi.EnvironmentVariables["PUNKMV_TRANSPORT"] = ChosenTransport;
                 // CRITICAL: the child inherits THIS game's environment, and Unity Doorstop marks
                 // itself initialized there (DOORSTOP_INITIALIZED etc.) — inherited, the child's
                 // injector thinks it already ran, skips BepInEx entirely, and the sidecar boots as

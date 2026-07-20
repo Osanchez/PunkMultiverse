@@ -48,18 +48,24 @@ namespace PunkMultiverse.Core
 
         private SteamLobbyController _lobby;
         public SteamLobbyController Lobby => _lobby;
-        // True while this session runs against a locally-spawned sidecar coordinator: the join is
-        // forced onto the local transport for THIS session even when the config says Steam.
+        // True while this session runs against a locally-spawned sidecar coordinator: the join uses
+        // the launcher-chosen transport (below) for THIS session, not the player's config value.
         private bool _sidecarSession;
+        private string _sidecarTransport = "Loopback"; // set at spawn from SidecarLauncher.ChosenTransport
 
         /// <summary>The single point where a session's transport is decided. Adding a transport is
-        /// ONE config value + ONE case in CreateTransport: "Steam" (user P2P via Steam networking),
-        /// "Loopback" (dev/LAN UDP). Planned: "Udp" (LiteNetLib — sidecar/Docker/WAN), and
-        /// "SteamServer" (anonymous game-server identity) if the spike proves the appid routes it.
-        /// Coordinator processes and sidecar sessions resolve to the local transport regardless of
-        /// config — a coordinator can never be a Steam USER endpoint.</summary>
+        /// ONE config value + ONE case in CreateTransport:
+        ///   Steam       — user P2P (normal friend play)
+        ///   Loopback    — dev/LAN UDP
+        ///   SteamServer — connect to an anonymous game-server identity (dedicated/sidecar)
+        ///   (planned) Udp — LiteNetLib for Docker/no-Steam
+        /// A coordinator uses its launch env; a sidecar SESSION uses the launcher's choice; everyone
+        /// else uses config. A coordinator is never a Steam USER endpoint, so config "Steam" there
+        /// falls back to Loopback via the env default.</summary>
         internal string ResolvedTransport =>
-            NetConfig.IsCoordinator || _sidecarSession ? "Loopback" : NetConfig.Transport.Value;
+            NetConfig.IsCoordinator ? NetConfig.EnvCoordinatorTransport
+            : _sidecarSession ? _sidecarTransport
+            : NetConfig.Transport.Value;
 
         public bool UsingSteam => ResolvedTransport.Equals("Steam", StringComparison.OrdinalIgnoreCase);
 
@@ -225,6 +231,7 @@ namespace PunkMultiverse.Core
                     if (chosenSeed != 0 || friendlyFire)
                         Plugin.Log.LogWarning("[Sidecar] chosen seed/settings do not reach the sidecar yet — coordinator uses defaults");
                     LastError = null;
+                    _sidecarTransport = SidecarLauncher.ChosenTransport;
                     StartCoroutine(JoinSidecarWhenUp());
                     return;
                 }
@@ -254,9 +261,9 @@ namespace PunkMultiverse.Core
         private System.Collections.IEnumerator JoinSidecarWhenUp()
         {
             _sidecarSession = true;
+            bool steamServer = _sidecarTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase);
             float deadline = Time.unscaledTime + 90f;
-            string address = $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}";
-            Plugin.Log.LogInfo($"[Sidecar] waiting for the coordinator, then joining {address}");
+            Plugin.Log.LogInfo($"[Sidecar] waiting for the coordinator ({_sidecarTransport}), then joining");
             while (Time.unscaledTime < deadline)
             {
                 if (State >= SessionState.Lobby) yield break; // connected — lobby reached
@@ -269,7 +276,19 @@ namespace PunkMultiverse.Core
                         yield break;
                     }
                     _sidecarSession = true; // StopSession clears it after each failed attempt
-                    JoinSession(address);   // Connecting; its own timeout returns us to Offline on failure
+
+                    // SteamServer: the coordinator publishes its server SteamID to the id file once
+                    // logged on — that file existing IS the readiness signal (and the join code).
+                    // Loopback: join the fixed local address directly.
+                    string address = null;
+                    if (steamServer)
+                    {
+                        ulong serverId = GameServerBootstrap.ReadPublishedId();
+                        if (serverId != 0) address = serverId.ToString();
+                    }
+                    else address = $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}";
+
+                    if (address != null) JoinSession(address); // else wait for the id file to appear
                 }
                 yield return new WaitForSecondsRealtime(3f);
             }
@@ -1048,8 +1067,9 @@ namespace PunkMultiverse.Core
             {
                 case "loopback":
                     return new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value);
-                // case "udp":         planned — LiteNetLib (sidecar/Docker/WAN), see server-sidecar plan
-                // case "steamserver": pending — anonymous game-server identity, gated on spike A verdict
+                case "steamserver":
+                    return new SteamServerTransport();
+                // case "udp":  planned — LiteNetLib (Docker/LAN/no-Steam), see server-sidecar plan
                 default:
                     return new SteamMessagesTransport();
             }
@@ -1129,6 +1149,10 @@ namespace PunkMultiverse.Core
             {
                 RuntimeInstrumentation.SetPhase(PerfPhase.SteamPump);
                 SteamBootstrap.Pump();
+                // Game-server callbacks (logon, incoming connections, backend drop) pump here too —
+                // BEFORE the IsRunning gate, so a coordinator's server connection-status callbacks
+                // fire even between logon and the first transport Poll.
+                if (GameServerBootstrap.InitOk) GameServerBootstrap.Pump();
                 // No transport (main menu, offline): still poll the dev command file so the
                 // harness can drive/screenshot menu UI. In-session ticking stays below, after
                 // Poll/Drain, so scenario commands keep acting on post-dispatch state.

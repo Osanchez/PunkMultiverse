@@ -451,6 +451,28 @@ that session even on a Steam-configured install). Sidecar's log = `BepInEx/LogOu
   be a Steam endpoint); pre-lobby seed/settings don't reach the coordinator yet
   (party-leader forwarding); coordinator occupies slot 0.
 
+## 30. steamserver-sidecar (remote-capable dedicated server) — VERIFIED 2026-07-19
+
+`Transport=SteamServer`: the coordinator holds an anonymous Steam game-server identity;
+players connect over SDR (NAT traversal + encryption, no port forwarding). Dual connection
+per peer (vport 0 bulk = Control+Events, vport 1 fast = Combat+State) with a 1-byte channel
+prefix, so the WS8.2 barriers still see per-channel reliable ordering.
+
+- Host install: `Transport=Steam`, `HostViaSidecar=true`, `AutoStart=Host` → spawns a
+  `PUNKMV_TRANSPORT=SteamServer` coordinator (BepInEx `LogOutput.1.log`) and joins it via the
+  published `coordinator-steamid.txt`.
+- Second player: `Transport=SteamServer`, then `join <serverid>` (the id from that file).
+- PASS: sidecar log `[GameServer] logged on — server id <N>` + `[SteamServer] host up`;
+  each player `[SteamServer] ... connected ... (both lanes)`; 3-way GO LIVE + checksum
+  parity; **`[Seq]=0` on all three** (the dual-connection ordering gate); combat routed.
+- Headline gate: `Stop-Process` the host player's game → coordinator logs `[SteamServer]
+  peer ... lane down (Timeout)` + `slot reserved` + `suspended puppet`; the other player
+  stays `state=InGame`, no `promoted to host`, no teardown.
+- Devcmd `join <address|steamid64>` drives an explicit join (harness needs it — no lobby).
+- Limits: same-machine SDR adds a few ms; lane-timeout drop detection ~13s (Steam default,
+  not loopback-fast). T2 (Combat-vs-bulk isolation measurement) and T3 (real remote friend)
+  still open — see STEAMSERVER_TRANSPORT_SPEC §7.
+
 ---
 
 ### Cadence

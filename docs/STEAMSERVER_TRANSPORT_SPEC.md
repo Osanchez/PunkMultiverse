@@ -130,7 +130,23 @@ Server browser/A2S responses, VAC (`eServerModeAuthentication` without Secure), 
 discovery for server sessions, ThreadedReceive parity, allowlists, Docker (that's the
 LiteNetLib "Udp" transport, planned separately per the A-then-C decision).
 
-## 7. Test plan
+## 7. Test plan — STATUS
+
+- **T1 — same-machine 3-proc, all-SteamServer — PASSED 2026-07-19.** Host install
+  (`Transport=Steam`, `HostViaSidecar=true`) spawned a `PUNKMV_TRANSPORT=SteamServer`
+  coordinator; the coordinator logged on anonymous (server id 902…), published
+  `coordinator-steamid.txt`, opened both lanes; the host player joined its own sidecar over
+  SteamServer (both lanes connected); OD Test2 (`Transport=SteamServer`) joined via
+  `join <serverid>`. Result: 3-way GO LIVE, identical checksums, **[Seq]=0 on all three**
+  (dual-connection ordering contract holds), combat routed, and — the headline — **killing
+  the host player's game left OD Test2 InGame** (coordinator logged the lane timeout, reserved
+  the slot, suspended the puppet; no migration, no teardown, zero exceptions).
+- **T2 — Combat-vs-bulk isolation — PENDING.** Needs a heavy Events burst (rejoin catch-up)
+  with `[SnapshotLatency] relayAvg/relayMax` sampled against a Loopback baseline. The
+  dual-connection design is in and [Seq]=0; the isolation *measurement* is the open item.
+- **T3 — real remote friend — PENDING** (needs a second machine/person).
+
+(original plan below)
 
 - **T1 — same-machine 3-proc, all-SteamServer** (extends scenario #29): player game
   (`Transport=Steam`, `HostViaSidecar=true`) spawns sidecar with `PUNKMV_TRANSPORT=SteamServer`;

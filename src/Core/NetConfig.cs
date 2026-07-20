@@ -56,6 +56,13 @@ namespace PunkMultiverse
         internal static readonly bool EnvCoordinator =
             System.Environment.GetEnvironmentVariable("PUNKMV_COORDINATOR") is string v
             && (v == "1" || v.Equals("true", System.StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>Transport a spawned coordinator should use, from PUNKMV_TRANSPORT (the launcher
+        /// sets it to match the hosting player's own capability: SteamServer on a Steam machine,
+        /// Loopback for local-only). Default Loopback — the safe local behavior.</summary>
+        internal static string EnvCoordinatorTransport =>
+            System.Environment.GetEnvironmentVariable("PUNKMV_TRANSPORT") is string t
+            && !string.IsNullOrWhiteSpace(t) ? t : "Loopback";
         public static ConfigEntry<bool> ProfileFrames;
         public static ConfigEntry<bool> HitchWatchdog;
         public static ConfigEntry<int> HitchThresholdMs;
@@ -69,7 +76,12 @@ namespace PunkMultiverse
         public static void Init(BepConfigFile cfg)
         {
             Transport = cfg.Bind("Transport", "Transport", "Steam",
-                new ConfigDescription("Which transport to use.", new AcceptableValueList<string>("Steam", "Loopback")));
+                new ConfigDescription(
+                    "Which transport to use. Steam = user P2P (normal friend play). Loopback = dev/LAN " +
+                    "UDP. SteamServer = connect to an anonymous game-server identity (the dedicated/" +
+                    "sidecar deployment — SDR traversal, no port forwarding; join code is the server's " +
+                    "SteamID64). A future 'Udp' (LiteNetLib) will cover Docker/no-Steam.",
+                    new AcceptableValueList<string>("Steam", "Loopback", "SteamServer")));
             LoopbackHost = cfg.Bind("Transport", "LoopbackHost", "127.0.0.1",
                 "Host address for the dev loopback transport.");
             LoopbackPort = cfg.Bind("Transport", "LoopbackPort", 7777,
