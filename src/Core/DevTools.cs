@@ -183,6 +183,20 @@ namespace PunkMultiverse.Core
                 case "say":
                     Out($"say: {line.Substring(3).Trim()}");
                     return;
+                case "start":
+                    // Drive the session admin's START (a coordinator no longer auto-launches). Works for
+                    // a normal host too. No-op with a reason if we aren't the admin or not all-ready.
+                    Out($"start: admin={session.IsSessionAdmin} allReady={session.AllReady} state={session.State}");
+                    session.RequestStart();
+                    return;
+                case "ready":
+                {
+                    bool want = parts.Length < 2 || !parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
+                    var me = session.LocalPlayer;
+                    if (me != null) session.SetLocalPrefs(me.ColorIndex, want);
+                    Out($"ready {(want ? "ON" : "OFF")}");
+                    return;
+                }
                 case "god":
                 {
                     GodMode = parts.Length < 2 || !parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
@@ -237,7 +251,7 @@ namespace PunkMultiverse.Core
                         ? $"{ship.transform.position.x:0.0},{ship.transform.position.y:0.0}" : "none";
                     string dead = ship != null && ship.IsDead ? " DEAD" : "";
                     Out($"status v{PluginVersionInfo.Version} state={session.State} slot={session.LocalSlot} " +
-                        $"host={session.IsHost} ship={pos}{dead} " +
+                        $"host={session.IsHost} admin={session.IsSessionAdmin} ship={pos}{dead} " +
                         $"shipFireReplays={ProjectileSync.ShipFireQueued + ProjectileSync.ShipFireLate}");
                     return;
                 }

@@ -104,6 +104,13 @@
                                      // lobby's current members. A shipless coordinator can't see the
                                      // Steam lobby, so the leader relays membership; the coordinator
                                      // gates incoming HELLOs against it (sidecar lobby-gated joins #2)
+        AdminGrant = 89,             // coordinator -> one player: your private capability token. The
+                                     // first real player to connect becomes session admin; the token
+                                     // authorizes host-like commands over an untrusted transport, so it
+                                     // works for the standalone server (no reliance on Steam identity)
+        AdminCommand = 90,           // admin player -> coordinator: token + command (start run / kick).
+                                     // The server performs it only if the token matches the grant, so a
+                                     // modded client that force-enables the buttons is still refused
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

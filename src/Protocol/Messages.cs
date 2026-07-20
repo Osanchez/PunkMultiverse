@@ -52,6 +52,7 @@ namespace PunkMultiverse.Protocol
         public int RespawnStationNetId;
         public bool ModsMismatch; // joiner's plugin set differs from the host's (Warn policy)
         public bool IsCoordinator; // dedicated shipless server slot: clients spawn no puppet for it
+        public bool IsAdmin;       // session admin (first joiner of a coordinator session): host-like UI
 
         public void Write(NetWriter w)
         {
@@ -66,6 +67,7 @@ namespace PunkMultiverse.Protocol
             w.WriteVarUInt((uint)RespawnStationNetId);
             w.WriteBool(ModsMismatch);
             w.WriteBool(IsCoordinator);
+            w.WriteBool(IsAdmin);
         }
 
         public static RosterEntry Read(NetReader r) => new RosterEntry
@@ -81,6 +83,7 @@ namespace PunkMultiverse.Protocol
             RespawnStationNetId = (int)r.ReadVarUInt(),
             ModsMismatch = r.ReadBool(),
             IsCoordinator = r.ReadBool(),
+            IsAdmin = r.ReadBool(),
         };
     }
 
@@ -1654,6 +1657,52 @@ namespace PunkMultiverse.Protocol
             for (int i = 0; i < n; i++) ids[i] = r.ReadULong();
             return new LobbyMembersMsg { Members = ids };
         }
+    }
+
+    /// <summary>What an <see cref="AdminCommandMsg"/> asks the coordinator to do.</summary>
+    public enum AdminCmd : byte { None = 0, StartRun = 1, Kick = 2 }
+
+    /// <summary>Coordinator -> one player: your private session-admin capability token. Sent once when
+    /// the player is promoted (first real joiner, or a handoff). The token is the ONLY thing that
+    /// authorizes host-like commands, so it never appears in the roster — only the boolean IsAdmin does.
+    /// Transport-agnostic by design: it does not trust the peer id / Steam identity, so it holds for the
+    /// standalone LiteNetLib/UDP server where identities aren't vouched.</summary>
+    public struct AdminGrantMsg
+    {
+        public ulong Token;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.AdminGrant);
+            w.WriteULong(Token);
+        }
+
+        public static AdminGrantMsg Read(NetReader r) => new AdminGrantMsg { Token = r.ReadULong() };
+    }
+
+    /// <summary>Admin player -> coordinator: run a host-like command, proven by the capability token.
+    /// The coordinator performs it only when the token matches the current grant, so force-enabling the
+    /// UI on a modded client changes nothing without the secret token.</summary>
+    public struct AdminCommandMsg
+    {
+        public ulong Token;
+        public AdminCmd Command;
+        public byte Arg;      // Kick: target slot
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.AdminCommand);
+            w.WriteULong(Token);
+            w.WriteByte((byte)Command);
+            w.WriteByte(Arg);
+        }
+
+        public static AdminCommandMsg Read(NetReader r) => new AdminCommandMsg
+        {
+            Token = r.ReadULong(),
+            Command = (AdminCmd)r.ReadByte(),
+            Arg = r.ReadByte(),
+        };
     }
 
     public struct InstrumentUsedMsg

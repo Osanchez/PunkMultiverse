@@ -70,6 +70,12 @@ namespace PunkMultiverse.Core
         // Coordinator side of #2: the SteamID64s the party leader says are lobby members. Null until the
         // first relay arrives (accept-all bootstrap); once set, a HELLO from a non-member is refused.
         private HashSet<ulong> _allowedPeers;
+        // Session admin (standalone/sidecar): the first real player to connect gets host-like controls.
+        // Coordinator side tracks who holds it and the secret token that authorizes their commands; the
+        // token is transport-agnostic (never trusts the peer id), so it holds for the LiteNetLib server.
+        private int _adminSlot = -1;      // coordinator: slot of the current admin, -1 = none
+        private ulong _adminToken;        // coordinator: capability token issued to the admin
+        private ulong _localAdminToken;   // client: my token when I'm the admin (0 = not admin)
 
         /// <summary>The single point where a session's transport is decided. Adding a transport is
         /// ONE config value + ONE case in CreateTransport:
@@ -90,6 +96,11 @@ namespace PunkMultiverse.Core
         /// <summary>The INVITE FRIENDS button lights up whenever we hold a Steam lobby — an ordinary
         /// user-P2P lobby OR a SteamServer discovery lobby (listen-server host or sidecar leader).</summary>
         public bool CanInvite => _lobby != null && _lobby.InLobby;
+
+        /// <summary>Whoever holds host-like controls (START / KICK). A normal player-host is always its
+        /// own admin; in a shipless-coordinator session it's the promoted player, not the headless
+        /// server. Drives which client sees the host UI; the server still re-checks the token.</summary>
+        public bool IsSessionAdmin => (IsHost && !NetConfig.IsCoordinator) || (LocalPlayer?.IsAdmin ?? false);
 
         /// <summary>Pasteable code for the current Steam lobby, or the loopback address.</summary>
         public string CurrentLobbyCode =>
@@ -449,9 +460,78 @@ namespace PunkMultiverse.Core
             _writer.WriteMsgType(MsgType.Kicked);
             _transport.Send(p.PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
             _players[slot] = null;
+            if (slot == _adminSlot) { _adminSlot = -1; _adminToken = 0; } // promote a successor next tick
             BroadcastLobbyState();
             RosterChanged?.Invoke();
             UI.Toast.Show($"{p.Name} WAS KICKED", 4f);
+        }
+
+        // ------------------------------------------------ session admin (standalone/sidecar)
+
+        /// <summary>UI entry: start the run. A normal player-host starts locally; a coordinator's admin
+        /// sends a token-proven request the server validates. Either way the START button calls this.</summary>
+        public void RequestStart()
+        {
+            if (IsHost && !NetConfig.IsCoordinator) { StartRun(); return; }
+            if (LocalPlayer?.IsAdmin == true && _localAdminToken != 0)
+                SendAdminCommand(AdminCmd.StartRun, 0);
+        }
+
+        /// <summary>UI entry: kick a player. Player-host kicks locally; a coordinator's admin sends a
+        /// token-proven request. The KICK buttons call this instead of KickPlayer directly.</summary>
+        public void RequestKick(byte slot)
+        {
+            if (IsHost && !NetConfig.IsCoordinator) { KickPlayer(slot); return; }
+            if (LocalPlayer?.IsAdmin == true && _localAdminToken != 0)
+                SendAdminCommand(AdminCmd.Kick, slot);
+        }
+
+        private void SendAdminCommand(AdminCmd cmd, byte arg)
+        {
+            if (_players[HostSlot] == null) return;
+            _writer.Reset();
+            new AdminCommandMsg { Token = _localAdminToken, Command = cmd, Arg = arg }.Write(_writer);
+            SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogInfo($"[Admin] sent {cmd}({arg}) to the server");
+        }
+
+        /// <summary>Coordinator: keep exactly one connected player flagged as admin. The first real
+        /// joiner is promoted; if the admin leaves, the next connected player inherits it with a FRESH
+        /// token (the old one is void). Idempotent — the fast path returns when the admin is unchanged.</summary>
+        private void EnsureAdminAssigned()
+        {
+            var current = _adminSlot >= 0 && _adminSlot <= MaxPlayers ? _players[_adminSlot] : null;
+            if (current != null && current.Connected && !current.IsCoordinator)
+            {
+                if (!current.IsAdmin) { current.IsAdmin = true; BroadcastLobbyState(); RosterChanged?.Invoke(); }
+                return; // admin still valid
+            }
+
+            var next = _players
+                .Where(p => p != null && p.Connected && !p.IsCoordinator)
+                .OrderBy(p => p.Slot)
+                .FirstOrDefault();
+
+            foreach (var p in _players) if (p != null) p.IsAdmin = false;
+            if (next == null) { _adminSlot = -1; _adminToken = 0; return; } // nobody to promote
+
+            next.IsAdmin = true;
+            _adminSlot = next.Slot;
+            _adminToken = NewCapabilityToken();
+            _writer.Reset();
+            new AdminGrantMsg { Token = _adminToken }.Write(_writer);
+            SendReliable(next.PeerId, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogInfo($"[Admin] {next} is now session admin (token issued)");
+            BroadcastLobbyState();
+            RosterChanged?.Invoke();
+        }
+
+        private static ulong NewCapabilityToken()
+        {
+            var b = new byte[8];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create()) rng.GetBytes(b);
+            ulong t = System.BitConverter.ToUInt64(b, 0);
+            return t == 0 ? 1UL : t; // 0 means "no token"
         }
 
         public void CopyLobbyCodeToClipboard()
@@ -1084,6 +1164,7 @@ namespace PunkMultiverse.Core
             _haveLeaderSettings = false; _leaderSettingsSent = false;
             _lobbyServerTransport = null; _serverLobbyRequested = false; _allowlistDirty = false;
             _allowedPeers = null;
+            _adminSlot = -1; _adminToken = 0; _localAdminToken = 0;
 
             // Tell everyone this is a deliberate end, not a connection hiccup, while the
             // transport is still up (host only — a quitting client just drops and gets its
@@ -1387,10 +1468,17 @@ namespace PunkMultiverse.Core
                 MaintainServerLobby();
 
                 // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
-                // A coordinator implies both — it has no UI — but only launches once at least one
-                // REAL player is in and ready (a shipless solo run would be an empty world).
+                // Coordinator: keep a session admin designated (the first real joiner gets host-like
+                // controls; a handoff picks the next player). The admin, not the headless server,
+                // presses START.
+                if (NetConfig.IsCoordinator && State == SessionState.Lobby)
+                    EnsureAdminAssigned();
+
+                // A coordinator auto-readies its own (shipless) slot, but no longer auto-LAUNCHES — the
+                // admin drives start. The dev/harness escape hatch is an explicit AutoLaunchRun=true,
+                // which still fires below (the coordinator inherits the host install's config).
                 bool autoReady = NetConfig.AutoReady.Value || NetConfig.IsCoordinator;
-                bool autoLaunch = NetConfig.AutoLaunchRun.Value || NetConfig.IsCoordinator;
+                bool autoLaunch = NetConfig.AutoLaunchRun.Value;
                 if (State == SessionState.Lobby && autoReady && LocalPlayer != null && !LocalPlayer.Ready)
                     SetLocalPrefs(LocalPlayer.ColorIndex != 0 ? LocalPlayer.ColorIndex : (byte)LocalSlot, true);
                 if (State == SessionState.Lobby && autoLaunch && IsHost && AllReady
@@ -2210,6 +2298,41 @@ namespace PunkMultiverse.Core
                     Plugin.Log.LogInfo($"[Coordinator] lobby allowlist now {_allowedPeers.Count} member(s) (via {relay})");
                     break;
                 }
+                case MsgType.AdminGrant when !IsHost:
+                {
+                    var grant = AdminGrantMsg.Read(_reader);
+                    _localAdminToken = grant.Token;
+                    Plugin.Log.LogInfo("[Admin] granted session-admin controls by the server");
+                    RosterChanged?.Invoke(); // surface the host UI once the roster flag lands too
+                    break;
+                }
+                case MsgType.AdminCommand when IsHost:
+                {
+                    var cmd = AdminCommandMsg.Read(_reader);
+                    // Only a coordinator delegates control (a player-host is its own admin). Authorize on
+                    // the SECRET TOKEN — never the peer id — so a modded/spoofing client is refused even
+                    // on an untrusted transport. Defence in depth: the sender must also be the admin's
+                    // live connection.
+                    if (!NetConfig.IsCoordinator) break;
+                    var admin = _adminSlot >= 0 && _adminSlot <= MaxPlayers ? _players[_adminSlot] : null;
+                    if (_adminToken == 0 || cmd.Token != _adminToken
+                        || admin == null || !admin.Connected || admin.PeerId != peer)
+                    {
+                        Plugin.Log.LogWarning($"[Admin] refused {cmd.Command} from peer {peer}: bad token or not the admin");
+                        break;
+                    }
+                    switch (cmd.Command)
+                    {
+                        case AdminCmd.StartRun:
+                            if (State == SessionState.Lobby && AllReady) StartRun();
+                            else Plugin.Log.LogInfo($"[Admin] start ignored (state={State}, allReady={AllReady})");
+                            break;
+                        case AdminCmd.Kick:
+                            if (cmd.Arg != _adminSlot) KickPlayer(cmd.Arg); // an admin can't kick itself
+                            break;
+                    }
+                    break;
+                }
                 case MsgType.SegmentDormancyCommit:
                 {
                     var commit = SegmentDormancyCommitMsg.Read(_reader);
@@ -2889,6 +3012,7 @@ namespace PunkMultiverse.Core
                         RespawnStationNetId = p.RespawnStationNetId,
                         ModsMismatch = p.ModsMismatch,
                         IsCoordinator = p.IsCoordinator,
+                        IsAdmin = p.IsAdmin,
                     });
             return roster;
         }
@@ -2996,6 +3120,7 @@ namespace PunkMultiverse.Core
                     RespawnStationNetId = e.RespawnStationNetId,
                     ModsMismatch = e.ModsMismatch,
                     IsCoordinator = e.IsCoordinator,
+                    IsAdmin = e.IsAdmin,
                     RttMs = oldRtt.TryGetValue(e.IdentityId, out var rtt) ? rtt : -1,
                 };
             }
