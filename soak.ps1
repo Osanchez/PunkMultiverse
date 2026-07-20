@@ -176,7 +176,13 @@ try {
     $c1Heal = CountIn $ClientLog "\[Heal\]"
     Copy-Item $ClientLog (Join-Path $ArtDir "client-phase1.log") -ErrorAction SilentlyContinue
 
-    Log "phase R: client kill + rejoin (catch-up + ship reclaim)"
+    Log "phase R: client kill + rejoin (FULL rejoin via station checkpoint)"
+    # The tester-reported black screen (2026-07-20) lived exactly in the never-soaked FULL-rejoin
+    # branch: every previous soak took the "designed deferral" (no checkpoint). Unlock a station
+    # first so the rejoiner exercises checkpoint respawn — and HARD-gate the outcome.
+    Cmd $HostPlug "unlockstation"
+    $unlocked = WaitFor $HostLog "\[Progress\] station upgrade .* broadcast" 30 "station checkpoint unlock"
+    if (-not $unlocked) { Warn "unlockstation produced no broadcast" "full-rejoin gate degrades to machinery-only" }
     Stop-Process -Id $script:ClientPid -Force
     Start-Sleep -Seconds 6
     # Delete the old log FIRST or the rejoin wait false-passes against phase-1 content
@@ -185,25 +191,25 @@ try {
     $p = Start-Process -FilePath (Join-Path $ClientDir "Punk.exe") -WorkingDirectory $ClientDir -PassThru
     $script:ClientPid = $p.Id
     Log "client relaunched pid=$($script:ClientPid)"
-    # Two CORRECT outcomes exist: a full rejoin (station checkpoint reached this run), or the
-    # designed deferred-rejection when no checkpoint exists yet ("rejoin once the party unlocks
-    # a station"). The soak run doesn't unlock stations (no devcmd for it yet), so the deferred
-    # path is the expected one; the machinery chain still proves out (drop -> slot reserved ->
-    # WS4.1 suspend -> HELLO -> correct response). Full-rejoin soak coverage needs a
-    # station-unlock devcmd (future harness item).
-    $rejoined = WaitFor $ClientLog "GO LIVE|caught up|catching up|Rejected by host: No checkpoint" 240 "client rejoin/deferral"
+    $rejoined = WaitFor $ClientLog "rejoin spawn at station|Rejected by host: No checkpoint" 240 "client full rejoin"
     $deferred = CountIn $HostLog "rejoin for P2 deferred"
     $suspended = CountIn $HostLog "suspended puppet P2"
     $reclaimed = CountIn $HostLog "reclaimed puppet P2"
     $respawned = CountIn $HostLog "puppet spawned for slot 1"
-    $fullRejoin = (CountIn $ClientLog "GO LIVE|caught up|catching up") -ge 1
-    Gate "rejoin machinery responded (full rejoin OR designed deferral)" ($fullRejoin -or ($deferred -ge 1)) "fullRejoin=$fullRejoin deferred=$deferred"
+    $stationSpawn = CountIn $ClientLog "rejoin spawn at station"
+    $wentLive = CountIn $ClientLog "GO LIVE"
+    if ($unlocked) {
+        # With a checkpoint the rejoiner MUST spawn at the station and go live — a deferral or a
+        # silent wedge here is the tester's black screen and now FAILS the soak.
+        Gate "FULL rejoin: spawned at station checkpoint + went live" (($stationSpawn -ge 1) -and ($wentLive -ge 1)) "stationSpawn=$stationSpawn goLive=$wentLive deferred=$deferred"
+    } else {
+        $fullRejoin = ($wentLive -ge 1)
+        Gate "rejoin machinery responded (full rejoin OR designed deferral)" ($fullRejoin -or ($deferred -ge 1)) "fullRejoin=$fullRejoin deferred=$deferred"
+    }
     Gate "rejoin: puppet suspended on disconnect (WS4.1)" ($suspended -ge 1) "suspended=$suspended"
-    if ($fullRejoin) {
+    if ($wentLive -ge 1) {
         if ($reclaimed -ge 1) { Log "WS4.1 fast reclaim CONFIRMED (same object reactivated)" }
         elseif ($respawned -ge 1) { Warn "reclaim window missed (fresh spawn fallback)" "reclaimed=0 freshSpawn=$respawned (boot exceeded 60s window - fallback is correct behavior)" }
-    } else {
-        Log "rejoin DEFERRED (no station checkpoint this run) - full-rejoin path needs a station-unlock devcmd"
     }
     Start-Sleep -Seconds 30
 
