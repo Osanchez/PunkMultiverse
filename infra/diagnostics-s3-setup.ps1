@@ -22,9 +22,16 @@
 #   aws s3 ls s3://punkmultiverse-diagnostics/PunkMultiverse/logs/
 #   aws s3 sync s3://punkmultiverse-diagnostics/PunkMultiverse/logs/<runId>/ ./logs-<runId>/
 
+# NOTE (learned the hard way during the 2026-07-20 console setup):
+#   * S3 bucket names are GLOBALLY unique — "punkmultiverse-diagnostics" was taken, and the
+#     console silently suggests a suffixed name. The real bucket became
+#     punkmultiverse-diagnostics-577792960632-us-east-1-an. Pass -Bucket explicitly and the
+#     SAME name flows into the Lambda env var AND the role policy; a mismatch between those
+#     two is a 404 (wrong bucket) or a 403 (policy names a different bucket) at PUT time.
+#   * The BUCKET env var is mandatory — without it the function 502s on cold start.
 param(
     [string]$Profile = "",
-    [string]$Bucket = "punkmultiverse-diagnostics",
+    [string]$Bucket = "punkmultiverse-diagnostics-577792960632-us-east-1-an",
     [string]$Region = "us-east-1",
     [string]$FunctionName = "punkmv-log-signer",
     [string]$RoleName = "punkmv-log-signer-role"
@@ -106,6 +113,7 @@ $Url = (Aws lambda get-function-url-config --function-name $FunctionName --query
 Write-Host "== 6/6 done =="
 Write-Host ""
 Write-Host "Signer endpoint:  $Url"
+Write-Host "Bucket:           $Bucket   (env var + role policy both point here)"
 Write-Host ""
 Write-Host "Put this in each player's BepInEx/plugins/PunkMultiverse/config.cfg under [Diag]:"
 Write-Host "  LogUploadEndpoint = $Url"
