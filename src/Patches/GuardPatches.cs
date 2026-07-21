@@ -88,7 +88,12 @@ namespace PunkMultiverse.Patches
                 try
                 {
                     if (!NetSession.Active) return; // single-player pause unchanged
-                    LayoutMenuColumn(__instance, hideRestart: true, relabelSaveQuitAsExit: true);
+                    // The slot freed by hiding RESTART becomes SEND LOGS: uploads this machine's
+                    // log under the shared run id so every player's view of one session lands in
+                    // one folder. Toast reports the outcome (sent / saved locally / rate-limited).
+                    LayoutMenuColumn(__instance, hideRestart: true, relabelSaveQuitAsExit: true,
+                        spareLabel: "SEND LOGS",
+                        spareAction: () => UI.Toast.Show(Core.LogUpload.UploadFromUi(NetSession.Instance), 6f));
                     KeepShipControllableWhilePaused();
                 }
                 catch { }
@@ -125,7 +130,8 @@ namespace PunkMultiverse.Patches
         /// slot is hidden. Every surviving role now lives in a slot that was always occupied, so the
         /// visible column is contiguous and the animator can't reopen a gap. Also relabels the
         /// Save&amp;Quit role → EXIT (its suspend-save is blocked in net runs; the run auto-saves).</summary>
-        private static void LayoutMenuColumn(UnityEngine.Component root, bool hideRestart, bool relabelSaveQuitAsExit = false)
+        private static void LayoutMenuColumn(UnityEngine.Component root, bool hideRestart,
+            bool relabelSaveQuitAsExit = false, string spareLabel = null, System.Action spareAction = null)
         {
             // Physical slots = the menu buttons the game is CURRENTLY showing, top-down. PauseScreen
             // carries five (Resume/Restart/Quit/SaveAndQuit/Report) but only shows a subset.
@@ -154,7 +160,22 @@ namespace PunkMultiverse.Patches
             for (int i = 0; i < slots.Count; i++)
             {
                 var slot = slots[i];
-                if (i >= roles.Count) { slot.btn.gameObject.SetActive(false); continue; } // extra slot
+                if (i >= roles.Count)
+                {
+                    // Leftover physical slot (hiding RESTART frees one in a net run). Rather than
+                    // deactivate it, hand it to a mod role — it already sits in a real prefab slot,
+                    // so it inherits correct position and the open animation instead of fighting
+                    // the animator the way an injected button would.
+                    if (spareAction != null && !string.IsNullOrEmpty(spareLabel))
+                    {
+                        SetLabel(slot.btn, spareLabel);
+                        RewireClick(slot.btn, spareAction);
+                        spareAction = null; // one spare role only
+                        continue;
+                    }
+                    slot.btn.gameObject.SetActive(false);
+                    continue;
+                }
                 var role = roles[i];
                 bool sameRole = slot.handler == role.handler && ReferenceEquals(slot.target, role.target);
                 if (sameRole)
@@ -207,6 +228,13 @@ namespace PunkMultiverse.Patches
         // Rewire a slot to invoke another role's screen method directly (via reflection on the
         // captured target), NOT by chaining to another button's onClick — a button we hand a new
         // role to may itself be a remap target whose onClick we clear, which would break a chain.
+        /// <summary>Point a menu slot at mod code instead of a vanilla screen method.</summary>
+        private static void RewireClick(UnityEngine.UI.Button button, System.Action action)
+        {
+            button.onClick = new UnityEngine.UI.Button.ButtonClickedEvent();
+            button.onClick.AddListener(() => { try { action(); } catch { } });
+        }
+
         private static void RewireClick(UnityEngine.UI.Button button, UnityEngine.Object target, string method)
         {
             button.onClick = new UnityEngine.UI.Button.ButtonClickedEvent(); // drop the old role's call

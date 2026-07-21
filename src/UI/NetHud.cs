@@ -27,12 +27,16 @@ namespace PunkMultiverse.UI
 
         private void Update()
         {
-            // F9 = overlay, F10 = toggle sync diagnostics. (F11/F12 are Steam screenshot keys, so
-            // avoid them.) With diagnostics on, ownership + render-state dumps happen automatically
-            // and land in the log, which auto-sends to the webhook on game close — no manual dump key.
+            // F8 = send this machine's log, F9 = overlay, F10 = toggle sync diagnostics.
+            // (F11/F12 are Steam screenshot keys, so avoid them.) With diagnostics on, ownership +
+            // render-state dumps happen automatically and land in the log.
             var kb = Keyboard.current;
             if (kb != null)
             {
+                // Same entry point as the pause menu's SEND LOGS — rate limits and the
+                // always-save-locally fallback live in LogUpload, not here.
+                if (kb[Key.F8].wasPressedThisFrame)
+                    Toast.Show(Core.LogUpload.UploadFromUi(Core.NetSession.Instance), 6f);
                 if (kb[Key.F9].wasPressedThisFrame) _visible = !_visible;
                 if (kb[Key.F10].wasPressedThisFrame)
                 {
