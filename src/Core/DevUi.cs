@@ -52,6 +52,26 @@ namespace PunkMultiverse.Core
             return _screenCapture;
         }
 
+        /// <summary>Open/close the in-game pause screen from the harness. The pause menu is only
+        /// reachable through an input action, so its contents (which the mod rewrites in a net run —
+        /// hidden RESTART, EXIT relabel, SEND LOGS) were previously unverifiable without a human at
+        /// the keyboard. Open() and Close() are public on PauseScreen, so this drives the same path
+        /// the key does.</summary>
+        internal static void PauseMenu(string[] parts, Action<string> outFn)
+        {
+            bool close = parts.Length >= 2 && parts[1].Equals("close", StringComparison.OrdinalIgnoreCase);
+            PauseScreen screen = null;
+            foreach (var candidate in UnityEngine.Object.FindObjectsOfType<PauseScreen>(true))
+                if (candidate != null) { screen = candidate; break; }
+            if (screen == null) { outFn("pausemenu: no PauseScreen in the scene"); return; }
+            try
+            {
+                if (close) screen.Close(); else screen.Open();
+                outFn($"pausemenu: {(close ? "closed" : "opened")}");
+            }
+            catch (Exception e) { outFn($"pausemenu: failed ({e.Message})"); }
+        }
+
         internal static void Dump(string[] parts, Action<string> outFn)
         {
             string filter = parts.Length >= 2 ? parts[1].ToLowerInvariant() : null;

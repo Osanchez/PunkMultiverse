@@ -57,14 +57,17 @@ namespace PunkMultiverse.Core
             return null;
         }
 
-        /// <summary>UI entry (pause-menu button / F8). Returns a short line for a toast.</summary>
+        /// <summary>UI entry (pause-menu button / F8). Returns a toast line ONLY when the send was
+        /// refused up front; otherwise null, because the outcome is asynchronous and Upload /
+        /// SignAndPut raise their own toast when it's actually known. (Returning "sending…" here
+        /// produced two toasts and reported success before the PUT had happened.)</summary>
         internal static string UploadFromUi(NetSession session)
         {
             string blocked = BlockedReason();
             if (blocked != null) return $"LOGS: {blocked.ToUpperInvariant()}";
-            string result = null;
-            Upload(session, line => result = line);
-            return result ?? "LOGS: SENDING…";
+            UI.Toast.Show("SENDING LOG…", 2f);
+            Upload(session, line => Plugin.Log.LogInfo($"[Diag] {line}"));
+            return null;
         }
 
         internal static void Upload(NetSession session, Action<string> output)

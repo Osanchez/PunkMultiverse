@@ -36,7 +36,10 @@ namespace PunkMultiverse.UI
                 // Same entry point as the pause menu's SEND LOGS — rate limits and the
                 // always-save-locally fallback live in LogUpload, not here.
                 if (kb[Key.F8].wasPressedThisFrame)
-                    Toast.Show(Core.LogUpload.UploadFromUi(Core.NetSession.Instance), 6f);
+                {
+                    var refused = Core.LogUpload.UploadFromUi(Core.NetSession.Instance);
+                    if (refused != null) Toast.Show(refused, 5f); // else the send toasts its own result
+                }
                 if (kb[Key.F9].wasPressedThisFrame) _visible = !_visible;
                 if (kb[Key.F10].wasPressedThisFrame)
                 {

@@ -93,7 +93,12 @@ namespace PunkMultiverse.Patches
                     // one folder. Toast reports the outcome (sent / saved locally / rate-limited).
                     LayoutMenuColumn(__instance, hideRestart: true, relabelSaveQuitAsExit: true,
                         spareLabel: "SEND LOGS",
-                        spareAction: () => UI.Toast.Show(Core.LogUpload.UploadFromUi(NetSession.Instance), 6f));
+                        spareAction: () =>
+                        {
+                            // null = accepted; the async outcome raises its own toast.
+                            var refused = Core.LogUpload.UploadFromUi(NetSession.Instance);
+                            if (refused != null) UI.Toast.Show(refused, 5f);
+                        });
                     KeepShipControllableWhilePaused();
                 }
                 catch { }
