@@ -42,7 +42,7 @@ namespace PunkMultiverse
         public static ConfigEntry<float> ResidencyGraceSeconds;
 
         public static ConfigEntry<bool> SyncDiagnostics;
-        public static ConfigEntry<string> LogUploadBase;
+        public static ConfigEntry<string> LogUploadEndpoint;
         public static ConfigEntry<bool> SummaryHeal;
         public static ConfigEntry<bool> ProfileFrames;
         public static ConfigEntry<bool> HitchWatchdog;
@@ -147,11 +147,12 @@ namespace PunkMultiverse
                     "lease. 0 disables the grace.",
                     new AcceptableValueRange<float>(0f, 5f)));
 
-            LogUploadBase = cfg.Bind("Diag", "LogUploadBase",
-                "https://punkmultiverse-diagnostics.s3.amazonaws.com",
-                "Base URL for the `uploadlogs` devcmd: this machine's BepInEx log is gzipped and " +
-                "PUT to <base>/PunkMultiverse/logs/<runId>/<player>.log.gz. The bucket allows " +
-                "anonymous PUT on that prefix only (write-only, no keys in the mod). Empty = disabled.");
+            LogUploadEndpoint = cfg.Bind("Diag", "LogUploadEndpoint", "",
+                "Signer endpoint for the `uploadlogs` devcmd (the Lambda Function URL printed by " +
+                "infra/diagnostics-s3-setup.ps1). The mod asks it for a short-lived presigned S3 " +
+                "PUT URL for one exact object, then uploads — no AWS credentials in the mod and no " +
+                "anonymous access on the bucket. Empty (default) = collect only: `uploadlogs` still " +
+                "gzips the log to <plugin>/diagnostics/<runId>/ and prints the path to send manually.");
             SyncDiagnostics = cfg.Bind("Diag", "SyncDiagnostics", false,
                 "Verbose sync/authority diagnostics: per-entity ownership assigns, releases, deny " +
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
