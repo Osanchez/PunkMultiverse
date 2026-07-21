@@ -157,11 +157,20 @@ namespace PunkMultiverse.Sync
 
         // Turrets track the owner's aim: write the game's own BarrelTransform.Direction and let
         // its LateUpdate apply the visible rotation (rotating the transform ourselves would race it).
+        private Vector2 _heldAim = Vector2.right; // last good owner aim — see below
+
         private void Update()
         {
             if (_movement != null) _movement.flyDirection = _moveInput;
 
-            if (AimDirection.sqrMagnitude < 0.01f) return;
+            // HOLD the owner's last valid aim instead of skipping the feed when it goes idle
+            // (owner in the shop / menus sends ~zero aim). An un-fed Aimer falls back to the
+            // vanilla control map — which stays ENABLED on puppets — so the puppet's turrets
+            // started tracking the LOCAL player's cursor: "the player not in the shop has
+            // control of both players' turrets" (tester report 2026-07-20). Feeding every frame
+            // keeps the vanilla cursor path permanently outvoted.
+            if (AimDirection.sqrMagnitude >= 0.01f) _heldAim = AimDirection;
+            var aim = _heldAim;
             // Drive the vanilla Aimer with a world target along the owner's aim — its own
             // rotation-speed smoothing then turns the turret exactly like it does for a local
             // player. (An un-fed Aimer keeps rotating toward a stale target, which both fought
@@ -169,11 +178,11 @@ namespace PunkMultiverse.Sync
             if (_aimers != null)
                 foreach (var aimer in _aimers)
                     if (aimer != null)
-                        aimer.AimAt((Vector2)aimer.transform.position + AimDirection.normalized * 20f);
+                        aimer.AimAt((Vector2)aimer.transform.position + aim.normalized * 20f);
             if (_barrels == null) return;
             foreach (var barrel in _barrels)
                 if (barrel != null)
-                    barrel.Direction = AimDirection;
+                    barrel.Direction = aim;
         }
 
         // The ship prefab's Crosshair is a WORLD-SPACE sprite parked at Aimer.TargetPosition —

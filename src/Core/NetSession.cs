@@ -933,6 +933,9 @@ namespace PunkMultiverse.Core
         {
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             SetState(SessionState.InGame);
+            // Same value on every machine (seed + host identity are already shared): the run id
+            // groups all players' `uploadlogs` under one S3 folder and names bug reports.
+            LogUpload.SetRun(CurrentRunSeed, _players[HostSlot]?.IdentityId ?? LocalIdentityId());
             Sync.ShipSync.ReleaseStartGate();
             if (_isRejoin)
             {

@@ -198,6 +198,15 @@ namespace PunkMultiverse.Core
                     Out($"ready {(want ? "ON" : "OFF")}");
                     return;
                 }
+                case "uploadlogs":
+                    // Tester diagnostics pipeline: gzip + PUT this machine's BepInEx log to the
+                    // write-only S3 prefix, grouped under the shared run id (see LogUpload).
+                    Out($"uploadlogs: run id {LogUpload.RunId} — starting");
+                    LogUpload.Upload(session, Out);
+                    return;
+                case "runid":
+                    Out($"runid: {LogUpload.RunId}");
+                    return;
                 case "unlockstation":
                 {
                     // Harness aid for the FULL-rejoin path (which needs a station checkpoint):
