@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
@@ -195,6 +196,49 @@ namespace PunkMultiverse.Core
                     var me = session.LocalPlayer;
                     if (me != null) session.SetLocalPrefs(me.ColorIndex, want);
                     Out($"ready {(want ? "ON" : "OFF")}");
+                    return;
+                }
+                case "unlockstation":
+                {
+                    // Harness aid for the FULL-rejoin path (which needs a station checkpoint):
+                    // unlock a station through the REAL purchase path (Station.Data.Install), so
+                    // ProgressionSync captures + broadcasts it, LatestStationNetId becomes the
+                    // party's respawn checkpoint, and the vanilla unlock cascade (respawn, lights,
+                    // map icon) runs everywhere — identical to a player buying the first upgrade.
+                    // `unlockstation` = nearest station to the local ship; `unlockstation <netId>`.
+                    var em = ServiceLocator.Get<EntityManager>();
+                    var ship = ShipSync.LocalShip;
+                    if (em == null || ship == null) { Out("unlockstation: no entity manager / local ship"); return; }
+                    int wantNetId = 0;
+                    if (parts.Length >= 2) int.TryParse(parts[1], out wantNetId);
+                    Vector2 origin = ship.transform.position;
+                    // Nearest-first, but skip stations with nothing left to install (the spawn
+                    // station ships fully unlocked) — the point is to CREATE a new checkpoint.
+                    var candidates = new List<(float dist, int netId, Station.Data data)>();
+                    foreach (var data in em.GetEntitiesWithComponent<Station.Data>())
+                    {
+                        var entity = data?.entity;
+                        if (entity == null || !NetIds.TryGetNetId(entity.instanceId, out int netId)) continue;
+                        if (wantNetId != 0 && netId != wantNetId) continue;
+                        candidates.Add((Vector2.Distance(origin, entity.position), netId, data));
+                    }
+                    candidates.Sort((a, b) => a.dist.CompareTo(b.dist));
+                    foreach (var (dist, netId, data) in candidates)
+                    {
+                        StationUpgrade install = null;
+                        foreach (var u in data.allUpgrades)
+                        {
+                            if (u == null || string.IsNullOrEmpty(u.id) || data.installedUpgrades.Contains(u)) continue;
+                            install = u;
+                            break;
+                        }
+                        if (install == null) continue;
+                        data.Install(install); // -> ProgressionSync.CaptureUpgrade -> broadcast + checkpoint
+                        Out($"unlockstation: installed '{install.id}' on station netId {netId} " +
+                            $"dist={dist:0.0} checkpoint={Sync.ProgressionSync.LatestStationNetId}");
+                        return;
+                    }
+                    Out($"unlockstation: no station with uninstalled upgrades ({candidates.Count} stations seen)");
                     return;
                 }
                 case "god":

@@ -711,6 +711,7 @@ namespace PunkMultiverse.Core
             _localLevelChecksum = 0;
             _localLevelReady = default;
             _nextLevelReadyRetryAt = 0f;
+            _goLiveDeadline = 0f; // re-armed when this machine's LEVEL_READY goes out
             _levelReadyVisualPending = false;
             _levelReadyVisualStartedAt = 0f;
             Sync.ShipSync.ResetStartGate();
@@ -797,9 +798,17 @@ namespace PunkMultiverse.Core
             else if (_players[HostSlot] != null)
             {
                 _hasLocalLevelChecksum = true;
+                _goLiveDeadline = Time.unscaledTime + GoLiveTimeout;
                 SendLevelReady();
             }
         }
+
+        // Field reports (tester, 2026-07-20): a rejoiner can end up on a permanent black screen —
+        // level generated, LEVEL_READY sent, but go-live never completes (unreproducible on loopback;
+        // suspected Steam-transport catch-up wedge on hour-old worlds). A player stuck there can't
+        // even quit. Convert "black screen forever" into a clean failure back to the menu.
+        private const float GoLiveTimeout = 120f; // generous: initial go-live also waits on SLOW peers
+        private float _goLiveDeadline;
 
         private void SendLevelReady()
         {
@@ -1479,6 +1488,18 @@ namespace PunkMultiverse.Core
                 if (State == SessionState.Loading && !IsHost && _hasLocalLevelChecksum
                     && Time.unscaledTime >= _nextLevelReadyRetryAt)
                     SendLevelReady();
+
+                // Black-screen watchdog: level is generated and LEVEL_READY retries at 1 Hz, but
+                // go-live never completed. Tear down cleanly to the menu instead of leaving the
+                // player on an unresponsive black screen (they can rejoin — the slot is reserved).
+                if (State == SessionState.Loading && !IsHost && _hasLocalLevelChecksum
+                    && _goLiveDeadline > 0f && Time.unscaledTime >= _goLiveDeadline)
+                {
+                    _goLiveDeadline = 0f;
+                    Fail($"Timed out waiting for the host's go-live ({(int)GoLiveTimeout}s) — " +
+                         "left the loading screen. Use REJOIN to try again.");
+                    return;
+                }
 
                 // Sidecar parity (#1): once in the coordinator's lobby, forward the world settings
                 // the host player picked so the coordinator hosts THEIR world. Send before readying
@@ -2924,7 +2945,11 @@ namespace PunkMultiverse.Core
             _writer.Reset();
             _writer.WriteMsgType(MsgType.GoLive);
             SendReliable(peer, NetChannel.Control, _writer.ToSegment());
-            Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} (manifest {fps.Count})");
+            // Stage sizes matter for field triage: a rejoiner black-screening on a big/old world
+            // (unreproducible locally) needs this line + the client's watchdog to say WHERE it died.
+            Plugin.Log.LogInfo($"[Session] rejoin catch-up sent to {peer} (manifest {fps.Count}, " +
+                $"upgrades {Sync.ProgressionSync.UpgradeSnapshot().Count}, " +
+                $"kills {Sync.EnemySync.KilledCount})");
         }
 
         private void SendEntityBaseline(ulong onlyPeer)
