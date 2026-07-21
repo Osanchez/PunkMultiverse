@@ -42,6 +42,7 @@ namespace PunkMultiverse
         public static ConfigEntry<float> ResidencyGraceSeconds;
 
         public static ConfigEntry<bool> SyncDiagnostics;
+        public static ConfigEntry<string> LogUploadBase;
         public static ConfigEntry<bool> SummaryHeal;
         public static ConfigEntry<bool> ProfileFrames;
         public static ConfigEntry<bool> HitchWatchdog;
@@ -146,6 +147,11 @@ namespace PunkMultiverse
                     "lease. 0 disables the grace.",
                     new AcceptableValueRange<float>(0f, 5f)));
 
+            LogUploadBase = cfg.Bind("Diag", "LogUploadBase",
+                "https://punkmultiverse-diagnostics.s3.amazonaws.com",
+                "Base URL for the `uploadlogs` devcmd: this machine's BepInEx log is gzipped and " +
+                "PUT to <base>/PunkMultiverse/logs/<runId>/<player>.log.gz. The bucket allows " +
+                "anonymous PUT on that prefix only (write-only, no keys in the mod). Empty = disabled.");
             SyncDiagnostics = cfg.Bind("Diag", "SyncDiagnostics", false,
                 "Verbose sync/authority diagnostics: per-entity ownership assigns, releases, deny " +
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
