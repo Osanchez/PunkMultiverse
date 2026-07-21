@@ -22,7 +22,9 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 12;
+        public const int ProtocolVersion = 13; // 13: EntityFireMsg.WeaponHash (puppet fire fidelity)
+                                                // NOTE: feature/server_sidecar independently used 13
+                                                // for its own additions — resolve to 14 when merging.
         public const int MaxPlayers = 4;
         private const float PingInterval = 1f;
         private const float ConnectTimeout = 15f;

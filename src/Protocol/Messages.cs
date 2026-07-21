@@ -1398,6 +1398,10 @@ namespace PunkMultiverse.Protocol
                                             // replay re-anchor the muzzle to the local puppet
         public byte TargetSlot;             // player the shooter is targeting (homing), 255 = none
         public int Seed;                    // RNG seed used for this burst tick
+        public uint WeaponHash;             // authority's weapon identity (HashName of the cleaned
+                                            // weapon name) — the replay must fire the SAME weapon,
+                                            // not whichever Shooter sits closest to the muzzle
+                                            // (multi-weapon bosses fired the wrong projectile type)
 
         public void Write(NetWriter w)
         {
@@ -1414,6 +1418,7 @@ namespace PunkMultiverse.Protocol
             w.WritePosition(BodyPos);
             w.WriteByte(TargetSlot);
             w.WriteInt(Seed);
+            w.WriteUInt(WeaponHash);
         }
 
         public static EntityFireMsg Read(NetReader r) => new EntityFireMsg
@@ -1430,6 +1435,7 @@ namespace PunkMultiverse.Protocol
             BodyPos = r.ReadPosition(),
             TargetSlot = r.ReadByte(),
             Seed = r.ReadInt(),
+            WeaponHash = r.ReadUInt(),
         };
     }
 
