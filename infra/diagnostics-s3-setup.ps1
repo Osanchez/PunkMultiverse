@@ -82,7 +82,7 @@ Write-Host "  packaged $zip"
 Write-Host "== 4/6 lambda =="
 try {
     Aws lambda create-function --function-name $FunctionName --runtime python3.12 `
-        --role $RoleArn --handler lambda_function.handler --timeout 10 --memory-size 256 `
+        --role $RoleArn --handler lambda_function.lambda_handler --timeout 10 --memory-size 256 `
         --environment ("Variables={BUCKET=" + $Bucket + "}") `
         --zip-file ("fileb://" + $zip) --region $Region | Out-Null
     Write-Host "  created $FunctionName"

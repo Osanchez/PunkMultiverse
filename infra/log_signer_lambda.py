@@ -37,7 +37,7 @@ _s3 = boto3.client("s3")
 _SAFE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def handler(event, _context):
+def lambda_handler(event, _context):
     params = event.get("queryStringParameters") or {}
     run_id = (params.get("runId") or "").strip()
     player = (params.get("player") or "").strip()
