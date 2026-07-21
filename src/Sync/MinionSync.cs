@@ -231,6 +231,18 @@ namespace PunkMultiverse.Sync
         internal static bool TryRespawnFromBaseline(int netId, uint lifetime, byte ownerSlot,
             string entityId, Vector2 pos)
         {
+            // Plants are GENERATION-owned: their branch structure (Data.rootBranch) only exists
+            // from level generation against terrain. A type+position respawn creates default Data,
+            // and EntityPlant.Bind -> Generate NREs on the null root branch (soak FAIL 2026-07-20,
+            // 'NippleCurved' post-rejoin divergence heal). Their fruit state reconciles through the
+            // plant-fruit ledger instead; leave the plant itself missing rather than half-spawn it.
+            var prefabCheck = FindPrefab(entityId);
+            if (prefabCheck != null && prefabCheck.GetComponentInChildren<EntityPlant>(true) != null)
+            {
+                Plugin.Log.LogWarning($"[Spawns] '{entityId}' #{netId} is generation-owned (plant) — " +
+                    "not respawnable from a baseline entry; skipped");
+                return false;
+            }
             _applyingRemote = true; // the CreateEntity below must not re-capture as a new spawn
             try { SpawnReplica(netId, lifetime, ownerSlot, entityId, pos, wireOwnerShip: false); }
             finally { _applyingRemote = false; }
