@@ -207,6 +207,19 @@ namespace PunkMultiverse.Core
                 case "runid":
                     Out($"runid: {LogUpload.RunId}");
                     return;
+                case "shopstate":
+                {
+                    // Assertion surface for shop-upgrade parity: UnlockedStationCount is the
+                    // per-player shop LEVEL (RunData.unlockedShopCount, bumped by
+                    // RegisterShopUnlock) and the item count is the stock it has rolled.
+                    // ("shop" is taken — that one fakes the shop-open damage shield.)
+                    var rd = ServiceLocator.Get<RunData>();
+                    if (rd == null) { Out("shopstate: no RunData"); return; }
+                    int items = -1;
+                    try { items = rd.GeneralShopItemList?.Items?.Count ?? -1; } catch { }
+                    Out($"shopstate: unlockedShopCount={rd.UnlockedStationCount} items={items}");
+                    return;
+                }
                 case "unlockstation":
                 {
                     // Harness aid for the FULL-rejoin path (which needs a station checkpoint):
@@ -242,9 +255,17 @@ namespace PunkMultiverse.Core
                             break;
                         }
                         if (install == null) continue;
+                        // Mirror vanilla Station.OnUseActivated, which does TWO things on an unlock:
+                        // Install (replicates via ProgressionSync) AND RegisterShopUnlock (grows the
+                        // LOCAL shop). Calling only Install made this devcmd unfaithful — the
+                        // unlocker's own shop never grew, which looked like a sync bug in reverse.
+                        bool wasLocked = data.installedUpgrades.Count == 0;
                         data.Install(install); // -> ProgressionSync.CaptureUpgrade -> broadcast + checkpoint
+                        if (wasLocked)
+                            try { ServiceLocator.Get<RunData>()?.RegisterShopUnlock(); } catch { }
                         Out($"unlockstation: installed '{install.id}' on station netId {netId} " +
-                            $"dist={dist:0.0} checkpoint={Sync.ProgressionSync.LatestStationNetId}");
+                            $"dist={dist:0.0} checkpoint={Sync.ProgressionSync.LatestStationNetId}" +
+                            (wasLocked ? " (unlock: local shop grown)" : " (already unlocked)"));
                         return;
                     }
                     Out($"unlockstation: no station with uninstalled upgrades ({candidates.Count} stations seen)");
