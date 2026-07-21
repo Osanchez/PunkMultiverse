@@ -31,21 +31,58 @@ namespace PunkMultiverse.Core
 
         internal static void SetRun(int seed, ulong hostIdentity)
         {
-            RunId = $"{(uint)seed:X8}-{(hostIdentity & 0xFFFF):X4}";
-            Plugin.Log.LogInfo($"[Diag] run id {RunId} — quote this in reports; `uploadlogs` collects this machine's log");
+            string next = $"{(uint)seed:X8}-{(hostIdentity & 0xFFFF):X4}";
+            if (next != RunId) { _sendsThisRun = 0; _nextAllowedSendAt = 0f; } // fresh run, fresh budget
+            RunId = next;
+            Plugin.Log.LogInfo($"[Diag] run id {RunId} — quote this in reports; SEND LOGS / F8 uploads this machine's log");
         }
 
+        // Anti-spam. The STABLE key means a re-send overwrites this player's single object, so
+        // spamming can never grow a run's folder — these bounds exist to stop repeat *requests*
+        // (a stuck key, an impatient player) from costing anything.
+        private const float SendCooldownSeconds = 30f;
+        private const int MaxSendsPerRun = 5;
+        private static float _nextAllowedSendAt;
+        private static int _sendsThisRun;
         private static bool _busy;
+
+        /// <summary>Why a send would be refused right now, or null if it's allowed. Lets the UI
+        /// grey the button out and say why instead of failing after the click.</summary>
+        internal static string BlockedReason()
+        {
+            if (_busy) return "already sending";
+            if (_sendsThisRun >= MaxSendsPerRun) return $"limit reached ({MaxSendsPerRun} per run)";
+            float wait = _nextAllowedSendAt - Time.unscaledTime;
+            if (wait > 0f) return $"wait {Mathf.CeilToInt(wait)}s";
+            return null;
+        }
+
+        /// <summary>UI entry (pause-menu button / F8). Returns a toast line ONLY when the send was
+        /// refused up front; otherwise null, because the outcome is asynchronous and Upload /
+        /// SignAndPut raise their own toast when it's actually known. (Returning "sending…" here
+        /// produced two toasts and reported success before the PUT had happened.)</summary>
+        internal static string UploadFromUi(NetSession session)
+        {
+            string blocked = BlockedReason();
+            if (blocked != null) return $"LOGS: {blocked.ToUpperInvariant()}";
+            UI.Toast.Show("SENDING LOG…", 2f);
+            Upload(session, line => Plugin.Log.LogInfo($"[Diag] {line}"));
+            return null;
+        }
 
         internal static void Upload(NetSession session, Action<string> output)
         {
-            if (_busy) { output("uploadlogs: already collecting"); return; }
+            string blocked = BlockedReason();
+            if (blocked != null) { output($"uploadlogs: {blocked}"); return; }
+            _nextAllowedSendAt = Time.unscaledTime + SendCooldownSeconds;
+            _sendsThisRun++;
 
             // ---- 1. snapshot + gzip the live log, and SAVE IT LOCALLY no matter what ----
             string player = Sanitize(session?.LocalPlayer?.Name ?? Environment.UserName);
-            int slot = session != null ? session.LocalSlot : -1;
-            string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-            string name = $"{player}-P{slot + 1}-{stamp}.log.gz";
+            // Stable, collision-safe per-player suffix: the display name alone can repeat between
+            // players, and a timestamp would make every send a NEW object. Identity hash does both.
+            string pid = ShortId(session?.LocalPlayer?.IdentityId ?? 0);
+            string name = $"{player}-{pid}.log.gz";
             string localPath;
             byte[] gz;
             try
@@ -89,14 +126,15 @@ namespace PunkMultiverse.Core
                 return;
             }
             _busy = true;
-            session.StartCoroutine(SignAndPut(endpoint, player, gz, localPath, kib, output));
+            session.StartCoroutine(SignAndPut(endpoint, player, pid, gz, localPath, kib, output));
         }
 
-        private static IEnumerator SignAndPut(string endpoint, string player, byte[] body,
+        private static IEnumerator SignAndPut(string endpoint, string player, string pid, byte[] body,
             string localPath, int kib, Action<string> output)
         {
             string signUrl = $"{endpoint.TrimEnd('/')}?runId={UnityWebRequest.EscapeURL(RunId)}" +
-                             $"&player={UnityWebRequest.EscapeURL(player)}&size={body.Length}";
+                             $"&player={UnityWebRequest.EscapeURL(player)}" +
+                             $"&pid={UnityWebRequest.EscapeURL(pid)}&size={body.Length}";
             string putUrl = null;
             string key = null;
 
@@ -172,6 +210,15 @@ namespace PunkMultiverse.Core
                 sb.Append(c);
             }
             return sb.Length > 0 ? sb.ToString() : null;
+        }
+
+        /// <summary>8 hex chars derived from the player's stable identity (SteamID / install id).
+        /// Distinguishes same-named players without putting a raw SteamID in the object key.</summary>
+        private static string ShortId(ulong identity)
+        {
+            if (identity == 0) return "LOCAL000";
+            ulong h = identity * 1099511628211UL ^ 14695981039346656037UL;
+            return ((uint)(h ^ (h >> 32))).ToString("X8");
         }
 
         private static string Sanitize(string name)

@@ -72,7 +72,6 @@ namespace PunkMultiverse
         public static ConfigEntry<float> ProfileObjectScanInterval;
         public static ConfigEntry<bool> CaptureHitchStack;
         public static ConfigEntry<float> DiagOwnershipDumpInterval;
-        public static ConfigEntry<string> LogWebhookUrl;
 
         public static void Init(BepConfigFile cfg)
         {
@@ -231,10 +230,6 @@ namespace PunkMultiverse
             DiagOwnershipDumpInterval = cfg.Bind("Diag", "OwnershipDumpInterval", 0f,
                 "When SyncDiagnostics is on and this is > 0, log a full ownership table every N " +
                 "seconds (0 = only on demand via the F11 overlay button).");
-            LogWebhookUrl = cfg.Bind("Diag", "LogWebhookUrl", "",
-                "Discord webhook URL for the F8 'send logs' key (uploads a gzipped BepInEx log). " +
-                "Empty = F8 disabled. Keep this here, not in source — Discord auto-revokes webhook " +
-                "URLs found in public repos.");
         }
     }
 }
