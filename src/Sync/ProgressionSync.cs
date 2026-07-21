@@ -193,6 +193,10 @@ namespace PunkMultiverse.Sync
                 for (int i = 0; i < data.installedUpgrades.Count; i++)
                     if (data.installedUpgrades[i] == upgrade) return true; // catch-up replay echo
                 _applyingRemote = true;
+                // A station's FIRST upgrade is its unlock — vanilla gates the shop growth on
+                // exactly this (Station.OnUseActivated: `if (!IsUnlocked)`), so capture it before
+                // Install flips IsUnlocked.
+                bool wasLocked = data.installedUpgrades.Count == 0;
                 try
                 {
                     // Same effect as a successful purchase, minus the cost.
@@ -202,6 +206,29 @@ namespace PunkMultiverse.Sync
                     // prices scale off that count — so everyone else kept seeing base prices and
                     // upgrade availability drifted per machine. Register remote installs too.
                     try { ServiceLocator.Get<RunData>()?.RegisterStationUpgradePurchase(upgrade.id); } catch { }
+
+                    // Shop-upgrade parity (tester report 2026-07-21, confirmed by decompile):
+                    // unlocking a station does TWO things in vanilla —
+                    //     TryInstallUpgrade(...)      -> Data.Install, which we replicate (above)
+                    //     runData.RegisterShopUnlock() -> rolls NEW MODULES into the shop
+                    // Only the first replicated; RegisterShopUnlock ran solely on the interacting
+                    // player's machine, so ONLY THE UNLOCKER'S SHOP EVER GREW. The station opened
+                    // for everyone, which made it look shared. Fire it here for the unlock edge.
+                    // Each machine draws from its OWN RunData (shopUnlockRnd, modulesPickedUp,
+                    // modulesAddedToShop), so inventories stay per-player — the shared thing is the
+                    // unlock EVENT, not the stock.
+                    if (wasLocked)
+                    {
+                        try
+                        {
+                            ServiceLocator.Get<RunData>()?.RegisterShopUnlock();
+                            Plugin.Log.LogInfo($"[Progress] shop unlock registered from remote station {netId}");
+                        }
+                        catch (Exception e)
+                        {
+                            Plugin.Log.LogWarning($"[Progress] shop unlock failed: {e.Message}");
+                        }
+                    }
                 }
                 finally
                 {
