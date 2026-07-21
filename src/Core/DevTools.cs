@@ -749,6 +749,7 @@ namespace PunkMultiverse.Core
                     return;
                 }
                 case "shot": DevUi.Shot(parts, Out); return;
+                case "pausemenu": DevUi.PauseMenu(parts, Out); return;
                 case "uidump": DevUi.Dump(parts, Out); return;
                 case "uitree": DevUi.Tree(parts, Out); return;
                 case "click": DevUi.Click(parts, Out); return;
