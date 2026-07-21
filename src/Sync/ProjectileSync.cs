@@ -608,6 +608,7 @@ namespace PunkMultiverse.Sync
                 BodyPos = owner.se.transform.position,
                 TargetSlot = targetSlot,
                 Seed = _lastFireSeed,
+                WeaponHash = WeaponIdentityHash(weapon),
             };
             // Host-simulated fire never passes through Dispatch — feed the registrar here.
             if (session.IsHost) Core.AuthorityManager.NoteAggro(owner.netId, targetSlot);
@@ -622,6 +623,22 @@ namespace PunkMultiverse.Sync
             // post-RC1/RC2 now that entity-fire churn ≈ 0. TargetSlot==255 falls back to plain
             // unreliable broadcast inside SendEntityFire.
             session.SendEntityFire(Writer.ToSegment(), targetSlot);
+        }
+
+        /// <summary>Stable cross-machine identity for a weapon instance: the cleaned Unity object
+        /// name ("(Clone)" and whitespace stripped). Prefab names are identical on every install,
+        /// factory-built replay weapons clone the same prefabs, so authority and puppet agree.</summary>
+        internal static uint WeaponIdentityHash(WeaponBase weapon)
+        {
+            // WeaponBase is a plain class; its TemplateData is the ScriptableObject asset every
+            // build shares — the game's own string Id (IIdentifiable) is the stable identity,
+            // with the asset name as fallback for data lacking an id.
+            var data = weapon?.TemplateData;
+            if (data == null) return 0;
+            string id = null;
+            try { id = data.Id; } catch { }
+            if (string.IsNullOrEmpty(id)) id = data.name;
+            return string.IsNullOrEmpty(id) ? 0 : DamageSync.HashName(id);
         }
 
         private static (SavableEntity, int) ResolveEntityWeapon(WeaponBase weapon, IBarrel barrel)
@@ -729,6 +746,7 @@ namespace PunkMultiverse.Sync
                 Shooter shooter = null;
                 WeaponBase weapon = null;
                 float bestScore = float.MaxValue;
+                bool bestHashMatch = false;
                 foreach (var candidate in se.GetComponentsInChildren<Shooter>(true))
                 {
                     // A puppet's weapon assembly frequently never initializes: Shooter.weapon is
@@ -743,13 +761,28 @@ namespace PunkMultiverse.Sync
                     if (w == null && candidate.weaponHolder != null) w = candidate.weaponHolder.Weapon;
                     if (w == null) w = GetOrBuildReplayWeapon(candidate);
                     if (w == null) continue;
+
+                    // Candidate ranking (tester report 2026-07-20, "wrong bullets" + "one rotating
+                    // laser"): weapon identity BEATS geometry — a multi-weapon boss must never
+                    // replay a missile through its bullet gun because that Shooter sat closer to
+                    // the muzzle. Within the same weapon type, break ties by barrel DIRECTION as
+                    // well as position: radial-laser enemies mount N same-type beam Shooters at
+                    // one center, and pure position matching funneled every beam through the SAME
+                    // Shooter — whose one persistent beam then just rotated (N beams -> 1).
+                    bool hashMatch = msg.WeaponHash != 0 && WeaponIdentityHash(w) == msg.WeaponHash;
                     float score = ((Vector2)candidate.transform.position - muzzleWorld).sqrMagnitude;
-                    if (score < bestScore)
+                    Vector2 candDir = Vector2.zero;
+                    try
                     {
-                        bestScore = score;
-                        shooter = candidate;
-                        weapon = w;
+                        var barrels = candidate.GetComponentsInChildren<BarrelTransform>(true);
+                        if (barrels.Length > 0 && barrels[0] != null) candDir = barrels[0].Direction;
                     }
+                    catch { }
+                    if (candDir != Vector2.zero && msg.Dir != Vector2.zero)
+                        score += (1f - Vector2.Dot(candDir.normalized, msg.Dir.normalized)) * 4f;
+
+                    if (hashMatch && !bestHashMatch) { bestHashMatch = true; bestScore = score; shooter = candidate; weapon = w; }
+                    else if (hashMatch == bestHashMatch && score < bestScore) { bestScore = score; shooter = candidate; weapon = w; }
                 }
                 if (weapon == null)
                 {
@@ -1086,11 +1119,26 @@ namespace PunkMultiverse.Sync
             var key = (msg.SourceSlot, msg.ShotId, msg.Ordinal);
             if (DetonatedIdentities.Contains(key)) return;
             if (!VisualByIdentity.TryGetValue(key, out var comp) || comp == null) return;
-            comp.transform.position = msg.Pos;
+
+            // Error-proportional correction, not a hard snap (tester report 2026-07-20: curving
+            // projectiles "rubberband all over the place"). A curved flight path phase-drifts
+            // laterally between 12 Hz updates, so snapping the position teleports the visual copy
+            // sideways every tick. Velocity is ALWAYS adopted — it re-aims the curve's tangent so
+            // the local mover continues on the authority's arc — while position converges softly:
+            // tiny error: leave it (velocity alone re-converges); moderate: blend a third per
+            // update (~50ms visual settle at 12 Hz); wild (tunneled/blocked divergence): snap.
+            Vector2 current = comp.transform.position;
+            Vector2 error = msg.Pos - current;
+            float mag = error.magnitude;
+            Vector2 corrected = mag < 0.75f ? current
+                : mag > 6f ? msg.Pos
+                : current + error * 0.35f;
+
+            comp.transform.position = corrected;
             var rb = comp.GetComponent<Rigidbody2D>();
             if (rb != null)
             {
-                rb.position = msg.Pos;
+                rb.position = corrected;
                 rb.linearVelocity = msg.Vel;
             }
             VisualExpiry[key] = Time.unscaledTime + VisualProjectileTtlSeconds;

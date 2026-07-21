@@ -22,8 +22,11 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 13; // 13: sidecar parity + admin — RosterEntry.IsAdmin,
-                                                // LobbyMembers(88)/AdminGrant(89)/AdminCommand(90)
+        public const int ProtocolVersion = 14; // 14 = main's 13 (EntityFireMsg.WeaponHash, fire
+                                                // fidelity) + this branch's sidecar/admin additions
+                                                // (RosterEntry.IsAdmin, LobbyMembers 88, AdminGrant 89,
+                                                // AdminCommand 90) — both 13s were parallel, distinct
+                                                // wire formats; the union is 14.
         public const int MaxPlayers = 4;
         /// <summary>Reserved slot for a dedicated coordinator — OUTSIDE the 0..MaxPlayers-1 player
         /// range, so a shipless server never consumes one of the four player/ship slots. Only ever
