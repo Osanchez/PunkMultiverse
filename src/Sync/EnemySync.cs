@@ -3779,13 +3779,17 @@ namespace PunkMultiverse.Sync
                 if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
                 if (__instance.GetComponent<Ship>() != null) return; // ships have their own life events
                 if (!TryGetNetId(__instance, out int netId)) return;
-                // Announce any death WE simulated (no puppet = live local sim). Checking the
-                // ownership registrar instead loses kills that land mid-handoff — the other
-                // machine then keeps a live copy and HP-syncs our corpse back up (zombies).
-                // A double announce after a race is harmless: receivers dedupe on KilledNetIds.
+                // Announce any death WE simulated (canonical + no puppet = live local sim).
+                // The residency-era registrar gate here (OwnerOf==LocalSlot) recreated exactly
+                // what this comment warns about: a kill landing while the lease reads someone
+                // else never announced, the killer's object+data vanished locally, and the
+                // other machines kept a live copy whose stream just died — the field-reported
+                // orphaned/starved puppet (#579 Unit_Grunt, 2026-07-22 playtest: absent on the
+                // owner, frozen on the host). Canonical-and-not-a-puppet is the honest "we
+                // simulate it" test; a double announce after a race is harmless (local
+                // KilledNetIds latch here, receiver dedupe + revision checks there).
                 if (__instance.GetComponentInParent<RemoteEntityPuppet>() != null) return;
                 if (!IsCanonical(__instance)) return;
-                if (OwnerOf(netId) != session.LocalSlot) return;
                 if (!KilledNetIds.Add(netId)) return;
                 byte killer = KillerOf(netId, session);
                 NetStats.AddKill(killer);
@@ -4164,7 +4168,10 @@ namespace PunkMultiverse.Sync
                 }
                 if (!TryGetNetId(__instance, out int netId)) return;
                 if (!IsCanonical(__instance)) return;
-                if (OwnerOf(netId) != session.LocalSlot) return;
+                // Same rule as BroadcastEntityDeath: canonical + no puppet = we simulate it —
+                // announce regardless of the lease registrar, or a mid-handoff kill strands a
+                // live copy on every other machine (the orphaned-puppet class).
+                if (__instance.GetComponentInParent<RemoteEntityPuppet>() != null) return;
                 if (!KilledNetIds.Add(netId)) return;
                 Writer.Reset();
                 new EntityKilledMsg

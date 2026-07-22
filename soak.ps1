@@ -156,13 +156,15 @@ try {
     $HostDevout = Join-Path $HostPlug "devout.txt"
     Cmd $ClientPlug "tp rel 300 0"           # far past interest radius -> non-resident for host kills
     Start-Sleep -Seconds 6
-    # Spawn module/consumable droppers right by the host. They FALL (rigidbodies), so horizontal
-    # fire misses — destroy them by netId with `poke` instead (position-independent). netIds come
-    # from the `entities` dump, which the mod writes to devout.txt (not the log).
-    Cmd $HostPlug "spawn CrateTech rel 6 0`nspawn Box_FuelGen rel 6 2`nspawn CrateTech rel 6 -2`nspawn Box_FuelGen rel 6 -4"
+    # Spawn module/consumable droppers right by the host, PINNED — unpinned crates are
+    # rigidbodies that fall out of the census radius before the entities dump (measured:
+    # "poking 0 loot droppers" runs where the gate only passed on ambient kills, or failed).
+    # Destroy by netId with `poke` (position-independent); netIds come from the `entities`
+    # dump, which the mod writes to devout.txt (not the log).
+    Cmd $HostPlug "spawn CrateTech rel 6 0 pin`nspawn Box_FuelGen rel 6 2 pin`nspawn CrateTech rel 6 -2 pin`nspawn Box_FuelGen rel 6 -4 pin"
     Start-Sleep -Seconds 4
     Set-Content -Path $HostDevout -Value "" -Encoding Ascii   # clear spawn echoes before the dump
-    Cmd $HostPlug "entities 25"
+    Cmd $HostPlug "entities 40"
     Start-Sleep -Seconds 4
     $lootIds = @(Select-String -Path $HostDevout -Pattern "entity #(\d+) (CrateTech|Box_FuelGen)" -ErrorAction SilentlyContinue |
                  ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique)
