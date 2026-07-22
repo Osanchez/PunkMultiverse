@@ -61,6 +61,7 @@ namespace PunkMultiverse.Sync
         internal static byte ForcedLinkScore = 255;            // 255 = auto (devcmd override for tests)
         private static float _nextLinkHealthAt;
         private static long _lastUnderrunsSample, _lastMissingChunksSample;
+        private static long _lastJitterSamples, _lastJitterMicros; // windowed link-health jitter
         private static float _linkDistressSince;       // WS7.3: continuous-distress episode start
         private static bool _linkDistressAnnounced;
         private static readonly Dictionary<int, EntityStateEntry> FullState = new Dictionary<int, EntityStateEntry>();
@@ -218,6 +219,7 @@ namespace PunkMultiverse.Sync
             ForcedLinkScore = 255;
             _nextLinkHealthAt = 0;
             _lastUnderrunsSample = _lastMissingChunksSample = 0;
+            _lastJitterSamples = _lastJitterMicros = 0;
             _linkDistressSince = 0f;
             _linkDistressAnnounced = false;
             SummaryMismatchStreaks.Clear();
@@ -1776,7 +1778,18 @@ namespace PunkMultiverse.Sync
                 // EXCLUDED — they run ~800/s as per-puppet-per-FixedUpdate background noise
                 // (entity-count-proportional), and scoring them pinned every healthy client at 254
                 // and crashed its budget to the floor (measured).
-                float jitterPenalty = Mathf.Max(0f, (float)InstrumentationCounters.AdaptiveJitterAverageMs - 15f) * 3f;
+                // Jitter must be WINDOWED (this tick's samples), not the lifetime average: one
+                // early spike (a stall, a load hitch) permanently inflated the lifetime mean, the
+                // score then sat >=48 forever and the owner ground this viewer's budget at the
+                // 400B floor for the whole session (2026-07-22 soak: 18k budget drops in calm
+                // phases from a single 15s stall's baked-in average).
+                long samples = InstrumentationCounters.AdaptiveSamples;
+                long jitterMicros = InstrumentationCounters.AdaptiveJitterMicros;
+                long dSamples = Math.Max(0, samples - _lastJitterSamples);
+                double windowJitterMs = dSamples > 0 ? (jitterMicros - _lastJitterMicros) / 1000.0 / dSamples : 0;
+                _lastJitterSamples = samples;
+                _lastJitterMicros = jitterMicros;
+                float jitterPenalty = Mathf.Max(0f, (float)windowJitterMs - 15f) * 3f;
                 score = (byte)Mathf.Clamp(missingDelta * 10 + (int)jitterPenalty, 0, 254);
                 _ = underrunsDelta; // sampled for future use; see comment above
             }

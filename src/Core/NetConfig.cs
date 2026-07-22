@@ -190,15 +190,19 @@ namespace PunkMultiverse
             // WRITTEN in its config, and a file value beats a new bind default. Renaming the
             // key is the only way "on by default" actually reaches the existing fleet; the
             // orphaned [Diag] line is inert. Keep this key as the emergency kill-switch.
-            SummaryHeal = cfg.Bind("Sync", "SummaryHeal", true,
+            SummaryHeal = cfg.Bind("Sync", "SummaryHeal", false,
                 "WS9.1: segment identity-summary mismatches trigger targeted roster audits " +
-                "(echo + repair), so silent world divergence self-heals in bounded time. Safe " +
-                "since v2 (2026-07-22): viewers only judge segments FULLY inside their own " +
-                "interest radius (entity positions there are snapshot-fresh), and a 5u boundary " +
-                "band + 3-cycle confirmation filter entities in transit — validated as zero " +
-                "false audits under a chasing crowd, with an injected dropped-replica divergence " +
-                "healing in <=5s. Off = detection-only telemetry (summaries=tx/chk/miss on " +
-                "[BytePlanes]) with no repair traffic.");
+                "(echo + repair), so silent world divergence self-heals in bounded time. The v2 " +
+                "predicate (viewer judges only segments fully inside its interest radius, 5u " +
+                "boundary band, 3-cycle confirmation) eliminated the fringe-staleness false " +
+                "positives and healed an injected dropped-replica divergence in <=5s — but the " +
+                "2026-07-22 release soak caught a remaining class: an enemy IDLING near the band " +
+                "threshold sits on different sides of the cutoff on the two machines " +
+                "indefinitely (persistent phantom mismatch, un-healable audit loop). Repair " +
+                "stays OFF until membership hashes on the owner's segment ASSIGNMENT (the " +
+                "snapshot group key viewers already receive) instead of inferred positions. " +
+                "Detection telemetry (summaries=tx/chk/miss on [BytePlanes]) runs either way; " +
+                "the round-robin roster-audit floor still repairs missing entities.");
             ProfileFrames = cfg.Bind("Diag", "ProfileFrames", true,
                 "Per-frame profiler: times each of our subsystem ticks (ShipSync, WorldSync, " +
                 "EnemySync, Authority, …) and every ~3s logs [Profile] avg/max ms per section plus " +
