@@ -229,6 +229,7 @@ namespace PunkMultiverse.Core
         {
             float interval = Math.Max(1f, Math.Min(30f, NetConfig.ProfileReportInterval.Value));
             _nextReportAt = Time.unscaledTime + interval;
+            DiagWatch.ReportIntervalSeconds = interval;
             long nowTicks = Stopwatch.GetTimestamp();
             double elapsed = Math.Max(0.001, (nowTicks - _reportStartedTicks) / (double)Stopwatch.Frequency);
             double mono = nowTicks / (double)Stopwatch.Frequency;
@@ -246,6 +247,10 @@ namespace PunkMultiverse.Core
             catch (Exception e) { WarnOnce("state-flow", e); }
             try { ReportPopulation(mono, elapsed); }
             catch (Exception e) { WarnOnce("population", e); }
+            try { DiagWatch.ReportGrowth(mono); }         // leak / unbounded-queue trend
+            catch (Exception e) { WarnOnce("growth", e); }
+            try { DiagWatch.ReportJitter(mono); }         // oscillating enemy puppets
+            catch (Exception e) { WarnOnce("jitter", e); }
             try { MaybeScanObjects(mono); }
             catch (Exception e) { WarnOnce("scan", e); }
         }

@@ -39,6 +39,9 @@ namespace PunkMultiverse.Patches
         // grant remotely without spawning a position-based pickup (a different mechanism, WS5.1).
         private static readonly Dictionary<int, Dictionary<string, int>> CapturedLoot
             = new Dictionary<int, Dictionary<string, int>>();
+        /// <summary>Pending loot payloads awaiting broadcast/consume; drains per death. Growth means
+        /// captures aren't being consumed (a broadcast path stopped clearing them).</summary>
+        internal static int CapturedLootCount => CapturedLoot.Count;
 
         private static void CaptureIngredientDrop(int netId, string id)
         {
