@@ -176,6 +176,57 @@ namespace PunkMultiverse.Core
             catch { }
         }
 
+        /// <summary>Owner-side motion spectrum of one entity (see the motionprofile devcmd): per
+        /// physics step, count velocity direction reversals (dot &lt; 0 with both steps moving) and
+        /// track speed + the in-place oscillation amplitude around a rolling mean position.</summary>
+        private static System.Collections.IEnumerator MotionProfile(int netId, Rigidbody2D rb, float secs)
+        {
+            int steps = 0, reversals = 0;
+            float speedSum = 0f, speedMax = 0f, amp = 0f;
+            Vector2 prevVel = Vector2.zero, meanPos = rb.position;
+            // Wasted speed with the SAME 0.5s windowing the puppet uses (path - net displacement),
+            // so owner and puppet numbers are directly comparable: puppet ≈ owner means the wobble
+            // is REAL motion faithfully reproduced; puppet >> owner means the sync manufactures it.
+            float winStart = Time.unscaledTime, winPath = 0f, wastedSum = 0f, wastedMax = 0f;
+            int wins = 0;
+            Vector2 winStartPos = rb.position, lastPos = rb.position;
+            float t0 = Time.unscaledTime;
+            while (Time.unscaledTime - t0 < secs)
+            {
+                yield return new WaitForFixedUpdate();
+                if (rb == null) { Out($"motionprofile #{netId}: entity died mid-sample"); yield break; }
+                var vel = rb.linearVelocity;
+                steps++;
+                float speed = vel.magnitude;
+                speedSum += speed; speedMax = Mathf.Max(speedMax, speed);
+                if (speed > 0.5f && prevVel.magnitude > 0.5f && Vector2.Dot(vel, prevVel) < 0f) reversals++;
+                prevVel = vel;
+                meanPos = Vector2.Lerp(meanPos, rb.position, 0.05f);       // ~0.4s rolling mean
+                amp = Mathf.Max(amp, Vector2.Distance(rb.position, meanPos));
+                winPath += Vector2.Distance(rb.position, lastPos);
+                lastPos = rb.position;
+                float now = Time.unscaledTime;
+                if (now - winStart >= 0.5f)
+                {
+                    float wasted = (winPath - Vector2.Distance(rb.position, winStartPos)) / (now - winStart);
+                    wastedSum += wasted; wastedMax = Mathf.Max(wastedMax, wasted); wins++;
+                    winStart = now; winStartPos = rb.position; winPath = 0f;
+                }
+            }
+            float dur = Time.unscaledTime - t0;
+            float revHz = reversals / Mathf.Max(0.001f, dur);
+            float snapHz = Mathf.Max(NetConfig.StateHz.Value, NetConfig.CombatStateHz.Value);
+            Out(string.Format(CultureInfo.InvariantCulture,
+                "motionprofile #{0}: {1:0.0}s {2} steps | speed avg={3:0.0} max={4:0.0} u/s | " +
+                "direction reversals={5} ({6:0.0}/s) | oscillation amp={7:0.00}u | " +
+                "OWNER wasted avg={8:0.00} max={9:0.0} u/s | snapshot={10:0}Hz (Nyquist {11:0}Hz) -> {12}",
+                netId, dur, steps, speedSum / Mathf.Max(1, steps), speedMax, reversals, revHz, amp,
+                wins > 0 ? wastedSum / wins : 0f, wastedMax,
+                snapHz, snapHz / 2f,
+                revHz > snapHz / 2f ? "UNDER-SAMPLED: motion exceeds what snapshots can carry"
+                                    : "sampling adequate; compare OWNER wasted vs puppet jitterstats"));
+        }
+
         private static void Execute(NetSession session, string line)
         {
             var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -233,6 +284,30 @@ namespace PunkMultiverse.Core
                     int items = -1;
                     try { items = rd.GeneralShopItemList?.Items?.Count ?? -1; } catch { }
                     Out($"shopstate: unlockedShopCount={rd.UnlockedStationCount} items={items}");
+                    return;
+                }
+                case "jitterstats":
+                    // Per-enemy-type sync-smoothness table (wastedAvg/peak/jitter%), accumulated by
+                    // every puppet since the last dump. `jitterstats keep` dumps without resetting.
+                    DiagWatch.DumpTypeStats(Out, reset: parts.Length < 2 || !parts[1].Equals("keep", StringComparison.OrdinalIgnoreCase));
+                    return;
+                case "motionprofile":
+                {
+                    // OWNER-side ground truth for the jitter hypothesis: sample an entity's rigidbody
+                    // every FixedUpdate for N seconds and report its direction-reversal rate vs the
+                    // snapshot rate. Reversals/sec above ~half the snapshot Hz cannot be represented
+                    // by sampling (Nyquist) — proof that the type moves too fast for snapshots.
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out int mpId)) { Out("motionprofile <netId> [secs]"); return; }
+                    float mpSecs = 5f;
+                    if (parts.Length >= 3) float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out mpSecs);
+                    if (!NetIds.TryGetInstanceId(mpId, out int mpInst)) { Out($"motionprofile: netId {mpId} unknown here"); return; }
+                    var mpEgm = ServiceLocator.Get<EntityGameObjectManager>();
+                    if (mpEgm == null || !mpEgm.TryGetSavableEntity(mpInst, out var mpSe) || mpSe == null)
+                    { Out($"motionprofile: #{mpId} not instantiated here"); return; }
+                    var mpRb = mpSe.GetComponent<Rigidbody2D>();
+                    if (mpRb == null) { Out($"motionprofile: #{mpId} has no rigidbody"); return; }
+                    Out($"motionprofile: sampling #{mpId} for {mpSecs:0.0}s...");
+                    session.StartCoroutine(MotionProfile(mpId, mpRb, Mathf.Clamp(mpSecs, 1f, 20f)));
                     return;
                 }
                 case "unlockstation":
@@ -341,7 +416,8 @@ namespace PunkMultiverse.Core
                     string dead = ship != null && ship.IsDead ? " DEAD" : "";
                     Out($"status v{PluginVersionInfo.Version} state={session.State} slot={session.LocalSlot} " +
                         $"host={session.IsHost} ship={pos}{dead} " +
-                        $"shipFireReplays={ProjectileSync.ShipFireQueued + ProjectileSync.ShipFireLate}");
+                        $"shipFireReplays={ProjectileSync.ShipFireQueued + ProjectileSync.ShipFireLate} " +
+                        $"phantomHits={ProjectileSync.PhantomHitCount}");
                     return;
                 }
                 case "entities":
@@ -695,6 +771,61 @@ namespace PunkMultiverse.Core
                     else if (parts.Length >= 2) Sync.EnemySync.ForcedViewerBudget = 0f;
                     Out($"netbudget: {(Sync.EnemySync.ForcedViewerBudget > 0f ? $"FORCED {Sync.EnemySync.ForcedViewerBudget:0}B/tick for every viewer" : "auto (link-health adaptive)")}"
                         + $" budgetDrops={InstrumentationCounters.StateEntriesBudgetDroppedCount}");
+                    return;
+                }
+                case "desync":
+                {
+                    // WS9.1 heal harness: deliberately break THIS machine's world. "desync drop"
+                    // swallows the next incoming spawn replica — the summary/heal pipeline must
+                    // then detect the divergence and repair it in bounded time.
+                    if (parts.Length >= 2 && parts[1].Equals("drop", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Sync.MinionSync.DropNextReplica = true;
+                        Out("desync: next incoming spawn replica will be DROPPED (one-shot)");
+                    }
+                    else Out($"desync: armed={Sync.MinionSync.DropNextReplica} (usage: desync drop)");
+                    return;
+                }
+                case "vsync":
+                {
+                    // Clock-dilation harness: an unfocused instance's vsync-aligned frame timing
+                    // pins unscaledDeltaTime at 1/refresh, dilating the whole sim under load (see
+                    // [Clock]). "vsync 0 [fpsCap]" turns vsync off (optional targetFrameRate cap,
+                    // 0 = uncapped); "vsync 1" restores. No args = print current + measured rate.
+                    if (parts.Length >= 2 && int.TryParse(parts[1], out int vs))
+                        QualitySettings.vSyncCount = Mathf.Clamp(vs, 0, 4);
+                    if (parts.Length >= 3 && int.TryParse(parts[2], out int cap))
+                        Application.targetFrameRate = cap <= 0 ? -1 : cap;
+                    Out($"vsync: vSyncCount={QualitySettings.vSyncCount} targetFrameRate={Application.targetFrameRate} " +
+                        $"clockRate={RuntimeInstrumentation.ClockRate:0.00}x real");
+                    return;
+                }
+                case "snaphz":
+                {
+                    // Jitter A/B harness (owner side): live-set the combat snapshot rate. The send
+                    // loop reads CombatStateHz.Value every tick, so this takes effect immediately.
+                    // "snaphz 60" doubles combat cadence; "snaphz auto" restores the config default.
+                    if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float hz) && hz >= 1f)
+                        NetConfig.CombatStateHz.Value = Mathf.Clamp(hz, 1f, 120f);
+                    else if (parts.Length >= 2)
+                        NetConfig.CombatStateHz.Value = (float)NetConfig.CombatStateHz.DefaultValue;
+                    Out($"snaphz: CombatStateHz={NetConfig.CombatStateHz.Value:0} " +
+                        $"(tick={Mathf.Max(NetConfig.StateHz.Value, NetConfig.CombatStateHz.Value):0}Hz)");
+                    return;
+                }
+                case "interpdelay":
+                {
+                    // Jitter A/B harness (viewer side): add fixed headroom to every entity puppet's
+                    // render delay. Tests whether underruns come from render time overtaking the
+                    // buffer (client frame stalls / sender gaps) — if +N ms kills the underruns and
+                    // the wasted-speed table drops with it, buffer depth is the lever. Ships/props
+                    // unaffected. "interpdelay 60" = +60ms; "interpdelay auto" = off.
+                    if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float ms) && ms > 0f)
+                        Sync.RemoteEntityPuppet.ExperimentExtraDelay = Mathf.Clamp(ms, 0f, 500f) / 1000f;
+                    else if (parts.Length >= 2) Sync.RemoteEntityPuppet.ExperimentExtraDelay = 0f;
+                    Out(Sync.RemoteEntityPuppet.ExperimentExtraDelay > 0f
+                        ? $"interpdelay: +{Sync.RemoteEntityPuppet.ExperimentExtraDelay * 1000f:0}ms on every entity puppet"
+                        : "interpdelay: auto (adaptive only)");
                     return;
                 }
                 case "shop":

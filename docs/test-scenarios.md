@@ -430,6 +430,25 @@ all three logs) land in `%TEMP%\punkmv-soak\<stamp>`.
 - Refuses to start if any Punk.exe is already running; only kills its own PIDs;
   restores the host install config byte-for-byte on exit.
 
+## 29. jitter-crowd (puppet smoothness under enemy load) — ROOT-CAUSED 2026-07-22
+
+Is puppet motion faithful to the owner sim when many combat-tier enemies stream at once?
+
+- **PRECONDITION (the finding): `H>`+`C> vsync 0` right after go-live.** Without it, the
+  unfocused instance's clock dilates under load (~0.4x real) and manufactures the exact
+  jitter this scenario measures — harness.md "clock-dilation trap". Any `[Clock]` warning
+  during a window voids that window.
+- `H> god on`, `C> god on`; co-locate ships (`C> tp <hostX+2> <hostY>`).
+- `H>` spawn a ring of 12 `Unit_FlyDad` at rel ±4-8, `H> entities 30` for netIds,
+  `H> poke <id> 1` each (aggro), `H> probe <first>` must show `target=ship…/visible`.
+- Measure in 20-25s windows: `C> jitterstats` at begin (resets) and end (reports);
+  optional `H> motionprofile <netId> 15` for the owner-side wasted-speed ground truth.
+- PASS (healed-clock reference, 2026-07-22): window `underruns` < 150/s session-wide,
+  `delayAvg` < 120ms (NOT pinned at ~246ms), FlyDad `avg` ≤ ~0.5 u/s with `jitter%` 0
+  (owner-side reference ~0.9-1.0 via motionprofile — puppet must not exceed owner).
+- FAIL signature of the dilation artifact: underruns ~1500/s, delayAvg pinned at the
+  250ms ceiling, puppet wastedAvg 2-4x owner — check `[Clock]` before blaming sync.
+
 ---
 
 ### Cadence

@@ -78,6 +78,14 @@ Delete stale `devcmd.txt` files before launching.
 
 ## Known quirks (context that saves you an hour)
 
+- **THE CLOCK-DILATION TRAP (do this first)**: an unfocused instance with vsync on advances
+  its entire game clock a fixed 1/refresh per frame — under load its sim runs at ~0.4x real
+  time, every viewer's interpolation starves (~1500 underruns/s, delay pinned at 250ms), and
+  every puppet wobbles. This is manufactured "enemy jitter", not a sync bug. After go-live,
+  send `vsync 0` to BOTH instances before measuring ANY sync/perf numbers. `[Clock]` warnings
+  in a log mean that instance's numbers from that stretch are invalid. Full writeup:
+  harness.md "clock-dilation trap".
+
 - Spawned enemies are PASSIVE until damaged — `poke` them to aggro before grading fire
   behavior. For client-owned-vs-host-puppet geometry, wait for the client's `[Lease] ->P2`
   commit on the spawn segment BEFORE moving the host in, or ownership flips to the host.

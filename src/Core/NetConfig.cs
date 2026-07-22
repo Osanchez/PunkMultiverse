@@ -46,6 +46,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> SyncDiagnostics;
         public static ConfigEntry<string> LogUploadEndpoint;
         public static ConfigEntry<bool> SummaryHeal;
+        public static ConfigEntry<bool> ClockGuardEnabled;
         public static ConfigEntry<bool> ProfileFrames;
         public static ConfigEntry<bool> HitchWatchdog;
         public static ConfigEntry<int> HitchThresholdMs;
@@ -171,14 +172,37 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
-            SummaryHeal = cfg.Bind("Diag", "SummaryHeal", false,
-                "EXPERIMENTAL (WS9.1): let segment identity-summary mismatches actively trigger " +
-                "targeted roster audits (echo + repair). Off = summaries still run as detection " +
-                "telemetry (the summaries=tx/chk/miss counters on [BytePlanes]) but never generate " +
-                "repair traffic. Keep off until the membership predicate is viewer-targeted: an " +
-                "enemy that wanders outside a viewer's interest radius leaves stale data-side " +
-                "positions behind, and position-based segment membership then false-positives " +
-                "(measured: repeating un-healable mismatches on fringe + wander segments).");
+            ClockGuardEnabled = cfg.Bind("Sync", "ClockGuard", true,
+                "While a net session is active and this game window is UNFOCUSED, temporarily " +
+                "swap vsync for a frame-rate cap at your display's own refresh rate, restoring " +
+                "your exact settings the moment you tab back in. WHY: with vsync on, an " +
+                "unfocused window's game clock advances a fixed 1/refresh per frame regardless " +
+                "of real frame time — under load the whole simulation runs slow (measured 0.4x " +
+                "real time on a 240Hz display), its snapshots fall behind, and every OTHER " +
+                "player sees enemies vibrate/stutter (chronic interpolation underruns). The " +
+                "swap keeps the clock honest at any refresh rate and is invisible: it only ever " +
+                "applies while you are not looking at the game. Disable ONLY if it misbehaves " +
+                "with your driver/display setup — a [Clock] warning in your log plus teammates " +
+                "reporting stutter while you were tabbed out means this instance is the cause.");
+
+            // [Sync] section + fresh key ON PURPOSE (was [Diag] SummaryHeal): the v1 entry
+            // shipped default-false, so every existing install has "SummaryHeal = false"
+            // WRITTEN in its config, and a file value beats a new bind default. Renaming the
+            // key is the only way "on by default" actually reaches the existing fleet; the
+            // orphaned [Diag] line is inert. Keep this key as the emergency kill-switch.
+            SummaryHeal = cfg.Bind("Sync", "SummaryHeal", false,
+                "WS9.1: segment identity-summary mismatches trigger targeted roster audits " +
+                "(echo + repair), so silent world divergence self-heals in bounded time. The v2 " +
+                "predicate (viewer judges only segments fully inside its interest radius, 5u " +
+                "boundary band, 3-cycle confirmation) eliminated the fringe-staleness false " +
+                "positives and healed an injected dropped-replica divergence in <=5s — but the " +
+                "2026-07-22 release soak caught a remaining class: an enemy IDLING near the band " +
+                "threshold sits on different sides of the cutoff on the two machines " +
+                "indefinitely (persistent phantom mismatch, un-healable audit loop). Repair " +
+                "stays OFF until membership hashes on the owner's segment ASSIGNMENT (the " +
+                "snapshot group key viewers already receive) instead of inferred positions. " +
+                "Detection telemetry (summaries=tx/chk/miss on [BytePlanes]) runs either way; " +
+                "the round-robin roster-audit floor still repairs missing entities.");
             ProfileFrames = cfg.Bind("Diag", "ProfileFrames", true,
                 "Per-frame profiler: times each of our subsystem ticks (ShipSync, WorldSync, " +
                 "EnemySync, Authority, …) and every ~3s logs [Profile] avg/max ms per section plus " +

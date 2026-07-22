@@ -135,11 +135,78 @@ namespace PunkMultiverse.Core
             JitterPeak.Clear();
         }
 
+        // ---------------------------------------------------------------- per-type motion stats
+        // Every puppet reports EVERY wasted-speed window sample here (not only above-floor ones), so
+        // a sweep can rank ALL enemy types by their sync smoothness, not just the pathological ones.
+        // Keyed by entityId; dumped and reset by the `jitterstats` devcmd (the jittersweep harness).
+
+        private sealed class TypeStat
+        {
+            public int Samples;
+            public double Sum;
+            public float Peak;
+            public int AboveFloor; // windows exceeding the [Jitter] report floor
+        }
+
+        private static readonly Dictionary<string, TypeStat> TypeStats = new Dictionary<string, TypeStat>();
+
+        internal static void NoteMotionSample(string entityType, float wastedSpeed, bool aboveFloor)
+        {
+            if (string.IsNullOrEmpty(entityType)) return;
+            if (!TypeStats.TryGetValue(entityType, out var s)) TypeStats[entityType] = s = new TypeStat();
+            s.Samples++;
+            s.Sum += wastedSpeed;
+            if (wastedSpeed > s.Peak) s.Peak = wastedSpeed;
+            if (aboveFloor) s.AboveFloor++;
+        }
+
+        // Counter values captured at the last jitterstats reset, so each dump reports the WINDOW's
+        // underruns/s and adaptive delay (the lifetime averages in [SnapshotLatency] dilute A/B arms).
+        private static long _winUnderruns, _winSamples, _winDelayMicros, _winJitterMicros;
+        private static float _winStartedAt;
+
+        /// <summary>Ranked per-type motion table for the jittersweep harness. wastedAvg/peak in u/s;
+        /// jitter% = fraction of 0.5s windows above the report floor (the "visibly vibrating" rate).</summary>
+        internal static void DumpTypeStats(Action<string> output, bool reset)
+        {
+            float winSecs = _winStartedAt > 0f ? Time.unscaledTime - _winStartedAt : 0f;
+            long dUnder = InstrumentationCounters.InterpolationUnderruns - _winUnderruns;
+            long dSamples = InstrumentationCounters.AdaptiveSamples - _winSamples;
+            output(string.Format(CultureInfo.InvariantCulture,
+                "jitterstats window: {0:0.0}s underruns={1} ({2:0.0}/s) delayAvg={3:0.0}ms jitterAvg={4:0.00}ms",
+                winSecs, dUnder, dUnder / Math.Max(0.001f, winSecs),
+                dSamples > 0 ? (InstrumentationCounters.AdaptiveDelayMicros - _winDelayMicros) / 1000.0 / dSamples : 0,
+                dSamples > 0 ? (InstrumentationCounters.AdaptiveJitterMicros - _winJitterMicros) / 1000.0 / dSamples : 0));
+            if (reset)
+            {
+                _winStartedAt = Time.unscaledTime;
+                _winUnderruns = InstrumentationCounters.InterpolationUnderruns;
+                _winSamples = InstrumentationCounters.AdaptiveSamples;
+                _winDelayMicros = InstrumentationCounters.AdaptiveDelayMicros;
+                _winJitterMicros = InstrumentationCounters.AdaptiveJitterMicros;
+            }
+            if (TypeStats.Count == 0) { output("jitterstats: no samples"); return; }
+            var rows = new List<KeyValuePair<string, TypeStat>>(TypeStats);
+            rows.Sort((a, b) => (b.Value.Sum / Math.Max(1, b.Value.Samples))
+                .CompareTo(a.Value.Sum / Math.Max(1, a.Value.Samples)));
+            output($"jitterstats: {rows.Count} type(s), worst first (wastedAvg u/s | peak | jitter% | windows)");
+            foreach (var kv in rows)
+            {
+                var s = kv.Value;
+                output(string.Format(CultureInfo.InvariantCulture,
+                    "jitterstats {0}: avg={1:0.00} peak={2:0.0} jitter%={3:0.0} windows={4}",
+                    kv.Key, s.Sum / Math.Max(1, s.Samples), s.Peak,
+                    100.0 * s.AboveFloor / Math.Max(1, s.Samples), s.Samples));
+            }
+            if (reset) TypeStats.Clear();
+        }
+
         internal static void Reset()
         {
             Metrics.Clear();
             _registered = false;
             JitterPeak.Clear();
+            TypeStats.Clear();
         }
     }
 }

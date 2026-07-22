@@ -61,6 +61,7 @@ namespace PunkMultiverse.Sync
         internal static byte ForcedLinkScore = 255;            // 255 = auto (devcmd override for tests)
         private static float _nextLinkHealthAt;
         private static long _lastUnderrunsSample, _lastMissingChunksSample;
+        private static long _lastJitterSamples, _lastJitterMicros; // windowed link-health jitter
         private static float _linkDistressSince;       // WS7.3: continuous-distress episode start
         private static bool _linkDistressAnnounced;
         private static readonly Dictionary<int, EntityStateEntry> FullState = new Dictionary<int, EntityStateEntry>();
@@ -218,6 +219,7 @@ namespace PunkMultiverse.Sync
             ForcedLinkScore = 255;
             _nextLinkHealthAt = 0;
             _lastUnderrunsSample = _lastMissingChunksSample = 0;
+            _lastJitterSamples = _lastJitterMicros = 0;
             _linkDistressSince = 0f;
             _linkDistressAnnounced = false;
             SummaryMismatchStreaks.Clear();
@@ -1252,7 +1254,11 @@ namespace PunkMultiverse.Sync
                 var wirePos = new Vector2(Mathf.RoundToInt(data.position.x * 32f) / 32f,
                     Mathf.RoundToInt(data.position.y * 32f) / 32f);
                 if (!AuthorityManager.SegmentOf(wirePos).Equals(key)) continue;
-                if (DistanceToSegmentEdge(wirePos, key) < 2f) continue;
+                // 5u band (was 2u): chasing flyers burst to ~16 u/s, and the two machines sample
+                // the summary up to a snapshot-pipeline skew apart — a fast mover can cross a 2u
+                // band between their sample instants (measured 2026-07-22: same hash pair swapped
+                // owner<->viewer on wander segments = time-shifted views of one crossing).
+                if (DistanceToSegmentEdge(wirePos, key) < 5f) continue;
                 unchecked
                 {
                     ulong h = 14695981039346656037UL;
@@ -1263,6 +1269,21 @@ namespace PunkMultiverse.Sync
                 count++;
             }
             return hash;
+        }
+
+        /// <summary>WS9.1 v2 freshness zone: true when every point of the segment sits inside this
+        /// viewer's interest radius (minus a margin for ship movement across the 5s summary
+        /// cycle) — the region where the owner's snapshot stream keeps our entity positions
+        /// current, so position-based segment membership can be trusted.</summary>
+        private static bool SegmentFullyInInterest(AuthorityManager.SegmentKey key)
+        {
+            var ship = ShipSync.LocalShip;
+            if (ship == null) return false;
+            float size = Level.SegmentSize > 0 ? Level.SegmentSize : 25f;
+            Vector2 shipPos = ship.transform.position;
+            float dx = Mathf.Max(Mathf.Abs(shipPos.x - key.X * size), Mathf.Abs(shipPos.x - (key.X + 1) * size));
+            float dy = Mathf.Max(Mathf.Abs(shipPos.y - key.Y * size), Mathf.Abs(shipPos.y - (key.Y + 1) * size));
+            return dx * dx + dy * dy <= Mathf.Pow(Mathf.Max(25f, NetConfig.InterestRadius.Value) - 5f, 2f);
         }
 
         // Distance (world units) from a position to the nearest edge of its containing segment.
@@ -1338,6 +1359,15 @@ namespace PunkMultiverse.Sync
             if (AuthorityManager.OwnerOf(key) != msg.OwnerSlot) return; // stale — lease moved on
             var active = TryGetActiveSegments();
             if (active == null || !active.Contains(new Vector2Int(key.X, key.Y))) return;
+            // WS9.1 v2 — the viewer-targeted membership predicate that makes heal safe to enable:
+            // only judge segments whose ENTIRE area lies inside this viewer's interest radius.
+            // Beyond it the owner interest-filters our snapshot stream (send gate is
+            // InterestRadius + SegmentSize, so inside plain InterestRadius is fresh with a full
+            // segment of margin), our data positions go stale, and position-based membership
+            // false-positives — measured as repeating un-healable mismatches on fringe/wander
+            // segments, the reason v1 shipped detection-only. Within the zone every entity's
+            // position is snapshot-fresh, so a confirmed mismatch is a REAL divergence.
+            if (!SegmentFullyInInterest(key)) return;
             EntityManager em2;
             try { em2 = ServiceLocator.Get<EntityManager>(); }
             catch { return; }
@@ -1353,7 +1383,10 @@ namespace PunkMultiverse.Sync
                 || streak.owner != msg.OwnerSlot || streak.epoch != msg.Epoch)
                 streak = (msg.OwnerSlot, msg.Epoch, 0);
             streak.count++;
-            if (streak.count < 2)
+            // 3 consecutive cycles (~15s persistent): a REAL divergence persists indefinitely so
+            // this only delays the heal by one cycle, while entities in transit across segment
+            // boundaries stop confirming (measured false-audit source with 2).
+            if (streak.count < 3)
             {
                 SummaryMismatchStreaks[key] = streak;
                 return;
@@ -1745,7 +1778,18 @@ namespace PunkMultiverse.Sync
                 // EXCLUDED — they run ~800/s as per-puppet-per-FixedUpdate background noise
                 // (entity-count-proportional), and scoring them pinned every healthy client at 254
                 // and crashed its budget to the floor (measured).
-                float jitterPenalty = Mathf.Max(0f, (float)InstrumentationCounters.AdaptiveJitterAverageMs - 15f) * 3f;
+                // Jitter must be WINDOWED (this tick's samples), not the lifetime average: one
+                // early spike (a stall, a load hitch) permanently inflated the lifetime mean, the
+                // score then sat >=48 forever and the owner ground this viewer's budget at the
+                // 400B floor for the whole session (2026-07-22 soak: 18k budget drops in calm
+                // phases from a single 15s stall's baked-in average).
+                long samples = InstrumentationCounters.AdaptiveSamples;
+                long jitterMicros = InstrumentationCounters.AdaptiveJitterMicros;
+                long dSamples = Math.Max(0, samples - _lastJitterSamples);
+                double windowJitterMs = dSamples > 0 ? (jitterMicros - _lastJitterMicros) / 1000.0 / dSamples : 0;
+                _lastJitterSamples = samples;
+                _lastJitterMicros = jitterMicros;
+                float jitterPenalty = Mathf.Max(0f, (float)windowJitterMs - 15f) * 3f;
                 score = (byte)Mathf.Clamp(missingDelta * 10 + (int)jitterPenalty, 0, 254);
                 _ = underrunsDelta; // sampled for future use; see comment above
             }
