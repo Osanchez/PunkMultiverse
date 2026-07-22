@@ -576,10 +576,10 @@ namespace PunkMultiverse.Sync
                 }
                 else
                 {
-                    // Health victims validate the damage type themselves (damageConditions), so
-                    // an untyped fallback would be REJECTED by condition-gated breakables — send
-                    // the typed damage through the real pipeline whenever the type resolved.
-                    if (type != null) hb.TakeDamage(new Damage(msg.Amount, type));
+                    // Health victims validate damage themselves (damageConditions) — let the
+                    // vanilla pipeline judge typeless hits too rather than silently dropping
+                    // them (projectile requests always carry the real type anyway).
+                    hb.TakeDamage(new Damage(msg.Amount, type));
                 }
             }
             catch (System.Exception e)
