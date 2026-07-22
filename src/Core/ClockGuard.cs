@@ -53,9 +53,13 @@ namespace PunkMultiverse.Core
             }
             _focused = focused;
 
-            // Swap only when it can actually help: session on, window unfocused, vsync engaged
-            // (with vsync already off the clock is honest and there is nothing to fix).
-            bool want = SessionActive && !_focused && (QualitySettings.vSyncCount > 0 || _swapped);
+            // Swap only when it can actually help: gate on, session on, window unfocused, vsync
+            // engaged (with vsync already off the clock is honest and there is nothing to fix).
+            // The [Sync] ClockGuard config is the emergency kill-switch; the [Clock] watchdog
+            // and the toasts below stay live either way so a disabled guard still tells the
+            // player when their instance is the one hurting the party.
+            bool want = NetConfig.ClockGuardEnabled.Value && SessionActive && !_focused
+                        && (QualitySettings.vSyncCount > 0 || _swapped);
             if (want && !_swapped) Swap();
             else if (!want && _swapped) Restore();
 

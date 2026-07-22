@@ -257,8 +257,12 @@ try {
     $seq = (CountIn $HostLog "\[Seq\]") + (CountIn $ClientLog "\[Seq\]") + $c1Seq
     Gate "sequencer clean (zero [Seq] gaps)" ($seq -eq 0) "total=$seq"
 
+    # SummaryHeal is ON by default since WS9.1 v2: an occasional [Heal] is the system working
+    # (a transient real divergence detected + repaired). The failure mode is a STORM — the same
+    # segment re-healing forever (false-positive predicate or an un-healable divergence). A
+    # healthy 10-minute soak measured 0; anything past a handful means the predicate regressed.
     $heal = (CountIn $HostLog "\[Heal\]") + (CountIn $ClientLog "\[Heal\]") + $c1Heal
-    Gate "zero [Heal] repair storms (SummaryHeal off)" ($heal -eq 0) "total=$heal"
+    Gate "no [Heal] repair storms (occasional heals OK, SummaryHeal on)" ($heal -le 4) "total=$heal (threshold 4)"
 
     $tmH = LastMatch $HostLog "terrainMismatch=\d+"
     $tmC = LastMatch $ClientLog "terrainMismatch=\d+"

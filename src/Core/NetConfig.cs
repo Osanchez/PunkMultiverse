@@ -46,6 +46,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> SyncDiagnostics;
         public static ConfigEntry<string> LogUploadEndpoint;
         public static ConfigEntry<bool> SummaryHeal;
+        public static ConfigEntry<bool> ClockGuardEnabled;
         public static ConfigEntry<bool> ProfileFrames;
         public static ConfigEntry<bool> HitchWatchdog;
         public static ConfigEntry<int> HitchThresholdMs;
@@ -171,6 +172,19 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
+            ClockGuardEnabled = cfg.Bind("Sync", "ClockGuard", true,
+                "While a net session is active and this game window is UNFOCUSED, temporarily " +
+                "swap vsync for a frame-rate cap at your display's own refresh rate, restoring " +
+                "your exact settings the moment you tab back in. WHY: with vsync on, an " +
+                "unfocused window's game clock advances a fixed 1/refresh per frame regardless " +
+                "of real frame time — under load the whole simulation runs slow (measured 0.4x " +
+                "real time on a 240Hz display), its snapshots fall behind, and every OTHER " +
+                "player sees enemies vibrate/stutter (chronic interpolation underruns). The " +
+                "swap keeps the clock honest at any refresh rate and is invisible: it only ever " +
+                "applies while you are not looking at the game. Disable ONLY if it misbehaves " +
+                "with your driver/display setup — a [Clock] warning in your log plus teammates " +
+                "reporting stutter while you were tabbed out means this instance is the cause.");
+
             // [Sync] section + fresh key ON PURPOSE (was [Diag] SummaryHeal): the v1 entry
             // shipped default-false, so every existing install has "SummaryHeal = false"
             // WRITTEN in its config, and a file value beats a new bind default. Renaming the
