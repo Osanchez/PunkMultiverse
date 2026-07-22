@@ -147,6 +147,27 @@ try {
         Start-Sleep -Seconds 12
     }
 
+    # phase D: distant-kill loot. The rest of the soak keeps both ships together, so kills are
+    # resident for everyone and the non-owner loot path never runs. Split them: client flies far,
+    # host kills module/consumable/ingredient droppers, and the FAR client must MATERIALIZE physical
+    # pickups from the payload (the "everyone picks up their own" path — v0.1.120). This is the only
+    # phase that exercises it; without it the loot rework is untested by the soak.
+    Log "phase D: distant-kill loot (split players -> non-resident materialization)"
+    Cmd $ClientPlug "tp rel 220 0"           # far past interest radius -> non-resident for host kills
+    Start-Sleep -Seconds 6
+    Cmd $HostPlug "spawn CrateTech rel 9 0`nspawn Box_FuelGen rel 9 3`nspawn CrateTech rel 9 -3`nspawn Unit_Grunt rel 11 1"
+    Start-Sleep -Seconds 5
+    # destroy them where the host stands; the client is 220u away (won't collect, must materialize)
+    for ($i = 0; $i -lt 3; $i++) { Cmd $HostPlug "fire 4 dir 1 0"; Start-Sleep -Seconds 8 }
+    Start-Sleep -Seconds 6
+    $matModule   = CountIn $ClientLog "\[Loot\] materialized module"
+    $matAny      = (CountIn $ClientLog "\[Loot\] materialized")
+    $lootExc     = (CountIn $ClientLog "materialize failed|error handling EntityKilled")
+    Gate "distant loot: far client materializes physical pickups" ($matAny -ge 1) "materialized=$matAny (module=$matModule)"
+    Gate "distant loot: no materialize exceptions" ($lootExc -eq 0) "lootExc=$lootExc"
+    Cmd $ClientPlug "tp rel -220 0"          # rejoin the host for the rest of the run
+    Start-Sleep -Seconds 6
+
     Log "phase W2: wander"
     Cmd $HostPlug "autofly 15"; Cmd $ClientPlug "autofly 15"
     Start-Sleep -Seconds 40

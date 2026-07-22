@@ -153,8 +153,9 @@ namespace PunkMultiverse.Patches
                     {
                         var factory = ServiceLocator.Get<ModulePickupFactory>();
                         for (int i = 0; i < entry.Count; i++) factory?.Create(md, deathPos);
-                        if (NetDiag.Enabled)
-                            NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} materialized module '{modId}' x{entry.Count} at {deathPos} (physical pickup, map-marked)");
+                        // Always logged (not diag-gated): materialization is infrequent (only distant
+                        // kills) and is the soak's assertion surface for the loot-parity path.
+                        Plugin.Log.LogInfo($"[Loot] materialized module '{modId}' x{entry.Count} at {deathPos} (physical pickup, map-marked)");
                     }
                     catch (System.Exception e)
                     {
@@ -209,8 +210,7 @@ namespace PunkMultiverse.Patches
                     {
                         var factory = ServiceLocator.Get<ConsumablePickupFactory>();
                         for (int i = 0; i < entry.Count; i++) factory?.Create(consumable, deathPos);
-                        if (NetDiag.Enabled)
-                            NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} materialized consumable '{conId}' x{entry.Count} at {deathPos}");
+                        Plugin.Log.LogInfo($"[Loot] materialized consumable '{conId}' x{entry.Count} at {deathPos}");
                     }
                     catch (System.Exception e) { Plugin.Log.LogWarning($"[Loot] consumable materialize failed '{conId}': {e.Message}"); }
                     continue;
@@ -229,8 +229,7 @@ namespace PunkMultiverse.Patches
                 {
                     var factory = ServiceLocator.Get<IngredientPickupFactory>();
                     for (int i = 0; i < entry.Count; i++) factory?.Create(ingredient, deathPos);
-                    if (NetDiag.Enabled)
-                        NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} materialized ingredient '{entry.Id}' x{entry.Count} at {deathPos}");
+                    Plugin.Log.LogInfo($"[Loot] materialized ingredient '{entry.Id}' x{entry.Count} at {deathPos}");
                 }
                 catch (System.Exception e) { Plugin.Log.LogWarning($"[Loot] ingredient materialize failed '{entry.Id}': {e.Message}"); }
             }
