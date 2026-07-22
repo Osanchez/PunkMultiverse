@@ -745,6 +745,13 @@ namespace PunkMultiverse.Core
         private readonly List<(ulong peer, NetChannel channel)> _outboxScratch
             = new List<(ulong, NetChannel)>();
 
+        /// <summary>Total queued reliable messages across all peers/channels. Should sit near zero in
+        /// steady state — sustained growth means sends aren't draining (backpressure / leak).</summary>
+        internal int OutboxDepth
+        {
+            get { int n = 0; foreach (var q in _outbox.Values) n += q.Count; return n; }
+        }
+
         /// <summary>Reliable send that can never silently drop; may deliver next frame(s).</summary>
         public void SendReliable(ulong peer, NetChannel channel, ArraySegment<byte> data)
         {

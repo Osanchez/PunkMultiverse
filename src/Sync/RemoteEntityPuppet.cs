@@ -441,6 +441,44 @@ namespace PunkMultiverse.Sync
             }
             _rb.linearVelocity = Vector2.LerpUnclamped(a.Vel, b.Vel, t);
             _rb.MoveRotation(Mathf.LerpAngle(a.Rot, b.Rot, t));
+
+            TrackJitter(target);
+        }
+
+        private bool _jitterInit;
+
+        // Jitter = motion that GOES NOWHERE. Over a 0.5s window sum the path travelled (Σ|steps|)
+        // and compare to the net displacement (|end-start|). A traveller has path≈net; a stationary
+        // enemy has path≈0; a VIBRATING enemy racks up a long path with ~zero net. "Wasted speed" =
+        // (path-net)/window is that in-place motion in u/s — directly what you'd see on screen, and
+        // amplitude-aware (counting reversals flagged sub-pixel float noise as jitter). >4u/s of
+        // in-place motion is clearly-visible vibration; normal interpolation wobble is well under 1.
+        private const float JitterWindow = 0.5f;
+        private Vector2 _jitWindowStart, _jitLastPos;
+        private float _jitWindowStartTime, _jitPath;
+
+        private void TrackJitter(Vector2 pos)
+        {
+            if (NetId < 0) return;
+            float now = Time.unscaledTime;
+            if (!_jitterInit)
+            {
+                _jitterInit = true;
+                _jitWindowStart = _jitLastPos = pos;
+                _jitWindowStartTime = now; _jitPath = 0f;
+                return;
+            }
+            _jitPath += Vector2.Distance(pos, _jitLastPos);
+            _jitLastPos = pos;
+            if (now - _jitWindowStartTime < JitterWindow) return;
+
+            float net = Vector2.Distance(pos, _jitWindowStart);
+            float wasted = (_jitPath - net) / (now - _jitWindowStartTime); // u/s of motion that went nowhere
+            float floor = NetConfig.JitterFloorUnitsPerSec != null ? NetConfig.JitterFloorUnitsPerSec.Value : 10f;
+            if (wasted >= floor)
+                Core.DiagWatch.NoteJitter(NetId, wasted);
+
+            _jitWindowStart = pos; _jitWindowStartTime = now; _jitPath = 0f; // next window
         }
 
         /// <summary>Cubic Hermite between two snapshots using their velocities as tangents —
