@@ -59,10 +59,23 @@ namespace PunkMultiverse.Core
         /// needs no compile-time reference to every collection.</summary>
         internal static Action RegisterDefaults;
 
+        // A run's first ~20s is warmup — heap and streamed collections climb hard from zero as the
+        // world loads, then plateau. Judging across that window flags every session-start as a
+        // "leak". Skip it (and drop the warmup samples) so a [Growth] line means POST-warmup growth,
+        // which is the real leak/queue signal. Re-armed at each go-live (incl. rejoin).
+        private static int _warmupSkips;
+        internal static void NotifyRunStarted()
+        {
+            _warmupSkips = 7; // * report interval (~3s) = ~21s
+            foreach (var m in Metrics) m.History.Clear();
+            JitterPeak.Clear();
+        }
+
         /// <summary>Append one line per metric that shows sustained growth. Called each report.</summary>
         internal static void ReportGrowth(double mono)
         {
             EnsureRegistered();
+            if (_warmupSkips > 0) { _warmupSkips--; foreach (var m in Metrics) m.History.Clear(); return; }
             foreach (var m in Metrics)
             {
                 double v;

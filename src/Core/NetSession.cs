@@ -619,6 +619,7 @@ namespace PunkMultiverse.Core
         private void DoGoLive()
         {
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
+            DiagWatch.NotifyRunStarted(); // skip warmup in the growth watchdog
             SetState(SessionState.InGame);
             // Same value on every machine (seed + host identity are already shared): the run id
             // groups all players' `uploadlogs` under one S3 folder and names bug reports.
