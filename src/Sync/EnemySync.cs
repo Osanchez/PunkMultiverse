@@ -231,6 +231,7 @@ namespace PunkMultiverse.Sync
             _nextFirstSnapshotSweepAt = 0;
             LastKeyframeAt.Clear();
             SimulationSegments.Clear();
+            ReceivedSegments.Clear();
             MutationRevisions.Clear();
             AppliedMutationRevisions.Clear();
             LastEntityStateMs.Clear();
@@ -1191,11 +1192,17 @@ namespace PunkMultiverse.Sync
         {
             var key = new AuthorityManager.SegmentKey(seg.x, seg.y);
             var entries = new List<(int netId, uint lifetime, string entityType, Vector2 pos)>();
-            foreach (var data in em.GetEntitiesInSegment(seg))
+            // Same membership as the summary hash (the owner's segment ASSIGNMENT, not position
+            // inference) or the repair comparisons chase a different set than the detector.
+            foreach (var kv in SimulationSegments)
             {
-                if (data == null || !NetIds.TryGetNetId(data.instanceId, out int netId)) continue;
+                if (!kv.Value.Equals(key)) continue;
+                int netId = kv.Key;
                 if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
-                if (!AuthorityManager.SegmentOf(data.position).Equals(key)) continue;
+                if (!NetIds.TryGetInstanceId(netId, out int instanceId)) continue;
+                EntityData data = null;
+                try { data = em.GetEntity(instanceId); } catch { }
+                if (data == null) continue;
                 // Mirror the roster rule: bespoke-system entities only count while concrete.
                 if (!data.isUnloadable && !LiveEntities.ContainsKey(netId)) continue;
                 entries.Add((netId, NetIds.LifetimeOf(netId), data.entityId ?? string.Empty, data.position));
@@ -1227,49 +1234,74 @@ namespace PunkMultiverse.Sync
         private const float SummaryAuditCooldown = 5f;
 
         /// <summary>Order-independent identity hash for one segment: XOR of FNV-mixed (netId,
-        /// lifetime), PURE data-level — EntityData presence + the killed set, both synced invariants
-        /// (deterministic generation + reliable spawn/kill messages; positions kept fresh on viewers
-        /// by the snapshot apply path's MoveTo). Deliberately EXCLUDES pose/hp (interpolation skew)
-        /// AND the audit's "live object" clause (materialization is residency-dependent — including
-        /// it made every owner-live/viewer-not-yet-materialized entity a permanent false mismatch,
-        /// seen live as repeating un-healable [Heal] loops on segments like count 0-vs-2). A
-        /// conservative hash that catches every data-class desync with zero false positives beats a
-        /// rich one that fires repairs on skew.</summary>
-        private static ulong ComputeSegmentIdentityHash(EntityManager em, Vector2Int seg,
-            AuthorityManager.SegmentKey key, out int count)
+        /// lifetime), PURE data-level — EntityData presence + the killed set, both synced
+        /// invariants. Membership is the owner's segment ASSIGNMENT, not position inference:
+        /// the owner uses SimulationSegments (what it last streamed each entity under) and the
+        /// viewer uses ReceivedSegments (the group key each entity's state last arrived under —
+        /// the apply path already enforces position==group, so this IS the owner's assignment
+        /// echoed back, one snapshot behind at worst; the 3-cycle streak covers that transit).
+        /// This replaced two generations of position predicates that false-positived forever:
+        /// wire-rounding pair-splits at segment edges, then entities IDLING at any boundary-band
+        /// threshold sitting on different sides of the cutoff on the two machines indefinitely
+        /// (both measured live as repeating un-healable [Heal] loops).</summary>
+        private static ulong ComputeSegmentIdentityHash(EntityManager em,
+            AuthorityManager.SegmentKey key, bool asOwner, out int count)
         {
             ulong hash = 0;
             count = 0;
-            foreach (var data in em.GetEntitiesInSegment(seg))
+            float now = Time.unscaledTime;
+            // RECENCY on the detection plane only: membership requires the assignment to have
+            // carried traffic within the window (every streamed entity beats the 0.75s prop
+            // heartbeat, so 5s is >6 missed beats). An entity that wandered OUT of this viewer's
+            // interest stops arriving, its last-known assignment goes stale, and without the
+            // window it haunted whichever fresh-zone segment it was last seen in (measured:
+            // miss=4 on wander segments in the first v3 run). The REPAIR plane (roster audits +
+            // reverse check) deliberately ignores recency — audits speak data-presence truth.
+            if (asOwner)
             {
-                if (data == null || !NetIds.TryGetNetId(data.instanceId, out int netId)) continue;
-                if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
-                // Bucket by the WIRE-rounded position (what viewers actually hold after MoveTo) —
-                // the owner's raw float pos can sit on the other side of a segment edge from the
-                // 1/32u-rounded value, splitting one entity into a mismatch PAIR across adjacent
-                // segments (seen live: identical element hash in (43,39) owner-side / (43,40)
-                // viewer-side). And exclude a boundary band entirely: an entity in transit flips
-                // buckets at slightly different times on each peer — those stay covered by the
-                // round-robin roster audits instead of false-positive-ing the summaries.
-                var wirePos = new Vector2(Mathf.RoundToInt(data.position.x * 32f) / 32f,
-                    Mathf.RoundToInt(data.position.y * 32f) / 32f);
-                if (!AuthorityManager.SegmentOf(wirePos).Equals(key)) continue;
-                // 5u band (was 2u): chasing flyers burst to ~16 u/s, and the two machines sample
-                // the summary up to a snapshot-pipeline skew apart — a fast mover can cross a 2u
-                // band between their sample instants (measured 2026-07-22: same hash pair swapped
-                // owner<->viewer on wander segments = time-shifted views of one crossing).
-                if (DistanceToSegmentEdge(wirePos, key) < 5f) continue;
-                unchecked
+                foreach (var kv in SimulationSegments)
                 {
-                    ulong h = 14695981039346656037UL;
-                    h = (h ^ (uint)netId) * 1099511628211UL;
-                    h = (h ^ NetIds.LifetimeOf(netId)) * 1099511628211UL;
-                    hash ^= h;
+                    if (!kv.Value.Equals(key)) continue;
+                    if (!LastSentAt.TryGetValue(kv.Key, out float sentAt) || now - sentAt > 5f) continue;
+                    AccumulateIdentity(em, kv.Key, ref hash, ref count);
                 }
-                count++;
+            }
+            else
+            {
+                foreach (var kv in ReceivedSegments)
+                {
+                    if (!kv.Value.seg.Equals(key) || now - kv.Value.at > 5f) continue;
+                    AccumulateIdentity(em, kv.Key, ref hash, ref count);
+                }
             }
             return hash;
         }
+
+        private static void AccumulateIdentity(EntityManager em, int netId, ref ulong hash, ref int count)
+        {
+            if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) return;
+            // Validity = the DATA exists on this machine. A streamed-but-never-materialized
+            // replica (dropped spawn) has an assignment entry and no data — exactly the
+            // divergence the summary must surface.
+            if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return;
+            bool hasData = false;
+            try { hasData = em.GetEntity(instanceId) != null; } catch { }
+            if (!hasData) return;
+            unchecked
+            {
+                ulong h = 14695981039346656037UL;
+                h = (h ^ (uint)netId) * 1099511628211UL;
+                h = (h ^ NetIds.LifetimeOf(netId)) * 1099511628211UL;
+                hash ^= h;
+            }
+            count++;
+        }
+
+        /// <summary>Viewer-side mirror of the owner's SimulationSegments: for each entity, the
+        /// segment its state last ARRIVED under (the snapshot group key) and when. Fed by the
+        /// apply path; this is the owner's authoritative assignment, not a position guess.</summary>
+        internal static readonly Dictionary<int, (AuthorityManager.SegmentKey seg, float at)> ReceivedSegments
+            = new Dictionary<int, (AuthorityManager.SegmentKey, float)>();
 
         /// <summary>WS9.1 v2 freshness zone: true when every point of the segment sits inside this
         /// viewer's interest radius (minus a margin for ship movement across the 5s summary
@@ -1313,7 +1345,7 @@ namespace PunkMultiverse.Sync
             {
                 var key = new AuthorityManager.SegmentKey(seg.x, seg.y);
                 if (AuthorityManager.OwnerOf(key) != session.LocalSlot) continue;
-                ulong hash = ComputeSegmentIdentityHash(em, seg, key, out int count);
+                ulong hash = ComputeSegmentIdentityHash(em, key, asOwner: true, out int count);
                 var msg = new SegmentStateSummaryMsg
                 {
                     OwnerSlot = (byte)session.LocalSlot, EchoSlot = 255,
@@ -1373,7 +1405,7 @@ namespace PunkMultiverse.Sync
             catch { return; }
             if (em2 == null) return;
             InstrumentationCounters.StateSummaryChecked();
-            ulong localHash = ComputeSegmentIdentityHash(em2, new Vector2Int(key.X, key.Y), key, out int localCount);
+            ulong localHash = ComputeSegmentIdentityHash(em2, key, asOwner: false, out int localCount);
             if (localHash == msg.Hash && localCount == msg.Count)
             {
                 SummaryMismatchStreaks.Remove(key);
@@ -1444,8 +1476,12 @@ namespace PunkMultiverse.Sync
                 var entry = new EntityStateEntry { NetId = netId, Lifetime = lifetime, Pos = pos };
                 TryHealDivergedEntity(entry, entityType, key, msg.Slot, active);
             }
-            // Reverse divergence: our live entity is missing from its owner's roster. A single
-            // miss can be a boundary-crossing race; flag on the second consecutive audit.
+            // Reverse divergence: our live entity is missing from its owner's roster. Membership
+            // by RECEIVED assignment (the owner's own group key): if the owner had merely moved
+            // the entity to another segment, our assignment would have moved with its stream —
+            // absence from the segment WE last received it under means the owner stopped having
+            // it there. A single miss can be an in-flight transition; warn at 2, and with heal
+            // enabled REMOVE the ghost at 3 (>=10s persistent, segment fully in our fresh zone).
             if (active == null || !active.Contains(new Vector2Int(key.X, key.Y))) return;
             foreach (var kv in LiveEntities)
             {
@@ -1454,8 +1490,8 @@ namespace PunkMultiverse.Sync
                 if (se == null || listed.Contains(netId)) continue;
                 if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
                 if (se.GetComponent<Unit>() == null && se.GetComponent<Rigidbody2D>() == null) continue;
-                if (!AuthorityManager.TrySegmentOf(netId, out var entitySegment)
-                    || !entitySegment.Equals(key)) continue;
+                if (!ReceivedSegments.TryGetValue(netId, out var received)
+                    || !received.seg.Equals(key)) continue;
                 uint lifetime = NetIds.LifetimeOf(netId);
                 if (!ReverseDivergenceStreaks.TryGetValue(netId, out var streak)
                     || !streak.segment.Equals(key) || streak.lifetime != lifetime)
@@ -1466,6 +1502,12 @@ namespace PunkMultiverse.Sync
                     InstrumentationCounters.DivergenceDetected();
                     Plugin.Log.LogWarning($"[RosterAudit] reverse divergence: {NetDiag.Describe(netId)} " +
                         $"is live here in segment {key} but absent from owner P{msg.Slot + 1}'s roster");
+                }
+                else if (streak.count >= 3 && NetConfig.SummaryHeal.Value && SegmentFullyInInterest(key))
+                {
+                    RemoveGhostEntity(netId, key, msg.Slot);
+                    ReverseDivergenceStreaks.Remove(netId);
+                    continue;
                 }
                 ReverseDivergenceStreaks[netId] = streak;
             }
@@ -3600,6 +3642,11 @@ namespace PunkMultiverse.Sync
                         () => $"drop {NetDiag.Describe(e.NetId)} from P{msg.Slot + 1}/{msg.Epoch} segment={transmittedSegment}; committed P{AuthorityManager.OwnerOf(transmittedSegment) + 1}/{AuthorityManager.EpochOf(transmittedSegment)}");
                     continue;
                 }
+                // WS9.1 assignment-based membership: this entry passed the lifetime, position==
+                // group, and authority gates — the group key IS the owner's current segment
+                // assignment for this entity. Recorded even when no local data exists yet (a
+                // dropped replica must still count against the summary).
+                ReceivedSegments[e.NetId] = (transmittedSegment, Time.unscaledTime);
                 if (KilledNetIds.Contains(e.NetId)) continue; // dead here — don't animate a corpse
                 bool authorityChanged = false;
                 if (LastEntityStateMs.TryGetValue(e.NetId, out var last))
@@ -3822,8 +3869,20 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        /// <summary>Harness fault injection (`desync dropkill` devcmd): swallow the next incoming
+        /// entity kill so this machine keeps a live GHOST its owner already removed — the WS9.1
+        /// ghost-removal positive test. One-shot; nothing in shipping gameplay sets it.</summary>
+        internal static bool DropNextKill;
+
         public static bool ApplyEntityKilled(EntityKilledMsg msg)
         {
+            if (DropNextKill)
+            {
+                DropNextKill = false;
+                Plugin.Log.LogWarning($"[Dev] desync: DROPPED kill for {NetDiag.Describe(msg.NetId)} — " +
+                    "this machine now hosts a deliberate ghost");
+                return false;
+            }
             if (!AcceptMutation(msg.NetId, msg.Lifetime, msg.MutationRevision)) return false;
             if (!KilledNetIds.Add(msg.NetId)) return false;
             NetStats.AddKill(msg.KillerSlot);
@@ -3934,6 +3993,27 @@ namespace PunkMultiverse.Sync
         // Boundary handoffs keep their own dedicated validation.)
 
         private static bool _warnedDataDestroy;
+
+        /// <summary>WS9.1 ghost-removal verb: this machine holds a live entity its owner's
+        /// authoritative roster no longer contains (3 consecutive audits over >=10s, segment
+        /// fully inside our fresh zone). Remove it WITHOUT the kill ceremony — a ghost never
+        /// really died here, so no loot, no death VFX; just the object + data + a killed-set
+        /// tombstone so a stale stream-in can't resurrect it.</summary>
+        private static void RemoveGhostEntity(int netId, AuthorityManager.SegmentKey key, byte ownerSlot)
+        {
+            InstrumentationCounters.DivergenceDetected();
+            Plugin.Log.LogWarning($"[Heal] removing GHOST {NetDiag.Describe(netId)} in segment {key} — " +
+                $"live here, absent from owner P{ownerSlot + 1}'s roster for 3 consecutive audits");
+            KilledNetIds.Add(netId);
+            ReceivedSegments.Remove(netId);
+            if (NetIds.TryGetInstanceId(netId, out int instanceId))
+            {
+                var egm = TryGetEgm();
+                if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
+                    UnityEngine.Object.Destroy(se.gameObject);
+                DestroyData(instanceId);
+            }
+        }
 
         /// <summary>Destroy an entity's data so a later stream-in can't resurrect it.</summary>
         private static void DestroyData(int instanceId)

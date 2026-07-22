@@ -783,7 +783,13 @@ namespace PunkMultiverse.Core
                         Sync.MinionSync.DropNextReplica = true;
                         Out("desync: next incoming spawn replica will be DROPPED (one-shot)");
                     }
-                    else Out($"desync: armed={Sync.MinionSync.DropNextReplica} (usage: desync drop)");
+                    else if (parts.Length >= 2 && parts[1].Equals("dropkill", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Sync.EnemySync.DropNextKill = true;
+                        Out("desync: next incoming entity kill will be DROPPED (one-shot ghost)");
+                    }
+                    else Out($"desync: dropArmed={Sync.MinionSync.DropNextReplica} " +
+                             $"dropkillArmed={Sync.EnemySync.DropNextKill} (usage: desync drop|dropkill)");
                     return;
                 }
                 case "vsync":
