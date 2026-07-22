@@ -172,7 +172,11 @@ clock diverges >10% from the wall clock; `vsync` prints the measured rate on dem
 effect on the 12-FlyDad crowd scenario: underruns 1550/s -> 80/s, delay 246ms(pinned) -> 97ms,
 FlyDad puppet wasted-speed 3-4.6 -> 0.44 u/s (jitter% 0.0). Note `vsync 0` after a long
 dilated stretch snaps the clock forward (one [Clock] line at >10x real) and the fast-forward
-can scatter/aggro the world — set it up-front, not mid-scenario.
+can scatter/aggro the world — set it up-front, not mid-scenario. Even set right at go-live,
+the heal is NOT instant: dilation persists ~20-25s more, then one catch-up snap ([Clock] at
+~7x real), then steady 1.00x — wait for the [Clock] warnings to go quiet before spawning.
+Verified 2026-07-22 (both instances vsync 0, 3/3 windows): puppet wastedAvg 0.86-0.98 vs
+owner 0.77-0.97 (ratio ~1.0-1.1x), jitter% 0.0, underruns 160-200/s, delay 81-114ms.
 
 ## Notes
 
