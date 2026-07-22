@@ -171,7 +171,12 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
-            SummaryHeal = cfg.Bind("Diag", "SummaryHeal", true,
+            // [Sync] section + fresh key ON PURPOSE (was [Diag] SummaryHeal): the v1 entry
+            // shipped default-false, so every existing install has "SummaryHeal = false"
+            // WRITTEN in its config, and a file value beats a new bind default. Renaming the
+            // key is the only way "on by default" actually reaches the existing fleet; the
+            // orphaned [Diag] line is inert. Keep this key as the emergency kill-switch.
+            SummaryHeal = cfg.Bind("Sync", "SummaryHeal", true,
                 "WS9.1: segment identity-summary mismatches trigger targeted roster audits " +
                 "(echo + repair), so silent world divergence self-heals in bounded time. Safe " +
                 "since v2 (2026-07-22): viewers only judge segments FULLY inside their own " +
