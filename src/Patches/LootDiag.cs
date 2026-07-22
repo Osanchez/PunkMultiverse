@@ -121,11 +121,7 @@ namespace PunkMultiverse.Patches
             if (!EnemySync.TryMarkLootDropped(netId)) return; // already dropped/granted here
 
             IngredientRegistry registry = null;
-            RunData runData = null;
-            ResourceRegistry resources = null;
             try { registry = ServiceLocator.Get<IngredientRegistry>(); } catch { }
-            try { runData = ServiceLocator.Get<RunData>(); } catch { }
-            try { resources = ServiceLocator.Get<ResourceRegistry>(); } catch { }
 
             foreach (var entry in loot)
             {
@@ -164,30 +160,13 @@ namespace PunkMultiverse.Patches
                     continue;
                 }
 
-                // Shared currency (money/gold): charge the local player's shared resource tank
-                // directly — no physical coin (avoids re-replicating a pickup). The tank is the same
-                // object the ship reads, so the money HUD updates as a real pickup would. Per-machine,
-                // never synced — can't inflate anyone else's wallet.
+                // Shared currency (money/gold): coins are PRESENT-ONLY (Omar, 2026-07-21) — a player
+                // who wasn't there to see the death doesn't get the gold. Previously this charged the
+                // distant player's tank directly ("free gold nobody picked up"); that grant is gone.
+                // Coins now exist only on machines where the entity was resident (the vanilla drop),
+                // and those despawn on a timer (CoinDespawnPatch). Nothing to materialize far away.
                 if (entry.Id.StartsWith(CurrencyIdPrefix, System.StringComparison.Ordinal))
-                {
-                    if (runData == null || resources == null) continue;
-                    string resId = entry.Id.Substring(CurrencyIdPrefix.Length);
-                    var res = resources.Get(resId);
-                    ResourceTank tank = null;
-                    if (res != null)
-                        foreach (var t in runData.SharedResourceTanks)
-                            if (t != null && t.resource == res) { tank = t; break; }
-                    if (tank == null)
-                    {
-                        if (NetDiag.Enabled)
-                            NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} remote currency '{resId}' — no shared tank, skipped");
-                        continue;
-                    }
-                    tank.Charge(entry.Count);
-                    if (NetDiag.Enabled)
-                        NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} granted remote currency +{entry.Count} {resId} (entity not resident here)");
                     continue;
-                }
 
                 // Consumable: spawn a physical pickup to COLLECT (Omar's "everyone picks up their
                 // own"). This also side-steps a real crash — Vault.Add(Consumable) drove the vanilla
@@ -392,6 +371,28 @@ namespace PunkMultiverse.Patches
                 try { total = __instance.AmountOf(__0); } catch { }
                 string id = __0 != null ? __0.id : "?";
                 NetDiag.Log("Loot", $"vault +{__1} {id} (now {total})");
+            }
+        }
+
+        // Coin despawn (Omar, 2026-07-21): the base game's Pickup has no lifetime, so uncollected
+        // currency coins linger forever. In a net run, coins are present-only (no distant grant),
+        // so any coin left uncollected is genuine litter — despawn it after CoinDespawnSeconds.
+        // Only ResourcePickup (money/gold) is affected; module/ingredient/consumable pickups persist.
+        // Pickup.FixedUpdate is the game's own per-step pickup tick — piggyback its age check.
+        [HarmonyPatch(typeof(Pickup), "FixedUpdate")]
+        internal static class CoinDespawnPatch
+        {
+            private static void Postfix(Pickup __instance)
+            {
+                if (!NetSession.Active || __instance == null) return;             // co-op only
+                if (!(__instance is ResourcePickup)) return;                      // coins only
+                float limit = NetConfig.CoinDespawnSeconds != null ? NetConfig.CoinDespawnSeconds.Value : 0f;
+                if (limit <= 0f) return;                                          // 0 = never despawn
+                if (__instance.Age < limit) return;
+                if (NetDiag.Enabled)
+                    NetDiag.Throttled("coin-despawn", 5f, "Loot",
+                        () => $"coin despawned (uncollected {__instance.Age:0}s > {limit:0}s)");
+                UnityEngine.Object.Destroy(__instance.gameObject);
             }
         }
     }
