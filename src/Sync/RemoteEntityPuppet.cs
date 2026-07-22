@@ -255,6 +255,44 @@ namespace PunkMultiverse.Sync
                 Core.InstrumentationCounters.RemoteEntityAdded();
             }
             MuteNow();
+            // EXPERIMENT GATE (off): puppet-puppet collision-ignore did NOT reduce crowd jitter in
+            // the 2026-07-22 A/B (owner 0.94 -> puppet 4.04 u/s WITH it vs 1.46 -> 3.05 without;
+            // high run variance). Kept for a controlled re-test; flip via the experiment flag only.
+            if (ExperimentIgnorePuppetCollisions) IgnorePuppetPuppetCollisions();
+        }
+
+        internal static bool ExperimentIgnorePuppetCollisions; // toggled by future harness runs only
+
+        // ---------------------------------------------------------------- puppet-puppet collisions
+        // Proven cause of crowd jitter (2026-07-22 FlyDad experiment): puppets are live physics
+        // bodies, so in a dense pack they collide with EACH OTHER locally — every impulse displaces
+        // the body, the next FixedUpdate's MovePosition yanks it back to the snapshot target, and
+        // the thrash reads as vibration (owner wasted 1.5 u/s vs puppet 3.1 avg / 10.5 peak at 12
+        // enemies; faithful ~1.1x when sparse). The owner's simulation ALREADY did the crowd
+        // separation — it's baked into the snapshots — so local re-separation is double physics.
+        // Puppets therefore ignore collisions with other puppets; ships, terrain, and projectiles
+        // are untouched. Pairwise IgnoreCollision (not a layer swap) so vanilla layer-based
+        // queries (Vision masks etc.) keep working; Unity drops pairs automatically on destroy.
+        private static readonly List<RemoteEntityPuppet> ActivePuppets = new List<RemoteEntityPuppet>();
+        private Collider2D[] _colliders;
+
+        private void IgnorePuppetPuppetCollisions()
+        {
+            _colliders = GetComponentsInChildren<Collider2D>(true);
+            for (int p = ActivePuppets.Count - 1; p >= 0; p--)
+            {
+                var other = ActivePuppets[p];
+                if (other == null || other == this) { if (other == null) ActivePuppets.RemoveAt(p); continue; }
+                var theirs = other._colliders;
+                if (theirs == null) continue;
+                foreach (var mine in _colliders)
+                {
+                    if (mine == null || mine.isTrigger) continue; // triggers (pickup magnets, vision) untouched
+                    foreach (var c in theirs)
+                        if (c != null && !c.isTrigger) Physics2D.IgnoreCollision(mine, c, true);
+                }
+            }
+            if (!ActivePuppets.Contains(this)) ActivePuppets.Add(this);
         }
 
         /// <summary>Idempotent, and callable while the GameObject is still INACTIVE — replicas
@@ -296,6 +334,20 @@ namespace PunkMultiverse.Sync
         {
             RemoveInstrumentationCount();
             StopWeaponSounds();
+            // Handoff: this entity may become locally OWNED (component destroyed, GameObject
+            // lives on) — restore vanilla collisions against the remaining puppets.
+            ActivePuppets.Remove(this);
+            if (_colliders != null)
+                foreach (var other in ActivePuppets)
+                {
+                    if (other == null || other._colliders == null) continue;
+                    foreach (var mine in _colliders)
+                    {
+                        if (mine == null || mine.isTrigger) continue;
+                        foreach (var c in other._colliders)
+                            if (c != null && !c.isTrigger) Physics2D.IgnoreCollision(mine, c, false);
+                    }
+                }
             if (GetComponent<DuplicateEntityInert>() != null) return;
             // The Animators outlive this component — a woken entity must not stay speed-0.
             if (_animatorsFrozen) SetAnimatorsFrozen(false);
@@ -456,6 +508,7 @@ namespace PunkMultiverse.Sync
         private const float JitterWindow = 0.5f;
         private Vector2 _jitWindowStart, _jitLastPos;
         private float _jitWindowStartTime, _jitPath;
+        private string _typeId; // resolved lazily; "" when unresolvable
 
         private void TrackJitter(Vector2 pos)
         {
@@ -477,6 +530,10 @@ namespace PunkMultiverse.Sync
             float floor = NetConfig.JitterFloorUnitsPerSec != null ? NetConfig.JitterFloorUnitsPerSec.Value : 10f;
             if (wasted >= floor)
                 Core.DiagWatch.NoteJitter(NetId, wasted);
+            // Every window also feeds the per-TYPE table (jittersweep ranks all enemy types).
+            if (_typeId == null)
+                _typeId = GetComponent<SavableEntity>()?.EntityData?.entityId ?? "";
+            Core.DiagWatch.NoteMotionSample(_typeId, wasted, wasted >= floor);
 
             _jitWindowStart = pos; _jitWindowStartTime = now; _jitPath = 0f; // next window
         }
