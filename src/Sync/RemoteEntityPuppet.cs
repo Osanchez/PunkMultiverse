@@ -44,6 +44,25 @@ namespace PunkMultiverse.Sync
         public Vector2 AimDirection { get; private set; }
 
         private byte _fireState; // 0 idle, 1 warming, 2 firing — from the owner (see SetFireState)
+        /// <summary>Owner-reported fire state as currently DRAWN here (drives DriveBeam). The
+        /// phantom-hit audit compares this against incoming replayed hitscan damage: damage while
+        /// this is not 2 means the victim was hit by a beam their screen is not showing.</summary>
+        internal byte FireState => _fireState;
+
+        // Fire-event-driven beam lighting: bridges the gap between a replayed hitscan shot's
+        // immediate damage and the fire-state snapshot that normally draws the beam. 0.25s covers
+        // the measured state latency (~85-150ms) with margin; a one-shot beam then fades honestly.
+        private float _beamReplayUntil;
+        private Vector2 _beamReplayDir;
+        internal bool BeamReplayLit => Time.unscaledTime < _beamReplayUntil;
+
+        /// <summary>Called by the hitscan fire-event replay: draw this puppet's beam NOW, along
+        /// the replayed shot's direction, instead of waiting out the fire-state snapshot.</summary>
+        internal void NoteBeamReplay(Vector2 dir)
+        {
+            _beamReplayUntil = Time.unscaledTime + 0.25f;
+            _beamReplayDir = dir;
+        }
         private Shooter _shooter;
         private bool _shooterChecked;
         private float _nextFireAuditAt;
@@ -216,11 +235,18 @@ namespace PunkMultiverse.Sync
             if (barrel == null) return;
             try
             {
-                if (_fireState == 2)
+                if (_fireState == 2 || BeamReplayLit)
                 {
+                    // BeamReplayLit: a replayed hitscan shot just dealt its damage HERE, but the
+                    // fire-STATE snapshot (which normally lights the beam) is still in flight
+                    // (~interp delay behind). Draw the beam NOW along the replayed shot's own
+                    // direction so damage and visual land together — the measured 6/16
+                    // "invisible laser" [PhantomHit]s were exactly this gap. State 2 takes over
+                    // (and refines the aim) when it arrives moments later.
                     beam.IsTriggerPulled = true;
                     beam.Warmup(Time.deltaTime); // reach warmed state so OnBarrelMoved shows Firing
-                    beam.OnBarrelMoved(barrel.Position, barrel.Direction);
+                    beam.OnBarrelMoved(barrel.Position,
+                        _fireState == 2 || _beamReplayDir == Vector2.zero ? barrel.Direction : _beamReplayDir);
                 }
                 else if (_fireState == 1)
                 {

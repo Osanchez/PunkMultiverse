@@ -416,7 +416,8 @@ namespace PunkMultiverse.Core
                     string dead = ship != null && ship.IsDead ? " DEAD" : "";
                     Out($"status v{PluginVersionInfo.Version} state={session.State} slot={session.LocalSlot} " +
                         $"host={session.IsHost} ship={pos}{dead} " +
-                        $"shipFireReplays={ProjectileSync.ShipFireQueued + ProjectileSync.ShipFireLate}");
+                        $"shipFireReplays={ProjectileSync.ShipFireQueued + ProjectileSync.ShipFireLate} " +
+                        $"phantomHits={ProjectileSync.PhantomHitCount}");
                     return;
                 }
                 case "entities":
