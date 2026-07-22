@@ -168,7 +168,14 @@ by the harness (two instances on one PC: whichever lacks focus dilates; the laun
 instance steals focus from the first). The `[Clock]` watchdog line warns whenever the game
 clock diverges >10% from the wall clock; `vsync` prints the measured rate on demand.
 
-**Rule: after go-live, send `vsync 0` to BOTH instances before measuring anything.** Measured
+**Since ClockGuard (src/Core/ClockGuard.cs) this is handled automatically**: while a net
+session is active, the unfocused instance swaps vsync for a targetFrameRate cap at its display
+refresh (honest clock at any Hz) and restores the player's settings on refocus/session end —
+look for `[ClockGuard] unfocused in session: vsync 1->0 ...` in the log. Any `[Clock]` warning
+in a session now means the guard could not help (driver-forced vsync etc.) and that stretch's
+numbers are invalid; the affected player also gets an on-screen toast.
+
+**Fallback rule if the guard is ever suspect: send `vsync 0` to BOTH instances before measuring.** Measured
 effect on the 12-FlyDad crowd scenario: underruns 1550/s -> 80/s, delay 246ms(pinned) -> 97ms,
 FlyDad puppet wasted-speed 3-4.6 -> 0.44 u/s (jitter% 0.0). Note `vsync 0` after a long
 dilated stretch snaps the clock forward (one [Clock] line at >10x real) and the fast-forward

@@ -58,6 +58,7 @@ namespace PunkMultiverse
             Object.DontDestroyOnLoad(_runtime);
             _runtime.hideFlags = HideFlags.HideAndDontSave;
             _runtime.AddComponent<NetSession>();
+            _runtime.AddComponent<ClockGuard>();
             _runtime.AddComponent<NetHud>();
             _runtime.AddComponent<LobbyScreen>();
             _runtime.AddComponent<MainMenuInjection>();
