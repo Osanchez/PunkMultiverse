@@ -378,6 +378,39 @@ namespace PunkMultiverse.Core
                                  : "back to normal"));
                     return;
                 }
+                case "breakables":
+                {
+                    // Health-based breakables (fiber plants etc.) are generation-only — never in
+                    // the spawnable roster and invisible to `entities` (units only). List nearby
+                    // ones with netIds so a scenario can tp to one and `fire at` it (the
+                    // Health-damage routing test path).
+                    var bship = ShipSync.LocalShip;
+                    if (bship == null) { Out("breakables: no local ship"); return; }
+                    float bradius = 60f;
+                    if (parts.Length >= 2)
+                        float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out bradius);
+                    UnityEngine.Vector2 borigin = bship.transform.position;
+                    var bem = ServiceLocator.Get<EntityManager>();
+                    var begm = ServiceLocator.Get<EntityGameObjectManager>();
+                    int blisted = 0;
+                    foreach (var data in bem.GetAllEntities())
+                    {
+                        if (data == null) continue;
+                        UnityEngine.Vector2 bpos = data.position;
+                        float bdist = UnityEngine.Vector2.Distance(borigin, bpos);
+                        if (bdist > bradius) continue;
+                        if (!NetIds.TryGetNetId(data.instanceId, out int bnetId)) continue;
+                        if (!begm.TryGetSavableEntity(data.instanceId, out var bse) || bse == null) continue;
+                        if (bse.GetComponent<Unit>() != null) continue;
+                        var bhb = bse.GetComponent<Health>();
+                        if (bhb == null) continue;
+                        if (++blisted > 20) { Out("breakables: ...truncated at 20"); break; }
+                        Out($"breakable #{bnetId} {data.entityId} pos={bpos.x:0.0},{bpos.y:0.0} dist={bdist:0.0} " +
+                            $"hp={bhb.CurrentHealth:0.#}/{bhb.MaxHealth:0.#} owner={(EnemySync.OwnerOf(bnetId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(bnetId) + 1))}");
+                    }
+                    if (blisted == 0) Out($"breakables: none within {bradius:0}");
+                    return;
+                }
                 case "roster":
                 {
                     // Every spawnable entity with the classification the sweep scenario needs:
@@ -585,12 +618,18 @@ namespace PunkMultiverse.Core
                     if (egm == null || !egm.TryGetSavableEntity(instanceId, out var se) || se == null)
                     { Out($"poke: #{netId} has no live object here"); return; }
                     var dr = se.GetComponent<DamagableResource>();
-                    if (dr == null) { Out($"poke: #{netId} not damagable"); return; }
                     // Typeless Damage through TakeDamage — the ROUTED path: puppets forward a
                     // damage request to the owner, dormant targets queue a claim (wake-on-hit),
                     // owned targets apply locally. Exactly what a projectile hit exercises,
-                    // minus the projectile.
-                    dr.TakeDamage(new Damage(amount, null));
+                    // minus the projectile. Health-based breakables (fiber plants) route the
+                    // same way since v0.1.127; their damageConditions may reject typeless hits.
+                    if (dr != null) dr.TakeDamage(new Damage(amount, null));
+                    else
+                    {
+                        var hb = se.GetComponent<Health>();
+                        if (hb == null) { Out($"poke: #{netId} not damagable"); return; }
+                        hb.TakeDamage(new Damage(amount, null));
+                    }
                     Out($"poke: #{netId} hit for {amount:0.#} (owner=" +
                         $"{(EnemySync.OwnerOf(netId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(netId) + 1))})");
                     return;
