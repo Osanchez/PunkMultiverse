@@ -94,9 +94,14 @@ try {
 
     # Arm the host install for scripted loopback (client install is the dedicated test copy).
     $cfg = $HostCfgBackup
+    # CommandFile is armed explicitly: the soak must be self-sufficient against a PLAYER
+    # (default) config — with it unset every host devcmd (spawns, pokes, unlockstation, the
+    # stall itself) silently no-ops and half the gates grade vacuous passes or false fails
+    # (measured 2026-07-22 after the host install moved to clean player defaults).
     foreach ($kv in @(
         @("AutoStart", "Host"), @("AutoReady", "true"), @("AutoLaunchRun", "true"),
-        @("AutoFlySeconds", "0"), @("SyncDiagnostics", "true"), @("Transport", "Loopback"))) {
+        @("AutoFlySeconds", "0"), @("SyncDiagnostics", "true"), @("Transport", "Loopback"),
+        @("CommandFile", "devcmd.txt"))) {
         $cfg = $cfg -replace ("(?m)^{0}\s*=.*$" -f $kv[0]), ("{0} = {1}" -f $kv[0], $kv[1])
     }
     Set-Content -Path $HostCfgPath -Value $cfg -Encoding utf8
