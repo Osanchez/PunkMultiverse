@@ -18,6 +18,7 @@ namespace PunkMultiverse
 
         public static ConfigEntry<string> ModManifestPolicy;
         public static ConfigEntry<float> EnemyHealthScalePerPlayer;
+        public static ConfigEntry<float> CoinDespawnSeconds;
         public static ConfigEntry<bool> AutoUpdate;
 
         public static ConfigEntry<string> AutoStart;
@@ -86,6 +87,12 @@ namespace PunkMultiverse
                 "Per-player enemy health scaling used when ENEMY HP SCALING is enabled on the " +
                 "GAME SETTINGS screen: Base Health * (1 + (0.25 * number of players)), counted " +
                 "when the game starts. The host's value applies to the whole session.");
+
+            CoinDespawnSeconds = cfg.Bind("Session", "CoinDespawnSeconds", 45f,
+                "Co-op only: currency (gold) pickups auto-despawn this many seconds after dropping " +
+                "if nobody collects them — the base game has no such timer, so uncollected coins " +
+                "would pile up forever. Only shared-currency ResourcePickups are affected; module/" +
+                "ingredient/consumable pickups are left to persist. 0 disables (coins never despawn).");
 
             ModManifestPolicy = cfg.Bind("Session", "ModManifestPolicy", "Reject",
                 new ConfigDescription(
