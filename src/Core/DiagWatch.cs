@@ -160,10 +160,31 @@ namespace PunkMultiverse.Core
             if (aboveFloor) s.AboveFloor++;
         }
 
+        // Counter values captured at the last jitterstats reset, so each dump reports the WINDOW's
+        // underruns/s and adaptive delay (the lifetime averages in [SnapshotLatency] dilute A/B arms).
+        private static long _winUnderruns, _winSamples, _winDelayMicros, _winJitterMicros;
+        private static float _winStartedAt;
+
         /// <summary>Ranked per-type motion table for the jittersweep harness. wastedAvg/peak in u/s;
         /// jitter% = fraction of 0.5s windows above the report floor (the "visibly vibrating" rate).</summary>
         internal static void DumpTypeStats(Action<string> output, bool reset)
         {
+            float winSecs = _winStartedAt > 0f ? Time.unscaledTime - _winStartedAt : 0f;
+            long dUnder = InstrumentationCounters.InterpolationUnderruns - _winUnderruns;
+            long dSamples = InstrumentationCounters.AdaptiveSamples - _winSamples;
+            output(string.Format(CultureInfo.InvariantCulture,
+                "jitterstats window: {0:0.0}s underruns={1} ({2:0.0}/s) delayAvg={3:0.0}ms jitterAvg={4:0.00}ms",
+                winSecs, dUnder, dUnder / Math.Max(0.001f, winSecs),
+                dSamples > 0 ? (InstrumentationCounters.AdaptiveDelayMicros - _winDelayMicros) / 1000.0 / dSamples : 0,
+                dSamples > 0 ? (InstrumentationCounters.AdaptiveJitterMicros - _winJitterMicros) / 1000.0 / dSamples : 0));
+            if (reset)
+            {
+                _winStartedAt = Time.unscaledTime;
+                _winUnderruns = InstrumentationCounters.InterpolationUnderruns;
+                _winSamples = InstrumentationCounters.AdaptiveSamples;
+                _winDelayMicros = InstrumentationCounters.AdaptiveDelayMicros;
+                _winJitterMicros = InstrumentationCounters.AdaptiveJitterMicros;
+            }
             if (TypeStats.Count == 0) { output("jitterstats: no samples"); return; }
             var rows = new List<KeyValuePair<string, TypeStat>>(TypeStats);
             rows.Sort((a, b) => (b.Value.Sum / Math.Max(1, b.Value.Samples))

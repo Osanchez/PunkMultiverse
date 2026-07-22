@@ -772,6 +772,48 @@ namespace PunkMultiverse.Core
                         + $" budgetDrops={InstrumentationCounters.StateEntriesBudgetDroppedCount}");
                     return;
                 }
+                case "vsync":
+                {
+                    // Clock-dilation harness: an unfocused instance's vsync-aligned frame timing
+                    // pins unscaledDeltaTime at 1/refresh, dilating the whole sim under load (see
+                    // [Clock]). "vsync 0 [fpsCap]" turns vsync off (optional targetFrameRate cap,
+                    // 0 = uncapped); "vsync 1" restores. No args = print current + measured rate.
+                    if (parts.Length >= 2 && int.TryParse(parts[1], out int vs))
+                        QualitySettings.vSyncCount = Mathf.Clamp(vs, 0, 4);
+                    if (parts.Length >= 3 && int.TryParse(parts[2], out int cap))
+                        Application.targetFrameRate = cap <= 0 ? -1 : cap;
+                    Out($"vsync: vSyncCount={QualitySettings.vSyncCount} targetFrameRate={Application.targetFrameRate} " +
+                        $"clockRate={RuntimeInstrumentation.ClockRate:0.00}x real");
+                    return;
+                }
+                case "snaphz":
+                {
+                    // Jitter A/B harness (owner side): live-set the combat snapshot rate. The send
+                    // loop reads CombatStateHz.Value every tick, so this takes effect immediately.
+                    // "snaphz 60" doubles combat cadence; "snaphz auto" restores the config default.
+                    if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float hz) && hz >= 1f)
+                        NetConfig.CombatStateHz.Value = Mathf.Clamp(hz, 1f, 120f);
+                    else if (parts.Length >= 2)
+                        NetConfig.CombatStateHz.Value = (float)NetConfig.CombatStateHz.DefaultValue;
+                    Out($"snaphz: CombatStateHz={NetConfig.CombatStateHz.Value:0} " +
+                        $"(tick={Mathf.Max(NetConfig.StateHz.Value, NetConfig.CombatStateHz.Value):0}Hz)");
+                    return;
+                }
+                case "interpdelay":
+                {
+                    // Jitter A/B harness (viewer side): add fixed headroom to every entity puppet's
+                    // render delay. Tests whether underruns come from render time overtaking the
+                    // buffer (client frame stalls / sender gaps) — if +N ms kills the underruns and
+                    // the wasted-speed table drops with it, buffer depth is the lever. Ships/props
+                    // unaffected. "interpdelay 60" = +60ms; "interpdelay auto" = off.
+                    if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float ms) && ms > 0f)
+                        Sync.RemoteEntityPuppet.ExperimentExtraDelay = Mathf.Clamp(ms, 0f, 500f) / 1000f;
+                    else if (parts.Length >= 2) Sync.RemoteEntityPuppet.ExperimentExtraDelay = 0f;
+                    Out(Sync.RemoteEntityPuppet.ExperimentExtraDelay > 0f
+                        ? $"interpdelay: +{Sync.RemoteEntityPuppet.ExperimentExtraDelay * 1000f:0}ms on every entity puppet"
+                        : "interpdelay: auto (adaptive only)");
+                    return;
+                }
                 case "shop":
                 {
                     // Harness: simulate the local player having the shop/ship-menu open so routed

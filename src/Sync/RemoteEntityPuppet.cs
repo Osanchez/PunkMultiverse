@@ -263,15 +263,21 @@ namespace PunkMultiverse.Sync
 
         internal static bool ExperimentIgnorePuppetCollisions; // toggled by future harness runs only
 
+        // Jitter A/B knob (`interpdelay` devcmd): fixed seconds added to every entity puppet's
+        // adaptive render delay. Tests the underrun-manufactures-wobble hypothesis directly —
+        // extra headroom trades presentation latency for never overtaking the buffer.
+        internal static float ExperimentExtraDelay;
+
         // ---------------------------------------------------------------- puppet-puppet collisions
-        // Proven cause of crowd jitter (2026-07-22 FlyDad experiment): puppets are live physics
-        // bodies, so in a dense pack they collide with EACH OTHER locally — every impulse displaces
-        // the body, the next FixedUpdate's MovePosition yanks it back to the snapshot target, and
-        // the thrash reads as vibration (owner wasted 1.5 u/s vs puppet 3.1 avg / 10.5 peak at 12
-        // enemies; faithful ~1.1x when sparse). The owner's simulation ALREADY did the crowd
-        // separation — it's baked into the snapshots — so local re-separation is double physics.
-        // Puppets therefore ignore collisions with other puppets; ships, terrain, and projectiles
-        // are untouched. Pairwise IgnoreCollision (not a layer swap) so vanilla layer-based
+        // SUPERSEDED HYPOTHESIS (2026-07-22, same-day): crowd jitter was NOT puppet-puppet
+        // collisions — the A/B showed no improvement because the real cause was harness clock
+        // dilation (an unfocused sender's game clock runs at ~0.4x real under load; see [Clock]
+        // in RuntimeInstrumentation and harness.md "clock-dilation trap"). With clocks healed,
+        // a 12-FlyDad crowd measures 0.44 u/s puppet wasted-speed vs ~1.0 owner-side — faithful
+        // with collisions ON. The mechanism below still exists in principle (owner separation is
+        // baked into snapshots; local re-separation is double physics) but its measured effect
+        // is negligible. Kept gated OFF; re-evaluate only with clean clocks.
+        // Pairwise IgnoreCollision (not a layer swap) so vanilla layer-based
         // queries (Vision masks etc.) keep working; Unity drops pairs automatically on destroy.
         private static readonly List<RemoteEntityPuppet> ActivePuppets = new List<RemoteEntityPuppet>();
         private Collider2D[] _colliders;
@@ -433,7 +439,7 @@ namespace PunkMultiverse.Sync
         private void FixedUpdate()
         {
             if (_rb == null || _buffer.Count == 0) return; // frozen at its last safe pose
-            float renderTime = Time.unscaledTime - _timing.Delay;
+            float renderTime = Time.unscaledTime - (_timing.Delay + ExperimentExtraDelay);
             var last = _buffer[_buffer.Count - 1];
             if (SnapshotAge > 2f)
             {
