@@ -251,10 +251,22 @@ namespace PunkMultiverse.Sync
             catch { return false; }
         }
 
+        /// <summary>Harness fault injection (`desync drop` devcmd): swallow the next incoming
+        /// spawn replica so this machine's world genuinely diverges — the WS9.1 summary-heal
+        /// positive test. One-shot; nothing in shipping gameplay sets it.</summary>
+        internal static bool DropNextReplica;
+
         private static void SpawnReplica(int netId, uint lifetime, byte ownerSlot, string entityId, Vector2 pos, bool wireOwnerShip)
         {
             try
             {
+                if (DropNextReplica)
+                {
+                    DropNextReplica = false;
+                    Plugin.Log.LogWarning($"[Dev] desync: DROPPED replica '{entityId}' netId {netId} " +
+                        $"(P{ownerSlot + 1}) at {pos.x:0.0},{pos.y:0.0} — this world now diverges deliberately");
+                    return;
+                }
                 var prefab = FindPrefab(entityId);
                 if (prefab == null)
                 {

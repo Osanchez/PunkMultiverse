@@ -773,6 +773,19 @@ namespace PunkMultiverse.Core
                         + $" budgetDrops={InstrumentationCounters.StateEntriesBudgetDroppedCount}");
                     return;
                 }
+                case "desync":
+                {
+                    // WS9.1 heal harness: deliberately break THIS machine's world. "desync drop"
+                    // swallows the next incoming spawn replica — the summary/heal pipeline must
+                    // then detect the divergence and repair it in bounded time.
+                    if (parts.Length >= 2 && parts[1].Equals("drop", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Sync.MinionSync.DropNextReplica = true;
+                        Out("desync: next incoming spawn replica will be DROPPED (one-shot)");
+                    }
+                    else Out($"desync: armed={Sync.MinionSync.DropNextReplica} (usage: desync drop)");
+                    return;
+                }
                 case "vsync":
                 {
                     // Clock-dilation harness: an unfocused instance's vsync-aligned frame timing

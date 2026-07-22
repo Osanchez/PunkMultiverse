@@ -171,14 +171,15 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
-            SummaryHeal = cfg.Bind("Diag", "SummaryHeal", false,
-                "EXPERIMENTAL (WS9.1): let segment identity-summary mismatches actively trigger " +
-                "targeted roster audits (echo + repair). Off = summaries still run as detection " +
-                "telemetry (the summaries=tx/chk/miss counters on [BytePlanes]) but never generate " +
-                "repair traffic. Keep off until the membership predicate is viewer-targeted: an " +
-                "enemy that wanders outside a viewer's interest radius leaves stale data-side " +
-                "positions behind, and position-based segment membership then false-positives " +
-                "(measured: repeating un-healable mismatches on fringe + wander segments).");
+            SummaryHeal = cfg.Bind("Diag", "SummaryHeal", true,
+                "WS9.1: segment identity-summary mismatches trigger targeted roster audits " +
+                "(echo + repair), so silent world divergence self-heals in bounded time. Safe " +
+                "since v2 (2026-07-22): viewers only judge segments FULLY inside their own " +
+                "interest radius (entity positions there are snapshot-fresh), and a 5u boundary " +
+                "band + 3-cycle confirmation filter entities in transit — validated as zero " +
+                "false audits under a chasing crowd, with an injected dropped-replica divergence " +
+                "healing in <=5s. Off = detection-only telemetry (summaries=tx/chk/miss on " +
+                "[BytePlanes]) with no repair traffic.");
             ProfileFrames = cfg.Bind("Diag", "ProfileFrames", true,
                 "Per-frame profiler: times each of our subsystem ticks (ShipSync, WorldSync, " +
                 "EnemySync, Authority, …) and every ~3s logs [Profile] avg/max ms per section plus " +
