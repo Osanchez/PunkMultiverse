@@ -932,6 +932,7 @@ namespace PunkMultiverse.Core
         private void DoGoLive()
         {
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
+            DiagWatch.NotifyRunStarted(); // skip warmup in the growth watchdog
             SetState(SessionState.InGame);
             // Same value on every machine (seed + host identity are already shared): the run id
             // groups all players' `uploadlogs` under one S3 folder and names bug reports.
@@ -1061,6 +1062,13 @@ namespace PunkMultiverse.Core
             = new Dictionary<(ulong, NetChannel), Queue<byte[]>>();
         private readonly List<(ulong peer, NetChannel channel)> _outboxScratch
             = new List<(ulong, NetChannel)>();
+
+        /// <summary>Total queued reliable messages across all peers/channels. Should sit near zero in
+        /// steady state — sustained growth means sends aren't draining (backpressure / leak).</summary>
+        internal int OutboxDepth
+        {
+            get { int n = 0; foreach (var q in _outbox.Values) n += q.Count; return n; }
+        }
 
         /// <summary>Reliable send that can never silently drop; may deliver next frame(s).</summary>
         public void SendReliable(ulong peer, NetChannel channel, ArraySegment<byte> data)

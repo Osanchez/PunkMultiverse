@@ -41,6 +41,16 @@ namespace PunkMultiverse
             NetConfig.Init(cfg);
             RuntimeInstrumentation.Initialize(Thread.CurrentThread);
 
+            // Growth watchdog: register the bounded-in-steady-state collections whose unbounded
+            // growth would signal a leak / stuck queue. Heap is registered by DiagWatch itself.
+            Core.DiagWatch.RegisterDefaults = () =>
+            {
+                Core.DiagWatch.Register("outbox", () => Core.NetSession.Instance?.OutboxDepth ?? 0, floor: 64);
+                Core.DiagWatch.Register("visualProjectiles", () => Sync.ProjectileSync.VisualProjectileCount, floor: 128);
+                Core.DiagWatch.Register("liveReplicas", () => Sync.EnemySync.LiveEntityCount, floor: 400);
+                Core.DiagWatch.Register("capturedLoot", () => Patches.LootDiag.CapturedLootCount, floor: 32);
+            };
+
             _harmony = new Harmony(Guid);
             _harmony.PatchAll(typeof(Plugin).Assembly);
 

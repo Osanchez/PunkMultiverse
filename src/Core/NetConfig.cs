@@ -19,6 +19,7 @@ namespace PunkMultiverse
         public static ConfigEntry<string> ModManifestPolicy;
         public static ConfigEntry<float> EnemyHealthScalePerPlayer;
         public static ConfigEntry<float> CoinDespawnSeconds;
+        public static ConfigEntry<float> JitterFloorUnitsPerSec;
         public static ConfigEntry<bool> AutoUpdate;
 
         public static ConfigEntry<string> AutoStart;
@@ -118,6 +119,12 @@ namespace PunkMultiverse
                 "if nobody collects them — the base game has no such timer, so uncollected coins " +
                 "would pile up forever. Only shared-currency ResourcePickups are affected; module/" +
                 "ingredient/consumable pickups are left to persist. 0 disables (coins never despawn).");
+
+            JitterFloorUnitsPerSec = cfg.Bind("Diag", "JitterFloorUnitsPerSec", 10f,
+                "Enemy-jitter detector threshold: a remote enemy whose interpolation racks up this " +
+                "many units/second of in-place (goes-nowhere) motion is reported as vibrating in the " +
+                "[Jitter] line. Normal erratic flyers wobble ~6-10u/s; the pathological 'insane " +
+                "jitter' is far higher. Lower to catch subtler cases, raise to only flag the worst.");
 
             ModManifestPolicy = cfg.Bind("Session", "ModManifestPolicy", "Reject",
                 new ConfigDescription(

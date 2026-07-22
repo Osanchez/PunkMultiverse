@@ -85,6 +85,9 @@ namespace PunkMultiverse.Sync
         // only the current canonical lifetime; Lifetimes retains every concrete object until its
         // OnDestroy so superseded objects can be quarantined instead of accidentally simulating.
         private static readonly Dictionary<int, SavableEntity> LiveEntities = new Dictionary<int, SavableEntity>();
+        /// <summary>Streamed-in replica count — bounded by the resident world; unbounded growth is a
+        /// registration leak (dead entities never removed).</summary>
+        internal static int LiveEntityCount => LiveEntities.Count;
         private static readonly Dictionary<int, List<EntityIdentityRegistration>> Lifetimes
             = new Dictionary<int, List<EntityIdentityRegistration>>();
         private static readonly HashSet<int> SeenLifetimeNetIds = new HashSet<int>();
