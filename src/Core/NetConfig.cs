@@ -161,11 +161,19 @@ namespace PunkMultiverse
                     "lease. 0 disables the grace.",
                     new AcceptableValueRange<float>(0f, 5f)));
 
-            LogUploadEndpoint = cfg.Bind("Diag", "LogUploadEndpoint", "",
-                "Signer endpoint for the `uploadlogs` devcmd (the Lambda Function URL printed by " +
-                "infra/diagnostics-s3-setup.ps1). The mod asks it for a short-lived presigned S3 " +
-                "PUT URL for one exact object, then uploads — no AWS credentials in the mod and no " +
-                "anonymous access on the bucket. Empty (default) = collect only: `uploadlogs` still " +
+            // Fresh key ON PURPOSE (was [Diag] LogUploadEndpoint, default empty): every existing
+            // install has the empty value WRITTEN, and a file value beats a new bind default —
+            // renaming the key is the only way the now-default endpoint reaches the fleet, so
+            // testers' SEND LOGS actually lands in S3 instead of quietly saving locally. The
+            // endpoint is hardened for public exposure: presigned single-object PUTs only,
+            // 10 MiB cap, per-run stable keys (re-sends overwrite), client cooldowns, reserved
+            // concurrency, and a budget kill-switch. The orphaned old key line is inert.
+            LogUploadEndpoint = cfg.Bind("Diag", "LogUploadUrl",
+                "https://57mjrwp6bts74pm7hsbv6rlgq40eekkq.lambda-url.us-east-1.on.aws/",
+                "Signer endpoint for SEND LOGS / the `uploadlogs` devcmd (a Lambda Function URL; " +
+                "see infra/diagnostics-s3-setup.ps1). The mod asks it for a short-lived presigned " +
+                "S3 PUT URL for one exact object, then uploads — no AWS credentials in the mod and " +
+                "no anonymous access on the bucket. Empty = collect only: `uploadlogs` still " +
                 "gzips the log to <plugin>/diagnostics/<runId>/ and prints the path to send manually.");
             SyncDiagnostics = cfg.Bind("Diag", "SyncDiagnostics", false,
                 "Verbose sync/authority diagnostics: per-entity ownership assigns, releases, deny " +
