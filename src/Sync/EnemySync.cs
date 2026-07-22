@@ -3794,7 +3794,7 @@ namespace PunkMultiverse.Sync
             // death-site pickup (DropLootGuard suppresses that far local drop without taking the
             // latch). Either way the player gets a collectable per-player copy in its Vault. A machine
             // that dropped locally (resident + near) already took the latch, so this is a no-op there.
-            PunkMultiverse.Patches.LootDiag.GrantRemoteLoot(msg.NetId, msg.Loot);
+            PunkMultiverse.Patches.LootDiag.GrantRemoteLoot(msg.NetId, msg.Loot, msg.Position, msg.HasPosition);
             PunkMultiverse.Patches.LootDiag.DiscardCapturedLoot(msg.NetId);
             return true;
         }

@@ -147,6 +147,36 @@ try {
         Start-Sleep -Seconds 12
     }
 
+    # phase D: distant-kill loot. The rest of the soak keeps both ships together, so kills are
+    # resident for everyone and the non-owner loot path never runs. Split them: client flies far,
+    # host kills module/consumable/ingredient droppers, and the FAR client must MATERIALIZE physical
+    # pickups from the payload (the "everyone picks up their own" path — v0.1.120). This is the only
+    # phase that exercises it; without it the loot rework is untested by the soak.
+    Log "phase D: distant-kill loot (split players -> non-resident materialization)"
+    $HostDevout = Join-Path $HostPlug "devout.txt"
+    Cmd $ClientPlug "tp rel 300 0"           # far past interest radius -> non-resident for host kills
+    Start-Sleep -Seconds 6
+    # Spawn module/consumable droppers right by the host. They FALL (rigidbodies), so horizontal
+    # fire misses — destroy them by netId with `poke` instead (position-independent). netIds come
+    # from the `entities` dump, which the mod writes to devout.txt (not the log).
+    Cmd $HostPlug "spawn CrateTech rel 6 0`nspawn Box_FuelGen rel 6 2`nspawn CrateTech rel 6 -2`nspawn Box_FuelGen rel 6 -4"
+    Start-Sleep -Seconds 4
+    Set-Content -Path $HostDevout -Value "" -Encoding Ascii   # clear spawn echoes before the dump
+    Cmd $HostPlug "entities 25"
+    Start-Sleep -Seconds 4
+    $lootIds = @(Select-String -Path $HostDevout -Pattern "entity #(\d+) (CrateTech|Box_FuelGen)" -ErrorAction SilentlyContinue |
+                 ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -Unique)
+    Log "  phase D: poking $($lootIds.Count) loot droppers to death"
+    if ($lootIds.Count -gt 0) { Cmd $HostPlug (($lootIds | ForEach-Object { "poke $_ 999" }) -join "`n") }
+    Start-Sleep -Seconds 10
+    $matModule = CountIn $ClientLog "\[Loot\] materialized module"
+    $matAny    = CountIn $ClientLog "\[Loot\] materialized"
+    $lootExc   = CountIn $ClientLog "materialize failed|error handling EntityKilled"
+    Gate "distant loot: far client materializes physical pickups" ($matAny -ge 1) "materialized=$matAny (module=$matModule, droppers=$($lootIds.Count))"
+    Gate "distant loot: no materialize exceptions" ($lootExc -eq 0) "lootExc=$lootExc"
+    Cmd $ClientPlug "tp rel -300 0"          # rejoin the host for the rest of the run
+    Start-Sleep -Seconds 6
+
     Log "phase W2: wander"
     Cmd $HostPlug "autofly 15"; Cmd $ClientPlug "autofly 15"
     Start-Sleep -Seconds 40
