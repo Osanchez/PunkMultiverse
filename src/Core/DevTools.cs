@@ -179,6 +179,64 @@ namespace PunkMultiverse.Core
         /// <summary>Owner-side motion spectrum of one entity (see the motionprofile devcmd): per
         /// physics step, count velocity direction reversals (dot &lt; 0 with both steps moving) and
         /// track speed + the in-place oscillation amplitude around a rolling mean position.</summary>
+        // RENDER-frame smoothness probe — measures what is actually DRAWN, per screen frame,
+        // where the fixed-step metrics (motionprofile, jitterstats) are structurally blind:
+        // they sample physics steps (or the ideal interp target), so fixed-step aliasing,
+        // interpolation failures, and rotation twitch are invisible to them while being fully
+        // visible to a player on a high-refresh display. Run on the SAME netId owner-side and
+        // puppet-side; a smooth render path has stall% near 0 and speedCV well under 1.
+        //  - stall% : moving-entity frames that advanced <10% of the mean step (fixed-step
+        //             aliasing signature: at 240fps/50Hz physics without interpolation ~80%)
+        //  - speedCV: stddev/mean of per-frame speed (burstiness of drawn motion)
+        //  - rotWasted: |angle steps| summed minus net rotation, per second (facing twitch)
+        private static System.Collections.IEnumerator RenderSmooth(int netId, Transform t, float secs)
+        {
+            int frames = 0, stallFrames = 0, movingFrames = 0;
+            float speedSum = 0f, speedSqSum = 0f, speedMax = 0f;
+            float rotPath = 0f, rotMaxStep = 0f, prevAngle = t.eulerAngles.z, startAngle = prevAngle;
+            Vector2 prevPos = t.position;
+            var samples = new System.Collections.Generic.List<float>(2048);
+            float t0 = Time.unscaledTime, prevTime = t0;
+            while (Time.unscaledTime - t0 < secs)
+            {
+                yield return null; // end of Update — transform holds the interpolated DRAWN pose
+                if (t == null) { Out($"rendersmooth #{netId}: entity died mid-sample"); yield break; }
+                float now = Time.unscaledTime;
+                float dt = Mathf.Max(0.0001f, now - prevTime);
+                prevTime = now;
+                Vector2 pos = t.position;
+                float step = Vector2.Distance(pos, prevPos);
+                prevPos = pos;
+                float angle = t.eulerAngles.z;
+                float dAngle = Mathf.Abs(Mathf.DeltaAngle(prevAngle, angle));
+                prevAngle = angle;
+                rotPath += dAngle;
+                rotMaxStep = Mathf.Max(rotMaxStep, dAngle);
+                frames++;
+                float speed = step / dt;
+                samples.Add(speed);
+                speedSum += speed; speedSqSum += speed * speed; speedMax = Mathf.Max(speedMax, speed);
+            }
+            float dur = Time.unscaledTime - t0;
+            float mean = speedSum / Mathf.Max(1, frames);
+            // Stall detection needs the mean first — second pass over the recorded samples.
+            foreach (float s in samples)
+            {
+                if (mean < 1f) break; // entity ~stationary; stall% meaningless
+                movingFrames++;
+                if (s < mean * 0.1f) stallFrames++;
+            }
+            float variance = frames > 1 ? Mathf.Max(0f, speedSqSum / frames - mean * mean) : 0f;
+            float cv = mean > 0.01f ? Mathf.Sqrt(variance) / mean : 0f;
+            float netRot = Mathf.Abs(Mathf.DeltaAngle(startAngle, prevAngle));
+            Out(string.Format(CultureInfo.InvariantCulture,
+                "rendersmooth #{0}: {1:0.0}s {2} frames ({3:0}fps) | drawn speed mean={4:0.0} max={5:0.0} u/s " +
+                "CV={6:0.00} | stall%={7:0.0} | rotWasted={8:0.0}deg/s maxStep={9:0.0}deg",
+                netId, dur, frames, frames / Mathf.Max(0.1f, dur), mean, speedMax, cv,
+                movingFrames > 0 ? 100f * stallFrames / movingFrames : 0f,
+                (rotPath - netRot) / Mathf.Max(0.1f, dur), rotMaxStep));
+        }
+
         private static System.Collections.IEnumerator MotionProfile(int netId, Rigidbody2D rb, float secs)
         {
             int steps = 0, reversals = 0;
@@ -308,6 +366,19 @@ namespace PunkMultiverse.Core
                     if (mpRb == null) { Out($"motionprofile: #{mpId} has no rigidbody"); return; }
                     Out($"motionprofile: sampling #{mpId} for {mpSecs:0.0}s...");
                     session.StartCoroutine(MotionProfile(mpId, mpRb, Mathf.Clamp(mpSecs, 1f, 20f)));
+                    return;
+                }
+                case "rendersmooth":
+                {
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out int rsId)) { Out("rendersmooth <netId> [secs]"); return; }
+                    float rsSecs = 5f;
+                    if (parts.Length >= 3) float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out rsSecs);
+                    if (!NetIds.TryGetInstanceId(rsId, out int rsInst)) { Out($"rendersmooth: netId {rsId} unknown here"); return; }
+                    var rsEgm = ServiceLocator.Get<EntityGameObjectManager>();
+                    if (rsEgm == null || !rsEgm.TryGetSavableEntity(rsInst, out var rsSe) || rsSe == null)
+                    { Out($"rendersmooth: #{rsId} not instantiated here"); return; }
+                    Out($"rendersmooth: sampling DRAWN pose of #{rsId} for {rsSecs:0.0}s...");
+                    session.StartCoroutine(RenderSmooth(rsId, rsSe.transform, Mathf.Clamp(rsSecs, 1f, 20f)));
                     return;
                 }
                 case "unlockstation":

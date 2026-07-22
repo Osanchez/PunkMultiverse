@@ -3664,16 +3664,30 @@ namespace PunkMultiverse.Sync
                 LastEntityStateMs[e.NetId] = (msg.Slot, msg.Epoch, msg.TimeMs);
                 if (!NetIds.TryGetInstanceId(e.NetId, out int instanceId)) continue;
 
-                // Keep the data-side position fresh so stream-in spawns at the right spot.
-                try
+                // Keep the data-side position fresh so stream-in spawns at the right spot — but
+                // ONLY for entities with no live object here. SavableEntity.Bind subscribes
+                // OnEntityMoved, which sets transform.position DIRECTLY on every data move: for a
+                // live puppet, our per-snapshot MoveTo was teleporting the drawn body to the raw
+                // wire position (~100ms AHEAD of the interp target) ~30x/s, and the next physics
+                // step yanked it back — the render-level saw-tooth the fixed-step metrics could
+                // not see (measured: puppet drawn-frame speed spikes 221-390 u/s vs owner 12-16,
+                // 25% stall frames; the 'rendersmooth' probe finally caught it). Live objects
+                // keep their data fresh through the game's own transform->data writeback in
+                // SavableEntity.Update, so the spatial grid stays correctly bucketed either way.
+                // MoveTo stays essential for NON-live entities (dormant/far stream-in positions).
+                bool liveHere = LiveEntities.TryGetValue(e.NetId, out var liveSe) && liveSe != null;
+                if (!liveHere)
                 {
-                    var data = em?.GetEntity(instanceId);
-                    // MoveTo is not cosmetic: it updates SpatialGrid bucket membership. Directly
-                    // assigning position left the entity indexed in its old segment, so every
-                    // rebuild of that segment instantiated the same netId again on clients.
-                    if (data != null) data.MoveTo(new Vector3(e.Pos.x, e.Pos.y, data.position.z));
+                    try
+                    {
+                        var data = em?.GetEntity(instanceId);
+                        // MoveTo is not cosmetic: it updates SpatialGrid bucket membership. Directly
+                        // assigning position left the entity indexed in its old segment, so every
+                        // rebuild of that segment instantiated the same netId again on clients.
+                        if (data != null) data.MoveTo(new Vector3(e.Pos.x, e.Pos.y, data.position.z));
+                    }
+                    catch { }
                 }
-                catch { }
 
                 // Ownership is derived only after the authoritative position has been installed.
                 // This breaks the old circular failure where a stale local position selected the
