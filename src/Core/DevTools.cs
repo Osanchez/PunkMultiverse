@@ -207,6 +207,35 @@ namespace PunkMultiverse.Core
                 case "runid":
                     Out($"runid: {LogUpload.RunId}");
                     return;
+                case "wallet":
+                {
+                    // Loot-sync assertion surface: shared-currency tank values (gold etc.) + this
+                    // player's per-player Vault totals. Lets a two-instance test measure WHO
+                    // actually receives loot from a kill (the "non-host pickups don't sync" claim).
+                    var rd = ServiceLocator.Get<RunData>();
+                    if (rd == null) { Out("wallet: no RunData"); return; }
+                    var sb = new System.Text.StringBuilder("wallet:");
+                    try
+                    {
+                        foreach (var tank in rd.SharedResourceTanks)
+                        {
+                            if (tank == null || tank.resource == null) continue;
+                            string id = null; try { id = tank.resource.Id; } catch { }
+                            sb.Append($" {id ?? tank.resource.name}={tank.Value:0}");
+                        }
+                    }
+                    catch (Exception e) { sb.Append($" (tanks err {e.Message})"); }
+                    try
+                    {
+                        var vault = ServiceLocator.Get<Vault>();
+                        int ing = 0;
+                        if (vault != null) foreach (var kv in vault.Ingredients) ing += kv.Value;
+                        sb.Append($" | vaultIngredients={ing} vaultModules={vault?.ModuleCount ?? 0}");
+                    }
+                    catch (Exception e) { sb.Append($" (vault err {e.Message})"); }
+                    Out(sb.ToString());
+                    return;
+                }
                 case "shopstate":
                 {
                     // Assertion surface for shop-upgrade parity: UnlockedStationCount is the

@@ -76,6 +76,23 @@ namespace PunkMultiverse.Patches
             byId[key] = n + 1; // each Consumable pickup is worth 1
         }
 
+        // Reserved prefix marking a Module (equipment) id. Modules are the ONLY loot with no
+        // inventory-add API — they live purely as physical ModulePickup entities. So unlike currency
+        // and ingredients (granted directly to a distant player), a module MUST be re-spawned as a
+        // real pickup at the death site on every machine, or a non-owner gets nothing at all (the
+        // tester's permanently-lost tech shield). The pickup carries the vanilla EntityMapItem, so its
+        // map marker + fog/discovery gating come for free.
+        internal const string ModuleIdPrefix = "$mod:";
+
+        private static void CaptureModuleDrop(int netId, string id)
+        {
+            if (!CapturedLoot.TryGetValue(netId, out var byId))
+                CapturedLoot[netId] = byId = new Dictionary<string, int>();
+            string key = ModuleIdPrefix + id;
+            byId.TryGetValue(key, out int n);
+            byId[key] = n + 1;
+        }
+
         /// <summary>Read and clear the loot rolled for netId as a wire payload. Empty when nothing
         /// ingredient-typed was rolled (or this machine didn't simulate the death).</summary>
         internal static LootEntry[] ConsumeCapturedLoot(int netId)
@@ -98,16 +115,14 @@ namespace PunkMultiverse.Patches
         /// Vault, which is never synced, so it can't inflate anyone else. Gated on the SAME
         /// one-drop-per-machine latch as the local drop so a machine that dropped locally never also
         /// grants.</summary>
-        internal static void GrantRemoteLoot(int netId, LootEntry[] loot)
+        internal static void GrantRemoteLoot(int netId, LootEntry[] loot, UnityEngine.Vector2 deathPos, bool hasPos)
         {
             if (loot == null || loot.Length == 0) return;
             if (!EnemySync.TryMarkLootDropped(netId)) return; // already dropped/granted here
 
-            Vault vault = null;
             IngredientRegistry registry = null;
             RunData runData = null;
             ResourceRegistry resources = null;
-            try { vault = ServiceLocator.Get<Vault>(); } catch { }
             try { registry = ServiceLocator.Get<IngredientRegistry>(); } catch { }
             try { runData = ServiceLocator.Get<RunData>(); } catch { }
             try { resources = ServiceLocator.Get<ResourceRegistry>(); } catch { }
@@ -115,6 +130,39 @@ namespace PunkMultiverse.Patches
             foreach (var entry in loot)
             {
                 if (string.IsNullOrEmpty(entry.Id) || entry.Count <= 0) continue;
+
+                // Module: spawn a REAL physical pickup at the death site (no inventory grant exists,
+                // and "be present" is the model). ModulePickupFactory.Create routes through
+                // EntityGameObjectManager.CreateEntity — and MinionSync.MarkLootSpawns already patches
+                // that factory, so the spawn is auto-excluded from runtime-spawn replication (stays a
+                // local per-player copy). The pickup's EntityMapItem gives it the vanilla map marker,
+                // shown only once the area is discovered.
+                if (entry.Id.StartsWith(ModuleIdPrefix, System.StringComparison.Ordinal))
+                {
+                    if (!hasPos) continue; // no site to place it — can't materialize a physical module
+                    string modId = entry.Id.Substring(ModuleIdPrefix.Length);
+                    ModuleData md = null;
+                    try { md = ServiceLocator.Get<ModuleRegistry>()?.Get(modId); } catch { }
+                    if (md == null)
+                    {
+                        if (NetDiag.Enabled)
+                            NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} remote module '{modId}' — unknown id, skipped");
+                        continue;
+                    }
+                    try
+                    {
+                        var factory = ServiceLocator.Get<ModulePickupFactory>();
+                        for (int i = 0; i < entry.Count; i++) factory?.Create(md, deathPos);
+                        // Always logged (not diag-gated): materialization is infrequent (only distant
+                        // kills) and is the soak's assertion surface for the loot-parity path.
+                        Plugin.Log.LogInfo($"[Loot] materialized module '{modId}' x{entry.Count} at {deathPos} (physical pickup, map-marked)");
+                    }
+                    catch (System.Exception e)
+                    {
+                        Plugin.Log.LogWarning($"[Loot] module materialize failed for '{modId}': {e.Message}");
+                    }
+                    continue;
+                }
 
                 // Shared currency (money/gold): charge the local player's shared resource tank
                 // directly — no physical coin (avoids re-replicating a pickup). The tank is the same
@@ -141,10 +189,14 @@ namespace PunkMultiverse.Patches
                     continue;
                 }
 
-                // Consumable: per-player Vault, same pattern as ingredients (WS5.1).
+                // Consumable: spawn a physical pickup to COLLECT (Omar's "everyone picks up their
+                // own"). This also side-steps a real crash — Vault.Add(Consumable) drove the vanilla
+                // ConsumableWheel.OnConsumableAmountChanged into an out-of-range index when granting
+                // to a distant player whose wheel UI wasn't expecting it. Factory routes through
+                // CreateEntity, which MarkLootSpawns already excludes from replication.
                 if (entry.Id.StartsWith(ConsumableIdPrefix, System.StringComparison.Ordinal))
                 {
-                    if (vault == null) continue;
+                    if (!hasPos) continue;
                     string conId = entry.Id.Substring(ConsumableIdPrefix.Length);
                     Consumable consumable = null;
                     try { consumable = ServiceLocator.Get<IRegistry<Consumable, string>>()?.Get(conId); } catch { }
@@ -154,24 +206,32 @@ namespace PunkMultiverse.Patches
                             NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} remote consumable '{conId}' — unknown id, skipped");
                         continue;
                     }
-                    vault.Add(consumable, entry.Count);
-                    if (NetDiag.Enabled)
-                        NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} granted remote consumable +{entry.Count} {conId} (entity not resident here)");
+                    try
+                    {
+                        var factory = ServiceLocator.Get<ConsumablePickupFactory>();
+                        for (int i = 0; i < entry.Count; i++) factory?.Create(consumable, deathPos);
+                        Plugin.Log.LogInfo($"[Loot] materialized consumable '{conId}' x{entry.Count} at {deathPos}");
+                    }
+                    catch (System.Exception e) { Plugin.Log.LogWarning($"[Loot] consumable materialize failed '{conId}': {e.Message}"); }
                     continue;
                 }
 
-                // Ingredient: per-player Vault.
-                if (vault == null || registry == null) continue;
-                var ingredient = registry.Get(entry.Id);
+                // Ingredient: spawn a physical pickup to collect (same model).
+                if (!hasPos) continue;
+                var ingredient = registry?.Get(entry.Id);
                 if (ingredient == null)
                 {
                     if (NetDiag.Enabled)
                         NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} remote loot '{entry.Id}' x{entry.Count} — unknown id, skipped");
                     continue;
                 }
-                vault.Add(ingredient, entry.Count);
-                if (NetDiag.Enabled)
-                    NetDiag.Log("Loot", $"{NetDiag.Describe(netId)} granted remote loot +{entry.Count} {entry.Id} (entity not resident here)");
+                try
+                {
+                    var factory = ServiceLocator.Get<IngredientPickupFactory>();
+                    for (int i = 0; i < entry.Count; i++) factory?.Create(ingredient, deathPos);
+                    Plugin.Log.LogInfo($"[Loot] materialized ingredient '{entry.Id}' x{entry.Count} at {deathPos}");
+                }
+                catch (System.Exception e) { Plugin.Log.LogWarning($"[Loot] ingredient materialize failed '{entry.Id}': {e.Message}"); }
             }
         }
 
@@ -203,6 +263,16 @@ namespace PunkMultiverse.Patches
                     var consumable = __0.consumable;
                     if (consumable == null || string.IsNullOrEmpty(consumable.id)) return;
                     CaptureConsumableDrop(netId, consumable.id);
+                    return;
+                }
+
+                // Module == physical equipment pickup. No inventory API — re-spawned as a real
+                // ModulePickup on receivers so everyone gets one to collect (must be present).
+                if (__0.droppableType == DroppabbleType.Module)
+                {
+                    var module = __0.module;
+                    if (module == null || string.IsNullOrEmpty(module.Id)) return;
+                    CaptureModuleDrop(netId, module.Id);
                     return;
                 }
 
