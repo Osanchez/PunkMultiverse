@@ -82,11 +82,13 @@ namespace PunkMultiverse
         {
             Transport = cfg.Bind("Transport", "Transport", "Steam",
                 new ConfigDescription(
-                    "Which transport to use. Steam = user P2P (normal friend play). Loopback = dev/LAN " +
-                    "UDP. SteamServer = connect to an anonymous game-server identity (the dedicated/" +
-                    "sidecar deployment — SDR traversal, no port forwarding; join code is the server's " +
-                    "SteamID64). Udp = direct LiteNetLib UDP for Docker/LAN/no-Steam servers (join " +
-                    "code is host:port; the host's UdpPort must be reachable — port-forward or LAN).",
+                    "LEAVE THIS ON Steam - normal players never change it. Hosting and joining " +
+                    "friends works on Steam, and joining a dedicated server is done in-game (PLAY " +
+                    "ONLINE -> DIRECT CONNECT for an IP server, or accepting a Steam invite), which " +
+                    "auto-selects the right connection. This value is only the DEFAULT for the " +
+                    "clipboard Join/Host buttons. Advanced/server-only: Loopback (dev/LAN UDP); " +
+                    "SteamServer (dedicated Steam game-server identity - what the host-your-own " +
+                    "sidecar uses); Udp (direct UDP by host:port - what Docker/no-Steam servers use).",
                     new AcceptableValueList<string>("Steam", "Loopback", "SteamServer", "Udp")));
             UdpAddress = cfg.Bind("Transport", "UdpAddress", "127.0.0.1",
                 "Udp transport: server address to join when no explicit address is given " +

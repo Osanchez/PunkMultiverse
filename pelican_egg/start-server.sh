@@ -231,6 +231,10 @@ if [[ ! -f "${WINEPREFIX}/system.reg" ]]; then
     log "initializing Wine prefix at ${WINEPREFIX} (first boot)"
     wineboot --init >/dev/null 2>&1 || true
     wineserver -w
+    # No sound card in a server container: tell Wine to load NO audio driver (the "no sound"
+    # setting). Silences the ALSA "cannot find card" spam on every game launch.
+    wine reg add 'HKEY_CURRENT_USER\Software\Wine\Drivers' /v Audio /t REG_SZ /d '' /f >/dev/null 2>&1 || true
+    wineserver -w
 fi
 
 # A virtual framebuffer for Unity's graphics init even under -nographics (some Unity builds

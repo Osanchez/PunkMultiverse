@@ -169,7 +169,15 @@ namespace PunkMultiverse.Core
         private System.Collections.IEnumerator Start()
         {
             yield return new WaitForSecondsRealtime(2f);
-            SteamBootstrap.EnsureInitialized();
+            // Only touch Steam when the transport actually needs it (Steam P2P or the SteamServer
+            // dedicated identity). A Udp/Loopback server has no Steam client, so probing it just
+            // logs a scary "SteamAPI.Init failed" warning on every dedicated-server boot. Skip it.
+            var rt = ResolvedTransport;
+            if (rt.Equals("Steam", StringComparison.OrdinalIgnoreCase)
+                || rt.Equals("SteamServer", StringComparison.OrdinalIgnoreCase))
+                SteamBootstrap.EnsureInitialized();
+            else
+                Plugin.Log.LogInfo($"[Steam] skipped (transport {rt} needs no Steam)");
 
             // The overlay join-request callback registers in the lobby controller's ctor —
             // create it NOW, or accepting a Steam invite does nothing until the player has
