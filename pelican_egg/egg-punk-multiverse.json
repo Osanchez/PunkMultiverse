@@ -1,0 +1,234 @@
+{
+    "_comment": "PUNK Multiverse dedicated coordinator. CUSTOM Wine image (not stock steamcmd) - PUNK is a Steam playtest and cannot be fetched by SteamCMD; the operator supplies the game files. See pelican_egg/README.md.",
+    "meta": {
+        "version": "PLCN_v3",
+        "update_url": null
+    },
+    "exported_at": "2026-07-22T00:00:00+00:00",
+    "name": "PUNK Multiverse",
+    "author": "omarsanchezdev@gmail.com",
+    "uuid": "9f8b2c74-1d3e-4a56-b7c8-0e1f2a3b4c5d",
+    "description": "Dedicated headless coordinator for PUNK Multiverse (the co-op mod for PUNK). Runs the Windows game under Wine with the LiteNetLib 'Udp' transport - no Steam required. Game files are operator-supplied (PUNK is a Steam playtest, not SteamCMD-downloadable).",
+    "image": null,
+    "tags": [
+        "wine",
+        "unity",
+        "bepinex",
+        "modded"
+    ],
+    "features": [],
+    "docker_images": {
+        "PUNK Multiverse (Wine) - replace with your pushed tag": "docker.io/yourdockerhubuser/punkmv-server:latest"
+    },
+    "file_denylist": [],
+    "startup_commands": {
+        "Default": "bash /start-server.sh"
+    },
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"[Udp] hosting on\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# PUNK Multiverse install script.\n#\n# IMPORTANT: PUNK is a Steam *playtest* (appid 2850470). Playtest depots are NOT downloadable\n# with `steamcmd +login anonymous`, so - unlike a normal games-steamcmd egg - this install does\n# NOT fetch the game. Provide the files one of two ways:\n#   (A) Set GAME_FILES_URL to a zip/tar of your modded install; this script downloads+extracts it.\n#   (B) Leave it blank and upload the files to the server root via the panel File Manager / SFTP.\nset -e\napt -y update\napt -y --no-install-recommends install curl tar unzip xz-utils ca-certificates findutils\nmkdir -p /mnt/server\ncd /mnt/server\n\nif [ -n \"${GAME_FILES_URL}\" ]; then\n    echo \"Downloading game files from ${GAME_FILES_URL}\"\n    TMP=/tmp/punkmv-game.archive\n    curl -sSL -o \"${TMP}\" \"${GAME_FILES_URL}\"\n    case \"${GAME_FILES_URL}\" in\n        *.zip)           unzip -o \"${TMP}\" -d /mnt/server ;;\n        *.tar.gz|*.tgz)  tar -xzf \"${TMP}\" -C /mnt/server ;;\n        *.tar.xz)        tar -xJf \"${TMP}\" -C /mnt/server ;;\n        *.tar)           tar -xf  \"${TMP}\" -C /mnt/server ;;\n        *) echo \"Unknown archive type; left ${TMP} in place for manual handling\" ;;\n    esac\n    rm -f \"${TMP}\"\n    # If the archive wrapped everything in one top-level folder, flatten so Punk.exe is at root.\n    if [ ! -f /mnt/server/Punk.exe ]; then\n        DIR=$(find /mnt/server -maxdepth 3 -name Punk.exe -printf '%h\\n' 2>/dev/null | head -n1)\n        if [ -n \"${DIR}\" ] && [ \"${DIR}\" != \"/mnt/server\" ]; then\n            echo \"Flattening ${DIR} -> /mnt/server\"\n            cp -a \"${DIR}/.\" /mnt/server/\n        fi\n    fi\nfi\n\nif [ -f /mnt/server/Punk.exe ]; then\n    echo \"OK: Punk.exe present.\"\n    if [ -d /mnt/server/BepInEx ]; then echo \"OK: BepInEx present.\"; else echo \"WARNING: BepInEx/ missing - the mod is not installed in this copy.\"; fi\nelse\n    echo \"======================================================================\"\n    echo \" No Punk.exe found yet.\"\n    echo \" Upload your modded PUNK install to the server root: Punk.exe, BepInEx/,\"\n    echo \" Punk_Data/, MonoBleedingEdge/, winhttp.dll, doorstop_config.ini, and the\"\n    echo \" .doorstop_version file. See pelican_egg/README.md for the full list.\"\n    echo \"======================================================================\"\nfi\necho \"Install step complete.\"\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "sort": 1,
+            "name": "Game Files URL",
+            "description": "Optional. A direct URL to a .zip / .tar.gz / .tar.xz of your MODDED PUNK install (folder containing Punk.exe + BepInEx). Downloaded and extracted at install time. Leave blank to upload the files yourself via File Manager / SFTP. PUNK is a Steam playtest and CANNOT be fetched by SteamCMD.",
+            "env_variable": "GAME_FILES_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "nullable",
+                "string",
+                "max:512"
+            ]
+        },
+        {
+            "sort": 2,
+            "name": "Game Executable",
+            "description": "Windows executable to launch, relative to the game directory.",
+            "env_variable": "STARTUP_EXE",
+            "default_value": "Punk.exe",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string",
+                "max:64"
+            ]
+        },
+        {
+            "sort": 3,
+            "name": "Game Directory",
+            "description": "Absolute path to the game install inside the container. Leave as default unless the files are nested in a subfolder.",
+            "env_variable": "GAME_DIR",
+            "default_value": "/home/container",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string",
+                "max:128"
+            ]
+        },
+        {
+            "sort": 4,
+            "name": "Advertised Address",
+            "description": "Host address written into the join code shown to players (host:port). Informational - the server binds all interfaces on the allocation port regardless. Set to your public IP/DNS to make the in-game code copy-pasteable.",
+            "env_variable": "SERVER_ADDRESS",
+            "default_value": "0.0.0.0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "max:128"
+            ]
+        },
+        {
+            "sort": 5,
+            "name": "Auto-Start Run",
+            "description": "1 = the coordinator launches the run automatically. 0 = the first player to join (the session admin) presses START from their in-game host controls.",
+            "env_variable": "AUTO_START_RUN",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "boolean"
+            ]
+        },
+        {
+            "sort": 6,
+            "name": "Enemy HP Scaling / Player",
+            "description": "Enemy max-health multiplier added per connected player (1 + value*players), fixed at run start. Mod config key EnemyHealthScalePerPlayer. Default 0.25.",
+            "env_variable": "HP_SCALING_PER_PLAYER",
+            "default_value": "0.25",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:0,4"
+            ]
+        },
+        {
+            "sort": 7,
+            "name": "Coin Despawn (seconds)",
+            "description": "How long dropped gold coins persist before expiring. Mod config key CoinDespawnSeconds. Default 45.",
+            "env_variable": "COIN_DESPAWN_SECONDS",
+            "default_value": "45",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:5,600"
+            ]
+        },
+        {
+            "sort": 8,
+            "name": "Mod Version Policy",
+            "description": "How joiners with a mismatched mod version are handled. Reject = refuse the join (recommended). Warn = allow but log a warning.",
+            "env_variable": "MOD_MANIFEST_POLICY",
+            "default_value": "Reject",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "in:Reject,Warn"
+            ]
+        },
+        {
+            "sort": 9,
+            "name": "Admin Command File",
+            "description": "1 = watch BepInEx/plugins/PunkMultiverse/devcmd.txt so an operator can inject dev/admin commands (spawn, status, roster, etc.) at runtime. 0 = disabled.",
+            "env_variable": "ENABLE_ADMIN_COMMANDS",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "boolean"
+            ]
+        },
+        {
+            "sort": 10,
+            "name": "Sync Diagnostics",
+            "description": "1 = verbose [Diag] sync/authority logging (useful when debugging desync). 0 = quiet.",
+            "env_variable": "SYNC_DIAGNOSTICS",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "boolean"
+            ]
+        },
+        {
+            "sort": 11,
+            "name": "Stop Grace (seconds)",
+            "description": "On Stop, seconds to wait for the game to flush its save and exit cleanly before Wine is force-killed.",
+            "env_variable": "STOP_GRACE_SECONDS",
+            "default_value": "20",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:1,120"
+            ]
+        },
+        {
+            "sort": 12,
+            "name": "Steam App ID",
+            "description": "PUNK Playtest appid, written to steam_appid.txt so the base game does not relaunch through the Steam client. Change only if the playtest appid changes.",
+            "env_variable": "STEAM_APPID",
+            "default_value": "2850470",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "numeric"
+            ]
+        },
+        {
+            "sort": 13,
+            "name": "Wine Debug",
+            "description": "WINEDEBUG channel setting. Default -all (silent). Use e.g. +err,+warn to diagnose Wine issues.",
+            "env_variable": "WINEDEBUG",
+            "default_value": "-all",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "max:128"
+            ]
+        },
+        {
+            "sort": 14,
+            "name": "Extra Launch Args",
+            "description": "Additional arguments appended to the Punk.exe command line (Unity/Punk flags).",
+            "env_variable": "EXTRA_ARGS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "nullable",
+                "string",
+                "max:256"
+            ]
+        }
+    ]
+}

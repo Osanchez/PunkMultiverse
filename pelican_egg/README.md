@@ -1,0 +1,153 @@
+# PUNK Multiverse — Pelican egg (dedicated server)
+
+This folder deploys a **headless PUNK Multiverse coordinator** as a Docker game server managed by
+[Pelican](https://pelican.dev/) (the panel; also imports into Pterodactyl). It follows the
+[`pelican-eggs/games-steamcmd`](https://github.com/pelican-eggs/games-steamcmd) pattern — but with
+one deliberate departure explained below.
+
+## Why this is a custom image, not a stock SteamCMD egg
+
+Two facts about PUNK force a custom approach:
+
+1. **PUNK is a Steam *playtest* (appid `2850470`).** Playtest depots are *not* downloadable with
+   `steamcmd +login anonymous` — they require a Steam account that has been granted the playtest.
+   The whole premise of the games-steamcmd eggs ("SteamCMD fetches the server files on install")
+   therefore cannot work here. **You supply the game files yourself.**
+2. **PUNK ships only a Windows Unity build (`Punk.exe`).** There is no Linux dedicated-server
+   binary, so the server runs the Windows game under **Wine**.
+
+What makes a Steam-free headless server possible at all is the mod's **`Udp` transport**
+(LiteNetLib, added on `feat/litenetlib-transport`). The coordinator uses it, so it needs **no Steam
+networking** — no Steam client, no login, no SDR. A `steam_appid.txt` is still written so the base
+game doesn't try to bounce through the Steam client at launch.
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `egg-punk-multiverse.json` | The Pelican egg. Import this into the panel. |
+| `Dockerfile` | Builds the Wine + Xvfb runtime image. |
+| `entrypoint.sh` | Container entrypoint (baked into the image). |
+| `start-server.sh` | Writes `config.cfg` from env vars and launches the game headless (baked into the image). |
+
+## One-time setup
+
+### 1. Build and push the image
+
+The egg points at a Docker image you host. Build and push it (I can help wire up Docker Hub — just say the word):
+
+```bash
+cd pelican_egg
+docker build -t yourdockerhubuser/punkmv-server:latest .
+docker push yourdockerhubuser/punkmv-server:latest
+```
+
+Then edit `docker_images` in `egg-punk-multiverse.json` to match the tag you pushed (the default is
+the placeholder `docker.io/yourdockerhubuser/punkmv-server:latest`).
+
+### 2. Import the egg
+
+Panel → **Admin → Eggs → Import Egg** → upload `egg-punk-multiverse.json`.
+
+### 3. Create a server and give it the game files
+
+Create a server from the egg. Because SteamCMD can't fetch a playtest, provide the modded install
+one of two ways:
+
+- **(A) Game Files URL** — set the `GAME_FILES_URL` variable to a direct link to a `.zip` /
+  `.tar.gz` / `.tar.xz` of your **modded** PUNK folder. The install step downloads and extracts it
+  (and flattens a single wrapping folder so `Punk.exe` lands at the server root). Host the archive
+  somewhere the container can reach (S3, a release asset, your own web server).
+- **(B) Manual upload** — leave `GAME_FILES_URL` blank, then upload the files to the server root via
+  the panel File Manager or SFTP.
+
+**The files the server needs** (this is your working install minus Steam-only cruft):
+
+```
+Punk.exe
+UnityPlayer.dll
+winhttp.dll                 <- the BepInEx/Doorstop proxy; REQUIRED
+doorstop_config.ini
+.doorstop_version
+Punk_Data/                  <- the whole folder
+MonoBleedingEdge/           <- the whole folder (game's Mono runtime)
+BepInEx/                    <- core + plugins/PunkMultiverse (mod dll + LiteNetLib.dll + config.default.cfg)
+```
+
+You do **not** need to include `steam_appid.txt` (the server writes it) and you don't need the Steam
+client. Make sure `BepInEx/plugins/PunkMultiverse/` contains `PunkMultiverse.dll`, `LiteNetLib.dll`,
+and ideally `config.default.cfg` (the start script seeds `config.cfg` from it).
+
+## How players connect
+
+The server binds the **primary allocation port** (UDP) and hosts on the `Udp` transport. Players set
+`Transport = Udp` in their own mod config and join via `join <host:port>` (or the default
+`UdpAddress:UdpPort`). Set the **Advertised Address** variable to your public IP/DNS so the in-game
+join code is copy-pasteable. Session cap is **4 players** (a mod compile constant).
+
+The **first player to join becomes the session admin** and gets host-like controls (START / KICK)
+via a secret capability token — the headless server has no UI of its own. With **Auto-Start Run = 0**
+(default) that admin presses START; set it to `1` for a hands-off server that launches the run by
+itself. World settings (seed, friendly-fire) are chosen by that admin, not by the server.
+
+## Variables (full list)
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `GAME_FILES_URL` | *(blank)* | Install-time URL of a zip/tar of the modded install. Blank = upload manually. |
+| `STARTUP_EXE` | `Punk.exe` | Executable to launch. |
+| `GAME_DIR` | `/home/container` | Game install path in the container. |
+| `SERVER_ADDRESS` | `0.0.0.0` | Advertised join host (written into the join code). |
+| `AUTO_START_RUN` | `0` | `1` auto-launches the run; `0` waits for the admin to press START. |
+| `HP_SCALING_PER_PLAYER` | `0.25` | Enemy HP multiplier added per player (`EnemyHealthScalePerPlayer`). |
+| `COIN_DESPAWN_SECONDS` | `45` | Gold-coin lifetime (`CoinDespawnSeconds`). |
+| `MOD_MANIFEST_POLICY` | `Reject` | `Reject`/`Warn` on mod-version mismatch. |
+| `ENABLE_ADMIN_COMMANDS` | `1` | Watch `devcmd.txt` for runtime dev/admin commands. |
+| `SYNC_DIAGNOSTICS` | `0` | Verbose `[Diag]` sync logging. |
+| `STOP_GRACE_SECONDS` | `20` | Seconds to wait for a clean save on Stop before force-kill. |
+| `STEAM_APPID` | `2850470` | Written to `steam_appid.txt` (keeps the game off the Steam client). |
+| `WINEDEBUG` | `-all` | Wine debug channels. |
+| `EXTRA_ARGS` | *(blank)* | Extra args appended to the Punk.exe command line. |
+
+The port is the panel's primary allocation (`SERVER_PORT`), mapped to the mod's `UdpPort`.
+
+## Lifecycle
+
+- **Startup / done** — the panel marks the server "running" when it sees `[Udp] hosting on` in the
+  console (the coordinator is listening, even before anyone joins). `start-server.sh` streams the
+  BepInEx log to stdout so the console and this regex work.
+- **Stop** — the panel sends `^C`; `start-server.sh` traps it, gives the game `STOP_GRACE_SECONDS`
+  to flush its economy save via Unity's shutdown, then `wineserver -k`. (A dedicated in-mod `quit`
+  devcmd for a fully clean save-and-exit is a recommended follow-up — see below.)
+- **Admin commands** — with `ENABLE_ADMIN_COMMANDS=1` you can drive the running server by writing
+  devcmds into `BepInEx/plugins/PunkMultiverse/devcmd.txt` (e.g. `status`, `roster`, `start`,
+  `spawn ...`). Output goes to `devout.txt` and the console.
+
+## Testing the egg
+
+You can smoke-test the image locally before importing into the panel:
+
+```bash
+docker build -t punkmv-server:test .
+docker run --rm -it \
+  -p 7778:7778/udp \
+  -e SERVER_PORT=7778 \
+  -v /path/to/your/modded/PUNK:/home/container \
+  punkmv-server:test
+```
+
+Watch for `[Udp] hosting on *:7778`. Then, from a normal game client with `Transport = Udp`,
+`join <docker-host-ip>:7778`.
+
+## Known risks / open items
+
+- **Wine boot of a Unity+Steam game is the main unknown.** `SteamAPI.Init` will fail with no Steam
+  running; the mod handles that gracefully, but whether the *base* game boots fully headless under
+  Wine needs a real run — this is the first thing to verify when you test.
+- **No password gate yet.** Anyone who can reach the port and passes the mod-version check can join
+  (the transport's connection key filters stray packets, it is not a password). A server password is
+  a future mod feature.
+- **Clean shutdown is best-effort.** Adding a `quit` devcmd to the mod (save economy + `Application.Quit`)
+  would make Stop fully graceful; the egg already writes to `devcmd.txt` on stop so it's ready for it.
+- **WAN play needs a routable port** (port-forward or a VPS/cloud host). localhost/LAN works out of
+  the box.

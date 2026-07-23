@@ -1,0 +1,4 @@
+# Only the two scripts are COPY'd into the image; keep the build context lean.
+egg-punk-multiverse.json
+README.md
+*.md
