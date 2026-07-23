@@ -36,6 +36,21 @@ namespace PunkMultiverse.Sync
         private static readonly HashSet<int> DeathEffectsDone = new HashSet<int>();
         private static readonly Dictionary<int, Vector2> LastSentPos = new Dictionary<int, Vector2>();
         private static readonly Dictionary<int, float> LastSentAt = new Dictionary<int, float>();
+        // Components resolved ONCE per canonical lifetime (see RegisterLive) — an object's
+        // Rigidbody2D/Unit/DamagableResource never change, but TryCollectEntry used to re-search
+        // them via GetComponent for every owned candidate on every 20Hz send tick (~14k searches/s
+        // at a 170-entity roster). That was the bulk of EnemySync.Collect on a Wine coordinator,
+        // where Unity interop calls cost several times native. Maintained in lockstep with
+        // LiveEntities (set on register/replace, removed on unregister, cleared on reset). The
+        // cached refs still get Unity fake-null checks at use — a destroyed component reads null.
+        private sealed class LiveEntityRefs
+        {
+            public SavableEntity Entity;
+            public Rigidbody2D Rb;
+            public Unit Unit;
+            public DamagableResource Damagable;
+        }
+        private static readonly Dictionary<int, LiveEntityRefs> LiveRefs = new Dictionary<int, LiveEntityRefs>();
         private static readonly Dictionary<int, EntityStateEntry> LastSentState = new Dictionary<int, EntityStateEntry>();
         // WS7.1 stage A: per-entity sampling accumulator (see TryCollectEntry). 1.0 of accrual = due.
         private static readonly Dictionary<int, float> SendPriority = new Dictionary<int, float>();
@@ -247,6 +262,7 @@ namespace PunkMultiverse.Sync
             _nextSendAt = 0;
             _applyingRemote = false;
             LiveEntities.Clear();
+            LiveRefs.Clear();
             ClearCandidateClassCache();
             Lifetimes.Clear();
             SeenLifetimeNetIds.Clear();
@@ -515,6 +531,13 @@ namespace PunkMultiverse.Sync
             }
 
             LiveEntities[netId] = current;
+            LiveRefs[netId] = new LiveEntityRefs
+            {
+                Entity = current,
+                Rb = current.GetComponent<Rigidbody2D>(),
+                Unit = current.GetComponent<Unit>(),
+                Damagable = current.GetComponent<DamagableResource>(),
+            };
             registration.MakeCanonical();
             return registration;
         }
@@ -921,6 +944,7 @@ namespace PunkMultiverse.Sync
             if (removedCanonical)
             {
                 LiveEntities.Remove(netId);
+                LiveRefs.Remove(netId);
                 ForgetCandidateClass(netId);
                 SimulationSegments.Remove(netId);
                 LastSentAt.Remove(netId);
@@ -1585,9 +1609,10 @@ namespace PunkMultiverse.Sync
                     if (FixedOwners.Contains(netId)
                         || !SimulationSegments.TryGetValue(netId, out sourceSegment)
                         || AuthorityManager.OwnerOf(sourceSegment) != session.LocalSlot
-                        || !LiveEntities.TryGetValue(netId, out var live) || live == null
-                        || live.GetComponent<Unit>() == null
-                        || live.GetComponent<RemoteEntityPuppet>() != null) continue;
+                        || !LiveRefs.TryGetValue(netId, out var liveRefs)
+                        || liveRefs.Entity == null
+                        || liveRefs.Unit == null // registration-time cache; Unit never changes
+                        || liveRefs.Entity.GetComponent<RemoteEntityPuppet>() != null) continue;
                     boundaryHandoff = true;
                 }
                 if (!TryCollectEntry(egm, netId, out var entry, forceFull: boundaryHandoff)) continue;
@@ -3411,11 +3436,12 @@ namespace PunkMultiverse.Sync
             bool forceFull = false)
         {
             entry = default;
-            if (!LiveEntities.TryGetValue(netId, out var se) || se == null) return false;
-            if (se.GetComponent<RemoteEntityPuppet>() != null) return false; // not actually ours
-            if (se.GetComponent<DuplicateEntityInert>() != null) return false;
-            var rb = se.GetComponent<Rigidbody2D>();
-            var unit = se.GetComponent<Unit>();
+            // Registration-time component cache: no GetComponent searches on the per-tick path.
+            if (!LiveRefs.TryGetValue(netId, out var refs)) return false;
+            var se = refs.Entity;
+            if (se == null) return false;
+            var rb = refs.Rb;
+            var unit = refs.Unit;
             Vector2 pos = rb != null ? rb.position : (Vector2)se.transform.position;
             float now = Time.unscaledTime;
             byte fire = 0;
@@ -3466,10 +3492,16 @@ namespace PunkMultiverse.Sync
                 // up with one extra send, not a burst.
                 SendPriority[netId] = Mathf.Min(accrued - 1f, 1f);
             }
+            // The two states that CAN change during a lifetime (puppetized-in-place on an authority
+            // handoff, quarantined as a duplicate) are checked AFTER the rate gates, so only the
+            // sampled minority pays the GetComponent — the gated-out majority skips it entirely.
+            // Same outcome as the old head-of-function checks: a puppet/inert entity is never sent.
+            if (se.GetComponent<RemoteEntityPuppet>() != null) return false; // not actually ours
+            if (se.GetComponent<DuplicateEntityInert>() != null) return false;
             LastSentPos[netId] = pos;
             LastSentAt[netId] = now;
-            // Fetched after the rate gates on purpose — the gated-out majority never needs it.
-            var dr = se.GetComponent<DamagableResource>();
+            // Cached at registration — the gated-out majority never touches it.
+            var dr = refs.Damagable;
             float hp = 1f;
             try { if (dr != null && dr.MaxHealth > 0) hp = dr.CurrentHealth / dr.MaxHealth; } catch { }
             entry = new EntityStateEntry
