@@ -14,6 +14,7 @@ on:
       - '.gitignore'
       - 'LICENSE'
       - 'pelican_egg/**'   # server-deploy assets (egg/Dockerfile/scripts) — not part of the mod DLL
+      - 'infra/**'         # AWS setup scripts / Lambda source — not part of the mod DLL
   workflow_dispatch:
 
 permissions:
