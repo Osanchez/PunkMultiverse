@@ -2,17 +2,17 @@
 # PUNK Multiverse dedicated coordinator launcher (runs inside the Wine container).
 #
 # Responsibilities:
-#   1. Locate the operator-supplied game install (Punk.exe + BepInEx + the mod).
-#   2. Derive a headless server config.cfg from the environment (port, gameplay tunables, ...),
-#      starting from the mod's shipped config.default.cfg so unset keys keep sane defaults.
-#   3. Prevent the base game from relaunching through Steam (steam_appid.txt).
-#   4. Boot the game headless under Wine as a coordinator on the Udp transport, streaming the
+#   1. Locate the operator-supplied base game (Punk.exe).
+#   2. Overlay the image's baked BepInEx loader onto the game so even a vanilla copy is mod-ready.
+#   3. Self-update: pull the latest (or pinned) mod plugin from GitHub releases.
+#   4. Derive a headless server config.cfg from the environment (port, gameplay tunables, ...).
+#   5. Prevent the base game from relaunching through Steam (steam_appid.txt).
+#   6. Boot the game headless under Wine as a coordinator on the Udp transport, streaming the
 #      BepInEx log to stdout so the panel sees the readiness line and console.
-#   5. On SIGTERM/SIGINT (panel "Stop"), give the game a moment to flush its economy save,
-#      then force Wine down.
+#   7. On SIGTERM/SIGINT (panel "Stop"), drive the mod's `quit` (save + notify) then force Wine.
 #
-# Everything is driven by env vars (documented in README.md / the egg). Nothing here needs
-# Steam to be running.
+# Everything is driven by env vars (documented in README.md / the egg). Only the base game is
+# operator-supplied; BepInEx and the mod come from the image + GitHub. Nothing needs Steam.
 set -uo pipefail
 
 # --------------------------------------------------------------------- configuration (env)
@@ -29,6 +29,14 @@ MOD_MANIFEST_POLICY="${MOD_MANIFEST_POLICY:-Reject}"  # Reject | Warn — versio
 HP_SCALING_PER_PLAYER="${HP_SCALING_PER_PLAYER:-0.25}"
 COIN_DESPAWN_SECONDS="${COIN_DESPAWN_SECONDS:-45}"
 
+# Self-provisioning.
+INSTALL_BEPINEX="${INSTALL_BEPINEX:-1}"               # 1 = overlay the image's baked BepInEx loader each boot
+MOD_AUTO_UPDATE="${MOD_AUTO_UPDATE:-1}"               # 1 = check GitHub for a newer mod release on boot
+MOD_VERSION="${MOD_VERSION:-latest}"                  # "latest" or a release tag like v0.1.131
+MOD_RELEASE_REPO="${MOD_RELEASE_REPO:-Osanchez/PunkMultiverse}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"                      # optional: lifts API rate limits / private repos
+BEPINEX_STAGE="${BEPINEX_STAGE:-/opt/bepinex}"        # where the image baked the loader
+
 STOP_GRACE_SECONDS="${STOP_GRACE_SECONDS:-20}"        # shutdown: seconds to wait for a clean exit before wineserver -k
 WINEDEBUG="${WINEDEBUG:--all}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"                          # extra Unity/Punk.exe args
@@ -38,25 +46,110 @@ PLUGIN_DIR="${GAME_DIR}/BepInEx/plugins/PunkMultiverse"
 CFG="${PLUGIN_DIR}/config.cfg"
 CFG_DEFAULT="${PLUGIN_DIR}/config.default.cfg"
 BEPINEX_LOG="${GAME_DIR}/BepInEx/LogOutput.log"
+VERSION_MARKER="${PLUGIN_DIR}/.installed_version"
 
 log() { echo "[server] $*"; }
 fail() { echo "[server][FATAL] $*" >&2; exit 1; }
 
-# --------------------------------------------------------------------- preflight
+# --------------------------------------------------------------------- preflight: base game
 cd "${GAME_DIR}" || fail "GAME_DIR '${GAME_DIR}' does not exist"
 
 if [[ ! -f "${GAME_DIR}/${STARTUP_EXE}" ]]; then
     echo "======================================================================"
-    echo " Game files not found: ${GAME_DIR}/${STARTUP_EXE} is missing."
+    echo " Base game not found: ${GAME_DIR}/${STARTUP_EXE} is missing."
     echo ""
-    echo " PUNK is a Steam playtest and cannot be fetched by SteamCMD. Upload your"
-    echo " modded install (the folder containing Punk.exe, BepInEx/, Punk_Data/, and"
-    echo " the winhttp.dll doorstop) to the server root, then restart."
+    echo " PUNK is a Steam playtest and cannot be fetched by SteamCMD. Upload the"
+    echo " base game (Punk.exe, Punk_Data/, MonoBleedingEdge/, UnityPlayer.dll) to the"
+    echo " server root, then restart. BepInEx and the mod are provided automatically by"
+    echo " this image — you do NOT need to install them yourself."
     echo " See pelican_egg/README.md for the exact file list."
     echo "======================================================================"
     fail "no game executable"
 fi
-[[ -d "${GAME_DIR}/BepInEx" ]] || fail "BepInEx/ not found — the mod is not installed in this game copy"
+
+# --------------------------------------------------------------------- overlay BepInEx loader
+# Copy the image's baked loader (Doorstop proxy + BepInEx/core) over the game. Idempotent and
+# cheap (~1.5 MB); it makes a vanilla game mod-ready and keeps the loader version deterministic.
+# Never touches BepInEx/config or the plugins folder beyond what the mod step manages.
+if [[ "${INSTALL_BEPINEX}" == "1" || "${INSTALL_BEPINEX,,}" == "true" ]]; then
+    if [[ -d "${BEPINEX_STAGE}" ]]; then
+        log "overlaying baked BepInEx loader from ${BEPINEX_STAGE}"
+        cp -f  "${BEPINEX_STAGE}/winhttp.dll"         "${GAME_DIR}/winhttp.dll"         2>/dev/null || true
+        cp -f  "${BEPINEX_STAGE}/doorstop_config.ini" "${GAME_DIR}/doorstop_config.ini" 2>/dev/null || true
+        cp -f  "${BEPINEX_STAGE}/.doorstop_version"   "${GAME_DIR}/.doorstop_version"   2>/dev/null || true
+        mkdir -p "${GAME_DIR}/BepInEx"
+        cp -rf "${BEPINEX_STAGE}/BepInEx/core"        "${GAME_DIR}/BepInEx/"            2>/dev/null || true
+    else
+        log "WARNING: no baked BepInEx at ${BEPINEX_STAGE} — relying on game copy's own loader"
+    fi
+fi
+[[ -d "${GAME_DIR}/BepInEx/core" ]] || fail "BepInEx/core missing and none baked — cannot load the mod"
+
+# --------------------------------------------------------------------- self-update the mod
+# Pull the mod plugin (PunkMultiverse.dll + LiteNetLib.dll) from GitHub releases into the plugins
+# folder. Skips the download when the wanted release is already installed; degrades to the
+# existing copy when GitHub is unreachable.
+update_mod() {
+    [[ "${MOD_AUTO_UPDATE}" == "1" || "${MOD_AUTO_UPDATE,,}" == "true" ]] || { log "mod auto-update disabled"; return; }
+    local api hdr tag asset current
+    hdr=(-H "Accept: application/vnd.github+json")
+    [[ -n "${GITHUB_TOKEN}" ]] && hdr+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+
+    if [[ "${MOD_VERSION}" == "latest" ]]; then
+        api="https://api.github.com/repos/${MOD_RELEASE_REPO}/releases/latest"
+    else
+        api="https://api.github.com/repos/${MOD_RELEASE_REPO}/releases/tags/${MOD_VERSION}"
+    fi
+
+    local meta
+    if ! meta="$(curl -fsSL "${hdr[@]}" "${api}" 2>/dev/null)"; then
+        log "WARNING: could not reach GitHub (${api}); keeping the installed mod"
+        return
+    fi
+    tag="$(echo "${meta}" | jq -r '.tag_name // empty')"
+    # Prefer the PunkMultiverse-*.zip asset; fall back to the first zip.
+    asset="$(echo "${meta}" | jq -r '(.assets[] | select(.name|test("PunkMultiverse.*\\.zip$")) | .browser_download_url) // (.assets[] | select(.name|test("\\.zip$")) | .browser_download_url)' | head -n1)"
+    if [[ -z "${tag}" || -z "${asset}" ]]; then
+        log "WARNING: no release asset found for '${MOD_VERSION}'; keeping the installed mod"
+        return
+    fi
+
+    current="$(cat "${VERSION_MARKER}" 2>/dev/null || echo none)"
+    if [[ "${current}" == "${tag}" && -f "${PLUGIN_DIR}/PunkMultiverse.dll" ]]; then
+        log "mod up to date (${tag})"
+        return
+    fi
+
+    log "updating mod ${current} -> ${tag}"
+    local tmp; tmp="$(mktemp -d)"
+    if ! curl -fsSL "${hdr[@]}" -o "${tmp}/mod.zip" "${asset}"; then
+        log "WARNING: download failed (${asset}); keeping the installed mod"
+        rm -rf "${tmp}"; return
+    fi
+    if ! unzip -o -q "${tmp}/mod.zip" -d "${tmp}/x"; then
+        log "WARNING: release zip did not extract; keeping the installed mod"
+        rm -rf "${tmp}"; return
+    fi
+    # The release zip lays out BepInEx/plugins/PunkMultiverse/*.dll — find that folder wherever it
+    # landed and copy its contents into our plugin dir.
+    local src; src="$(find "${tmp}/x" -type d -name PunkMultiverse -path '*plugins*' | head -n1)"
+    [[ -z "${src}" ]] && src="$(dirname "$(find "${tmp}/x" -type f -name PunkMultiverse.dll | head -n1)" 2>/dev/null)"
+    if [[ -z "${src}" || ! -f "${src}/PunkMultiverse.dll" ]]; then
+        log "WARNING: PunkMultiverse.dll not in release ${tag}; keeping the installed mod"
+        rm -rf "${tmp}"; return
+    fi
+    mkdir -p "${PLUGIN_DIR}"
+    cp -f "${src}/"*.dll "${PLUGIN_DIR}/" 2>/dev/null || true
+    [[ -f "${src}/config.default.cfg" ]] && cp -f "${src}/config.default.cfg" "${PLUGIN_DIR}/config.default.cfg"
+    echo "${tag}" > "${VERSION_MARKER}"
+    log "mod ${tag} installed: $(ls -1 "${PLUGIN_DIR}"/*.dll 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+    if [[ ! -f "${PLUGIN_DIR}/LiteNetLib.dll" ]]; then
+        log "WARNING: LiteNetLib.dll not present in ${tag} — the Udp transport needs it. Ensure the"
+        log "         LiteNetLib transport is merged to main and released (see README known issues)."
+    fi
+    rm -rf "${tmp}"
+}
+update_mod
 
 # --------------------------------------------------------------------- config.cfg from env
 mkdir -p "${PLUGIN_DIR}"

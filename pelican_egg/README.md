@@ -21,21 +21,36 @@ What makes a Steam-free headless server possible at all is the mod's **`Udp` tra
 networking** — no Steam client, no login, no SDR. A `steam_appid.txt` is still written so the base
 game doesn't try to bounce through the Steam client at launch.
 
+## What you supply vs. what the image provides
+
+To keep things easy and self-updating, the image provisions everything except the copyrighted game:
+
+- **You supply: the base game only** — `Punk.exe`, `Punk_Data/`, `MonoBleedingEdge/`,
+  `UnityPlayer.dll`. (The playtest can't be redistributed in a public image, so it can't be baked in.)
+- **The image provides: BepInEx** — the Doorstop loader (`winhttp.dll`) + `BepInEx/core` are baked
+  into the image and overlaid onto your game files at boot, so even a *vanilla* game copy becomes
+  mod-ready. You never install BepInEx yourself.
+- **GitHub provides: the mod** — on every boot the server pulls the latest (or a pinned) mod release
+  from `Osanchez/PunkMultiverse` and drops it into the plugins folder. **Self-updating**: push a new
+  release and servers pick it up on their next restart.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `egg-punk-multiverse.json` | The Pelican egg. Import this into the panel. |
-| `Dockerfile` | Builds the Wine + Xvfb runtime image. |
+| `Dockerfile` | Builds the Wine + Xvfb image, with `jq` and the baked BepInEx layer. |
+| `build-image.sh` | Stages BepInEx from a local install, then builds (and optionally pushes) the image. |
 | `entrypoint.sh` | Container entrypoint (baked into the image). |
-| `start-server.sh` | Writes `config.cfg` from env vars and launches the game headless (baked into the image). |
+| `start-server.sh` | Overlays BepInEx, self-updates the mod, writes `config.cfg` from env, launches headless (baked in). |
 
 ## One-time setup
 
 ### 1. Build and push the image
 
-The egg points at the Docker Hub image `docker.io/osanchezdev/punk-punkmultiverse:latest`. Build and
-push it from this folder:
+The egg points at the Docker Hub image `docker.io/osanchezdev/punk-punkmultiverse:latest`. Use
+`build-image.sh`, which stages the BepInEx loader from a local PUNK install (it needs `winhttp.dll`
+and `BepInEx/core`), then builds and pushes:
 
 ```bash
 # One-time auth: log in with your Docker Hub username + a Personal Access Token as the password.
@@ -43,46 +58,42 @@ push it from this folder:
 docker login -u osanchezdev
 
 cd pelican_egg
-docker build -t osanchezdev/punk-punkmultiverse:latest .
-docker push osanchezdev/punk-punkmultiverse:latest
+./build-image.sh --push
+# Uses the install two levels up by default; override with GAME_DIR=/path/to/PUNK ./build-image.sh
 ```
 
 `docker login` stores the credential locally (in `~/.docker/config.json` or the OS keychain), so you
-only do it once per machine. If you tag a different version (e.g. `:v0.1.130`), update `docker_images`
-in `egg-punk-multiverse.json` to match.
+only do it once per machine. You only rebuild the **image** when the runtime (Wine, scripts, or the
+baked BepInEx) changes — **mod updates do not need an image rebuild**, since the mod self-updates from
+GitHub at boot.
 
 ### 2. Import the egg
 
 Panel → **Admin → Eggs → Import Egg** → upload `egg-punk-multiverse.json`.
 
-### 3. Create a server and give it the game files
+### 3. Create a server and give it the base game
 
-Create a server from the egg. Because SteamCMD can't fetch a playtest, provide the modded install
-one of two ways:
+Create a server from the egg, then provide **just the base game** (no BepInEx, no mod) one of two ways:
 
 - **(A) Game Files URL** — set the `GAME_FILES_URL` variable to a direct link to a `.zip` /
-  `.tar.gz` / `.tar.xz` of your **modded** PUNK folder. The install step downloads and extracts it
-  (and flattens a single wrapping folder so `Punk.exe` lands at the server root). Host the archive
+  `.tar.gz` / `.tar.xz` of the base PUNK folder. The install step downloads and extracts it (and
+  flattens a single wrapping folder so `Punk.exe` lands at the server root). Host the archive
   somewhere the container can reach (S3, a release asset, your own web server).
 - **(B) Manual upload** — leave `GAME_FILES_URL` blank, then upload the files to the server root via
   the panel File Manager or SFTP.
 
-**The files the server needs** (this is your working install minus Steam-only cruft):
+**The files the server needs** (base game only):
 
 ```
 Punk.exe
 UnityPlayer.dll
-winhttp.dll                 <- the BepInEx/Doorstop proxy; REQUIRED
-doorstop_config.ini
-.doorstop_version
 Punk_Data/                  <- the whole folder
 MonoBleedingEdge/           <- the whole folder (game's Mono runtime)
-BepInEx/                    <- core + plugins/PunkMultiverse (mod dll + LiteNetLib.dll + config.default.cfg)
 ```
 
-You do **not** need to include `steam_appid.txt` (the server writes it) and you don't need the Steam
-client. Make sure `BepInEx/plugins/PunkMultiverse/` contains `PunkMultiverse.dll`, `LiteNetLib.dll`,
-and ideally `config.default.cfg` (the start script seeds `config.cfg` from it).
+You do **not** need `steam_appid.txt` (the server writes it), the Steam client, BepInEx, or the mod —
+the image overlays BepInEx and self-updates the mod on boot. (If you do upload a full modded install,
+that's fine too; the overlay is idempotent and `INSTALL_BEPINEX=0` lets you keep the copy's own loader.)
 
 ## How players connect
 
@@ -100,7 +111,12 @@ itself. World settings (seed, friendly-fire) are chosen by that admin, not by th
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `GAME_FILES_URL` | *(blank)* | Install-time URL of a zip/tar of the modded install. Blank = upload manually. |
+| `GAME_FILES_URL` | *(blank)* | Install-time URL of a zip/tar of the base game. Blank = upload manually. |
+| `MOD_AUTO_UPDATE` | `1` | `1` = check GitHub for a newer mod build each boot; `0` = keep the installed one. |
+| `MOD_VERSION` | `latest` | `latest` or a release tag (e.g. `v0.1.131`) to pin the mod build. |
+| `MOD_RELEASE_REPO` | `Osanchez/PunkMultiverse` | GitHub owner/repo the mod is pulled from. |
+| `GITHUB_TOKEN` | *(blank)* | Optional token for API rate limits / a private mod repo. |
+| `INSTALL_BEPINEX` | `1` | `1` = overlay the image's baked BepInEx each boot; `0` = use the game copy's own. |
 | `STARTUP_EXE` | `Punk.exe` | Executable to launch. |
 | `GAME_DIR` | `/home/container` | Game install path in the container. |
 | `SERVER_ADDRESS` | `0.0.0.0` | Advertised join host (written into the join code). |
@@ -128,6 +144,11 @@ The port is the panel's primary allocation (`SERVER_PORT`), mapped to the mod's 
   hasn't exited within `STOP_GRACE_SECONDS`, the script escalates to a signal and finally
   `wineserver -k`. Restart is a stop followed by a fresh start; stale command-file leftovers are
   cleared on boot so a restart can't loop.
+- **Self-update** — on each boot the server overlays BepInEx from the image, then queries
+  `MOD_RELEASE_REPO` for the wanted release (`MOD_VERSION`, default `latest`), and installs it only
+  if the tag differs from `BepInEx/plugins/PunkMultiverse/.installed_version`. If GitHub is
+  unreachable it keeps the installed copy. So publishing a new mod release updates every server on
+  its next restart — no image rebuild.
 - **Admin commands** — with `ENABLE_ADMIN_COMMANDS=1` you can drive the running server by writing
   devcmds into `BepInEx/plugins/PunkMultiverse/devcmd.txt` (e.g. `status`, `roster`, `start`,
   `spawn ...`). Output goes to `devout.txt` and the console.
@@ -146,10 +167,17 @@ docker run --rm -it \
 ```
 
 Watch for `[Udp] hosting on *:7778`. Then, from a normal game client with `Transport = Udp`,
-`join <docker-host-ip>:7778`.
+`join <docker-host-ip>:7778`. (Mount just the base game — BepInEx and the mod install themselves.)
 
 ## Known risks / open items
 
+- **The Udp transport must be in a release for the server to work.** The self-update pulls the mod
+  from `Osanchez/PunkMultiverse` **releases**, which are cut from `main`. The `Udp` transport (and
+  `LiteNetLib.dll`) currently live on the `feat/litenetlib-transport` branch — until that merges to
+  `main` and a release is published, `MOD_VERSION=latest` installs a mod **without** Udp support and
+  the server won't host on Udp. The start script logs a warning if `LiteNetLib.dll` is absent from
+  the pulled release. **Action:** merge the branch (an auto-release follows), or point `MOD_VERSION`
+  at a tag that includes it.
 - **Wine boot of a Unity+Steam game is the main unknown.** `SteamAPI.Init` will fail with no Steam
   running; the mod handles that gracefully, but whether the *base* game boots fully headless under
   Wine needs a real run — this is the first thing to verify when you test.

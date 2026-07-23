@@ -39,11 +39,18 @@ RUN dpkg --add-architecture i386 \
       winehq-stable \
       xvfb xauth \
       cabextract procps psmisc \
-      curl tar unzip xz-utils \
+      curl tar unzip xz-utils jq \
       tini locales netcat-openbsd \
  && sed -i 's/^# *\(C.UTF-8\)/\1/' /etc/locale.gen 2>/dev/null || true \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
+
+# Baked "mod runtime" layer: BepInEx (the Doorstop winhttp.dll proxy + BepInEx/core) staged from
+# a known-good install by build-image.sh. This is the redistributable open-source loader — NOT
+# the game and NOT the mod. start-server.sh overlays it onto the operator's game files at boot so
+# even a vanilla game copy becomes mod-ready. The mod plugin itself is pulled fresh from GitHub
+# releases at runtime (self-updating), so it is deliberately NOT baked here.
+COPY _bepinex_stage/ /opt/bepinex/
 
 COPY entrypoint.sh /entrypoint.sh
 COPY start-server.sh /start-server.sh

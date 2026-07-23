@@ -32,7 +32,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# PUNK Multiverse install script.\n#\n# IMPORTANT: PUNK is a Steam *playtest* (appid 2850470). Playtest depots are NOT downloadable\n# with `steamcmd +login anonymous`, so - unlike a normal games-steamcmd egg - this install does\n# NOT fetch the game. Provide the files one of two ways:\n#   (A) Set GAME_FILES_URL to a zip/tar of your modded install; this script downloads+extracts it.\n#   (B) Leave it blank and upload the files to the server root via the panel File Manager / SFTP.\nset -e\napt -y update\napt -y --no-install-recommends install curl tar unzip xz-utils ca-certificates findutils\nmkdir -p /mnt/server\ncd /mnt/server\n\nif [ -n \"${GAME_FILES_URL}\" ]; then\n    echo \"Downloading game files from ${GAME_FILES_URL}\"\n    TMP=/tmp/punkmv-game.archive\n    curl -sSL -o \"${TMP}\" \"${GAME_FILES_URL}\"\n    case \"${GAME_FILES_URL}\" in\n        *.zip)           unzip -o \"${TMP}\" -d /mnt/server ;;\n        *.tar.gz|*.tgz)  tar -xzf \"${TMP}\" -C /mnt/server ;;\n        *.tar.xz)        tar -xJf \"${TMP}\" -C /mnt/server ;;\n        *.tar)           tar -xf  \"${TMP}\" -C /mnt/server ;;\n        *) echo \"Unknown archive type; left ${TMP} in place for manual handling\" ;;\n    esac\n    rm -f \"${TMP}\"\n    # If the archive wrapped everything in one top-level folder, flatten so Punk.exe is at root.\n    if [ ! -f /mnt/server/Punk.exe ]; then\n        DIR=$(find /mnt/server -maxdepth 3 -name Punk.exe -printf '%h\\n' 2>/dev/null | head -n1)\n        if [ -n \"${DIR}\" ] && [ \"${DIR}\" != \"/mnt/server\" ]; then\n            echo \"Flattening ${DIR} -> /mnt/server\"\n            cp -a \"${DIR}/.\" /mnt/server/\n        fi\n    fi\nfi\n\nif [ -f /mnt/server/Punk.exe ]; then\n    echo \"OK: Punk.exe present.\"\n    if [ -d /mnt/server/BepInEx ]; then echo \"OK: BepInEx present.\"; else echo \"WARNING: BepInEx/ missing - the mod is not installed in this copy.\"; fi\nelse\n    echo \"======================================================================\"\n    echo \" No Punk.exe found yet.\"\n    echo \" Upload your modded PUNK install to the server root: Punk.exe, BepInEx/,\"\n    echo \" Punk_Data/, MonoBleedingEdge/, winhttp.dll, doorstop_config.ini, and the\"\n    echo \" .doorstop_version file. See pelican_egg/README.md for the full list.\"\n    echo \"======================================================================\"\nfi\necho \"Install step complete.\"\n",
+            "script": "#!/bin/bash\n# PUNK Multiverse install script.\n#\n# IMPORTANT: PUNK is a Steam *playtest* (appid 2850470). Playtest depots are NOT downloadable\n# with `steamcmd +login anonymous`, so - unlike a normal games-steamcmd egg - this install does\n# NOT fetch the game. You only need to provide the BASE GAME (Punk.exe + Punk_Data/ +\n# MonoBleedingEdge/ + UnityPlayer.dll) - BepInEx and the mod are provided automatically by the\n# server image at boot (BepInEx is baked in; the mod self-updates from GitHub releases).\n# Provide the base game one of two ways:\n#   (A) Set GAME_FILES_URL to a zip/tar of the game; this script downloads+extracts it.\n#   (B) Leave it blank and upload the files to the server root via the panel File Manager / SFTP.\nset -e\napt -y update\napt -y --no-install-recommends install curl tar unzip xz-utils ca-certificates findutils\nmkdir -p /mnt/server\ncd /mnt/server\n\nif [ -n \"${GAME_FILES_URL}\" ]; then\n    echo \"Downloading game files from ${GAME_FILES_URL}\"\n    TMP=/tmp/punkmv-game.archive\n    curl -sSL -o \"${TMP}\" \"${GAME_FILES_URL}\"\n    case \"${GAME_FILES_URL}\" in\n        *.zip)           unzip -o \"${TMP}\" -d /mnt/server ;;\n        *.tar.gz|*.tgz)  tar -xzf \"${TMP}\" -C /mnt/server ;;\n        *.tar.xz)        tar -xJf \"${TMP}\" -C /mnt/server ;;\n        *.tar)           tar -xf  \"${TMP}\" -C /mnt/server ;;\n        *) echo \"Unknown archive type; left ${TMP} in place for manual handling\" ;;\n    esac\n    rm -f \"${TMP}\"\n    # If the archive wrapped everything in one top-level folder, flatten so Punk.exe is at root.\n    if [ ! -f /mnt/server/Punk.exe ]; then\n        DIR=$(find /mnt/server -maxdepth 3 -name Punk.exe -printf '%h\\n' 2>/dev/null | head -n1)\n        if [ -n \"${DIR}\" ] && [ \"${DIR}\" != \"/mnt/server\" ]; then\n            echo \"Flattening ${DIR} -> /mnt/server\"\n            cp -a \"${DIR}/.\" /mnt/server/\n        fi\n    fi\nfi\n\nif [ -f /mnt/server/Punk.exe ]; then\n    echo \"OK: Punk.exe present. BepInEx + mod are provided by the image at boot.\"\nelse\n    echo \"======================================================================\"\n    echo \" No Punk.exe found yet.\"\n    echo \" Upload the BASE GAME to the server root: Punk.exe, Punk_Data/,\"\n    echo \" MonoBleedingEdge/, UnityPlayer.dll. You do NOT need BepInEx or the mod -\"\n    echo \" the image installs BepInEx and self-updates the mod from GitHub on boot.\"\n    echo \" See pelican_egg/README.md.\"\n    echo \"======================================================================\"\nfi\necho \"Install step complete.\"\n",
             "container": "ghcr.io/parkervcp/installers:debian",
             "entrypoint": "bash"
         }
@@ -41,7 +41,7 @@
         {
             "sort": 1,
             "name": "Game Files URL",
-            "description": "Optional. A direct URL to a .zip / .tar.gz / .tar.xz of your MODDED PUNK install (folder containing Punk.exe + BepInEx). Downloaded and extracted at install time. Leave blank to upload the files yourself via File Manager / SFTP. PUNK is a Steam playtest and CANNOT be fetched by SteamCMD.",
+            "description": "Optional. A direct URL to a .zip / .tar.gz / .tar.xz of the BASE PUNK game (Punk.exe, Punk_Data/, MonoBleedingEdge/, UnityPlayer.dll). Downloaded and extracted at install time. Leave blank to upload the files yourself via File Manager / SFTP. You do NOT need to include BepInEx or the mod - the image installs BepInEx and self-updates the mod from GitHub. PUNK is a Steam playtest and CANNOT be fetched by SteamCMD.",
             "env_variable": "GAME_FILES_URL",
             "default_value": "",
             "user_viewable": true,
@@ -50,6 +50,74 @@
                 "nullable",
                 "string",
                 "max:512"
+            ]
+        },
+        {
+            "sort": 15,
+            "name": "Mod Auto-Update",
+            "description": "1 = on every boot, check GitHub releases and install a newer mod build if available. 0 = keep whatever is already installed.",
+            "env_variable": "MOD_AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "boolean"
+            ]
+        },
+        {
+            "sort": 16,
+            "name": "Mod Version",
+            "description": "Which mod release to run: 'latest' (default) or a specific release tag like v0.1.131. Pin a tag to freeze the server on a known build.",
+            "env_variable": "MOD_VERSION",
+            "default_value": "latest",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "max:32"
+            ]
+        },
+        {
+            "sort": 17,
+            "name": "Mod Release Repo",
+            "description": "GitHub owner/repo the mod is pulled from. Leave as default unless you fork the mod.",
+            "env_variable": "MOD_RELEASE_REPO",
+            "default_value": "Osanchez/PunkMultiverse",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": [
+                "required",
+                "string",
+                "max:100"
+            ]
+        },
+        {
+            "sort": 18,
+            "name": "GitHub Token",
+            "description": "Optional. A GitHub token to lift API rate limits or pull from a private mod repo. Not needed for the public repo.",
+            "env_variable": "GITHUB_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "nullable",
+                "string",
+                "max:200"
+            ]
+        },
+        {
+            "sort": 19,
+            "name": "Install BepInEx",
+            "description": "1 = overlay the image's baked BepInEx loader onto the game each boot (makes a vanilla game copy mod-ready and keeps the loader version consistent). 0 = use the game copy's own BepInEx.",
+            "env_variable": "INSTALL_BEPINEX",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "boolean"
             ]
         },
         {
