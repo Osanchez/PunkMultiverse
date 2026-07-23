@@ -247,6 +247,7 @@ namespace PunkMultiverse.Sync
             _nextSendAt = 0;
             _applyingRemote = false;
             LiveEntities.Clear();
+            ClearCandidateClassCache();
             Lifetimes.Clear();
             SeenLifetimeNetIds.Clear();
             ReplacementTypes.Clear();
@@ -919,6 +920,7 @@ namespace PunkMultiverse.Sync
             if (removedCanonical)
             {
                 LiveEntities.Remove(netId);
+                ForgetCandidateClass(netId);
                 SimulationSegments.Remove(netId);
                 LastSentAt.Remove(netId);
                 LastSentPos.Remove(netId);
@@ -3333,6 +3335,26 @@ namespace PunkMultiverse.Sync
         private static float _nextHostScanAt;
         private const float HostScanInterval = 0.5f; // authority scan cadence — fresh enough
 
+        // An entity's component makeup never changes, so the "is this a player ship/puppet?" test
+        // only needs GetComponent ONCE per netId. Caching it here turns the twice-per-entity
+        // GetComponent scan (the single hottest line of EnemySync.Collect — ~450ms/scan over a
+        // full roster on a headless Wine coordinator, where GetComponent is far slower than native)
+        // into a HashSet lookup. Cleared/pruned wherever LiveEntities is (Clear/Remove).
+        private static readonly HashSet<int> _shipLikeNetIds = new HashSet<int>(); // excluded (ship/puppet)
+        private static readonly HashSet<int> _unitLikeNetIds = new HashSet<int>(); // confirmed streamable
+
+        internal static void ForgetCandidateClass(int netId)
+        {
+            _shipLikeNetIds.Remove(netId);
+            _unitLikeNetIds.Remove(netId);
+        }
+
+        internal static void ClearCandidateClassCache()
+        {
+            _shipLikeNetIds.Clear();
+            _unitLikeNetIds.Clear();
+        }
+
         private static List<int> SpawnedUnitCandidates()
         {
             // FindObjectsByType is a whole-scene walk — at the 20 Hz state rate it was the
@@ -3348,10 +3370,19 @@ namespace PunkMultiverse.Sync
             {
                 var entity = kv.Value;
                 if (entity == null) continue;
-                if (entity.GetComponent<RemotePuppet>() != null) continue;      // player ships handled by ShipSync
-                if (entity.GetComponent<Ship>() != null) continue;
                 int netId = kv.Key;
                 if (KilledNetIds.Contains(netId)) continue;
+                if (_shipLikeNetIds.Contains(netId)) continue;                  // player ships handled by ShipSync
+                if (!_unitLikeNetIds.Contains(netId))
+                {
+                    // First sighting of this netId — classify once, then cache forever.
+                    if (entity.GetComponent<RemotePuppet>() != null || entity.GetComponent<Ship>() != null)
+                    {
+                        _shipLikeNetIds.Add(netId);
+                        continue;
+                    }
+                    _unitLikeNetIds.Add(netId);
+                }
                 _hostScratch.Add(netId);
             }
             return _hostScratch;
