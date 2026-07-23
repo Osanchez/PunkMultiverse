@@ -503,6 +503,27 @@ prefix, so the WS8.2 barriers still see per-channel reliable ordering.
   not loopback-fast). T2 (Combat-vs-bulk isolation measurement) and T3 (real remote friend)
   still open — see STEAMSERVER_TRANSPORT_SPEC §7.
 
+## 32. udp-transport (LiteNetLib direct UDP — Docker/LAN/no-Steam)
+
+`Transport=Udp`: LiteNetLib on `UdpPort` (default 7778, distinct from LoopbackPort so both
+can coexist). Reliable channels ride ReliableOrdered on LiteNetLib channels 0/1/2 (one per
+NetChannel — WS8.2 per-channel ordering, Combat never blocks behind Events); State is
+Unreliable. 1-byte channel prefix in the payload (SteamServerTransport pattern). Join code
+is `host:port`; peer ids: host=1, clients=LiteNetLib id+2 (client learns its own from
+`NetPeer.RemoteId`).
+
+- Host install: `Transport=Udp`, `AutoStart=Host`. Client: `Transport=Udp`,
+  `AutoStart=Join` (defaults to `UdpAddress:UdpPort`) or `join <host:port>`.
+- PASS: host `[Udp] hosting on *:7778`; client `[Udp] connected to host as peer N`;
+  GO LIVE + checksum parity; combat routed; no `[Udp] socket error` / `[Udp] oversized`.
+- Host-stall behavior: LiteNetLib disconnects at 10s silence → client arms a 2s-cadence
+  auto-reconnect (`[Udp] retrying connect`) and reattaches in place (resume-HELLO), same
+  policy as loopback. A REMOTE close (host quit) does NOT migrate — Udp clients can't
+  reach an elected peer at the configured server address — the session fails cleanly
+  ("Server closed the session."). The dedicated-server deployment never migrates anyway.
+- Harness: scratchpad `smoke-udp.ps1` pattern (arm both configs `Transport=Udp`, soak-style
+  launch, gates above).
+
 ---
 
 ### Cadence

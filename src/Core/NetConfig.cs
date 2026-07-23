@@ -10,6 +10,8 @@ namespace PunkMultiverse
         public static ConfigEntry<string> Transport;
         public static ConfigEntry<string> LoopbackHost;
         public static ConfigEntry<int> LoopbackPort;
+        public static ConfigEntry<string> UdpAddress;
+        public static ConfigEntry<int> UdpPort;
         public static ConfigEntry<bool> PumpSteamCallbacks;
         public static ConfigEntry<int> SteamAppId;
         public static ConfigEntry<bool> AcceptAnySteamSession;
@@ -83,8 +85,15 @@ namespace PunkMultiverse
                     "Which transport to use. Steam = user P2P (normal friend play). Loopback = dev/LAN " +
                     "UDP. SteamServer = connect to an anonymous game-server identity (the dedicated/" +
                     "sidecar deployment — SDR traversal, no port forwarding; join code is the server's " +
-                    "SteamID64). A future 'Udp' (LiteNetLib) will cover Docker/no-Steam.",
-                    new AcceptableValueList<string>("Steam", "Loopback", "SteamServer")));
+                    "SteamID64). Udp = direct LiteNetLib UDP for Docker/LAN/no-Steam servers (join " +
+                    "code is host:port; the host's UdpPort must be reachable — port-forward or LAN).",
+                    new AcceptableValueList<string>("Steam", "Loopback", "SteamServer", "Udp")));
+            UdpAddress = cfg.Bind("Transport", "UdpAddress", "127.0.0.1",
+                "Udp transport: server address to join when no explicit address is given " +
+                "(a `join host:port` devcmd or lobby code overrides this).");
+            UdpPort = cfg.Bind("Transport", "UdpPort", 7778,
+                "Udp transport: port the server listens on / clients connect to. Distinct from " +
+                "LoopbackPort so a dev loopback session and a Udp server can coexist on one machine.");
             LoopbackHost = cfg.Bind("Transport", "LoopbackHost", "127.0.0.1",
                 "Host address for the dev loopback transport.");
             LoopbackPort = cfg.Bind("Transport", "LoopbackPort", 7777,

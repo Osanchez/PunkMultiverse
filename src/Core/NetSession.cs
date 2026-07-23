@@ -109,9 +109,11 @@ namespace PunkMultiverse.Core
         /// server. Drives which client sees the host UI; the server still re-checks the token.</summary>
         public bool IsSessionAdmin => (IsHost && !NetConfig.IsCoordinator) || (LocalPlayer?.IsAdmin ?? false);
 
-        /// <summary>Pasteable code for the current Steam lobby, or the loopback address.</summary>
+        /// <summary>Pasteable code for the current Steam lobby, or the direct-connect address.</summary>
         public string CurrentLobbyCode =>
             _lobby != null && _lobby.InLobby ? SteamLobbyController.EncodeLobbyCode(_lobby.CurrentLobby)
+            : State != SessionState.Offline && ResolvedTransport.Equals("Udp", StringComparison.OrdinalIgnoreCase)
+                ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
             : State != SessionState.Offline && !UsingSteam ? $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}"
             : null;
 
@@ -410,8 +412,10 @@ namespace PunkMultiverse.Core
             }
             if (!UsingSteam)
             {
+                bool udp = ResolvedTransport.Equals("Udp", StringComparison.OrdinalIgnoreCase);
                 JoinSession(string.IsNullOrWhiteSpace(codeOrAddress)
-                    ? $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}"
+                    ? (udp ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
+                           : $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}")
                     : codeOrAddress.Trim());
                 return;
             }
@@ -1332,7 +1336,9 @@ namespace PunkMultiverse.Core
                     return new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value);
                 case "steamserver":
                     return new SteamServerTransport();
-                // case "udp":  planned — LiteNetLib (Docker/LAN/no-Steam), see server-sidecar plan
+                case "udp":
+                    // LiteNetLib direct UDP — Docker/LAN/no-Steam. Join code is host:port.
+                    return new LiteNetTransport(NetConfig.UdpAddress.Value, NetConfig.UdpPort.Value);
                 default:
                     return new SteamMessagesTransport();
             }
@@ -1818,10 +1824,19 @@ namespace PunkMultiverse.Core
                 // both of which mean its socket closed and the port is free); otherwise hold the
                 // session and reconnect in place.
                 bool hostReallyGone = hostQuit
-                    || (_transport is LoopbackUdpTransport lb && lb.LastDisconnectWasRemote);
+                    || (_transport is LoopbackUdpTransport lb && lb.LastDisconnectWasRemote)
+                    || (_transport is LiteNetTransport ln && ln.LastDisconnectWasRemote);
                 if (!hostReallyGone)
                 {
                     BeginLoopbackReconnect(reason);
+                    return;
+                }
+                if (_transport is LiteNetTransport)
+                {
+                    // Udp can't migrate: the join address names the departed host's machine, so
+                    // no elected peer is reachable by the rest of the roster. (The dedicated-
+                    // server deployment never hits this — the server IS the host.)
+                    Fail("Server closed the session.");
                     return;
                 }
                 _migrating = true;
