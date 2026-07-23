@@ -1624,6 +1624,15 @@ namespace PunkMultiverse.Core
                     }
                 }
 
+                // Dedicated server: an abandoned run must not simulate forever — there is no human
+                // at this host to notice and click anything. Covers Loading too (a lone player who
+                // quits mid-load would otherwise leave the coordinator stuck outside the lobby).
+                if (IsHost && NetConfig.IsCoordinator
+                    && (State == SessionState.InGame || State == SessionState.Loading))
+                    CheckEmptyServer();
+                else
+                    _emptySince = -1f;
+
                 // Clickless loadout pick while loading: DEV autostart (AutoReady), OR a headless
                 // coordinator which has no UI to click — without this its loadout selector sits
                 // open forever, its level never generates, and the whole party hangs in Loading.
@@ -1804,6 +1813,35 @@ namespace PunkMultiverse.Core
         /// over. The vanilla game-over Retry can't restart a NET run (its world regenerates
         /// past the mod's start gates) — instead everyone returns to the LOBBY, session
         /// intact, and the host launches the next run through the synchronized path.</summary>
+        private float _emptySince = -1f;
+
+        /// <summary>Coordinator only: when every player has disconnected mid-run, wait out a
+        /// rejoin grace window, then end the abandoned run so the server sits in a fresh lobby
+        /// ready for the next joiner (who becomes admin and can START). Party wipes don't need
+        /// this — CheckPartyWipe ends those within seconds.</summary>
+        private void CheckEmptyServer()
+        {
+            float resetAfter = NetConfig.EmptyServerResetSeconds.Value;
+            if (resetAfter <= 0f) { _emptySince = -1f; return; }
+
+            foreach (var p in _players)
+                if (p != null && !p.IsLocal && p.Connected) { _emptySince = -1f; return; }
+
+            if (_emptySince < 0f)
+            {
+                _emptySince = Time.unscaledTime;
+                Plugin.Log.LogInfo($"[Session] all players left mid-run — resetting to a fresh " +
+                    $"lobby in {resetAfter:0}s unless someone rejoins");
+                return;
+            }
+            if (Time.unscaledTime - _emptySince < resetAfter) return;
+
+            _emptySince = -1f;
+            Plugin.Log.LogInfo("[Session] empty-server grace elapsed — ending the abandoned run; " +
+                "lobby is fresh for the next player");
+            EndRunToLobby(announce: false);
+        }
+
         private void CheckPartyWipe()
         {
             bool anyAlive = false;
@@ -1816,7 +1854,12 @@ namespace PunkMultiverse.Core
                     : (Sync.ShipSync.ShipsBySlot.TryGetValue(p.Slot, out var s) ? s : null);
                 if (ship == null) continue;
                 counted++;
-                try { if (!ship.IsDead) anyAlive = true; } catch { anyAlive = true; }
+                // Remote ships are puppets whose Ship object never learns its player died — the
+                // wire-replicated Dead flag is the authoritative signal. Essential on a dedicated
+                // coordinator, where EVERY ship is a puppet and IsDead alone would never wipe.
+                bool dead = (!p.IsLocal && Sync.ShipSync.IsSlotDead(p.Slot));
+                try { dead = dead || ship.IsDead; } catch { }
+                if (!dead) anyAlive = true;
             }
             if (counted == 0 || anyAlive)
             {

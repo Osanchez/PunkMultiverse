@@ -45,6 +45,7 @@ namespace PunkMultiverse.Sync
             ShipsBySlot.Clear();
             ViewSlotByPlayer.Clear();
             LastShipStateMs.Clear();
+            DeadBySlot.Clear();
             SuspendedShips.Clear();
             _suspendSweepScratch.Clear();
             LocalShip = null;
@@ -752,6 +753,15 @@ namespace PunkMultiverse.Sync
         /// <summary>Apply a snapshot from the wire (already relayed by the host if needed).</summary>
         private static readonly Dictionary<byte, uint> LastShipStateMs = new Dictionary<byte, uint>();
 
+        // The wire has always CARRIED ShipFlags.Dead but nothing applied it — the puppet Ship
+        // object never learns its player died. Invisible on a player-host (its own ship is local),
+        // but a dedicated coordinator sees ONLY puppets, so party-wipe detection needs the
+        // replicated flag. Sticky until the next snapshot updates it; cleared on Reset.
+        private static readonly Dictionary<byte, bool> DeadBySlot = new Dictionary<byte, bool>();
+
+        /// <summary>Last wire-reported death state for a remote player's ship (false if unknown).</summary>
+        public static bool IsSlotDead(byte slot) => DeadBySlot.TryGetValue(slot, out bool dead) && dead;
+
         public static void ApplyShipState(ShipStateMsg msg)
         {
             ViewSlotByPlayer[msg.Slot] = msg.ViewSlot < NetSession.MaxPlayers ? msg.ViewSlot : msg.Slot;
@@ -769,6 +779,7 @@ namespace PunkMultiverse.Sync
             puppet.SetMoveInput(msg.Move);
             puppet.SetBoosting((msg.Flags & ShipFlags.Boost) != 0);
             puppet.SetHovering((msg.Flags & ShipFlags.Hover) != 0);
+            DeadBySlot[msg.Slot] = (msg.Flags & ShipFlags.Dead) != 0; // party-wipe input (see IsSlotDead)
             UnitStatus.WriteShieldFraction(ship, msg.ShieldFraction);
             UnitStatus.WriteBurnLevel(ship, msg.BurnLevel);
             UnitStatus.WriteFuelFraction(ship, msg.FuelFraction);

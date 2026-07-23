@@ -29,6 +29,7 @@ ENABLE_ADMIN_COMMANDS="${ENABLE_ADMIN_COMMANDS:-1}"   # 1 = watch devcmd.txt so 
 MOD_MANIFEST_POLICY="${MOD_MANIFEST_POLICY:-Reject}"  # Reject | Warn — version-mismatch gate for joiners
 HP_SCALING_PER_PLAYER="${HP_SCALING_PER_PLAYER:-0.25}"
 COIN_DESPAWN_SECONDS="${COIN_DESPAWN_SECONDS:-45}"
+EMPTY_SERVER_RESET_SECONDS="${EMPTY_SERVER_RESET_SECONDS:-120}"  # all players gone -> fresh lobby after this grace (0 = never)
 
 # Self-provisioning.
 INSTALL_BEPINEX="${INSTALL_BEPINEX:-1}"               # 1 = overlay the image's baked BepInEx loader each boot
@@ -209,6 +210,7 @@ set_cfg "Session"   "CoordinatorMode"  "true"                      "${CFG}"
 set_cfg "Session"   "ModManifestPolicy" "${MOD_MANIFEST_POLICY}"   "${CFG}"
 set_cfg "Session"   "EnemyHealthScalePerPlayer" "${HP_SCALING_PER_PLAYER}" "${CFG}"
 set_cfg "Session"   "CoinDespawnSeconds" "${COIN_DESPAWN_SECONDS}" "${CFG}"
+set_cfg "Session"   "EmptyServerResetSeconds" "${EMPTY_SERVER_RESET_SECONDS}" "${CFG}"
 # Debug/automation knobs the coordinator honors.
 set_cfg "Debug"     "AutoLaunchRun"    "$(bool "${AUTO_START_RUN}")" "${CFG}"
 # NOTE: these two live in the mod's [Diag] section, not [Debug] — a section mismatch is

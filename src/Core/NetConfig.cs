@@ -59,6 +59,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> SummaryHeal;
         public static ConfigEntry<bool> ClockGuardEnabled;
         public static ConfigEntry<bool> CoordinatorMode;
+        public static ConfigEntry<float> EmptyServerResetSeconds;
         public static ConfigEntry<bool> HostViaSidecar;
 
         /// <summary>True when this process is a dedicated coordinator (a shipless host that plays
@@ -240,6 +241,13 @@ namespace PunkMultiverse
                 "until the direct-UDP transport lands, so remote friends cannot join a sidecar " +
                 "session yet. Your pre-lobby seed/settings choices do not reach the sidecar yet " +
                 "(coordinator uses defaults).");
+            EmptyServerResetSeconds = cfg.Bind("Session", "EmptyServerResetSeconds", 120f,
+                "Dedicated server only: if a run is in progress and NO players have been connected " +
+                "for this many seconds, end the abandoned run and return the server to a fresh " +
+                "lobby so the next joiner can START a new game. The grace window leaves room for a " +
+                "crashed player to rejoin-in-place first. 0 disables (an abandoned run then " +
+                "simulates forever). Party wipes need no timer — all players dead ends the run " +
+                "within seconds via the normal wipe path.");
             CoordinatorMode = cfg.Bind("Session", "CoordinatorMode", false,
                 "EXPERIMENTAL (server sidecar): run this process as a dedicated shipless coordinator " +
                 "— it hosts and runs the correctness plane but plays nobody and simulates nothing. " +

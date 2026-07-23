@@ -191,6 +191,20 @@
         },
         {
             "sort": 12,
+            "name": "Empty-Server Reset (seconds)",
+            "description": "If a run is in progress and no players have been connected for this many seconds, the server ends the abandoned run and returns to a fresh lobby (grace window allows crashed players to rejoin first). Party wipes reset within seconds regardless. 0 = never reset.",
+            "env_variable": "EMPTY_SERVER_RESET_SECONDS",
+            "default_value": "120",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "min:0"
+            ]
+        },
+        {
+            "sort": 13,
             "name": "Mod Version Policy",
             "description": "How joiners with a mismatched mod version are handled. Reject = refuse the join (recommended). Warn = allow but log a warning.",
             "env_variable": "MOD_MANIFEST_POLICY",
@@ -204,7 +218,7 @@
             ]
         },
         {
-            "sort": 13,
+            "sort": 14,
             "name": "Admin Command File",
             "description": "1 = watch BepInEx/plugins/PunkMultiverse/devcmd.txt so an operator can inject dev/admin commands (spawn, status, roster, etc.) at runtime. 0 = disabled.",
             "env_variable": "ENABLE_ADMIN_COMMANDS",
@@ -217,7 +231,7 @@
             ]
         },
         {
-            "sort": 14,
+            "sort": 15,
             "name": "Log Level",
             "description": "Console verbosity. Verbose = full instrumentation blocks every ~3s (default: a dedicated server console is a diagnostic surface). Normal = warnings + events, instrumentation every 30s. Quiet = warnings and events only.",
             "env_variable": "LOG_LEVEL",
@@ -231,7 +245,7 @@
             ]
         },
         {
-            "sort": 15,
+            "sort": 16,
             "name": "Sync Diagnostics",
             "description": "1 = verbose [Diag] sync/authority logging (useful when debugging desync). 0 = quiet.",
             "env_variable": "SYNC_DIAGNOSTICS",
@@ -244,7 +258,7 @@
             ]
         },
         {
-            "sort": 16,
+            "sort": 17,
             "name": "Stop Grace (seconds)",
             "description": "On Stop, seconds to wait for the game to flush its save and exit cleanly before Wine is force-killed.",
             "env_variable": "STOP_GRACE_SECONDS",
@@ -258,7 +272,7 @@
             ]
         },
         {
-            "sort": 17,
+            "sort": 18,
             "name": "Steam App ID",
             "description": "PUNK Playtest appid, written to steam_appid.txt so the base game does not relaunch through the Steam client. Change only if the playtest appid changes.",
             "env_variable": "STEAM_APPID",
@@ -271,7 +285,7 @@
             ]
         },
         {
-            "sort": 18,
+            "sort": 19,
             "name": "Wine Debug",
             "description": "WINEDEBUG channel setting. Default -all (silent). Use e.g. +err,+warn to diagnose Wine issues.",
             "env_variable": "WINEDEBUG",
@@ -285,7 +299,7 @@
             ]
         },
         {
-            "sort": 19,
+            "sort": 20,
             "name": "Extra Launch Args",
             "description": "Additional arguments appended to the Punk.exe command line (Unity/Punk flags).",
             "env_variable": "EXTRA_ARGS",
