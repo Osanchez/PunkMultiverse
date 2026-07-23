@@ -285,6 +285,22 @@ namespace PunkMultiverse.UI
 
         private void Update()
         {
+            // Escape hatch: a client stuck on the loading screen (e.g. a host that never reaches
+            // go-live) can press Esc/B to leave immediately, instead of being locked out until the
+            // 120s go-live timeout. Runs even while our panel is hidden behind the loading screen.
+            var sess = NetSession.Instance;
+            if (sess != null && sess.State == SessionState.Loading && !sess.IsHost)
+            {
+                var k = Keyboard.current; var g0 = Gamepad.current;
+                if ((k != null && k.escapeKey.wasPressedThisFrame)
+                    || (g0 != null && g0.buttonEast.wasPressedThisFrame))
+                {
+                    UiTheme.PlayClick();
+                    sess.StopSession("left the loading screen");
+                    return;
+                }
+            }
+
             if (!Visible) return;
 
             // Esc / gamepad B backs out one level. Never while typing in the seed field — Esc

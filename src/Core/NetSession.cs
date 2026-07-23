@@ -114,9 +114,15 @@ namespace PunkMultiverse.Core
         /// server. Drives which client sees the host UI; the server still re-checks the token.</summary>
         public bool IsSessionAdmin => (IsHost && !NetConfig.IsCoordinator) || (LocalPlayer?.IsAdmin ?? false);
 
+        // The address a DIRECT CONNECT actually used (what the player typed), so the lobby screen
+        // shows it instead of the config default (127.0.0.1). Set by JoinDirect / a pasted address;
+        // cleared on StopSession.
+        private string _directConnectCode;
+
         /// <summary>Pasteable code for the current Steam lobby, or the direct-connect address.</summary>
         public string CurrentLobbyCode =>
             _lobby != null && _lobby.InLobby ? SteamLobbyController.EncodeLobbyCode(_lobby.CurrentLobby)
+            : State != SessionState.Offline && _directConnectCode != null ? _directConnectCode
             : State != SessionState.Offline && ResolvedTransport.Equals("Udp", StringComparison.OrdinalIgnoreCase)
                 ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
             : State != SessionState.Offline && !UsingSteam ? $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}"
@@ -411,6 +417,7 @@ namespace PunkMultiverse.Core
         {
             if (State != SessionState.Offline) StopSession("direct connect"); // clears prior overrides
             _directTransport = "Udp"; // set AFTER StopSession so it survives into the join
+            _directConnectCode = $"{host.Trim()}:{port}"; // what the lobby screen should show
             LastError = null;
             JoinSession($"{host.Trim()}:{port}");
         }
@@ -1297,7 +1304,7 @@ namespace PunkMultiverse.Core
             bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
             _sidecarSession = false; // future sessions choose their transport from config again
             _haveLeaderSettings = false; _leaderSettingsSent = false;
-            _lobbyServerTransport = null; _directTransport = null; _serverLobbyRequested = false; _allowlistDirty = false;
+            _lobbyServerTransport = null; _directTransport = null; _directConnectCode = null; _serverLobbyRequested = false; _allowlistDirty = false;
             _allowedPeers = null;
             _adminSlot = -1; _adminToken = 0; _localAdminToken = 0;
 

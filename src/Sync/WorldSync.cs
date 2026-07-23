@@ -166,12 +166,17 @@ namespace PunkMultiverse.Sync
 
             private static void Postfix(Level __instance, MethodBase __originalMethod, object[] __args)
             {
+                // Cheap gates FIRST, before the profiler wrapper: level generation calls SetCell
+                // hundreds of thousands of times while State==Loading (nothing to capture yet), and
+                // wrapping every one of those in PatchProfiler.Enter/Exit needlessly amplified the
+                // generation stall on a slow (headless/Wine) host.
+                if (!NetSession.Active || _applying) return;
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame) return;
+
                 var profile = PatchProfiler.Enter(PatchId.WorldCaptureCellChanges);
                 try
                 {
-                    if (!NetSession.Active || _applying) return;
-                    var session = NetSession.Instance;
-                    if (session.State != SessionState.InGame) return;
                     var ps = __originalMethod.GetParameters();
                     // Trailing int parameter is the changeSource on both methods when present.
                     if (ps.Length >= 3 && ps[ps.Length - 1].ParameterType == typeof(int)
