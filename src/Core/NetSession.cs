@@ -403,7 +403,6 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Sidecar] relayed {ids.Length} lobby member(s) to the coordinator");
         }
 
-        /// <summary>Join: Steam = decode lobby code (null = clipboard); loopback = address (null = config default).</summary>
         /// <summary>Direct-connect to a Udp server by address (PLAY ONLINE -> DIRECT CONNECT).
         /// Forces the Udp transport for this session only — the player never edits config. On an
         /// unreachable server the join times out (ConnectTimeout) and Fail() sets LastError, which
@@ -416,42 +415,72 @@ namespace PunkMultiverse.Core
             JoinSession($"{host.Trim()}:{port}");
         }
 
+        /// <summary>Join a dedicated Steam game-server by its SteamID64. Forces the SteamServer
+        /// transport for this session (no config change) — same override the discovery-lobby invite
+        /// path uses. The client reaches the server over SDR; needs Steam initialized.</summary>
+        private void JoinSteamServer(ulong serverId)
+        {
+            if (State != SessionState.Offline) StopSession("joining server");
+            _lobbyServerTransport = "SteamServer"; // set AFTER StopSession so it survives the join
+            LastError = null;
+            JoinSession(serverId.ToString());
+        }
+
+        /// <summary>The JOIN button. Auto-detects what the player pasted and picks the transport for
+        /// them — no config editing, ever:
+        ///   host:port or an IP/hostname  -> Udp direct connect
+        ///   a 17-digit SteamID64         -> SteamServer (dedicated server / sidecar)
+        ///   a PMV-XXXX lobby code        -> Steam P2P
+        /// With nothing pasted, a dev Loopback/Udp config joins its configured default (harness /
+        /// AutoStart=Join); otherwise it reports an empty clipboard.</summary>
         public void JoinByCode(string codeOrAddress)
         {
             LastError = null;
-            // SteamServer join code = the server's SteamID64. A remote friend pastes it (the host
-            // shares it via the SERVER CODE display / `servercode` devcmd). Read the clipboard when
-            // the button passes null, exactly like the Steam lobby-code path.
-            if (ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase))
-            {
-                var raw = string.IsNullOrWhiteSpace(codeOrAddress) ? GUIUtility.systemCopyBuffer : codeOrAddress;
-                raw = raw?.Trim();
-                if (!ulong.TryParse(raw, out ulong serverId) || serverId == 0)
-                {
-                    LastError = "Paste a server code (17-digit ID) to join a dedicated server.";
-                    Plugin.Log.LogWarning($"[Session] {LastError}");
-                    return;
-                }
-                JoinSession(serverId.ToString());
-                return;
-            }
-            if (!UsingSteam)
+            var raw = (string.IsNullOrWhiteSpace(codeOrAddress) ? GUIUtility.systemCopyBuffer : codeOrAddress)?.Trim();
+
+            if (string.IsNullOrEmpty(raw))
             {
                 bool udp = ResolvedTransport.Equals("Udp", StringComparison.OrdinalIgnoreCase);
-                JoinSession(string.IsNullOrWhiteSpace(codeOrAddress)
-                    ? (udp ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
-                           : $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}")
-                    : codeOrAddress.Trim());
-                return;
-            }
-            var code = string.IsNullOrWhiteSpace(codeOrAddress) ? GUIUtility.systemCopyBuffer : codeOrAddress;
-            if (!SteamLobbyController.TryDecodeLobbyCode(code, out var lobbyId))
-            {
-                LastError = "Clipboard does not contain a valid lobby code (PMV-XXXXX-XXXXX-XXXX).";
+                bool loop = ResolvedTransport.Equals("Loopback", StringComparison.OrdinalIgnoreCase);
+                if (udp || loop) // dev/harness: nothing pasted means "use the configured default"
+                {
+                    JoinSession(udp ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
+                                    : $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}");
+                    return;
+                }
+                LastError = "Nothing to join — copy a friend's code or a server address first.";
                 Plugin.Log.LogWarning($"[Session] {LastError}");
                 return;
             }
-            JoinLobbyId(lobbyId);
+
+            // An address (has a dot or colon): IP:port / hostname -> direct UDP. Default the port.
+            if (raw.IndexOf('.') >= 0 || raw.IndexOf(':') >= 0)
+            {
+                string host = raw;
+                int port = NetConfig.UdpPort.Value;
+                int colon = raw.LastIndexOf(':');
+                if (colon > 0 && int.TryParse(raw.Substring(colon + 1), out int p) && p > 0 && p <= 65535)
+                {
+                    host = raw.Substring(0, colon);
+                    port = p;
+                }
+                JoinDirect(host, port);
+                return;
+            }
+            // A 17+ digit number is a server SteamID64 (a lobby code has letters, a port is small).
+            if (ulong.TryParse(raw, out ulong serverId) && serverId >= 10_000_000_000_000_000UL)
+            {
+                JoinSteamServer(serverId);
+                return;
+            }
+            // Otherwise a Steam lobby code.
+            if (SteamLobbyController.TryDecodeLobbyCode(raw, out var lobbyId))
+            {
+                JoinLobbyId(lobbyId);
+                return;
+            }
+            LastError = "Not recognized — paste a friend's lobby code, a server code, or a server address.";
+            Plugin.Log.LogWarning($"[Session] {LastError}");
         }
 
         /// <summary>The join code to SHARE for the current SteamServer session (the coordinator's
