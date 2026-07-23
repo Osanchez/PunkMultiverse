@@ -956,14 +956,36 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Run] repeated LEVEL_READY from active P{slot + 1} — GO_LIVE-only recovery sent");
         }
 
+        private float _nextGoLiveDiagAt;
+        private void CheckGoLiveDiag(string why)
+        {
+            float now = Time.unscaledTime;
+            if (now < _nextGoLiveDiagAt) return;
+            _nextGoLiveDiagAt = now + 3f;
+            var present = _players.Where(p => p != null && p.Connected).Select(p => p.Slot).ToList();
+            Plugin.Log.LogWarning($"[GoLive] waiting: {why} | hostSlot={HostSlot} " +
+                $"present=[{string.Join(",", present.Select(s => "P" + (s + 1)))}] " +
+                $"checksums=[{string.Join(",", _levelChecksums.Keys.Select(s => "P" + (s + 1)))}] " +
+                $"fingerprints=[{string.Join(",", _levelFingerprints.Keys.Select(s => "P" + (s + 1)))}]");
+        }
+
         private void CheckGoLive()
         {
             if (!IsHost || State != SessionState.Loading) return;
             var present = _players.Where(p => p != null && p.Connected).ToList();
-            if (present.Any(p => !_levelChecksums.ContainsKey(p.Slot))) return;
+            var missingChk = present.FirstOrDefault(p => !_levelChecksums.ContainsKey(p.Slot));
+            if (missingChk != null) { CheckGoLiveDiag($"no checksum from P{missingChk.Slot + 1}"); return; }
 
-            if (present.Any(p => !_levelFingerprints.ContainsKey(p.Slot))) return;
-            var host = _levelFingerprints[HostSlot];
+            var missingFp = present.FirstOrDefault(p => !_levelFingerprints.ContainsKey(p.Slot));
+            if (missingFp != null) { CheckGoLiveDiag($"no fingerprint from P{missingFp.Slot + 1}"); return; }
+            // Defensive: the host's OWN fingerprint must be present before we compare against it —
+            // otherwise this indexer throws inside message dispatch and the throw is swallowed,
+            // leaving every peer to time out with no GO LIVE and no mismatch logged.
+            if (!_levelFingerprints.TryGetValue(HostSlot, out var host))
+            {
+                CheckGoLiveDiag($"host slot P{HostSlot + 1} has no fingerprint yet");
+                return;
+            }
             if (_levelFingerprints.Values.Any(value => !SameGeneration(host, value)))
             {
                 if (_levelFingerprints.Values.Any(value => !SameVisualGeneration(host, value)))
