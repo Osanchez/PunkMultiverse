@@ -119,6 +119,11 @@ namespace PunkMultiverse.Core
         // cleared on StopSession.
         private string _directConnectCode;
 
+        /// <summary>Transport health snapshot for the `udpstats` devcmd (Udp transport only).</summary>
+        internal string TransportHealth() =>
+            _transport is Transport.LiteNetTransport udp ? udp.DescribeHealth()
+            : $"transport={(_transport?.GetType().Name ?? "none")} (no health probe)";
+
         /// <summary>Pasteable code for the current Steam lobby, or the direct-connect address.</summary>
         public string CurrentLobbyCode =>
             _lobby != null && _lobby.InLobby ? SteamLobbyController.EncodeLobbyCode(_lobby.CurrentLobby)
@@ -1010,8 +1015,12 @@ namespace PunkMultiverse.Core
             }
 
             // Everyone verified: hand out entity netIds, then go live.
+            // Chunk size keeps each message under the MINIMAL UDP MTU (~500B usable): LiteNetLib
+            // peers start at the minimum until path discovery finishes (which may never happen
+            // behind a Docker NAT), and a fragmented go-live burst is the prime suspect in the
+            // dedicated-server "client never receives GO_LIVE" wedge (2026-07-23). 40 × 8B = 320B.
             var fps = NetIds.BuildManifest();
-            const int chunkSize = 120;
+            const int chunkSize = 40;
             for (int start = 0; start < fps.Count || start == 0; start += chunkSize)
             {
                 var chunk = fps.Skip(start).Take(chunkSize).ToArray();
@@ -3100,7 +3109,9 @@ namespace PunkMultiverse.Core
         private void SendEntityBaseline(ulong onlyPeer)
         {
             var baseline = NetIds.BuildBaseline();
-            const int chunk = 120;
+            // 40 × ~12B ≈ 500B: stays a single packet even at LiteNetLib's minimum MTU — see the
+            // chunkSize note in CheckGoLive (fragmented go-live burst = suspected reliable wedge).
+            const int chunk = 40;
             for (int start = 0; start < baseline.Count || start == 0; start += chunk)
             {
                 int count = Math.Min(chunk, baseline.Count - start);

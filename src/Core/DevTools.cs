@@ -345,6 +345,11 @@ namespace PunkMultiverse.Core
                 case "runid":
                     Out($"runid: {LogUpload.RunId}");
                     return;
+                case "udpstats":
+                    // Transport-level truth for the go-live wedge hunt: per-peer reliable queue
+                    // depths, MTU, ping, and manager loss counters (Udp transport only).
+                    Out(session.TransportHealth());
+                    return;
                 case "loglevel":
                 {
                     // Live log verbosity switch (see NetConfig.LogLevel): flip a running instance

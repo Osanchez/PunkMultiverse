@@ -74,8 +74,88 @@ namespace PunkMultiverse.Transport
                 ChannelsCount = 4,           // one ordered stream per NetChannel
                 UnconnectedMessagesEnabled = false,
                 IPv6Enabled = false,         // Docker/LAN target; avoids dual-stack bind surprises
+                EnableStatistics = true,     // loss/resend counters for the reliable-backlog probe
             };
             return m;
+        }
+
+        // ---------------------------------------------------------------- reliable-backlog probe
+        //
+        // Field signature this exists for (dedicated server, 2026-07-23): the go-live burst
+        // (manifest + entity baseline + GO_LIVE, all ReliableOrdered on Control) never reached the
+        // client — it kept retrying LEVEL_READY for 26s+ while small traffic flowed fine. This
+        // probe distinguishes the three possible worlds every 3s while a reliable queue is
+        // non-empty: depth frozen = send-side wedge; depth draining = congestion/starvation;
+        // depth zero while the peer misbehaves = delivered, receiver-side bug.
+        private int _nextHealthTick;
+        private readonly Dictionary<ulong, int> _lastDepth = new Dictionary<ulong, int>();
+        private readonly Dictionary<ulong, int> _stalledSinceTick = new Dictionary<ulong, int>();
+
+        private void ProbeReliableBacklog()
+        {
+            if (!IsHost || _manager == null) return;
+            int now = Environment.TickCount;
+            if (unchecked(now - _nextHealthTick) < 0) return;
+            _nextHealthTick = now + 3000;
+
+            foreach (var kv in _peerById)
+            {
+                var peer = kv.Value;
+                if (peer == null || peer.ConnectionState != ConnectionState.Connected) continue;
+                int c0 = peer.GetPacketsCountInReliableQueue(0, true);
+                int c1 = peer.GetPacketsCountInReliableQueue(1, true);
+                int c2 = peer.GetPacketsCountInReliableQueue(2, true);
+                int depth = c0 + c1 + c2;
+                _lastDepth.TryGetValue(kv.Key, out int prev);
+                _lastDepth[kv.Key] = depth;
+                if (depth == 0) { _stalledSinceTick.Remove(kv.Key); continue; }
+
+                string trend;
+                if (prev > 0 && depth >= prev)
+                {
+                    if (!_stalledSinceTick.TryGetValue(kv.Key, out int since))
+                        _stalledSinceTick[kv.Key] = since = now;
+                    trend = $"STALLED {unchecked(now - since) / 1000}s";
+                }
+                else
+                {
+                    _stalledSinceTick.Remove(kv.Key);
+                    trend = prev > 0 ? $"draining {prev}->{depth}" : "new";
+                }
+                var s = _manager.Statistics;
+                Plugin.Log.LogWarning(
+                    $"[Udp] reliable backlog peer={kv.Key} ch0={c0} ch1={c1} ch2={c2} ({trend}) " +
+                    $"mtu={peer.Mtu} ping={peer.Ping}ms | mgr sent={s.PacketsSent} recv={s.PacketsReceived} loss={s.PacketLossPercent}%");
+            }
+        }
+
+        /// <summary>One-line transport health snapshot for the `udpstats` devcmd (both roles).</summary>
+        public string DescribeHealth()
+        {
+            if (_manager == null) return "[Udp] not running";
+            var s = _manager.Statistics;
+            string peers;
+            if (IsHost)
+            {
+                var parts = new List<string>();
+                foreach (var kv in _peerById)
+                {
+                    var p = kv.Value;
+                    if (p == null) continue;
+                    parts.Add($"peer{kv.Key}: state={p.ConnectionState} mtu={p.Mtu} ping={p.Ping}ms " +
+                        $"relq={p.GetPacketsCountInReliableQueue(0, true)}/{p.GetPacketsCountInReliableQueue(1, true)}/{p.GetPacketsCountInReliableQueue(2, true)}");
+                }
+                peers = parts.Count > 0 ? string.Join(" | ", parts.ToArray()) : "no peers";
+            }
+            else
+            {
+                var p = _hostPeer;
+                peers = p == null ? "no host connection"
+                    : $"host: state={p.ConnectionState} mtu={p.Mtu} ping={p.Ping}ms " +
+                      $"relq={p.GetPacketsCountInReliableQueue(0, true)}/{p.GetPacketsCountInReliableQueue(1, true)}/{p.GetPacketsCountInReliableQueue(2, true)}";
+            }
+            return $"[Udp] {peers} | mgr sent={s.PacketsSent} recv={s.PacketsReceived} " +
+                   $"bytesOut={s.BytesSent} bytesIn={s.BytesReceived} loss={s.PacketLossPercent}%";
         }
 
         public void StartHost()
@@ -155,6 +235,7 @@ namespace PunkMultiverse.Transport
         public void Poll()
         {
             _manager?.PollEvents();
+            ProbeReliableBacklog();
             // Client-side auto-reconnect after a host stall — the contract the reconnect-in-
             // place policy (BeginLoopbackReconnect) expects from non-Steam transports. Armed
             // only for timeouts, never for a remote close (that fails the session upstream).
