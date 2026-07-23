@@ -814,6 +814,16 @@ namespace PunkMultiverse.Sync
                     Core.NetDiag.Throttled($"replay{msg.NetId}", 1f, "Fire",
                         () => $"{Core.NetDiag.Describe(msg.NetId)} replaying remote shot={msg.ShotId} (puppet here)" +
                               (msg.TargetSlot != 255 ? $", targeting {Core.NetDiag.Owner(msg.TargetSlot)}" : ""));
+                // Hitscan: the shot's damage raycast runs synchronously inside this replay, but
+                // the beam VISUAL normally waits for the fire-state snapshot (~interp delay
+                // behind) — the measured "invisible laser" gap ([PhantomHit] 6/16 beam hits).
+                // Light the puppet's beam from the fire EVENT itself so damage and visual land
+                // on the same frame.
+                if (weapon is HitscanWeapon)
+                {
+                    var beamPuppet = se.GetComponent<RemoteEntityPuppet>();
+                    if (beamPuppet != null) beamPuppet.NoteBeamReplay(msg.Dir);
+                }
                 ReplaySpawned.Clear();
                 var previousShot = _currentShot;
                 _currentShot = new ShotContext
@@ -1204,7 +1214,16 @@ namespace PunkMultiverse.Sync
                         // owner's EntityFire. One that was NOT spawned during a replay means the
                         // puppet fired it locally (muting gap / extra spawn) — a duplicate, and the
                         // likely "ghost" shot. Flag which kind hit us.
-                        NoteHit(owner, WasReplaySpawned(__0)
+                        bool replayed = WasReplaySpawned(__0);
+                        // Handoff grace (measured false positive 2026-07-22): an enemy WE simulated
+                        // fires a fully-visible local shot, ownership hands off mid-flight, and the
+                        // pre-handoff projectile then lands with its owner now reading "puppet".
+                        // Only a projectile from an enemy that has been a puppet longer than any
+                        // shot could stay in flight is a true invisible duplicate.
+                        var projPup = owner.GetComponent<RemoteEntityPuppet>();
+                        if (!replayed && (projPup == null || projPup.PuppetAge > 3f))
+                            NotePhantom(owner, "PROJECTILE duplicate (puppet fired locally, not a replay)");
+                        NoteHit(owner, replayed
                             ? "projectile (replayed, expected)"
                             : "projectile (RAW — puppet fired locally, DUPLICATE)");
                         return true; // replayed enemy fire: victim-side
@@ -1367,6 +1386,32 @@ namespace PunkMultiverse.Sync
         private static bool WasReplaySpawned(object projectile) =>
             projectile is Component c && VisualProjectiles.Contains(c.gameObject.GetInstanceID());
 
+        // ---------------------------------------------------------------- phantom-hit audit
+        // Always-on tester-grade audit for "hit by something invisible" reports. Victim-side hit
+        // registration means a projectile that damages the local ship IS on this screen — unless a
+        // muted puppet duplicate-fired it locally — and a hitscan beam's damage (replayed fire
+        // EVENT, immediate) can outrun its visual (fire STATE snapshot + interp delay drives
+        // DriveBeam). Both cases log loudly here and count into `status` phantomHits. Zero across
+        // a session is positive proof every hit taken was visible on the victim's screen.
+        internal static long PhantomHitCount;
+        private static readonly Dictionary<int, float> PhantomWarnAt = new Dictionary<int, float>();
+
+        private static void NotePhantom(Unit owner, string detail)
+        {
+            PhantomHitCount++;
+            int key = owner != null ? owner.GetInstanceID() : 0;
+            float now = Time.unscaledTime;
+            if (PhantomWarnAt.TryGetValue(key, out float at) && now - at < 1f) return;
+            PhantomWarnAt[key] = now;
+            int netId = 0;
+            if (owner != null) EnemySync.TryGetNetId(owner, out netId);
+            var ship = ShipSync.LocalShip;
+            float dist = ship != null && owner != null
+                ? Vector2.Distance(ship.transform.position, owner.transform.position) : -1f;
+            Plugin.Log.LogWarning($"[PhantomHit] {detail} from #{netId} {(owner != null ? owner.name : "?")} " +
+                $"at {dist:0}u — my ship damaged with no matching visual on this screen");
+        }
+
         /// <summary>Diag: log an incoming hit on the local ship, naming the source enemy, the kind
         /// (projectile/hitscan), and how far the shooter is. A large distance means the shot came
         /// from an off-screen enemy — which reads as a "ghost"/invisible projectile appearing from
@@ -1421,7 +1466,18 @@ namespace PunkMultiverse.Sync
                 var owner = OwnerUnit(__0);
                 if (owner != null && owner.GetComponent<RemoteEntityPuppet>() != null)
                 {
-                    if (IsLocalShip(__instance)) { NoteHit(owner, "HITSCAN (beam may not render on replay)"); return true; } // replayed enemy beam: victim-side
+                    if (IsLocalShip(__instance))
+                    {
+                        // Beam damage rides the replayed fire EVENT; the beam VISUAL rides the fire
+                        // STATE snapshot (+interp delay) OR the event-driven replay light
+                        // (NoteBeamReplay, which the replay path arms just before this raycast).
+                        // Damage while neither is drawing the beam = the invisible-laser hit.
+                        var pup = owner.GetComponent<RemoteEntityPuppet>();
+                        if (pup != null && pup.FireState != 2 && !pup.BeamReplayLit)
+                            NotePhantom(owner, $"HITSCAN beam not drawn here (puppet fireState={pup.FireState}, no replay light)");
+                        NoteHit(owner, "HITSCAN (beam may not render on replay)");
+                        return true; // replayed enemy beam: victim-side
+                    }
                     UnitStatus.PlayDamageFlash(__instance);
                     return false;
                 }

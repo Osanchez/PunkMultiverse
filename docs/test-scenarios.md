@@ -430,7 +430,26 @@ all three logs) land in `%TEMP%\punkmv-soak\<stamp>`.
 - Refuses to start if any Punk.exe is already running; only kills its own PIDs;
   restores the host install config byte-for-byte on exit.
 
-## 29. server-sidecar (host player's game dies, session survives) — VERIFIED 2026-07-19
+## 29. jitter-crowd (puppet smoothness under enemy load) — ROOT-CAUSED 2026-07-22
+
+Is puppet motion faithful to the owner sim when many combat-tier enemies stream at once?
+
+- **PRECONDITION (the finding): `H>`+`C> vsync 0` right after go-live.** Without it, the
+  unfocused instance's clock dilates under load (~0.4x real) and manufactures the exact
+  jitter this scenario measures — harness.md "clock-dilation trap". Any `[Clock]` warning
+  during a window voids that window.
+- `H> god on`, `C> god on`; co-locate ships (`C> tp <hostX+2> <hostY>`).
+- `H>` spawn a ring of 12 `Unit_FlyDad` at rel ±4-8, `H> entities 30` for netIds,
+  `H> poke <id> 1` each (aggro), `H> probe <first>` must show `target=ship…/visible`.
+- Measure in 20-25s windows: `C> jitterstats` at begin (resets) and end (reports);
+  optional `H> motionprofile <netId> 15` for the owner-side wasted-speed ground truth.
+- PASS (healed-clock reference, 2026-07-22): window `underruns` < 150/s session-wide,
+  `delayAvg` < 120ms (NOT pinned at ~246ms), FlyDad `avg` ≤ ~0.5 u/s with `jitter%` 0
+  (owner-side reference ~0.9-1.0 via motionprofile — puppet must not exceed owner).
+- FAIL signature of the dilation artifact: underruns ~1500/s, delayAvg pinned at the
+  250ms ceiling, puppet wastedAvg 2-4x owner — check `[Clock]` before blaming sync.
+
+## 30. server-sidecar (host player's game dies, session survives) — VERIFIED 2026-07-19
 
 `[Session] HostViaSidecar = true`: hosting spawns a headless coordinator process from the
 same install (env `PUNKMV_COORDINATOR=1`, `DOORSTOP_*` scrubbed from the child env or it
@@ -447,7 +466,7 @@ that session even on a Steam-configured install). Sidecar's log = `BepInEx/LogOu
   reserved` + `suspended puppet`; the OTHER client stays `state=InGame` with NO
   `promoted to host` and no session teardown. (rxBundles=0/s afterward is correct — the
   sole remaining player owns everything near it; nobody is left to stream to it.)
-- Limits: loopback flavor is local/LAN only (see #30 for the remote-capable transport).
+- Limits: loopback flavor is local/LAN only (see #31 for the remote-capable transport).
 - Since the session-admin change: the coordinator NO LONGER auto-launches by itself — the
   first joiner is promoted to session admin (`[Admin] ... is now session admin`) and drives
   start. Harness: either keep `AutoLaunchRun=true` in the host install's config (the sidecar
@@ -455,7 +474,7 @@ that session even on a Steam-configured install). Sidecar's log = `BepInEx/LogOu
   Parity now in: leader's seed/settings forwarded (`PartyLeaderSettings`), coordinator sits
   in reserved slot 4 (players are slots 0-3).
 
-## 30. steamserver-sidecar (remote-capable dedicated server) — VERIFIED 2026-07-19
+## 31. steamserver-sidecar (remote-capable dedicated server) — VERIFIED 2026-07-19
 
 `Transport=SteamServer`: the coordinator holds an anonymous Steam game-server identity;
 players connect over SDR (NAT traversal + encryption, no port forwarding). Dual connection

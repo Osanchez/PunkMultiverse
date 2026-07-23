@@ -66,6 +66,12 @@ linkhealth <0-254|auto>     # WS7.2: force the receive-quality score THIS machin
 netbudget <bytes|auto>      # WS7.1: hard-cap the per-viewer presentation byte budget on THIS
                             # machine (owner side), print current budgetDrops. 400 = floor-level
                             # throttle for shed tests; auto = link-health adaptive
+snaphz <hz|auto>            # live-set CombatStateHz on THIS machine (owner side) — jitter A/B
+interpdelay <ms|auto>       # add fixed headroom to every entity puppet's render delay on THIS
+                            # machine (viewer side) — tests underrun-manufactured wobble
+vsync <0|1> [fpsCap]        # QualitySettings.vSyncCount + Application.targetFrameRate; prints
+                            # measured clockRate. `vsync 0` on the UNFOCUSED instance is REQUIRED
+                            # for valid sync measurements — see the clock-dilation trap below
 god [on|off]                # dev shield: local ship damage blocks at the routing
                             # chokepoints (every hit still audits as [CombatHit]
                             # applied=False with source) AND weapon resource is
@@ -149,6 +155,35 @@ Assertions, all greppable:
   `respawned local ship at the new station` + `stationRespawns=1` in `[Counts]`.
 - **Perf soak**: `spawn` N enemies in a loop around both ships and watch `[Profile]` /
   `[Frame]` / SPIKE attribution under load you control exactly.
+
+## The clock-dilation trap (poisons every sync measurement)
+
+An UNFOCUSED Punk instance with vsync on advances `Time.unscaledTime` (and game/fixed time
+with it) a fixed 1/refresh per frame regardless of real frame duration — on a 240Hz display
+that is 4.167ms/frame, so whenever real frames are slower than that the whole sim runs slow
+(measured 0.38-0.65x real under a 12-enemy crowd). A dilated HOST starves every real-time
+viewer's interpolation: adaptive delay pins at its 250ms ceiling, ~1500 underruns/s, and every
+puppet does extrapolate-yank wobble — indistinguishable from "enemy jitter" but manufactured
+by the harness (two instances on one PC: whichever lacks focus dilates; the launcher's second
+instance steals focus from the first). The `[Clock]` watchdog line warns whenever the game
+clock diverges >10% from the wall clock; `vsync` prints the measured rate on demand.
+
+**Since ClockGuard (src/Core/ClockGuard.cs) this is handled automatically**: while a net
+session is active, the unfocused instance swaps vsync for a targetFrameRate cap at its display
+refresh (honest clock at any Hz) and restores the player's settings on refocus/session end —
+look for `[ClockGuard] unfocused in session: vsync 1->0 ...` in the log. Any `[Clock]` warning
+in a session now means the guard could not help (driver-forced vsync etc.) and that stretch's
+numbers are invalid; the affected player also gets an on-screen toast.
+
+**Fallback rule if the guard is ever suspect: send `vsync 0` to BOTH instances before measuring.** Measured
+effect on the 12-FlyDad crowd scenario: underruns 1550/s -> 80/s, delay 246ms(pinned) -> 97ms,
+FlyDad puppet wasted-speed 3-4.6 -> 0.44 u/s (jitter% 0.0). Note `vsync 0` after a long
+dilated stretch snaps the clock forward (one [Clock] line at >10x real) and the fast-forward
+can scatter/aggro the world — set it up-front, not mid-scenario. Even set right at go-live,
+the heal is NOT instant: dilation persists ~20-25s more, then one catch-up snap ([Clock] at
+~7x real), then steady 1.00x — wait for the [Clock] warnings to go quiet before spawning.
+Verified 2026-07-22 (both instances vsync 0, 3/3 windows): puppet wastedAvg 0.86-0.98 vs
+owner 0.77-0.97 (ratio ~1.0-1.1x), jitter% 0.0, underruns 160-200/s, delay 81-114ms.
 
 ## Notes
 

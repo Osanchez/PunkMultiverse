@@ -51,6 +51,10 @@ namespace PunkMultiverse.Core
         private static float _nextObjectScanAt;
         private static long _reportStartedTicks;
         private static long _frameCount;
+        private static float _lastReportUnscaled;
+        /// <summary>Game-clock rate vs wall clock over the last report interval (1.0 = healthy).
+        /// Diverges when frame deltas are pinned (unfocused window on a high-refresh display).</summary>
+        internal static double ClockRate = 1.0;
         private static double _frameSumMs;
         private static double _frameMaxMs;
         private static int _lastGen0, _lastGen1, _lastGen2;
@@ -106,6 +110,8 @@ namespace PunkMultiverse.Core
             _frameMaxMs = 0;
             _nextReportAt = 0;
             _nextObjectScanAt = 0;
+            _lastReportUnscaled = 0;
+            ClockRate = 1.0;
             _reportStartedTicks = Stopwatch.GetTimestamp();
             _gcBaselined = false;
             _slowScansDisabled = false;
@@ -234,6 +240,24 @@ namespace PunkMultiverse.Core
             double elapsed = Math.Max(0.001, (nowTicks - _reportStartedTicks) / (double)Stopwatch.Frequency);
             double mono = nowTicks / (double)Stopwatch.Frequency;
             _reportStartedTicks = nowTicks;
+
+            // CLOCK DILATION detector (2026-07-22 root cause): an UNFOCUSED instance advances
+            // Time.unscaledTime a fixed 1/refresh per frame regardless of real frame duration
+            // (vsync-aligned timing), so under load its whole sim+net cadence runs slow — every
+            // real-time viewer's interpolation then starves chronically (delay pinned at ceiling,
+            // ~1450 underruns/s, all puppets extrapolate-yank = "crowd jitter"). Measured 0.42x
+            // on a 240Hz display. Warn whenever the game clock diverges from the wall clock.
+            float unscaledNow = Time.unscaledTime;
+            if (_lastReportUnscaled > 0f)
+            {
+                ClockRate = (unscaledNow - _lastReportUnscaled) / elapsed;
+                if (ClockRate < 0.90 || ClockRate > 1.10)
+                    Plugin.Log.LogWarning(string.Format(CultureInfo.InvariantCulture,
+                        "[Clock] mono={0:0.000}s game clock at {1:0.00}x real time ({2:0.0}s unscaled over {3:0.0}s real) — " +
+                        "frame deltas pinned (unfocused window / vsync-aligned timing?); sim + snapshot cadence dilated on this instance",
+                        mono, ClockRate, unscaledNow - _lastReportUnscaled, elapsed));
+            }
+            _lastReportUnscaled = unscaledNow;
 
             try { ReportFrames(mono); }
             catch (Exception e) { WarnOnce("frame", e); }
@@ -766,6 +790,11 @@ namespace PunkMultiverse.Core
         internal static long DirectSnapshotsReceived => Interlocked.Read(ref _directSnapshotsReceived);
         internal static long DirectRelayBypassedEntries => Interlocked.Read(ref _directRelayBypassedEntries);
         internal static long InterpolationUnderruns => Interlocked.Read(ref _interpolationUnderruns);
+        // Raw adaptive-timing accumulators, exposed so the jitterstats window report can compute
+        // per-window averages (the AdaptiveDelayAverageMs property is a lifetime average).
+        internal static long AdaptiveSamples => Interlocked.Read(ref _adaptiveSamples);
+        internal static long AdaptiveDelayMicros => Interlocked.Read(ref _adaptiveDelayMicros);
+        internal static long AdaptiveJitterMicros => Interlocked.Read(ref _adaptiveJitterMicros);
         internal static double AdaptiveDelayAverageMs => Interlocked.Read(ref _adaptiveSamples) > 0
             ? Interlocked.Read(ref _adaptiveDelayMicros) / 1000.0 / Interlocked.Read(ref _adaptiveSamples) : 0;
         internal static double AdaptiveJitterAverageMs => Interlocked.Read(ref _adaptiveSamples) > 0

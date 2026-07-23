@@ -163,13 +163,50 @@ namespace PunkMultiverse.Patches
                     continue;
                 }
 
-                // Shared currency (money/gold): coins are PRESENT-ONLY (Omar, 2026-07-21) — a player
-                // who wasn't there to see the death doesn't get the gold. Previously this charged the
-                // distant player's tank directly ("free gold nobody picked up"); that grant is gone.
-                // Coins now exist only on machines where the entity was resident (the vanilla drop),
-                // and those despawn on a timer (CoinDespawnPatch). Nothing to materialize far away.
+                // Shared currency (money/gold): materialize PHYSICAL coins at the death site, same
+                // "everyone picks up their own" model as modules/consumables/ingredients (Omar,
+                // 2026-07-22 — completes the v0.1.120 loot rework; previously currency was the one
+                // type that still direct-granted... then briefly nothing at all). The value rides
+                // the existing $res: payload; coins are plain prefab instances (never SavableEntity,
+                // so no replication concern), and CoinDespawnPatch already expires any uncollected
+                // ResourcePickup after CoinDespawnSeconds — the "must expire" half comes free.
                 if (entry.Id.StartsWith(CurrencyIdPrefix, System.StringComparison.Ordinal))
+                {
+                    if (!hasPos) continue; // no site — nothing to place
+                    string resId = entry.Id.Substring(CurrencyIdPrefix.Length);
+                    var coinPrefab = ResolveCoinPrefab(resId);
+                    if (coinPrefab == null)
+                    {
+                        Plugin.Log.LogWarning($"[Loot] no coin prefab found for resource '{resId}' — {entry.Count} currency not materialized");
+                        continue;
+                    }
+                    try
+                    {
+                        // A handful of coins that SUM to the exact rolled value (per-instance amount
+                        // override), scattered like a vanilla drop so the pile reads as loot.
+                        int coins = UnityEngine.Mathf.Clamp(
+                            UnityEngine.Mathf.RoundToInt(entry.Count / UnityEngine.Mathf.Max(1f, coinPrefab.amount)), 1, 6);
+                        float per = (float)entry.Count / coins;
+                        for (int i = 0; i < coins; i++)
+                        {
+                            var jitter = UnityEngine.Random.insideUnitCircle * 0.6f;
+                            var coin = UnityEngine.Object.Instantiate(coinPrefab,
+                                deathPos + jitter, UnityEngine.Quaternion.identity);
+                            coin.amount = per;
+                            var rb = coin.GetComponent<UnityEngine.Rigidbody2D>();
+                            if (rb != null)
+                                rb.AddForce(UnityEngine.Quaternion.AngleAxis(
+                                        UnityEngine.Random.Range(-35f, 35f), UnityEngine.Vector3.forward)
+                                    * UnityEngine.Vector2.up * 2.5f, UnityEngine.ForceMode2D.Impulse);
+                        }
+                        Plugin.Log.LogInfo($"[Loot] materialized {entry.Count} '{resId}' as {coins} coin(s) at {deathPos} (expires in {NetConfig.CoinDespawnSeconds?.Value ?? 0:0}s)");
+                    }
+                    catch (System.Exception e)
+                    {
+                        Plugin.Log.LogWarning($"[Loot] currency materialize failed for '{resId}': {e.Message}");
+                    }
                     continue;
+                }
 
                 // Consumable: spawn a physical pickup to COLLECT (Omar's "everyone picks up their
                 // own"). This also side-steps a real crash — Vault.Add(Consumable) drove the vanilla
@@ -215,6 +252,29 @@ namespace PunkMultiverse.Patches
                 }
                 catch (System.Exception e) { Plugin.Log.LogWarning($"[Loot] ingredient materialize failed '{entry.Id}': {e.Message}"); }
             }
+        }
+
+        // Coin prefabs are plain assets referenced only from drop-table ScriptableObjects — no
+        // registry/factory exposes them (why currency was the one loot type that couldn't
+        // materialize). But the assets ARE loaded: find them once via FindObjectsOfTypeAll,
+        // keeping only true prefab assets (no valid scene), keyed by their Resource.Id.
+        private static readonly Dictionary<string, ResourcePickup> CoinPrefabs = new Dictionary<string, ResourcePickup>();
+
+        private static ResourcePickup ResolveCoinPrefab(string resourceId)
+        {
+            if (CoinPrefabs.TryGetValue(resourceId, out var cached) && cached != null) return cached;
+            try
+            {
+                foreach (var p in UnityEngine.Resources.FindObjectsOfTypeAll<ResourcePickup>())
+                {
+                    if (p == null || p.gameObject.scene.IsValid()) continue; // scene instance, not an asset
+                    if (p.resource == null || p.resource.Id != resourceId) continue;
+                    CoinPrefabs[resourceId] = p;
+                    return p;
+                }
+            }
+            catch { }
+            return null;
         }
 
         // Records each Ingredient the killer's DropLoot actually spawned, keyed by the entity's

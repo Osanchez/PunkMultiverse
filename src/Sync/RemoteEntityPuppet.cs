@@ -44,6 +44,25 @@ namespace PunkMultiverse.Sync
         public Vector2 AimDirection { get; private set; }
 
         private byte _fireState; // 0 idle, 1 warming, 2 firing — from the owner (see SetFireState)
+        /// <summary>Owner-reported fire state as currently DRAWN here (drives DriveBeam). The
+        /// phantom-hit audit compares this against incoming replayed hitscan damage: damage while
+        /// this is not 2 means the victim was hit by a beam their screen is not showing.</summary>
+        internal byte FireState => _fireState;
+
+        // Fire-event-driven beam lighting: bridges the gap between a replayed hitscan shot's
+        // immediate damage and the fire-state snapshot that normally draws the beam. 0.25s covers
+        // the measured state latency (~85-150ms) with margin; a one-shot beam then fades honestly.
+        private float _beamReplayUntil;
+        private Vector2 _beamReplayDir;
+        internal bool BeamReplayLit => Time.unscaledTime < _beamReplayUntil;
+
+        /// <summary>Called by the hitscan fire-event replay: draw this puppet's beam NOW, along
+        /// the replayed shot's direction, instead of waiting out the fire-state snapshot.</summary>
+        internal void NoteBeamReplay(Vector2 dir)
+        {
+            _beamReplayUntil = Time.unscaledTime + 0.25f;
+            _beamReplayDir = dir;
+        }
         private Shooter _shooter;
         private bool _shooterChecked;
         private float _nextFireAuditAt;
@@ -216,11 +235,18 @@ namespace PunkMultiverse.Sync
             if (barrel == null) return;
             try
             {
-                if (_fireState == 2)
+                if (_fireState == 2 || BeamReplayLit)
                 {
+                    // BeamReplayLit: a replayed hitscan shot just dealt its damage HERE, but the
+                    // fire-STATE snapshot (which normally lights the beam) is still in flight
+                    // (~interp delay behind). Draw the beam NOW along the replayed shot's own
+                    // direction so damage and visual land together — the measured 6/16
+                    // "invisible laser" [PhantomHit]s were exactly this gap. State 2 takes over
+                    // (and refines the aim) when it arrives moments later.
                     beam.IsTriggerPulled = true;
                     beam.Warmup(Time.deltaTime); // reach warmed state so OnBarrelMoved shows Firing
-                    beam.OnBarrelMoved(barrel.Position, barrel.Direction);
+                    beam.OnBarrelMoved(barrel.Position,
+                        _fireState == 2 || _beamReplayDir == Vector2.zero ? barrel.Direction : _beamReplayDir);
                 }
                 else if (_fireState == 1)
                 {
@@ -255,6 +281,50 @@ namespace PunkMultiverse.Sync
                 Core.InstrumentationCounters.RemoteEntityAdded();
             }
             MuteNow();
+            // EXPERIMENT GATE (off): puppet-puppet collision-ignore did NOT reduce crowd jitter in
+            // the 2026-07-22 A/B (owner 0.94 -> puppet 4.04 u/s WITH it vs 1.46 -> 3.05 without;
+            // high run variance). Kept for a controlled re-test; flip via the experiment flag only.
+            if (ExperimentIgnorePuppetCollisions) IgnorePuppetPuppetCollisions();
+        }
+
+        internal static bool ExperimentIgnorePuppetCollisions; // toggled by future harness runs only
+
+        // Jitter A/B knob (`interpdelay` devcmd): fixed seconds added to every entity puppet's
+        // adaptive render delay. Tests the underrun-manufactures-wobble hypothesis directly —
+        // extra headroom trades presentation latency for never overtaking the buffer.
+        internal static float ExperimentExtraDelay;
+
+        // ---------------------------------------------------------------- puppet-puppet collisions
+        // SUPERSEDED HYPOTHESIS (2026-07-22, same-day): crowd jitter was NOT puppet-puppet
+        // collisions — the A/B showed no improvement because the real cause was harness clock
+        // dilation (an unfocused sender's game clock runs at ~0.4x real under load; see [Clock]
+        // in RuntimeInstrumentation and harness.md "clock-dilation trap"). With clocks healed,
+        // a 12-FlyDad crowd measures 0.44 u/s puppet wasted-speed vs ~1.0 owner-side — faithful
+        // with collisions ON. The mechanism below still exists in principle (owner separation is
+        // baked into snapshots; local re-separation is double physics) but its measured effect
+        // is negligible. Kept gated OFF; re-evaluate only with clean clocks.
+        // Pairwise IgnoreCollision (not a layer swap) so vanilla layer-based
+        // queries (Vision masks etc.) keep working; Unity drops pairs automatically on destroy.
+        private static readonly List<RemoteEntityPuppet> ActivePuppets = new List<RemoteEntityPuppet>();
+        private Collider2D[] _colliders;
+
+        private void IgnorePuppetPuppetCollisions()
+        {
+            _colliders = GetComponentsInChildren<Collider2D>(true);
+            for (int p = ActivePuppets.Count - 1; p >= 0; p--)
+            {
+                var other = ActivePuppets[p];
+                if (other == null || other == this) { if (other == null) ActivePuppets.RemoveAt(p); continue; }
+                var theirs = other._colliders;
+                if (theirs == null) continue;
+                foreach (var mine in _colliders)
+                {
+                    if (mine == null || mine.isTrigger) continue; // triggers (pickup magnets, vision) untouched
+                    foreach (var c in theirs)
+                        if (c != null && !c.isTrigger) Physics2D.IgnoreCollision(mine, c, true);
+                }
+            }
+            if (!ActivePuppets.Contains(this)) ActivePuppets.Add(this);
         }
 
         /// <summary>Idempotent, and callable while the GameObject is still INACTIVE — replicas
@@ -296,6 +366,20 @@ namespace PunkMultiverse.Sync
         {
             RemoveInstrumentationCount();
             StopWeaponSounds();
+            // Handoff: this entity may become locally OWNED (component destroyed, GameObject
+            // lives on) — restore vanilla collisions against the remaining puppets.
+            ActivePuppets.Remove(this);
+            if (_colliders != null)
+                foreach (var other in ActivePuppets)
+                {
+                    if (other == null || other._colliders == null) continue;
+                    foreach (var mine in _colliders)
+                    {
+                        if (mine == null || mine.isTrigger) continue;
+                        foreach (var c in other._colliders)
+                            if (c != null && !c.isTrigger) Physics2D.IgnoreCollision(mine, c, false);
+                    }
+                }
             if (GetComponent<DuplicateEntityInert>() != null) return;
             // The Animators outlive this component — a woken entity must not stay speed-0.
             if (_animatorsFrozen) SetAnimatorsFrozen(false);
@@ -381,7 +465,7 @@ namespace PunkMultiverse.Sync
         private void FixedUpdate()
         {
             if (_rb == null || _buffer.Count == 0) return; // frozen at its last safe pose
-            float renderTime = Time.unscaledTime - _timing.Delay;
+            float renderTime = Time.unscaledTime - (_timing.Delay + ExperimentExtraDelay);
             var last = _buffer[_buffer.Count - 1];
             if (SnapshotAge > 2f)
             {
@@ -456,6 +540,7 @@ namespace PunkMultiverse.Sync
         private const float JitterWindow = 0.5f;
         private Vector2 _jitWindowStart, _jitLastPos;
         private float _jitWindowStartTime, _jitPath;
+        private string _typeId; // resolved lazily; "" when unresolvable
 
         private void TrackJitter(Vector2 pos)
         {
@@ -477,6 +562,10 @@ namespace PunkMultiverse.Sync
             float floor = NetConfig.JitterFloorUnitsPerSec != null ? NetConfig.JitterFloorUnitsPerSec.Value : 10f;
             if (wasted >= floor)
                 Core.DiagWatch.NoteJitter(NetId, wasted);
+            // Every window also feeds the per-TYPE table (jittersweep ranks all enemy types).
+            if (_typeId == null)
+                _typeId = GetComponent<SavableEntity>()?.EntityData?.entityId ?? "";
+            Core.DiagWatch.NoteMotionSample(_typeId, wasted, wasted >= floor);
 
             _jitWindowStart = pos; _jitWindowStartTime = now; _jitPath = 0f; // next window
         }

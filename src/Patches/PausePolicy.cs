@@ -59,5 +59,37 @@ namespace PunkMultiverse.Patches
                 return false;
             }
         }
+
+        // Locator/scanner QoL (tester ask; Omar approved 2026-07-22): the map-reveal "showcase"
+        // DEACTIVATES the player's ship input and blocks closing the menu until the reveal
+        // animation finishes — a single-player assumption (the world is paused there). In a net
+        // run this policy keeps the world LIVE, so the showcase made the scanning player a
+        // sitting duck for the whole animation. Skip showcase mode entirely in net runs: input
+        // stays active, the menu opens/closes freely, and the async reveal (delay -> ScanArea)
+        // still completes in the background — the revealed area is simply on the map, whether or
+        // not the player kept the menu open to watch.
+        [HarmonyPatch(typeof(ShipMenuToggler), "EnterShowcaseMode")]
+        internal static class NoShowcaseInputLockInNetRuns
+        {
+            private static bool Prefix()
+            {
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame) return true;
+                Plugin.Log.LogInfo("[Pause] scanner reveal running in background (net run — input stays live)");
+                return false;
+            }
+        }
+
+        // Paired skip: with EnterShowcaseMode skipped, Exit would be a stray re-activate (and a
+        // HUD/state churn) firing seconds later into whatever the player is doing now.
+        [HarmonyPatch(typeof(ShipMenuToggler), "ExitShowcaseMode")]
+        internal static class NoShowcaseExitChurnInNetRuns
+        {
+            private static bool Prefix()
+            {
+                var session = NetSession.Instance;
+                return session == null || session.State != SessionState.InGame;
+            }
+        }
     }
 }

@@ -208,6 +208,59 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // Health-based breakables (fiber plants, spawnOnDeath props) take damage through
+        // Health.TakeDamage — a completely separate pipeline from DamagableResource, and the one
+        // RouteTakeDamage never covered. They are also never STREAMED (static, no puppet
+        // component), so the puppet check can't identify them as remote — route on OWNERSHIP
+        // instead. Without this, a non-owner's hit applied locally, Health.Die fired locally,
+        // and the owner-gated death broadcast never ran: the tester's "client breaks a fiber
+        // plant and nobody else sees it or gets the drop" (2026-07-22). Owner-side: the routed
+        // request applies through the HealthBase fallback in ApplyDamageRequest, the owner's
+        // Die then broadcasts EntityKilledMsg, and every machine breaks the plant + gets loot.
+        // Plant FRUITS keep their dedicated ledger path (a routed request can't name a fruit).
+        [HarmonyPatch(typeof(Health), "TakeDamage", typeof(Damage))]
+        internal static class RouteHealthDamage
+        {
+            private static bool Prefix(Health __instance, Damage __0)
+            {
+                if (!TryGetHealthRouteTarget(__instance, out int netId)) return true;
+                SendDamageRequest(isEntity: true, EnemySync.OwnerOf(netId), netId, __0);
+                UnitStatus.PlayDamageFlash(__instance); // instant local feedback; the break arrives via kill sync
+                return false;
+            }
+        }
+
+        [HarmonyPatch(typeof(Health), "TakeDamage", typeof(IReadOnlyList<Damage>))]
+        internal static class RouteHealthDamageList
+        {
+            private static bool Prefix(Health __instance, IReadOnlyList<Damage> __0)
+            {
+                if (!TryGetHealthRouteTarget(__instance, out int netId)) return true;
+                foreach (var damage in __0)
+                    SendDamageRequest(isEntity: true, EnemySync.OwnerOf(netId), netId, damage);
+                UnitStatus.PlayDamageFlash(__instance);
+                return false;
+            }
+        }
+
+        /// <summary>One route decision per victim: true = this Health victim is owned elsewhere
+        /// and its damage must travel as a DamageRequest. Locally-owned victims record kill
+        /// credit and apply vanilla (their Die broadcasts the break to everyone).</summary>
+        private static bool TryGetHealthRouteTarget(Health health, out int netId)
+        {
+            netId = 0;
+            if (!NetSession.Active || _applyingRemote) return false;
+            if (health.GetComponentInParent<EntityPlantFruit>() != null) return false; // fruit ledger path
+            if (!EnemySync.TryGetNetId(health, out netId)) return false; // no shared identity — local prop
+            if (EnemySync.IsLocallyOwned(netId))
+            {
+                var session = NetSession.Instance;
+                if (session != null) LastDamager[netId] = (byte)session.LocalSlot; // kill credit
+                return false;
+            }
+            return true;
+        }
+
         private static DamageAuditState CaptureAudit(DamagableResource dr, Damage damage)
         {
             var state = CaptureAuditBase(dr);
@@ -435,6 +488,7 @@ namespace PunkMultiverse.Sync
             // dormant-claim replay to a remote owner on arrival.
             if (!pendingReplay && !msg.Replay && !AcceptDamageRequest(msg)) return;
             DamagableResource dr = null;
+            Health hb = null;
             if (msg.IsEntity)
             {
                 if (!Core.NetIds.LifetimeMatches(msg.TargetNetId, msg.TargetLifetime))
@@ -460,6 +514,10 @@ namespace PunkMultiverse.Sync
                             // permanently immune to routed teammate damage.
                             dr = se.GetComponent<DamagableResource>();
                             if (dr == null) dr = se.GetComponentInChildren<DamagableResource>(true);
+                            // Health-based breakables (fiber plants etc. — see RouteHealthDamage):
+                            // ROOT ONLY on purpose. A children search on a plant would grab a
+                            // FRUIT's Health and quietly damage the wrong thing.
+                            if (dr == null) hb = se.GetComponent<Health>();
                         }
                     }
                     catch { }
@@ -500,19 +558,29 @@ namespace PunkMultiverse.Sync
                 if (LocalShopMenuOpen()) return; // shopping = safe (vanilla freezes the world; co-op can't)
                 dr = ShipSync.LocalShip != null ? ShipSync.LocalShip.GetComponent<DamagableResource>() : null;
             }
-            if (dr == null) return;
+            if (dr == null && hb == null) return;
 
             _applyingRemote = true;
-            float hpBefore = dr.CurrentHealth;
+            float hpBefore = dr != null ? dr.CurrentHealth : hb.CurrentHealth;
             float shieldBefore = !msg.IsEntity && ShipSync.LocalShip != null
                 ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
             try
             {
                 var type = ResolveType(msg.TypeHash);
-                if (type != null)
-                    dr.TakeDamage(new Damage(msg.Amount, type)); // full pipeline: shields, matrix, i-frames
+                if (dr != null)
+                {
+                    if (type != null)
+                        dr.TakeDamage(new Damage(msg.Amount, type)); // full pipeline: shields, matrix, i-frames
+                    else
+                        dr.Damage(msg.Amount); // untyped fallback
+                }
                 else
-                    dr.Damage(msg.Amount); // untyped fallback
+                {
+                    // Health victims validate damage themselves (damageConditions) — let the
+                    // vanilla pipeline judge typeless hits too rather than silently dropping
+                    // them (projectile requests always carry the real type anyway).
+                    hb.TakeDamage(new Damage(msg.Amount, type));
+                }
             }
             catch (System.Exception e)
             {

@@ -46,6 +46,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> SyncDiagnostics;
         public static ConfigEntry<string> LogUploadEndpoint;
         public static ConfigEntry<bool> SummaryHeal;
+        public static ConfigEntry<bool> ClockGuardEnabled;
         public static ConfigEntry<bool> CoordinatorMode;
         public static ConfigEntry<bool> HostViaSidecar;
 
@@ -185,11 +186,19 @@ namespace PunkMultiverse
                     "lease. 0 disables the grace.",
                     new AcceptableValueRange<float>(0f, 5f)));
 
-            LogUploadEndpoint = cfg.Bind("Diag", "LogUploadEndpoint", "",
-                "Signer endpoint for the `uploadlogs` devcmd (the Lambda Function URL printed by " +
-                "infra/diagnostics-s3-setup.ps1). The mod asks it for a short-lived presigned S3 " +
-                "PUT URL for one exact object, then uploads — no AWS credentials in the mod and no " +
-                "anonymous access on the bucket. Empty (default) = collect only: `uploadlogs` still " +
+            // Fresh key ON PURPOSE (was [Diag] LogUploadEndpoint, default empty): every existing
+            // install has the empty value WRITTEN, and a file value beats a new bind default —
+            // renaming the key is the only way the now-default endpoint reaches the fleet, so
+            // testers' SEND LOGS actually lands in S3 instead of quietly saving locally. The
+            // endpoint is hardened for public exposure: presigned single-object PUTs only,
+            // 10 MiB cap, per-run stable keys (re-sends overwrite), client cooldowns, reserved
+            // concurrency, and a budget kill-switch. The orphaned old key line is inert.
+            LogUploadEndpoint = cfg.Bind("Diag", "LogUploadUrl",
+                "https://57mjrwp6bts74pm7hsbv6rlgq40eekkq.lambda-url.us-east-1.on.aws/",
+                "Signer endpoint for SEND LOGS / the `uploadlogs` devcmd (a Lambda Function URL; " +
+                "see infra/diagnostics-s3-setup.ps1). The mod asks it for a short-lived presigned " +
+                "S3 PUT URL for one exact object, then uploads — no AWS credentials in the mod and " +
+                "no anonymous access on the bucket. Empty = collect only: `uploadlogs` still " +
                 "gzips the log to <plugin>/diagnostics/<runId>/ and prints the path to send manually.");
             SyncDiagnostics = cfg.Bind("Diag", "SyncDiagnostics", false,
                 "Verbose sync/authority diagnostics: per-entity ownership assigns, releases, deny " +
@@ -209,14 +218,35 @@ namespace PunkMultiverse
                 "Implies AutoStart=Host/AutoReady/AutoLaunchRun (waits for at least one real player). " +
                 "Intended for headless use (-batchmode -nographics); can also be forced with the " +
                 "PUNKMV_COORDINATOR=1 environment variable.");
-            SummaryHeal = cfg.Bind("Diag", "SummaryHeal", false,
-                "EXPERIMENTAL (WS9.1): let segment identity-summary mismatches actively trigger " +
-                "targeted roster audits (echo + repair). Off = summaries still run as detection " +
-                "telemetry (the summaries=tx/chk/miss counters on [BytePlanes]) but never generate " +
-                "repair traffic. Keep off until the membership predicate is viewer-targeted: an " +
-                "enemy that wanders outside a viewer's interest radius leaves stale data-side " +
-                "positions behind, and position-based segment membership then false-positives " +
-                "(measured: repeating un-healable mismatches on fringe + wander segments).");
+            ClockGuardEnabled = cfg.Bind("Sync", "ClockGuard", true,
+                "While a net session is active and this game window is UNFOCUSED, temporarily " +
+                "swap vsync for a frame-rate cap at your display's own refresh rate, restoring " +
+                "your exact settings the moment you tab back in. WHY: with vsync on, an " +
+                "unfocused window's game clock advances a fixed 1/refresh per frame regardless " +
+                "of real frame time — under load the whole simulation runs slow (measured 0.4x " +
+                "real time on a 240Hz display), its snapshots fall behind, and every OTHER " +
+                "player sees enemies vibrate/stutter (chronic interpolation underruns). The " +
+                "swap keeps the clock honest at any refresh rate and is invisible: it only ever " +
+                "applies while you are not looking at the game. Disable ONLY if it misbehaves " +
+                "with your driver/display setup — a [Clock] warning in your log plus teammates " +
+                "reporting stutter while you were tabbed out means this instance is the cause.");
+
+            // [Sync] section + fresh key ON PURPOSE (was [Diag] SummaryHeal): the v1 entry
+            // shipped default-false, so every existing install has "SummaryHeal = false"
+            // WRITTEN in its config, and a file value beats a new bind default. Renaming the
+            // key is the only way "on by default" actually reaches the existing fleet; the
+            // orphaned [Diag] line is inert. Keep this key as the emergency kill-switch.
+            SummaryHeal = cfg.Bind("Sync", "SummaryHeal", true,
+                "WS9.1 v3: segment identity-summary mismatches trigger targeted roster audits " +
+                "(echo + repair), so silent world divergence — an enemy existing on one screen " +
+                "but not another — self-heals in bounded time. Membership is ASSIGNMENT-based " +
+                "(the owner's own segment assignment, echoed to viewers as the snapshot group " +
+                "key), which eliminated every position-inference false-positive class the v1/v2 " +
+                "predicates hit (fringe staleness, boundary-band skew, idle-at-threshold). " +
+                "Repairs both directions: missing entities materialize from the owner's roster; " +
+                "ghosts (live here, absent from the owner) are removed after 3 consecutive " +
+                "audits inside this viewer's fresh zone. Off = detection-only telemetry " +
+                "(summaries=tx/chk/miss on [BytePlanes]) with no repair traffic.");
             ProfileFrames = cfg.Bind("Diag", "ProfileFrames", true,
                 "Per-frame profiler: times each of our subsystem ticks (ShipSync, WorldSync, " +
                 "EnemySync, Authority, …) and every ~3s logs [Profile] avg/max ms per section plus " +
