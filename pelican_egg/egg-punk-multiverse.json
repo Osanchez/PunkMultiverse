@@ -39,7 +39,7 @@
     },
     "variables": [
         {
-            "sort": 15,
+            "sort": 1,
             "name": "Mod Auto-Update",
             "description": "1 = on every boot, check GitHub releases and install a newer mod build if available. 0 = keep whatever is already installed.",
             "env_variable": "MOD_AUTO_UPDATE",
@@ -52,7 +52,7 @@
             ]
         },
         {
-            "sort": 16,
+            "sort": 2,
             "name": "Mod Version",
             "description": "Which mod release to run: 'latest' (default) or a specific release tag like v0.1.131. Pin a tag to freeze the server on a known build.",
             "env_variable": "MOD_VERSION",
@@ -66,7 +66,7 @@
             ]
         },
         {
-            "sort": 17,
+            "sort": 3,
             "name": "Mod Release Repo",
             "description": "GitHub owner/repo the mod is pulled from. Leave as default unless you fork the mod.",
             "env_variable": "MOD_RELEASE_REPO",
@@ -80,7 +80,7 @@
             ]
         },
         {
-            "sort": 18,
+            "sort": 4,
             "name": "GitHub Token",
             "description": "Optional. A GitHub token to lift API rate limits or pull from a private mod repo. Not needed for the public repo.",
             "env_variable": "GITHUB_TOKEN",
@@ -94,7 +94,7 @@
             ]
         },
         {
-            "sort": 19,
+            "sort": 5,
             "name": "Install BepInEx",
             "description": "1 = overlay the image's baked BepInEx loader onto the game each boot (makes a vanilla game copy mod-ready and keeps the loader version consistent). 0 = use the game copy's own BepInEx.",
             "env_variable": "INSTALL_BEPINEX",
@@ -107,7 +107,7 @@
             ]
         },
         {
-            "sort": 2,
+            "sort": 6,
             "name": "Game Executable",
             "description": "Windows executable to launch, relative to the game directory.",
             "env_variable": "STARTUP_EXE",
@@ -121,7 +121,7 @@
             ]
         },
         {
-            "sort": 3,
+            "sort": 7,
             "name": "Game Directory",
             "description": "Absolute path to the game install inside the container. Leave as default unless the files are nested in a subfolder.",
             "env_variable": "GAME_DIR",
@@ -135,7 +135,7 @@
             ]
         },
         {
-            "sort": 4,
+            "sort": 8,
             "name": "Advertised Address",
             "description": "Host address written into the join code shown to players (host:port). Informational - the server binds all interfaces on the allocation port regardless. Set to your public IP/DNS to make the in-game code copy-pasteable.",
             "env_variable": "SERVER_ADDRESS",
@@ -149,7 +149,7 @@
             ]
         },
         {
-            "sort": 5,
+            "sort": 9,
             "name": "Auto-Start Run",
             "description": "1 = the coordinator launches the run automatically. 0 = the first player to join (the session admin) presses START from their in-game host controls.",
             "env_variable": "AUTO_START_RUN",
@@ -162,7 +162,7 @@
             ]
         },
         {
-            "sort": 6,
+            "sort": 10,
             "name": "Enemy HP Scaling / Player",
             "description": "Enemy max-health multiplier added per connected player (1 + value*players), fixed at run start. Mod config key EnemyHealthScalePerPlayer. Decimal, e.g. 0.25. Leave blank to use 0.25.",
             "env_variable": "HP_SCALING_PER_PLAYER",
@@ -176,7 +176,7 @@
             ]
         },
         {
-            "sort": 7,
+            "sort": 11,
             "name": "Coin Despawn (seconds)",
             "description": "How long dropped gold coins persist before expiring. Mod config key CoinDespawnSeconds. Default 45.",
             "env_variable": "COIN_DESPAWN_SECONDS",
@@ -190,7 +190,7 @@
             ]
         },
         {
-            "sort": 8,
+            "sort": 12,
             "name": "Mod Version Policy",
             "description": "How joiners with a mismatched mod version are handled. Reject = refuse the join (recommended). Warn = allow but log a warning.",
             "env_variable": "MOD_MANIFEST_POLICY",
@@ -204,7 +204,7 @@
             ]
         },
         {
-            "sort": 9,
+            "sort": 13,
             "name": "Admin Command File",
             "description": "1 = watch BepInEx/plugins/PunkMultiverse/devcmd.txt so an operator can inject dev/admin commands (spawn, status, roster, etc.) at runtime. 0 = disabled.",
             "env_variable": "ENABLE_ADMIN_COMMANDS",
@@ -217,7 +217,21 @@
             ]
         },
         {
-            "sort": 10,
+            "sort": 14,
+            "name": "Log Level",
+            "description": "Console verbosity. Verbose = full instrumentation blocks every ~3s (default: a dedicated server console is a diagnostic surface). Normal = warnings + events, instrumentation every 30s. Quiet = warnings and events only.",
+            "env_variable": "LOG_LEVEL",
+            "default_value": "Verbose",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "in:Normal,Verbose,Quiet"
+            ]
+        },
+        {
+            "sort": 15,
             "name": "Sync Diagnostics",
             "description": "1 = verbose [Diag] sync/authority logging (useful when debugging desync). 0 = quiet.",
             "env_variable": "SYNC_DIAGNOSTICS",
@@ -230,7 +244,7 @@
             ]
         },
         {
-            "sort": 11,
+            "sort": 16,
             "name": "Stop Grace (seconds)",
             "description": "On Stop, seconds to wait for the game to flush its save and exit cleanly before Wine is force-killed.",
             "env_variable": "STOP_GRACE_SECONDS",
@@ -244,7 +258,7 @@
             ]
         },
         {
-            "sort": 12,
+            "sort": 17,
             "name": "Steam App ID",
             "description": "PUNK Playtest appid, written to steam_appid.txt so the base game does not relaunch through the Steam client. Change only if the playtest appid changes.",
             "env_variable": "STEAM_APPID",
@@ -257,7 +271,7 @@
             ]
         },
         {
-            "sort": 13,
+            "sort": 18,
             "name": "Wine Debug",
             "description": "WINEDEBUG channel setting. Default -all (silent). Use e.g. +err,+warn to diagnose Wine issues.",
             "env_variable": "WINEDEBUG",
@@ -271,7 +285,7 @@
             ]
         },
         {
-            "sort": 14,
+            "sort": 19,
             "name": "Extra Launch Args",
             "description": "Additional arguments appended to the Punk.exe command line (Unity/Punk flags).",
             "env_variable": "EXTRA_ARGS",

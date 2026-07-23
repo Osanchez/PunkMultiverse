@@ -234,6 +234,10 @@ namespace PunkMultiverse.Core
         private static void Report(SessionState state)
         {
             float interval = Math.Max(1f, Math.Min(30f, NetConfig.ProfileReportInterval.Value));
+            // LogLevel Normal/Quiet: keep the machinery (clock detector, growth/jitter watchdogs)
+            // on a 30s cadence but stop flooding the console at the fine-grained interval —
+            // Verbose restores the full ProfileReportInterval rate for bug reports.
+            if (!NetConfig.VerboseLogs) interval = Math.Max(interval, 30f);
             _nextReportAt = Time.unscaledTime + interval;
             DiagWatch.ReportIntervalSeconds = interval;
             long nowTicks = Stopwatch.GetTimestamp();
@@ -259,18 +263,23 @@ namespace PunkMultiverse.Core
             }
             _lastReportUnscaled = unscaledNow;
 
-            try { ReportFrames(mono); }
-            catch (Exception e) { WarnOnce("frame", e); }
-            try { ReportGc(mono, elapsed); }
-            catch (Exception e) { WarnOnce("gc", e); }
-            try { PatchProfiler.Report(mono, elapsed); }
-            catch (Exception e) { WarnOnce("patch", e); }
-            try { ReportCounts(mono, elapsed); }
-            catch (Exception e) { WarnOnce("counts", e); }
-            try { ReportStateFlow(mono, elapsed); }
-            catch (Exception e) { WarnOnce("state-flow", e); }
-            try { ReportPopulation(mono, elapsed); }
-            catch (Exception e) { WarnOnce("population", e); }
+            // Quiet: skip the periodic INFO blocks entirely; the warning-class watchdogs below
+            // (growth trend, jitter, clock) still run — they only speak when something is wrong.
+            if (!NetConfig.QuietLogs)
+            {
+                try { ReportFrames(mono); }
+                catch (Exception e) { WarnOnce("frame", e); }
+                try { ReportGc(mono, elapsed); }
+                catch (Exception e) { WarnOnce("gc", e); }
+                try { PatchProfiler.Report(mono, elapsed); }
+                catch (Exception e) { WarnOnce("patch", e); }
+                try { ReportCounts(mono, elapsed); }
+                catch (Exception e) { WarnOnce("counts", e); }
+                try { ReportStateFlow(mono, elapsed); }
+                catch (Exception e) { WarnOnce("state-flow", e); }
+                try { ReportPopulation(mono, elapsed); }
+                catch (Exception e) { WarnOnce("population", e); }
+            }
             try { DiagWatch.ReportGrowth(mono); }         // leak / unbounded-queue trend
             catch (Exception e) { WarnOnce("growth", e); }
             try { DiagWatch.ReportJitter(mono); }         // oscillating enemy puppets

@@ -41,6 +41,9 @@ namespace PunkMultiverse.Core
         private static double _frameMaxMs;
         private static float _nextReportAt;
         private static float _lastReportAt;
+        private static float _nextSpikeLogAt;
+        private static int _suppressedSpikes;
+        private static double _suppressedWorstMs;
 
         // NetStats snapshot at the last report, for per-interval deltas.
         private static long _lastBytesIn, _lastBytesOut, _lastMsgsIn, _lastMsgsOut;
@@ -97,15 +100,33 @@ namespace PunkMultiverse.Core
             if (total > _frameMaxMs) _frameMaxMs = total;
 
             if (total >= SpikeMs)
-                Plugin.Log.LogWarning($"[Profile] SPIKE mono={RuntimeInstrumentation.MonoSeconds:0.000}s {total:0.0}ms our-work this frame — {TopSectionsThisFrame()}");
+            {
+                // A sustained stall (e.g. EnemySync.Collect misbehaving) fires this every frame —
+                // hundreds of near-identical warnings per minute. Outside Verbose, rate-limit to
+                // one line per 5s carrying the count and worst total of what it swallowed.
+                if (NetConfig.VerboseLogs || Time.unscaledTime >= _nextSpikeLogAt)
+                {
+                    string suppressed = _suppressedSpikes > 0
+                        ? $" (+{_suppressedSpikes} spikes suppressed, worst {_suppressedWorstMs:0.0}ms)" : "";
+                    Plugin.Log.LogWarning($"[Profile] SPIKE mono={RuntimeInstrumentation.MonoSeconds:0.000}s {total:0.0}ms our-work this frame — {TopSectionsThisFrame()}{suppressed}");
+                    _nextSpikeLogAt = Time.unscaledTime + 5f;
+                    _suppressedSpikes = 0; _suppressedWorstMs = 0;
+                }
+                else
+                {
+                    _suppressedSpikes++;
+                    _suppressedWorstMs = System.Math.Max(_suppressedWorstMs, total);
+                }
+            }
 
             if (Time.unscaledTime >= _nextReportAt)
             {
                 float interval = System.Math.Max(1f, System.Math.Min(30f, NetConfig.ProfileReportInterval.Value));
+                if (!NetConfig.VerboseLogs) interval = System.Math.Max(interval, 30f); // LogLevel Normal/Quiet
                 float elapsed = _lastReportAt > 0 ? Time.unscaledTime - _lastReportAt : interval;
                 _lastReportAt = Time.unscaledTime;
                 _nextReportAt = Time.unscaledTime + interval;
-                Report(System.Math.Max(0.001f, elapsed));
+                if (!NetConfig.QuietLogs) Report(System.Math.Max(0.001f, elapsed));
             }
         }
 

@@ -1,3 +1,4 @@
+using System;
 using BepInEx.Configuration;
 // The game ships its own global-namespace ConfigFile type which shadows BepInEx's.
 using BepConfigFile = BepInEx.Configuration.ConfigFile;
@@ -46,6 +47,14 @@ namespace PunkMultiverse
         public static ConfigEntry<float> ResidencyGraceSeconds;
 
         public static ConfigEntry<bool> SyncDiagnostics;
+        public static ConfigEntry<string> LogLevel;
+
+        /// <summary>Full-rate instrumentation (periodic blocks at ProfileReportInterval, every SPIKE line).</summary>
+        public static bool VerboseLogs =>
+            string.Equals(LogLevel?.Value, "Verbose", StringComparison.OrdinalIgnoreCase);
+        /// <summary>Warnings and one-shot events only — no periodic instrumentation blocks.</summary>
+        public static bool QuietLogs =>
+            string.Equals(LogLevel?.Value, "Quiet", StringComparison.OrdinalIgnoreCase);
         public static ConfigEntry<string> LogUploadEndpoint;
         public static ConfigEntry<bool> SummaryHeal;
         public static ConfigEntry<bool> ClockGuardEnabled;
@@ -211,6 +220,14 @@ namespace PunkMultiverse
                 "S3 PUT URL for one exact object, then uploads — no AWS credentials in the mod and " +
                 "no anonymous access on the bucket. Empty = collect only: `uploadlogs` still " +
                 "gzips the log to <plugin>/diagnostics/<runId>/ and prints the path to send manually.");
+            LogLevel = cfg.Bind("Diag", "LogLevel", "Normal", new ConfigDescription(
+                "How chatty the log is. Normal = every warning and one-shot event, but the periodic " +
+                "instrumentation blocks ([Frame]/[Counts]/[Population]/…) slow to every 30s and " +
+                "[Profile]/[PatchProfile] SPIKE lines are rate-limited. Verbose = full-rate " +
+                "instrumentation (set this when reporting a bug so the log carries fine-grained " +
+                "data). Quiet = warnings and events only, no periodic blocks. Live-switchable with " +
+                "the `loglevel <Normal|Verbose|Quiet>` devcmd.",
+                new AcceptableValueList<string>("Normal", "Verbose", "Quiet")));
             SyncDiagnostics = cfg.Bind("Diag", "SyncDiagnostics", false,
                 "Verbose sync/authority diagnostics: per-entity ownership assigns, releases, deny " +
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +

@@ -498,6 +498,7 @@ namespace PunkMultiverse.Sync
             {
                 var priorRegistration = prior.GetComponent<EntityIdentityRegistration>();
                 priorRegistration?.MakeDuplicateInert();
+                ForgetCandidateClass(netId); // new object for this netId — reclassify on next scan
                 _overlappingLifetimes++;
                 ReplacementTypes[entityType] = ReplacementTypes.TryGetValue(entityType, out int count) ? count + 1 : 1;
                 InstrumentationCounters.DuplicateEntityPrevented();

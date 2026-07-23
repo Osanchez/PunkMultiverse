@@ -345,6 +345,20 @@ namespace PunkMultiverse.Core
                 case "runid":
                     Out($"runid: {LogUpload.RunId}");
                     return;
+                case "loglevel":
+                {
+                    // Live log verbosity switch (see NetConfig.LogLevel): flip a running instance
+                    // (or the server via console) to Verbose before reproducing a bug, back after.
+                    string level = parts.Length > 1 ? parts[1].Trim() : null;
+                    if (string.IsNullOrEmpty(level)) { Out($"loglevel: {NetConfig.LogLevel.Value} (use: loglevel Normal|Verbose|Quiet)"); return; }
+                    if (!level.Equals("Normal", StringComparison.OrdinalIgnoreCase)
+                        && !level.Equals("Verbose", StringComparison.OrdinalIgnoreCase)
+                        && !level.Equals("Quiet", StringComparison.OrdinalIgnoreCase))
+                    { Out($"loglevel: unknown '{level}' (use: Normal|Verbose|Quiet)"); return; }
+                    NetConfig.LogLevel.Value = char.ToUpperInvariant(level[0]) + level.Substring(1).ToLowerInvariant();
+                    Out($"loglevel: {NetConfig.LogLevel.Value}");
+                    return;
+                }
                 case "wallet":
                 {
                     // Loot-sync assertion surface: shared-currency tank values (gold etc.) + this

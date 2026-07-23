@@ -24,6 +24,7 @@ STEAM_APPID="${STEAM_APPID:-2850470}"                 # PUNK Playtest appid (ste
 
 AUTO_START_RUN="${AUTO_START_RUN:-0}"                 # 1 = auto-launch the run; 0 = first player (admin) presses START
 SYNC_DIAGNOSTICS="${SYNC_DIAGNOSTICS:-0}"             # 1 = verbose [Diag] logging
+LOG_LEVEL="${LOG_LEVEL:-Verbose}"                     # Normal | Verbose | Quiet — server console defaults to full instrumentation
 ENABLE_ADMIN_COMMANDS="${ENABLE_ADMIN_COMMANDS:-1}"   # 1 = watch devcmd.txt so ops can inject devcmds
 MOD_MANIFEST_POLICY="${MOD_MANIFEST_POLICY:-Reject}"  # Reject | Warn — version-mismatch gate for joiners
 HP_SCALING_PER_PLAYER="${HP_SCALING_PER_PLAYER:-0.25}"
@@ -210,7 +211,10 @@ set_cfg "Session"   "EnemyHealthScalePerPlayer" "${HP_SCALING_PER_PLAYER}" "${CF
 set_cfg "Session"   "CoinDespawnSeconds" "${COIN_DESPAWN_SECONDS}" "${CFG}"
 # Debug/automation knobs the coordinator honors.
 set_cfg "Debug"     "AutoLaunchRun"    "$(bool "${AUTO_START_RUN}")" "${CFG}"
-set_cfg "Debug"     "SyncDiagnostics"  "$(bool "${SYNC_DIAGNOSTICS}")" "${CFG}"
+# NOTE: these two live in the mod's [Diag] section, not [Debug] — a section mismatch is
+# silently ignored by BepInEx (the earlier "Debug" write of SyncDiagnostics did nothing).
+set_cfg "Diag"      "SyncDiagnostics"  "$(bool "${SYNC_DIAGNOSTICS}")" "${CFG}"
+set_cfg "Diag"      "LogLevel"         "${LOG_LEVEL}"              "${CFG}"
 if [[ "${ENABLE_ADMIN_COMMANDS}" == "1" || "${ENABLE_ADMIN_COMMANDS,,}" == "true" ]]; then
     set_cfg "Debug" "CommandFile" "devcmd.txt" "${CFG}"
     # Clear the command file AND any crash-leftover .consuming file — a stale `quit` drained on

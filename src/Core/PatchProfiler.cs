@@ -88,6 +88,10 @@ namespace PunkMultiverse.Core
             _spikeTicks = 0;
         }
 
+        private static double _nextSpikeLogAtMono;
+        private static int _suppressedSpikes;
+        private static double _suppressedWorstMs;
+
         internal static void EndFrame(double monoSeconds)
         {
             long spike = _spikeTicks;
@@ -95,9 +99,22 @@ namespace PunkMultiverse.Core
             _spikeTicks = 0;
             double ms = TicksToMs(spike);
             if (ms < 10.0) return;
+            // Outside Verbose, rate-limit like NetProfiler's SPIKE: a patch that stalls every
+            // frame (level-gen storms) otherwise prints hundreds of near-identical lines.
+            if (!NetConfig.VerboseLogs && monoSeconds < _nextSpikeLogAtMono)
+            {
+                _suppressedSpikes++;
+                _suppressedWorstMs = Math.Max(_suppressedWorstMs, ms);
+                return;
+            }
+            string suppressed = _suppressedSpikes > 0
+                ? string.Format(CultureInfo.InvariantCulture, " (+{0} suppressed, worst {1:0.0}ms)",
+                    _suppressedSpikes, _suppressedWorstMs) : "";
             Plugin.Log.LogWarning(string.Format(CultureInfo.InvariantCulture,
-                "[PatchProfile] SPIKE mono={0:0.000}s patch={1} call={2:0.0}ms",
-                monoSeconds, Names[(int)_spikeId], ms));
+                "[PatchProfile] SPIKE mono={0:0.000}s patch={1} call={2:0.0}ms{3}",
+                monoSeconds, Names[(int)_spikeId], ms, suppressed));
+            _nextSpikeLogAtMono = monoSeconds + 5.0;
+            _suppressedSpikes = 0; _suppressedWorstMs = 0;
         }
 
         internal static void Report(double monoSeconds, double elapsedSeconds)

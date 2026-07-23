@@ -775,6 +775,8 @@ namespace PunkMultiverse.Core
             _levelFingerprints.Clear();
             _peersAwaitingRejoinState.Clear();
             _nextGoLiveRecoveryAt.Clear();
+            _goLiveRecoverySends.Clear();
+            _nextGoLiveDiagAt = 0f;
             _hasLocalLevelChecksum = false;
             _localLevelChecksum = 0;
             _localLevelReady = default;
@@ -944,6 +946,8 @@ namespace PunkMultiverse.Core
             CheckGoLive();
         }
 
+        private readonly Dictionary<ulong, int> _goLiveRecoverySends = new Dictionary<ulong, int>();
+
         private void SendGoLiveRecovery(ulong peer, byte slot)
         {
             float now = Time.unscaledTime;
@@ -953,7 +957,13 @@ namespace PunkMultiverse.Core
             _writer.Reset();
             _writer.WriteMsgType(MsgType.GoLive);
             SendReliable(peer, NetChannel.Control, _writer.ToSegment());
-            Plugin.Log.LogInfo($"[Run] repeated LEVEL_READY from active P{slot + 1} — GO_LIVE-only recovery sent");
+            // The send stays at 1/s; the LOG decays to every 10th send so a peer that can't
+            // process GO_LIVE (e.g. its reliable stream is stuck behind a large baseline) doesn't
+            // flood the console with a line per second.
+            _goLiveRecoverySends.TryGetValue(peer, out int sends);
+            _goLiveRecoverySends[peer] = ++sends;
+            if (sends == 1 || sends % 10 == 0)
+                Plugin.Log.LogInfo($"[Run] repeated LEVEL_READY from active P{slot + 1} — GO_LIVE-only recovery sent (x{sends})");
         }
 
         private float _nextGoLiveDiagAt;
