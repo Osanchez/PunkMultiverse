@@ -10,6 +10,8 @@ namespace PunkMultiverse
         public static ConfigEntry<string> Transport;
         public static ConfigEntry<string> LoopbackHost;
         public static ConfigEntry<int> LoopbackPort;
+        public static ConfigEntry<string> UdpAddress;
+        public static ConfigEntry<int> UdpPort;
         public static ConfigEntry<bool> PumpSteamCallbacks;
         public static ConfigEntry<int> SteamAppId;
         public static ConfigEntry<bool> AcceptAnySteamSession;
@@ -47,6 +49,26 @@ namespace PunkMultiverse
         public static ConfigEntry<string> LogUploadEndpoint;
         public static ConfigEntry<bool> SummaryHeal;
         public static ConfigEntry<bool> ClockGuardEnabled;
+        public static ConfigEntry<bool> CoordinatorMode;
+        public static ConfigEntry<bool> HostViaSidecar;
+
+        /// <summary>True when this process is a dedicated coordinator (a shipless host that plays
+        /// nobody): hosts the session, runs the correctness plane (leases, sequencer, terrain, fog,
+        /// canonical stores), owns no world simulation, and auto-drives the lobby with no UI. Set
+        /// via config or the PUNKMV_COORDINATOR environment variable (how a spawned sidecar or a
+        /// container enables it without touching config files).</summary>
+        public static bool IsCoordinator =>
+            (CoordinatorMode != null && CoordinatorMode.Value) || EnvCoordinator;
+        internal static readonly bool EnvCoordinator =
+            System.Environment.GetEnvironmentVariable("PUNKMV_COORDINATOR") is string v
+            && (v == "1" || v.Equals("true", System.StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>Transport a spawned coordinator should use, from PUNKMV_TRANSPORT (the launcher
+        /// sets it to match the hosting player's own capability: SteamServer on a Steam machine,
+        /// Loopback for local-only). Default Loopback — the safe local behavior.</summary>
+        internal static string EnvCoordinatorTransport =>
+            System.Environment.GetEnvironmentVariable("PUNKMV_TRANSPORT") is string t
+            && !string.IsNullOrWhiteSpace(t) ? t : "Loopback";
         public static ConfigEntry<bool> ProfileFrames;
         public static ConfigEntry<bool> HitchWatchdog;
         public static ConfigEntry<int> HitchThresholdMs;
@@ -59,7 +81,19 @@ namespace PunkMultiverse
         public static void Init(BepConfigFile cfg)
         {
             Transport = cfg.Bind("Transport", "Transport", "Steam",
-                new ConfigDescription("Which transport to use.", new AcceptableValueList<string>("Steam", "Loopback")));
+                new ConfigDescription(
+                    "Which transport to use. Steam = user P2P (normal friend play). Loopback = dev/LAN " +
+                    "UDP. SteamServer = connect to an anonymous game-server identity (the dedicated/" +
+                    "sidecar deployment — SDR traversal, no port forwarding; join code is the server's " +
+                    "SteamID64). Udp = direct LiteNetLib UDP for Docker/LAN/no-Steam servers (join " +
+                    "code is host:port; the host's UdpPort must be reachable — port-forward or LAN).",
+                    new AcceptableValueList<string>("Steam", "Loopback", "SteamServer", "Udp")));
+            UdpAddress = cfg.Bind("Transport", "UdpAddress", "127.0.0.1",
+                "Udp transport: server address to join when no explicit address is given " +
+                "(a `join host:port` devcmd or lobby code overrides this).");
+            UdpPort = cfg.Bind("Transport", "UdpPort", 7778,
+                "Udp transport: port the server listens on / clients connect to. Distinct from " +
+                "LoopbackPort so a dev loopback session and a Udp server can coexist on one machine.");
             LoopbackHost = cfg.Bind("Transport", "LoopbackHost", "127.0.0.1",
                 "Host address for the dev loopback transport.");
             LoopbackPort = cfg.Bind("Transport", "LoopbackPort", 7777,
@@ -180,6 +214,19 @@ namespace PunkMultiverse
                 "windows, entity-state re-baselines, dual-ownership conflicts, and enemy fire " +
                 "announce/replay — all tagged [Diag:<category>] for grepping. Off by default (it's " +
                 "chatty); toggle live from the F11 overlay. Turn on to diagnose enemy behavior.");
+            HostViaSidecar = cfg.Bind("Session", "HostViaSidecar", false,
+                "EXPERIMENTAL (server sidecar, LOCAL/LAN only): hosting spawns a headless dedicated " +
+                "coordinator process from this install and joins it as a regular player — your game " +
+                "crashing or stalling no longer takes the session down. The sidecar is loopback-only " +
+                "until the direct-UDP transport lands, so remote friends cannot join a sidecar " +
+                "session yet. Your pre-lobby seed/settings choices do not reach the sidecar yet " +
+                "(coordinator uses defaults).");
+            CoordinatorMode = cfg.Bind("Session", "CoordinatorMode", false,
+                "EXPERIMENTAL (server sidecar): run this process as a dedicated shipless coordinator " +
+                "— it hosts and runs the correctness plane but plays nobody and simulates nothing. " +
+                "Implies AutoStart=Host/AutoReady/AutoLaunchRun (waits for at least one real player). " +
+                "Intended for headless use (-batchmode -nographics); can also be forced with the " +
+                "PUNKMV_COORDINATOR=1 environment variable.");
             ClockGuardEnabled = cfg.Bind("Sync", "ClockGuard", true,
                 "While a net session is active and this game window is UNFOCUSED, temporarily " +
                 "swap vsync for a frame-rate cap at your display's own refresh rate, restoring " +

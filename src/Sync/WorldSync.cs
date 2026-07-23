@@ -43,7 +43,7 @@ namespace PunkMultiverse.Sync
                                                         // mismatch. -1 sentinel, NOT 0: revision 0 is a
                                                         // real early-run value, and a 0 default made the
                                                         // confirm-twice filter confirm on FIRST sighting
-                                                        // at rev 0 (caught live by the coordinator test)
+                                                        // at rev 0 (caught live on the coordinator)
         private const float FullHashInterval = 30f;
         // Fog cells live in cellTypes but evolve through the game's own gas sim — an uncaptured,
         // un-ledgered mutation path that is only CONSISTENT between peers running comparable fog
@@ -78,6 +78,8 @@ namespace PunkMultiverse.Sync
             _cachedFullHash = 0;
             _cachedFullHashRevision = 0;
             _fullMismatchRevision = -1;
+            _coordinatorDirectWrites = 0;
+            _warnedDirectWrites = false;
             _fogCellId = 0;
             _fogIdResolved = false;
             _fogIdWarned = false;
@@ -257,8 +259,8 @@ namespace PunkMultiverse.Sync
         /// <summary>Full-array FNV over cellTypes with fog-type bytes masked to 0 — the backstop
         /// verifies the terrain the diff/ledger system owns, never the fog sim's cells (which evolve
         /// through an uncaptured engine path and are only symmetric between peers running comparable
-        /// sims — a throttled or minimized host is not). Returns 0 (checks skip, fail-safe) until the
-        /// fog id resolves; a level with no FogManager hashes unmasked — no fog, no asymmetry.</summary>
+        /// sims). Returns 0 (checks skip, fail-safe) until the fog id resolves; if the level simply
+        /// has no FogManager, hashes unmasked — no fog system means no fog asymmetry.</summary>
         private static ulong ComputeMaskedLevelHash()
         {
             var level = Level;
@@ -303,6 +305,26 @@ namespace PunkMultiverse.Sync
                 return hash == 0 ? 1UL : hash; // 0 is the "not computed" sentinel on the wire
             }
             catch { return 0; }
+        }
+
+        private static long _coordinatorDirectWrites;
+        private static bool _warnedDirectWrites;
+
+        // NativeArray<byte> is a struct VIEW over native memory: the boxed copy Traverse hands us
+        // writes through to the same underlying buffer, exactly like ReadCellType reads through it.
+        private static void WriteCellDirect(Level level, int index, byte type)
+        {
+            try
+            {
+                var cells = Traverse.Create(level).Field("cellTypes").GetValue();
+                if (cells is Unity.Collections.NativeArray<byte> native && native.IsCreated
+                    && index >= 0 && index < native.Length)
+                    native[index] = type;
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[World] direct cell write failed: {e.Message}");
+            }
         }
 
         private static byte ReadCellType(Level level, int index)
@@ -429,12 +451,12 @@ namespace PunkMultiverse.Sync
                 _nextDigestAt = Time.unscaledTime + 10f;
                 // Refresh the whole-array checksum on its slow cadence, stamped with the revision it
                 // was taken at; only advertise it when that still matches the live revision (else the
-                // ledgers-agree comparison on the client would race an in-flight change).
-                // The ApplyQueue guard is NOT optional: remote cells are ledgered (revision++) on
-                // receipt but applied to the array over budgeted frames — hashing while any are
-                // queued stamps a PRE-burst array with a POST-burst revision, and every viewer then
-                // "confirms" a phantom silent divergence (found live: the coordinator, where ALL
-                // combat cells arrive as remote bursts, kept the race window essentially open).
+                // ledgers-agree comparison on the client would race an in-flight change). The
+                // ApplyQueue guard is NOT optional: remote cells are ledgered (revision++) on receipt
+                // but applied to the array over budgeted frames — hashing while any are queued stamps
+                // a PRE-burst array with a POST-burst revision, and every viewer then "confirms" a
+                // phantom silent divergence (found live on the coordinator, where ALL combat cells
+                // arrive as remote bursts and the race window is essentially always open).
                 if (Pending.Count == 0 && ApplyQueue.Count == 0 && Time.unscaledTime >= _nextFullHashAt)
                 {
                     _nextFullHashAt = Time.unscaledTime + FullHashInterval;
@@ -565,6 +587,23 @@ namespace PunkMultiverse.Sync
                         _setCellByIndex.Invoke(level, new object[] { index, type, ChangeSourceNet });
                     else if (_setCellByVec != null && _width > 0)
                         _setCellByVec.Invoke(level, new object[] { new UnityEngine.Vector2Int(index % _width, index / _width), type, ChangeSourceNet });
+                    // Coordinator (shipless, headless): no segment is ever loaded, and vanilla
+                    // SetCell silently no-ops into unloaded space — 616 ledger cells applied with
+                    // zero array effect in the first live test, which made the CORRECT client
+                    // "repair" itself against a stale canonical array. Verify the write landed and
+                    // fall back to writing the data array directly: the coordinator maintains
+                    // canonical DATA, not presentation, and net-sourced cascades are suppressed
+                    // everywhere anyway. Read-back is cheap and makes the fallback self-diagnosing.
+                    if (NetConfig.IsCoordinator && ReadCellType(level, index) != type)
+                    {
+                        WriteCellDirect(level, index, type);
+                        _coordinatorDirectWrites++;
+                        if (!_warnedDirectWrites)
+                        {
+                            _warnedDirectWrites = true;
+                            Plugin.Log.LogInfo("[World] coordinator: SetCell no-ops on unloaded segments — writing cell data directly");
+                        }
+                    }
                 }
             }
             catch (Exception e)

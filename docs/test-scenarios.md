@@ -449,6 +449,81 @@ Is puppet motion faithful to the owner sim when many combat-tier enemies stream 
 - FAIL signature of the dilation artifact: underruns ~1500/s, delayAvg pinned at the
   250ms ceiling, puppet wastedAvg 2-4x owner — check `[Clock]` before blaming sync.
 
+## 30. server-sidecar (host player's game dies, session survives) — VERIFIED 2026-07-19
+
+`[Session] HostViaSidecar = true`: hosting spawns a headless coordinator process from the
+same install (env `PUNKMV_COORDINATOR=1`, `DOORSTOP_*` scrubbed from the child env or it
+boots as a vanilla zombie); the hosting player's game joins it via loopback (forced for
+that session even on a Steam-configured install). Sidecar's log = `BepInEx/LogOutput.1.log`
+(BepInEx's numbered fallback for the second instance).
+
+- Launch the host-install game with HostViaSidecar=true + AutoStart=Host; launch the
+  client install (Join, loopback) ~25s later.
+- PASS: three processes; sidecar log shows `hosting as P1 'SERVER'` + shipless marker;
+  player log shows `[Sidecar] coordinator spawned pid=` → `sent HELLO` → GO LIVE
+  (player is slot ≥1, host=False); 3-way checksum parity; all leases to real players.
+- THE gate: `Stop-Process` the PLAYER's game mid-run → coordinator logs `dropped — slot
+  reserved` + `suspended puppet`; the OTHER client stays `state=InGame` with NO
+  `promoted to host` and no session teardown. (rxBundles=0/s afterward is correct — the
+  sole remaining player owns everything near it; nobody is left to stream to it.)
+- Limits: loopback flavor is local/LAN only (see #31 for the remote-capable transport).
+- Since the session-admin change: the coordinator NO LONGER auto-launches by itself — the
+  first joiner is promoted to session admin (`[Admin] ... is now session admin`) and drives
+  start. Harness: either keep `AutoLaunchRun=true` in the host install's config (the sidecar
+  inherits it and still auto-starts) or send the `start` devcmd to the ADMIN's instance.
+  Parity now in: leader's seed/settings forwarded (`PartyLeaderSettings`), coordinator sits
+  in reserved slot 4 (players are slots 0-3).
+
+## 31. steamserver-sidecar (remote-capable dedicated server) — VERIFIED 2026-07-19
+
+`Transport=SteamServer`: the coordinator holds an anonymous Steam game-server identity;
+players connect over SDR (NAT traversal + encryption, no port forwarding). Dual connection
+per peer (vport 0 bulk = Control+Events, vport 1 fast = Combat+State) with a 1-byte channel
+prefix, so the WS8.2 barriers still see per-channel reliable ordering.
+
+- Host install: `Transport=Steam`, `HostViaSidecar=true`, `AutoStart=Host` → spawns a
+  `PUNKMV_TRANSPORT=SteamServer` coordinator (BepInEx `LogOutput.1.log`) and joins it via the
+  published `coordinator-steamid.txt`.
+- Second player: `Transport=SteamServer`, then `join <serverid>` (the id from that file).
+- PASS: sidecar log `[GameServer] logged on — server id <N>` + `[SteamServer] host up`;
+  each player `[SteamServer] ... connected ... (both lanes)`; 3-way GO LIVE + checksum
+  parity; **`[Seq]=0` on all three** (the dual-connection ordering gate); combat routed.
+- Headline gate: `Stop-Process` the host player's game → coordinator logs `[SteamServer]
+  peer ... lane down (Timeout)` + `slot reserved` + `suspended puppet`; the other player
+  stays `state=InGame`, no `promoted to host`, no teardown.
+- Devcmd `join <address|steamid64>` drives an explicit join (harness needs it — no lobby).
+  NOTE: once the leader's discovery lobby exists and its membership has been relayed, a
+  code-join from a SteamID that is NOT a lobby member is REFUSED (`refused HELLO ... not a
+  discovery-lobby member`) — that's parity #2 working, not a bug. Same-machine harness runs
+  aren't affected (all processes share one SteamID, which is a member). `[Transport]
+  AcceptAnySteamSession=true` is the accept-gate escape hatch for a listen-server host.
+- Start: same as #29 — coordinator no longer auto-launches; use AutoLaunchRun=true (host
+  install config, inherited by the sidecar) or the `start` devcmd on the admin instance.
+- Limits: same-machine SDR adds a few ms; lane-timeout drop detection ~13s (Steam default,
+  not loopback-fast). T2 (Combat-vs-bulk isolation measurement) and T3 (real remote friend)
+  still open — see STEAMSERVER_TRANSPORT_SPEC §7.
+
+## 32. udp-transport (LiteNetLib direct UDP — Docker/LAN/no-Steam)
+
+`Transport=Udp`: LiteNetLib on `UdpPort` (default 7778, distinct from LoopbackPort so both
+can coexist). Reliable channels ride ReliableOrdered on LiteNetLib channels 0/1/2 (one per
+NetChannel — WS8.2 per-channel ordering, Combat never blocks behind Events); State is
+Unreliable. 1-byte channel prefix in the payload (SteamServerTransport pattern). Join code
+is `host:port`; peer ids: host=1, clients=LiteNetLib id+2 (client learns its own from
+`NetPeer.RemoteId`).
+
+- Host install: `Transport=Udp`, `AutoStart=Host`. Client: `Transport=Udp`,
+  `AutoStart=Join` (defaults to `UdpAddress:UdpPort`) or `join <host:port>`.
+- PASS: host `[Udp] hosting on *:7778`; client `[Udp] connected to host as peer N`;
+  GO LIVE + checksum parity; combat routed; no `[Udp] socket error` / `[Udp] oversized`.
+- Host-stall behavior: LiteNetLib disconnects at 10s silence → client arms a 2s-cadence
+  auto-reconnect (`[Udp] retrying connect`) and reattaches in place (resume-HELLO), same
+  policy as loopback. A REMOTE close (host quit) does NOT migrate — Udp clients can't
+  reach an elected peer at the configured server address — the session fails cleanly
+  ("Server closed the session."). The dedicated-server deployment never migrates anyway.
+- Harness: scratchpad `smoke-udp.ps1` pattern (arm both configs `Transport=Udp`, soak-style
+  launch, gates above).
+
 ---
 
 ### Cadence

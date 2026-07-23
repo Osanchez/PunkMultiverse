@@ -30,12 +30,19 @@ namespace PunkMultiverse.Core
     ///        tp &lt;x&gt; &lt;y&gt; | tp rel dx dy    teleport the local ship
     ///        autofly &lt;seconds&gt;            re-arm the AutoFly scripted flight
     ///        say &lt;text&gt;                   echo a marker line into the log
+    ///        quit | stop | shutdown       clean shutdown: end session (save + notify), then exit
     ///    Every execution logs "[Dev] ..." so scenarios are assertable from LogOutput.log.
     /// </summary>
     internal static class DevTools
     {
         private static float _nextPollAt;
         private static bool _warnedPath;
+
+        // Deferred-quit deadline (unscaledTime). `quit`/`stop`/`shutdown` ends the session
+        // synchronously (economy save + client disconnect packets) then arms this so the process
+        // exits a beat later — long enough for the outgoing UDP disconnect datagrams to leave the
+        // socket before teardown. -1 = not armed. Deliberately NOT cleared by Reset().
+        private static float _quitAt = -1f;
 
         /// <summary>Dev shield for sweep tests: the local ship's damage is BLOCKED at the
         /// routing chokepoints (DamageSync), so every incoming hit still logs its
@@ -117,6 +124,13 @@ namespace PunkMultiverse.Core
 
         public static void Tick(NetSession session)
         {
+            if (_quitAt >= 0f && Time.unscaledTime >= _quitAt)
+            {
+                _quitAt = -1f;
+                Plugin.Log.LogInfo("[Dev] quit grace elapsed — exiting process");
+                Application.Quit();
+                return;
+            }
             TickFire();
             string file = NetConfig.CommandFile != null ? NetConfig.CommandFile.Value : "";
             if (string.IsNullOrEmpty(file)) return;
@@ -292,6 +306,34 @@ namespace PunkMultiverse.Core
             {
                 case "say":
                     Out($"say: {line.Substring(3).Trim()}");
+                    return;
+                case "start":
+                    // Drive the session admin's START (a coordinator no longer auto-launches). Works for
+                    // a normal host too. No-op with a reason if we aren't the admin or not all-ready.
+                    Out($"start: admin={session.IsSessionAdmin} allReady={session.AllReady} state={session.State}");
+                    session.RequestStart();
+                    return;
+                case "ready":
+                {
+                    bool want = parts.Length < 2 || !parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
+                    var me = session.LocalPlayer;
+                    if (me != null) session.SetLocalPrefs(me.ColorIndex, want);
+                    Out($"ready {(want ? "ON" : "OFF")}");
+                    return;
+                }
+                case "quit":
+                case "stop":
+                case "shutdown":
+                    // Clean process shutdown for the dedicated server: end the session (as host
+                    // this broadcasts SessionEnded + disconnect packets to clients and saves the
+                    // economy stash synchronously), then exit after a short grace so the outgoing
+                    // datagrams flush. The container stop hook writes this instead of hard-killing
+                    // Wine, so panel Stop/Restart preserves state.
+                    Out("quit: ending session and shutting down");
+                    Plugin.Log.LogInfo("[Dev] quit requested — ending session and exiting");
+                    try { session.StopSession("server shutdown"); }
+                    catch (Exception e) { Plugin.Log.LogWarning($"[Dev] StopSession during quit failed: {e.Message}"); }
+                    _quitAt = Time.unscaledTime + 0.5f;
                     return;
                 case "uploadlogs":
                     // Tester diagnostics pipeline: gzip + PUT this machine's BepInEx log to the
@@ -519,7 +561,7 @@ namespace PunkMultiverse.Core
                         ? $"{ship.transform.position.x:0.0},{ship.transform.position.y:0.0}" : "none";
                     string dead = ship != null && ship.IsDead ? " DEAD" : "";
                     Out($"status v{PluginVersionInfo.Version} state={session.State} slot={session.LocalSlot} " +
-                        $"host={session.IsHost} ship={pos}{dead} " +
+                        $"host={session.IsHost} admin={session.IsSessionAdmin} ship={pos}{dead} " +
                         $"shipFireReplays={ProjectileSync.ShipFireQueued + ProjectileSync.ShipFireLate} " +
                         $"phantomHits={ProjectileSync.PhantomHitCount}");
                     return;
@@ -856,6 +898,25 @@ namespace PunkMultiverse.Core
                         string who = kv.Key == session.LocalSlot ? "local" : "puppet";
                         Out($"fuel P{kv.Key + 1}({who})={UnitStatus.ReadFuelFraction(kv.Value):0.00}");
                     }
+                    return;
+                }
+                case "servercode":
+                {
+                    // Print + copy the SteamServer join code to share with a remote friend.
+                    ulong code = session.SteamServerCode;
+                    if (code == 0) { Out("servercode: not a SteamServer session"); return; }
+                    try { UnityEngine.GUIUtility.systemCopyBuffer = code.ToString(); } catch { }
+                    Out($"servercode: {code} (copied to clipboard — friend pastes into Join)");
+                    return;
+                }
+                case "join":
+                {
+                    // Harness: drive a join to an explicit address/code (loopback "ip:port",
+                    // SteamID64 for Steam/SteamServer). Lets a test feed a SteamServer coordinator's
+                    // id (from coordinator-steamid.txt) without a lobby/clipboard.
+                    if (parts.Length < 2) { Out("join <address|steamid64>"); return; }
+                    session.JoinByCode(parts[1]);
+                    Out($"join: dialing {parts[1]} (transport {session.ResolvedTransport})");
                     return;
                 }
                 case "linkhealth":

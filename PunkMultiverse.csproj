@@ -4,16 +4,25 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>PunkMultiverse</AssemblyName>
     <RootNamespace>PunkMultiverse</RootNamespace>
-    <Version>0.1.130</Version>
+    <Version>0.1.131</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Class libraries don't copy NuGet assemblies to bin by default; we need LiteNetLib.dll
+         in the output so build.ps1 can deploy it next to the plugin. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
 
     <!-- This folder lives inside the game install; override with -p:GameDir= for CI. -->
     <GameDir Condition="'$(GameDir)' == ''">$(MSBuildProjectDirectory)\..</GameDir>
     <ManagedDir>$(GameDir)\Punk_Data\Managed</ManagedDir>
     <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- LiteNetLib: the "Udp" transport (Docker/LAN/no-Steam). Pure netstandard UDP with
+         reliable-ordered channels; its DLL ships alongside ours (build.ps1 copies it). -->
+    <PackageReference Include="LiteNetLib" Version="1.2.0" />
+  </ItemGroup>
 
   <ItemGroup>
     <Reference Include="BepInEx.Core">      <HintPath>$(BepInExCore)\BepInEx.Core.dll</HintPath>       <Private>false</Private></Reference>

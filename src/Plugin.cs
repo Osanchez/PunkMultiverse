@@ -79,6 +79,7 @@ namespace PunkMultiverse
             RuntimeInstrumentation.Shutdown();
             // Last: we own SteamAPI on direct launches, and an un-shut-down steamclient
             // intermittently deadlocks process exit (the windowless zombie Punk.exe).
+            Transport.GameServerBootstrap.Shutdown();
             Transport.SteamBootstrap.Shutdown();
         }
     }

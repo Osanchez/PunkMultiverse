@@ -32,6 +32,8 @@ $pluginDir = Join-Path $GameDir "BepInEx\plugins\PunkMultiverse"
 New-Item -ItemType Directory -Force $pluginDir | Out-Null
 
 Copy-Item (Join-Path $outDir "PunkMultiverse.dll") $pluginDir -Force
+# Dependency DLLs (LiteNetLib for the Udp transport) ride alongside the plugin.
+Copy-Item (Join-Path $outDir "LiteNetLib.dll") $pluginDir -Force -ErrorAction SilentlyContinue
 if ($Debug) {
     Copy-Item (Join-Path $outDir "PunkMultiverse.pdb") $pluginDir -Force
 } else {
@@ -47,6 +49,7 @@ if ($Zip) {
     $staging = Join-Path $dist "staging\BepInEx\plugins\PunkMultiverse"
     New-Item -ItemType Directory -Force $staging | Out-Null
     Copy-Item (Join-Path $outDir "PunkMultiverse.dll") $staging -Force
+    Copy-Item (Join-Path $outDir "LiteNetLib.dll") $staging -Force -ErrorAction SilentlyContinue
     $zipPath = Join-Path $dist "PunkMultiverse-v$version.zip"
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     Compress-Archive -Path (Join-Path $dist "staging\BepInEx") -DestinationPath $zipPath

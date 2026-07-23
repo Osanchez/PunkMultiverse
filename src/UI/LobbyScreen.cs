@@ -712,7 +712,7 @@ namespace PunkMultiverse.UI
                 int slotIndex = i;
                 row.KickLabel = UiTheme.MakeButton(bg.transform, "Btn_Kick", "KICK",
                     new Vector2((WindowW - 120) / 2f - 70, 0), new Vector2(96, 44),
-                    () => NetSession.Instance.KickPlayer((byte)slotIndex), 13);
+                    () => NetSession.Instance.RequestKick((byte)slotIndex), 13);
                 UiTheme.RootOf(row.KickLabel).SetActive(false);
 
                 _rows.Add(row);
@@ -841,7 +841,7 @@ namespace PunkMultiverse.UI
 
         private void StartGame()
         {
-            NetSession.Instance.StartRun();
+            NetSession.Instance.RequestStart();
         }
 
         private void Leave()
@@ -858,7 +858,9 @@ namespace PunkMultiverse.UI
 
         private void CopyCodeWithFeedback()
         {
-            NetSession.Instance.CopyLobbyCodeToClipboard();
+            ulong serverCode = NetSession.Instance.SteamServerCode;
+            if (serverCode != 0) { try { GUIUtility.systemCopyBuffer = serverCode.ToString(); } catch { } }
+            else NetSession.Instance.CopyLobbyCodeToClipboard();
             if (_copyFlash != null) StopCoroutine(_copyFlash);
             _copyFlash = StartCoroutine(FlashCopied());
         }
@@ -916,7 +918,11 @@ namespace PunkMultiverse.UI
 
         private void RefreshLobby(NetSession session)
         {
-            _codeText.text = session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
+            // SteamServer sessions have no Steam lobby — surface the server join code (the SteamID64
+            // a remote friend pastes into Join) in the same slot, copyable the same way.
+            ulong serverCode = session.SteamServerCode;
+            _codeText.text = serverCode != 0 ? $"SERVER CODE   {serverCode}"
+                : session.CurrentLobbyCode != null ? $"LOBBY CODE   {session.CurrentLobbyCode}" : "";
             bool hasCode = !string.IsNullOrEmpty(_codeText.text);
             _copyChipRoot.gameObject.SetActive(hasCode);
             if (hasCode) // hug the right edge of the (centered, width-varying) code text
@@ -924,8 +930,8 @@ namespace PunkMultiverse.UI
                     _codeText.GetPreferredValues(_codeText.text).x * 0.5f + 78f, 0f);
             _seedText.text = $"WORLD SEED   {(session.ChosenSeed != 0 ? session.ChosenSeed.ToString() : "RANDOM")}"
                 + (session.FriendlyFire ? "   ·   <color=#f08c2e>FRIENDLY FIRE ON</color>" : "");
-            _inviteButton.SetActive(session.UsingSteam);
-            _startButton.SetActive(session.IsHost);
+            _inviteButton.SetActive(session.CanInvite); // Steam P2P or a SteamServer discovery lobby
+            _startButton.SetActive(session.IsSessionAdmin);
             var startBtn = UiTheme.ButtonOf(_startLabel);
             if (startBtn != null)
             {
@@ -955,9 +961,11 @@ namespace PunkMultiverse.UI
                     UiTheme.RootOf(row.KickLabel).SetActive(false);
                     continue;
                 }
-                UiTheme.RootOf(row.KickLabel).SetActive(session.IsHost && !p.IsLocal && session.State == SessionState.Lobby);
+                UiTheme.RootOf(row.KickLabel).SetActive(
+                    session.IsSessionAdmin && !p.IsLocal && !p.IsCoordinator && session.State == SessionState.Lobby);
                 row.Swatch.color = PlayerColors.Get(p.ColorIndex);
-                string tags = p.Slot == session.HostSlot ? "  <color=#f08c2e>HOST</color>" : "";
+                string tags = p.Slot == session.HostSlot ? "  <color=#f08c2e>HOST</color>"
+                    : p.IsAdmin ? "  <color=#f08c2e>ADMIN</color>" : "";
                 if (p.IsLocal) tags += "  <color=#717171>(YOU)</color>";
                 if (p.ModsMismatch) tags += "  <color=#ffb84d>[!] MODS</color>";
                 row.Name.text = p.Name + tags;

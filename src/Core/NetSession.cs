@@ -22,10 +22,17 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 13; // 13: EntityFireMsg.WeaponHash (puppet fire fidelity)
-                                                // NOTE: feature/server_sidecar independently used 13
-                                                // for its own additions — resolve to 14 when merging.
+        public const int ProtocolVersion = 14; // 14 = main's 13 (EntityFireMsg.WeaponHash, fire
+                                                // fidelity) + this branch's sidecar/admin additions
+                                                // (RosterEntry.IsAdmin, LobbyMembers 88, AdminGrant 89,
+                                                // AdminCommand 90) — both 13s were parallel, distinct
+                                                // wire formats; the union is 14.
         public const int MaxPlayers = 4;
+        /// <summary>Reserved slot for a dedicated coordinator — OUTSIDE the 0..MaxPlayers-1 player
+        /// range, so a shipless server never consumes one of the four player/ship slots. Only ever
+        /// occupied in a coordinator session; always null in normal play (which leaves every
+        /// "for i &lt; MaxPlayers" player loop untouched).</summary>
+        public const int CoordinatorSlot = MaxPlayers; // = 4
         private const float PingInterval = 1f;
         private const float ConnectTimeout = 15f;
 
@@ -41,7 +48,7 @@ namespace PunkMultiverse.Core
         public byte HostSlot { get; private set; }
         public string LastError { get; private set; }
 
-        private readonly NetPlayer[] _players = new NetPlayer[MaxPlayers];
+        private readonly NetPlayer[] _players = new NetPlayer[MaxPlayers + 1]; // +1 = CoordinatorSlot
         public IReadOnlyList<NetPlayer> Players => _players;
         public NetPlayer LocalPlayer => LocalSlot >= 0 ? _players[LocalSlot] : null;
 
@@ -50,11 +57,63 @@ namespace PunkMultiverse.Core
 
         private SteamLobbyController _lobby;
         public SteamLobbyController Lobby => _lobby;
-        public bool UsingSteam => !NetConfig.Transport.Value.Equals("Loopback", StringComparison.OrdinalIgnoreCase);
+        // True while this session runs against a locally-spawned sidecar coordinator: the join uses
+        // the launcher-chosen transport (below) for THIS session, not the player's config value.
+        private bool _sidecarSession;
+        private string _sidecarTransport = "Loopback"; // set at spawn from SidecarLauncher.ChosenTransport
+        // Sidecar parity (#1): the settings the hosting player picked on the Host screen, forwarded
+        // to the shipless coordinator once we reach its lobby so it hosts THEIR world, not defaults.
+        private bool _haveLeaderSettings, _leaderSettingsSent, _leaderFriendlyFire, _leaderHpScaling;
+        private int _leaderSeed;
+        // Sidecar parity (#2/#3): a SteamServer session's discovery lobby. A remote friend who enters
+        // it connects to the server id (not the lobby owner), so their transport must resolve to
+        // SteamServer even though their config says "Steam".
+        private string _lobbyServerTransport; // non-null on a friend who joined a SteamServer discovery lobby
+        private bool _serverLobbyRequested;   // the invite-owner asked Steam to create the discovery lobby
+        private float _nextServerLobbyRetryAt; // backoff after a failed discovery-lobby creation
+        private bool _allowlistDirty;         // discovery-lobby membership changed; re-relay to the coordinator
+        // Coordinator side of #2: the SteamID64s the party leader says are lobby members. Null until the
+        // first relay arrives (accept-all bootstrap); once set, a HELLO from a non-member is refused.
+        private HashSet<ulong> _allowedPeers;
+        // Session admin (standalone/sidecar): the first real player to connect gets host-like controls.
+        // Coordinator side tracks who holds it and the secret token that authorizes their commands; the
+        // token is transport-agnostic (never trusts the peer id), so it holds for the LiteNetLib server.
+        private int _adminSlot = -1;      // coordinator: slot of the current admin, -1 = none
+        private ulong _adminToken;        // coordinator: capability token issued to the admin
+        private ulong _localAdminToken;   // client: my token when I'm the admin (0 = not admin)
+        private float _nextAdminGrantResendAt; // periodic re-grant: heals an admin whose game restarted
+                                               // (roster flag survives the rejoin; the token didn't)
 
-        /// <summary>Pasteable code for the current Steam lobby, or the loopback address.</summary>
+        /// <summary>The single point where a session's transport is decided. Adding a transport is
+        /// ONE config value + ONE case in CreateTransport:
+        ///   Steam       — user P2P (normal friend play)
+        ///   Loopback    — dev/LAN UDP
+        ///   SteamServer — connect to an anonymous game-server identity (dedicated/sidecar)
+        ///   (planned) Udp — LiteNetLib for Docker/no-Steam
+        /// A coordinator uses its launch env; a sidecar SESSION uses the launcher's choice; everyone
+        /// else uses config. A coordinator is never a Steam USER endpoint, so config "Steam" there
+        /// falls back to Loopback via the env default.</summary>
+        internal string ResolvedTransport =>
+            NetConfig.IsCoordinator ? NetConfig.EnvCoordinatorTransport
+            : _sidecarSession ? _sidecarTransport
+            : _lobbyServerTransport ?? NetConfig.Transport.Value;
+
+        public bool UsingSteam => ResolvedTransport.Equals("Steam", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>The INVITE FRIENDS button lights up whenever we hold a Steam lobby — an ordinary
+        /// user-P2P lobby OR a SteamServer discovery lobby (listen-server host or sidecar leader).</summary>
+        public bool CanInvite => _lobby != null && _lobby.InLobby;
+
+        /// <summary>Whoever holds host-like controls (START / KICK). A normal player-host is always its
+        /// own admin; in a shipless-coordinator session it's the promoted player, not the headless
+        /// server. Drives which client sees the host UI; the server still re-checks the token.</summary>
+        public bool IsSessionAdmin => (IsHost && !NetConfig.IsCoordinator) || (LocalPlayer?.IsAdmin ?? false);
+
+        /// <summary>Pasteable code for the current Steam lobby, or the direct-connect address.</summary>
         public string CurrentLobbyCode =>
             _lobby != null && _lobby.InLobby ? SteamLobbyController.EncodeLobbyCode(_lobby.CurrentLobby)
+            : State != SessionState.Offline && ResolvedTransport.Equals("Udp", StringComparison.OrdinalIgnoreCase)
+                ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
             : State != SessionState.Offline && !UsingSteam ? $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}"
             : null;
 
@@ -116,7 +175,8 @@ namespace PunkMultiverse.Core
             var launchLobby = SteamLobbyController.ParseLaunchArgs();
 
             // DEV: config-driven autostart so two-instance loopback tests need no clicks.
-            var mode = NetConfig.AutoStart.Value;
+            // A dedicated coordinator always hosts — that's its entire job.
+            var mode = NetConfig.IsCoordinator ? "Host" : NetConfig.AutoStart.Value;
             if (launchLobby.HasValue)
             {
                 yield return new WaitForSecondsRealtime(3f);
@@ -202,6 +262,28 @@ namespace PunkMultiverse.Core
         /// once the session is up.</summary>
         public void HostOnline(int chosenSeed = 0, bool friendlyFire = false, bool enemyHpScaling = true)
         {
+            // Server sidecar (local/LAN only): hosting spawns a dedicated coordinator process and
+            // this game joins it as a regular player. Falls back to classic in-process hosting if
+            // the sidecar can't start. Seed/settings forwarding to the coordinator is not built
+            // yet (party-leader protocol) — the coordinator uses defaults; say so.
+            if (NetConfig.HostViaSidecar.Value && !NetConfig.IsCoordinator)
+            {
+                if (SidecarLauncher.LaunchIfNeeded(out string sidecarError))
+                {
+                    // Carry the host player's world choice to the coordinator (#1). Sent when we
+                    // reach its lobby (see Update); the coordinator adopts it before StartRun.
+                    _leaderSeed = chosenSeed;
+                    _leaderFriendlyFire = friendlyFire;
+                    _leaderHpScaling = enemyHpScaling;
+                    _haveLeaderSettings = true;
+                    _leaderSettingsSent = false;
+                    LastError = null;
+                    _sidecarTransport = SidecarLauncher.ChosenTransport;
+                    StartCoroutine(JoinSidecarWhenUp());
+                    return;
+                }
+                Plugin.Log.LogWarning($"[Sidecar] could not spawn coordinator ({sidecarError}) — hosting in-process instead");
+            }
             try
             {
                 LastError = null;
@@ -219,14 +301,121 @@ namespace PunkMultiverse.Core
             }
         }
 
+        /// <summary>Join the freshly-spawned sidecar coordinator, retrying while it boots (a cold
+        /// Punk.exe takes 10-25s to reach hosting). Each attempt uses the normal join path with its
+        /// own connect timeout; the coordinator's lobby appears to this player exactly like any
+        /// remote host's.</summary>
+        private System.Collections.IEnumerator JoinSidecarWhenUp()
+        {
+            _sidecarSession = true;
+            bool steamServer = _sidecarTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase);
+            float deadline = Time.unscaledTime + 90f;
+            Plugin.Log.LogInfo($"[Sidecar] waiting for the coordinator ({_sidecarTransport}), then joining");
+            while (Time.unscaledTime < deadline)
+            {
+                if (State >= SessionState.Lobby) yield break; // connected — lobby reached
+                if (State == SessionState.Offline)
+                {
+                    if (!SidecarLauncher.IsRunning)
+                    {
+                        _sidecarSession = false;
+                        Fail("Sidecar coordinator exited before the session came up.");
+                        yield break;
+                    }
+                    _sidecarSession = true; // StopSession clears it after each failed attempt
+
+                    // SteamServer: the coordinator publishes its server SteamID to the id file once
+                    // logged on — that file existing IS the readiness signal (and the join code).
+                    // Loopback: join the fixed local address directly.
+                    string address = null;
+                    if (steamServer)
+                    {
+                        ulong serverId = GameServerBootstrap.ReadPublishedId();
+                        if (serverId != 0) address = serverId.ToString();
+                    }
+                    else address = $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}";
+
+                    if (address != null) JoinSession(address); // else wait for the id file to appear
+                }
+                yield return new WaitForSecondsRealtime(3f);
+            }
+            if (State < SessionState.Lobby)
+            {
+                _sidecarSession = false;
+                Fail("Sidecar coordinator did not come up within 90s.");
+            }
+        }
+
+        /// <summary>Keep a SteamServer session's discovery lobby open and its allowlist fresh (#2/#3).
+        /// The invite OWNER — a listen-server host, or the player that launched a sidecar coordinator —
+        /// holds a Steam lobby stamped with the server id so friends join-by-invite; the same player
+        /// relays lobby membership to a shipless coordinator so it can gate joins. Remote friends and
+        /// the coordinator itself skip all of this.</summary>
+        private void MaintainServerLobby()
+        {
+            bool inviteOwner = !NetConfig.IsCoordinator
+                && State >= SessionState.Lobby
+                && ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase)
+                && (IsHost || (_sidecarSession && _haveLeaderSettings)); // not a plain lobby-joined friend
+            if (!inviteOwner) return;
+
+            ulong serverId = SteamServerCode; // 0 until the server id is known (welcome / logon)
+            if (serverId == 0) return;
+
+            if (_lobby == null || !_lobby.InLobby)
+            {
+                if (_serverLobbyRequested) return; // creation already in flight
+                if (Time.unscaledTime < _nextServerLobbyRetryAt) return; // backoff after a failure
+                _serverLobbyRequested = true;
+                EnsureLobbyController();
+                _lobby.CreateServerLobby(serverId);
+                return;
+            }
+
+            // Coordinator sessions only: push the current member set when it changed. A listen-server
+            // host gates at accept via IsMember and needs no relay.
+            if (!IsHost && _allowlistDirty && _players[HostSlot] != null)
+            {
+                _allowlistDirty = false;
+                SendAllowlistToCoordinator();
+            }
+        }
+
+        private void SendAllowlistToCoordinator()
+        {
+            var ids = _lobby.MemberIds();
+            _writer.Reset();
+            new LobbyMembersMsg { Members = ids }.Write(_writer);
+            SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogInfo($"[Sidecar] relayed {ids.Length} lobby member(s) to the coordinator");
+        }
+
         /// <summary>Join: Steam = decode lobby code (null = clipboard); loopback = address (null = config default).</summary>
         public void JoinByCode(string codeOrAddress)
         {
             LastError = null;
+            // SteamServer join code = the server's SteamID64. A remote friend pastes it (the host
+            // shares it via the SERVER CODE display / `servercode` devcmd). Read the clipboard when
+            // the button passes null, exactly like the Steam lobby-code path.
+            if (ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase))
+            {
+                var raw = string.IsNullOrWhiteSpace(codeOrAddress) ? GUIUtility.systemCopyBuffer : codeOrAddress;
+                raw = raw?.Trim();
+                if (!ulong.TryParse(raw, out ulong serverId) || serverId == 0)
+                {
+                    LastError = "Paste a server code (17-digit ID) to join a dedicated server.";
+                    Plugin.Log.LogWarning($"[Session] {LastError}");
+                    return;
+                }
+                JoinSession(serverId.ToString());
+                return;
+            }
             if (!UsingSteam)
             {
+                bool udp = ResolvedTransport.Equals("Udp", StringComparison.OrdinalIgnoreCase);
                 JoinSession(string.IsNullOrWhiteSpace(codeOrAddress)
-                    ? $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}"
+                    ? (udp ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
+                           : $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}")
                     : codeOrAddress.Trim());
                 return;
             }
@@ -240,10 +429,31 @@ namespace PunkMultiverse.Core
             JoinLobbyId(lobbyId);
         }
 
+        /// <summary>The join code to SHARE for the current SteamServer session (the coordinator's
+        /// server SteamID64), or 0 when this isn't a SteamServer session. A sidecar/remote player
+        /// shares the host slot's id; a listen-server host shares its own. Remote friends paste it
+        /// into Join.</summary>
+        public ulong SteamServerCode
+        {
+            get
+            {
+                if (!ResolvedTransport.Equals("SteamServer", StringComparison.OrdinalIgnoreCase)) return 0;
+                if (IsHost) return _transport?.LocalPeerId ?? 0;                 // listen-server host
+                // A coordinator sits in the reserved slot (CoordinatorSlot == MaxPlayers), so the
+                // upper bound is inclusive — the pre-#4 `< MaxPlayers` guard read the server id as 0.
+                return HostSlot <= MaxPlayers ? (_players[HostSlot]?.PeerId ?? 0) : 0; // player of a coordinator
+            }
+        }
+
         public void JoinLobbyId(Steamworks.CSteamID lobbyId)
         {
             try
             {
+                // Leave any live session BEFORE entering the lobby (the overlay path already does).
+                // If it happened inside LobbyJoined->JoinSession instead, StopSession would leave the
+                // lobby we JUST joined (breaking the host's IsMember gate) and clear the discovery
+                // lobby's SteamServer transport override before CreateTransport reads it.
+                if (State != SessionState.Offline) StopSession("joining another lobby");
                 LastError = null;
                 EnsureLobbyController();
                 _lobby.JoinLobby(lobbyId); // -> LobbyJoined -> JoinSession(hostId)
@@ -267,9 +477,90 @@ namespace PunkMultiverse.Core
             _writer.WriteMsgType(MsgType.Kicked);
             _transport.Send(p.PeerId, NetChannel.Control, _writer.ToSegment(), reliable: true);
             _players[slot] = null;
+            if (slot == _adminSlot) { _adminSlot = -1; _adminToken = 0; } // promote a successor next tick
             BroadcastLobbyState();
             RosterChanged?.Invoke();
             UI.Toast.Show($"{p.Name} WAS KICKED", 4f);
+        }
+
+        // ------------------------------------------------ session admin (standalone/sidecar)
+
+        /// <summary>UI entry: start the run. A normal player-host starts locally; a coordinator's admin
+        /// sends a token-proven request the server validates. Either way the START button calls this.</summary>
+        public void RequestStart()
+        {
+            if (IsHost && !NetConfig.IsCoordinator) { StartRun(); return; }
+            if (LocalPlayer?.IsAdmin == true && _localAdminToken != 0)
+                SendAdminCommand(AdminCmd.StartRun, 0);
+        }
+
+        /// <summary>UI entry: kick a player. Player-host kicks locally; a coordinator's admin sends a
+        /// token-proven request. The KICK buttons call this instead of KickPlayer directly.</summary>
+        public void RequestKick(byte slot)
+        {
+            if (IsHost && !NetConfig.IsCoordinator) { KickPlayer(slot); return; }
+            if (LocalPlayer?.IsAdmin == true && _localAdminToken != 0)
+                SendAdminCommand(AdminCmd.Kick, slot);
+        }
+
+        private void SendAdminCommand(AdminCmd cmd, byte arg)
+        {
+            if (_players[HostSlot] == null) return;
+            _writer.Reset();
+            new AdminCommandMsg { Token = _localAdminToken, Command = cmd, Arg = arg }.Write(_writer);
+            SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogInfo($"[Admin] sent {cmd}({arg}) to the server");
+        }
+
+        /// <summary>Coordinator: keep exactly one connected player flagged as admin. The first real
+        /// joiner is promoted; if the admin leaves, the next connected player inherits it with a FRESH
+        /// token (the old one is void). Idempotent — the fast path returns when the admin is unchanged.</summary>
+        private void EnsureAdminAssigned()
+        {
+            var current = _adminSlot >= 0 && _adminSlot <= MaxPlayers ? _players[_adminSlot] : null;
+            if (current != null && current.Connected && !current.IsCoordinator)
+            {
+                if (!current.IsAdmin) { current.IsAdmin = true; BroadcastLobbyState(); RosterChanged?.Invoke(); }
+                // Re-send the SAME grant on a slow cadence: an admin whose game restarted keeps the
+                // roster flag through the rejoin but lost the token with the process (on SteamServer
+                // its peer id is the same SteamID64, so a route change can't be detected). Idempotent
+                // — the client just overwrites its copy with the identical value.
+                if (Time.unscaledTime >= _nextAdminGrantResendAt)
+                {
+                    _nextAdminGrantResendAt = Time.unscaledTime + 5f;
+                    _writer.Reset();
+                    new AdminGrantMsg { Token = _adminToken }.Write(_writer);
+                    SendReliable(current.PeerId, NetChannel.Control, _writer.ToSegment());
+                }
+                return; // admin still valid
+            }
+
+            var next = _players
+                .Where(p => p != null && p.Connected && !p.IsCoordinator)
+                .OrderBy(p => p.Slot)
+                .FirstOrDefault();
+
+            foreach (var p in _players) if (p != null) p.IsAdmin = false;
+            if (next == null) { _adminSlot = -1; _adminToken = 0; return; } // nobody to promote
+
+            next.IsAdmin = true;
+            _adminSlot = next.Slot;
+            _adminToken = NewCapabilityToken();
+            _nextAdminGrantResendAt = Time.unscaledTime + 5f;
+            _writer.Reset();
+            new AdminGrantMsg { Token = _adminToken }.Write(_writer);
+            SendReliable(next.PeerId, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogInfo($"[Admin] {next} is now session admin (token issued)");
+            BroadcastLobbyState();
+            RosterChanged?.Invoke();
+        }
+
+        private static ulong NewCapabilityToken()
+        {
+            var b = new byte[8];
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create()) rng.GetBytes(b);
+            ulong t = System.BitConverter.ToUInt64(b, 0);
+            return t == 0 ? 1UL : t; // 0 means "no token"
         }
 
         public void CopyLobbyCodeToClipboard()
@@ -284,9 +575,35 @@ namespace PunkMultiverse.Core
         {
             if (_lobby != null) return;
             _lobby = new SteamLobbyController();
-            _lobby.LobbyCreated += _ => HostSession();
-            _lobby.LobbyJoined += (_, hostId) => JoinSession(hostId.ToString());
-            _lobby.LobbyError += err => { LastError = err; Plugin.Log.LogWarning($"[Session] {err}"); };
+            _lobby.LobbyCreated += _ =>
+            {
+                // A discovery lobby (SteamServer) is opened AFTER the session is already up — it must
+                // not (re)host. An ordinary Steam lobby's creation IS the cue to open the host socket.
+                if (_serverLobbyRequested) { _allowlistDirty = true; return; }
+                HostSession();
+            };
+            _lobby.LobbyJoined += (_, hostId) =>
+            {
+                // SteamServer discovery lobby: connect to the anonymous server it points at, forcing
+                // this session onto the SteamServer transport regardless of our own config value.
+                if (_lobby.IsServerLobby && _lobby.LobbyServerId != 0)
+                {
+                    _lobbyServerTransport = "SteamServer";
+                    Plugin.Log.LogInfo($"[Session] discovery lobby -> joining server {_lobby.LobbyServerId}");
+                    JoinSession(_lobby.LobbyServerId.ToString());
+                    return;
+                }
+                JoinSession(hostId.ToString());
+            };
+            _lobby.MembershipChanged += () => _allowlistDirty = true;
+            _lobby.LobbyError += err =>
+            {
+                LastError = err;
+                // A failed DISCOVERY-lobby creation must be retryable — otherwise one transient Steam
+                // hiccup means no invites (and for a listen-server host, no joins) all session.
+                if (_serverLobbyRequested) { _serverLobbyRequested = false; _nextServerLobbyRetryAt = Time.unscaledTime + 10f; }
+                Plugin.Log.LogWarning($"[Session] {err}");
+            };
             _lobby.JoinRequested += lobbyId =>
             {
                 Plugin.Log.LogInfo($"[Session] overlay join requested -> {lobbyId.m_SteamID}");
@@ -345,7 +662,7 @@ namespace PunkMultiverse.Core
 
             // Enemy health scaling is fixed for the whole run at start:
             // Base Health * (1 + (EnemyHealthScalePerPlayer * number of players)).
-            int playerCount = _players.Count(p => p != null && p.Connected);
+            int playerCount = _players.Count(p => p != null && p.Connected && !p.IsCoordinator);
             EnemyHpMult = HpScaling
                 ? 1f + Mathf.Max(0f, NetConfig.EnemyHealthScalePerPlayer.Value) * playerCount
                 : 1f;
@@ -636,7 +953,11 @@ namespace PunkMultiverse.Core
             // or quits mid-run, the CONNECT screen can offer REJOIN while the session lives.
             try
             {
-                if (UsingSteam && _lobby != null && _lobby.InLobby)
+                // A SteamServer discovery lobby is remembered like a Steam lobby: rejoin re-enters the
+                // lobby, reads the server id from its metadata, and reconnects over SteamServer. The
+                // old `!UsingSteam` fallback would have stored the server id as a LOOPBACK address —
+                // unjoinable after a restart (config transport is Steam).
+                if (_lobby != null && _lobby.InLobby && (UsingSteam || _lobby.IsServerLobby))
                     RejoinMemory.Remember(steam: true, _lobby.CurrentLobby.m_SteamID, null);
                 else if (!UsingSteam)
                     RejoinMemory.Remember(steam: false, 0, IsHost
@@ -846,16 +1167,19 @@ namespace PunkMultiverse.Core
                 Fail($"Host failed: {e.Message}");
                 return;
             }
-            LocalSlot = 0;
-            _players[0] = new NetPlayer
+            // A coordinator seats itself in the reserved slot (4), leaving all four player slots
+            // (0-3) for real players. A normal host is player slot 0 as always.
+            LocalSlot = NetConfig.IsCoordinator ? CoordinatorSlot : 0;
+            _players[LocalSlot] = new NetPlayer
             {
-                Slot = 0,
+                Slot = (byte)LocalSlot,
                 PeerId = _transport.LocalPeerId,
                 IdentityId = LocalIdentityId(),
-                Name = LocalName(),
+                Name = LocalDisplayName(),
                 IsLocal = true,
+                IsCoordinator = NetConfig.IsCoordinator, // shipless server slot — clients spawn no puppet
             };
-            HostSlot = 0;
+            HostSlot = (byte)LocalSlot;
             ChosenSeed = _pendingHostSeed; // settings picked on the pre-lobby screen
             FriendlyFire = _pendingFriendlyFire;
             HpScaling = _pendingHpScaling;
@@ -864,7 +1188,7 @@ namespace PunkMultiverse.Core
             _pendingHpScaling = false;
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
-            Plugin.Log.LogInfo($"[Session] hosting as {_players[0]}");
+            Plugin.Log.LogInfo($"[Session] hosting as {_players[LocalSlot]}");
         }
 
         private string _lastJoinAddress; // loopback rejoin target (Steam rejoins use the lobby id)
@@ -896,6 +1220,11 @@ namespace PunkMultiverse.Core
         public void StopSession(string reason)
         {
             bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
+            _sidecarSession = false; // future sessions choose their transport from config again
+            _haveLeaderSettings = false; _leaderSettingsSent = false;
+            _lobbyServerTransport = null; _serverLobbyRequested = false; _allowlistDirty = false;
+            _allowedPeers = null;
+            _adminSlot = -1; _adminToken = 0; _localAdminToken = 0;
 
             // Tell everyone this is a deliberate end, not a connection hiccup, while the
             // transport is still up (host only — a quitting client just drops and gets its
@@ -928,7 +1257,7 @@ namespace PunkMultiverse.Core
                 _transport.Dispose();
                 _transport = null;
             }
-            for (int i = 0; i < MaxPlayers; i++) _players[i] = null;
+            for (int i = 0; i <= MaxPlayers; i++) _players[i] = null;
             LocalSlot = -1;
             HostSlot = 0;
             _migrating = false;
@@ -1001,9 +1330,18 @@ namespace PunkMultiverse.Core
         private ITransport CreateTransport()
         {
             LastError = null;
-            return NetConfig.Transport.Value.Equals("Loopback", StringComparison.OrdinalIgnoreCase)
-                ? new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value)
-                : (ITransport)new SteamMessagesTransport();
+            switch (ResolvedTransport.ToLowerInvariant())
+            {
+                case "loopback":
+                    return new LoopbackUdpTransport(NetConfig.LoopbackHost.Value, NetConfig.LoopbackPort.Value);
+                case "steamserver":
+                    return new SteamServerTransport();
+                case "udp":
+                    // LiteNetLib direct UDP — Docker/LAN/no-Steam. Join code is host:port.
+                    return new LiteNetTransport(NetConfig.UdpAddress.Value, NetConfig.UdpPort.Value);
+                default:
+                    return new SteamMessagesTransport();
+            }
         }
 
         private void WireTransport()
@@ -1013,6 +1351,12 @@ namespace PunkMultiverse.Core
             _transport.DataReceived += OnData;
             if (_transport is SteamMessagesTransport steam)
                 steam.AllowPeer = id => _lobby != null && _lobby.IsMember(id);
+            else if (_transport is SteamServerTransport ss && !NetConfig.IsCoordinator)
+                // A listen-server host owns its discovery lobby in-process, so it can gate at accept —
+                // race-free, since a friend is a lobby member before they connect. A shipless
+                // coordinator has no lobby; it stays accept-all here and gates HELLOs against the
+                // relayed allowlist instead (see the LobbyMembers handler).
+                ss.AllowPeer = id => _lobby != null && _lobby.InLobby && _lobby.IsMember(id);
         }
 
         private void Fail(string error)
@@ -1039,6 +1383,8 @@ namespace PunkMultiverse.Core
             catch { /* Steam not up */ }
             return Environment.UserName;
         }
+
+        private static string LocalDisplayName() => NetConfig.IsCoordinator ? "SERVER" : LocalName();
 
         private ulong LocalIdentityId()
         {
@@ -1078,6 +1424,10 @@ namespace PunkMultiverse.Core
             {
                 RuntimeInstrumentation.SetPhase(PerfPhase.SteamPump);
                 SteamBootstrap.Pump();
+                // Game-server callbacks (logon, incoming connections, backend drop) pump here too —
+                // BEFORE the IsRunning gate, so a coordinator's server connection-status callbacks
+                // fire even between logon and the first transport Poll.
+                if (GameServerBootstrap.InitOk) GameServerBootstrap.Pump();
                 // No transport (main menu, offline): still poll the dev command file so the
                 // harness can drive/screenshot menu UI. In-session ticking stays below, after
                 // Poll/Drain, so scenario commands keep acting on post-dispatch state.
@@ -1171,10 +1521,43 @@ namespace PunkMultiverse.Core
                     return;
                 }
 
+                // Sidecar parity (#1): once in the coordinator's lobby, forward the world settings
+                // the host player picked so the coordinator hosts THEIR world. Send before readying
+                // (below) so it lands before the coordinator can auto-launch.
+                if (_haveLeaderSettings && !_leaderSettingsSent && !IsHost
+                    && State == SessionState.Lobby && _players[HostSlot] != null)
+                {
+                    _leaderSettingsSent = true;
+                    _writer.Reset();
+                    new PartyLeaderSettingsMsg
+                    {
+                        Seed = _leaderSeed, FriendlyFire = _leaderFriendlyFire, HpScaling = _leaderHpScaling,
+                    }.Write(_writer);
+                    SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
+                    Plugin.Log.LogInfo($"[Sidecar] sent world choice to coordinator (seed={_leaderSeed}, ff={_leaderFriendlyFire}, hp={_leaderHpScaling})");
+                }
+
+                // Sidecar parity (#2/#3): the invite owner opens/refreshes the SteamServer discovery
+                // lobby, and (coordinator sessions) relays its membership so joins are lobby-gated.
+                MaintainServerLobby();
+
                 // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
-                if (State == SessionState.Lobby && NetConfig.AutoReady.Value && LocalPlayer != null && !LocalPlayer.Ready)
+                // Coordinator: keep a session admin designated (the first real joiner gets host-like
+                // controls; a handoff picks the next player). The admin, not the headless server,
+                // presses START.
+                if (NetConfig.IsCoordinator && State == SessionState.Lobby)
+                    EnsureAdminAssigned();
+
+                // A coordinator auto-readies its own (shipless) slot, but no longer auto-LAUNCHES — the
+                // admin drives start. The dev/harness escape hatch is an explicit AutoLaunchRun=true,
+                // which still fires below (the coordinator inherits the host install's config).
+                bool autoReady = NetConfig.AutoReady.Value || NetConfig.IsCoordinator;
+                bool autoLaunch = NetConfig.AutoLaunchRun.Value;
+                if (State == SessionState.Lobby && autoReady && LocalPlayer != null && !LocalPlayer.Ready)
                     SetLocalPrefs(LocalPlayer.ColorIndex != 0 ? LocalPlayer.ColorIndex : (byte)LocalSlot, true);
-                if (State == SessionState.Lobby && NetConfig.AutoLaunchRun.Value && IsHost && AllReady)
+                if (State == SessionState.Lobby && autoLaunch && IsHost && AllReady
+                    && (!NetConfig.IsCoordinator
+                        || _players.Any(p => p != null && p.Connected && !p.IsLocal)))
                     StartRun();
 
                 if (State >= SessionState.Lobby && Time.unscaledTime >= _nextPingAt)
@@ -1407,7 +1790,7 @@ namespace PunkMultiverse.Core
                     ModVersion = Plugin.Version,
                     GameVersion = Application.version,
                     SteamId = LocalIdentityId(),
-                    Name = LocalName(),
+                    Name = LocalDisplayName(),
                     Resuming = _reattaching,
                     Mods = ModManifest.Local,
                 };
@@ -1441,10 +1824,19 @@ namespace PunkMultiverse.Core
                 // both of which mean its socket closed and the port is free); otherwise hold the
                 // session and reconnect in place.
                 bool hostReallyGone = hostQuit
-                    || (_transport is LoopbackUdpTransport lb && lb.LastDisconnectWasRemote);
+                    || (_transport is LoopbackUdpTransport lb && lb.LastDisconnectWasRemote)
+                    || (_transport is LiteNetTransport ln && ln.LastDisconnectWasRemote);
                 if (!hostReallyGone)
                 {
                     BeginLoopbackReconnect(reason);
+                    return;
+                }
+                if (_transport is LiteNetTransport)
+                {
+                    // Udp can't migrate: the join address names the departed host's machine, so
+                    // no elected peer is reachable by the rest of the roster. (The dedicated-
+                    // server deployment never hits this — the server IS the host.)
+                    Fail("Server closed the session.");
                     return;
                 }
                 _migrating = true;
@@ -1962,6 +2354,69 @@ namespace PunkMultiverse.Core
                     SendEventCatchUp(peer);
                     break;
                 }
+                case MsgType.PartyLeaderSettings when IsHost:
+                {
+                    var settings = PartyLeaderSettingsMsg.Read(_reader);
+                    // Only a coordinator adopts a leader's world choice, and only before the run
+                    // starts (a normal player-host already owns its own settings).
+                    if (!NetConfig.IsCoordinator || State != SessionState.Lobby) break;
+                    var leader = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (leader == null) break;
+                    ChosenSeed = settings.Seed;
+                    FriendlyFire = settings.FriendlyFire;
+                    HpScaling = settings.HpScaling;
+                    Plugin.Log.LogInfo($"[Coordinator] adopted {leader}'s world: seed={settings.Seed} ff={settings.FriendlyFire} hp={settings.HpScaling}");
+                    BroadcastLobbyState(); // so every lobby screen shows the chosen seed/FF
+                    break;
+                }
+                case MsgType.LobbyMembers when IsHost:
+                {
+                    var msg = LobbyMembersMsg.Read(_reader);
+                    // Only a shipless coordinator gates on a relayed lobby (a normal host owns the
+                    // lobby directly). Trust the relay only from a seated, connected player.
+                    if (!NetConfig.IsCoordinator) break;
+                    var relay = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (relay == null) break;
+                    _allowedPeers = new HashSet<ulong>(msg.Members);
+                    Plugin.Log.LogInfo($"[Coordinator] lobby allowlist now {_allowedPeers.Count} member(s) (via {relay})");
+                    break;
+                }
+                case MsgType.AdminGrant when !IsHost:
+                {
+                    var grant = AdminGrantMsg.Read(_reader);
+                    if (grant.Token == _localAdminToken) break; // periodic idempotent re-send
+                    _localAdminToken = grant.Token;
+                    Plugin.Log.LogInfo("[Admin] granted session-admin controls by the server");
+                    RosterChanged?.Invoke(); // surface the host UI once the roster flag lands too
+                    break;
+                }
+                case MsgType.AdminCommand when IsHost:
+                {
+                    var cmd = AdminCommandMsg.Read(_reader);
+                    // Only a coordinator delegates control (a player-host is its own admin). Authorize on
+                    // the SECRET TOKEN — never the peer id — so a modded/spoofing client is refused even
+                    // on an untrusted transport. Defence in depth: the sender must also be the admin's
+                    // live connection.
+                    if (!NetConfig.IsCoordinator) break;
+                    var admin = _adminSlot >= 0 && _adminSlot <= MaxPlayers ? _players[_adminSlot] : null;
+                    if (_adminToken == 0 || cmd.Token != _adminToken
+                        || admin == null || !admin.Connected || admin.PeerId != peer)
+                    {
+                        Plugin.Log.LogWarning($"[Admin] refused {cmd.Command} from peer {peer}: bad token or not the admin");
+                        break;
+                    }
+                    switch (cmd.Command)
+                    {
+                        case AdminCmd.StartRun:
+                            if (State == SessionState.Lobby && AllReady) StartRun();
+                            else Plugin.Log.LogInfo($"[Admin] start ignored (state={State}, allReady={AllReady})");
+                            break;
+                        case AdminCmd.Kick:
+                            if (cmd.Arg != _adminSlot) KickPlayer(cmd.Arg); // an admin can't kick itself
+                            break;
+                    }
+                    break;
+                }
                 case MsgType.SegmentDormancyCommit:
                 {
                     var commit = SegmentDormancyCommitMsg.Read(_reader);
@@ -2270,6 +2725,25 @@ namespace PunkMultiverse.Core
             string reject = null;
             bool midRun = State != SessionState.Lobby;
 
+            // Sidecar lobby-gated joins (#2): a shipless coordinator can't see the Steam lobby, so it
+            // admits a peer only once the party leader has relayed a membership set that includes it.
+            // Before the first relay arrives (_allowedPeers == null) it's accept-all — the leader's own
+            // connection bootstraps the session. A SteamServer peer id IS the connecting user's
+            // SteamID64, matching the relayed lobby-member ids.
+            // A peer whose identity already holds a seat (connected or reserved-for-rejoin) was
+            // admitted once — always let it back in, even if the CURRENT allowlist is stale (e.g. the
+            // leader re-hosted and opened a fresh discovery lobby the old friend hasn't re-entered).
+            bool seatedIdentity = _players.Any(p => p != null && !p.IsLocal
+                && (hello.SteamId != 0 ? p.IdentityId == hello.SteamId : p.Name == hello.Name));
+            if (NetConfig.IsCoordinator && _allowedPeers != null && !seatedIdentity && !_allowedPeers.Contains(peer))
+            {
+                Plugin.Log.LogWarning($"[Coordinator] refused HELLO from {peer}: not a discovery-lobby member");
+                _writer.Reset();
+                new RejectMsg { Reason = "This server is invite-only — ask the host for a Steam invite." }.Write(_writer);
+                SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+                return;
+            }
+
             // Other installed mods can change gameplay rules or conflict with the netcode's
             // patches — the host's ModManifestPolicy decides how strict to be.
             bool modsMismatch = false;
@@ -2319,7 +2793,7 @@ namespace PunkMultiverse.Core
                 // Lobby state: the same identity may still be seated (stale route, or a ghost
                 // reservation that outlived its run) — release it so one identity never holds
                 // two slots. The joiner then seats normally, often into the freed slot.
-                for (int i = 1; i < MaxPlayers; i++)
+                for (int i = 0; i < MaxPlayers; i++)
                 {
                     var p = _players[i];
                     if (p == null || p.IsLocal) continue;
@@ -2337,7 +2811,7 @@ namespace PunkMultiverse.Core
             int slot = -1;
             if (reject == null)
             {
-                for (int i = 1; i < MaxPlayers; i++)
+                for (int i = 0; i < MaxPlayers; i++)
                     if (_players[i] == null) { slot = i; break; }
                 if (slot < 0) reject = "Lobby is full.";
             }
@@ -2402,7 +2876,7 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Session] {reserved} reattached after host migration");
 
             _writer.Reset();
-            new WelcomeMsg { Slot = reserved.Slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
+            new WelcomeMsg { Slot = reserved.Slot, HostSlot = HostSlot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             BroadcastLobbyState();
             RosterChanged?.Invoke();
@@ -2444,7 +2918,7 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Session] {reserved} REJOINED — replaying run seed {CurrentRunSeed}");
 
             _writer.Reset();
-            new WelcomeMsg { Slot = reserved.Slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
+            new WelcomeMsg { Slot = reserved.Slot, HostSlot = HostSlot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             BroadcastLobbyState();
             RosterChanged?.Invoke();
@@ -2630,6 +3104,8 @@ namespace PunkMultiverse.Core
                         NeedsStationRespawn = p.NeedsStationRespawn,
                         RespawnStationNetId = p.RespawnStationNetId,
                         ModsMismatch = p.ModsMismatch,
+                        IsCoordinator = p.IsCoordinator,
+                        IsAdmin = p.IsAdmin,
                     });
             return roster;
         }
@@ -2654,9 +3130,9 @@ namespace PunkMultiverse.Core
                 _players[LocalSlot].IsLocal = true;
                 _players[LocalSlot].IdentityId = LocalIdentityId();
             }
-            // The host is whoever we connected to — after a migration that isn't slot 0.
-            var hostPlayer = _players.FirstOrDefault(p => p != null && _joinTargetPeerId != 0 && p.PeerId == _joinTargetPeerId);
-            HostSlot = wasReattaching ? _joinTargetHostSlot : hostPlayer != null ? hostPlayer.Slot : (byte)0;
+            // The host tells us its own slot (a coordinator sits at slot 4, not 0). Reattach keeps
+            // the slot it migrated to. Authoritative — no peer-id inference (loopback has peer 0).
+            HostSlot = wasReattaching ? _joinTargetHostSlot : welcome.HostSlot;
             if (wasReattaching)
             {
                 _reattaching = false;
@@ -2721,7 +3197,7 @@ namespace PunkMultiverse.Core
             foreach (var p in _players)
                 if (p != null && !oldRtt.ContainsKey(p.IdentityId))
                     oldRtt[p.IdentityId] = p.RttMs;
-            for (int i = 0; i < MaxPlayers; i++) _players[i] = null;
+            for (int i = 0; i <= MaxPlayers; i++) _players[i] = null;
             foreach (var e in roster)
             {
                 _players[e.Slot] = new NetPlayer
@@ -2736,6 +3212,8 @@ namespace PunkMultiverse.Core
                     NeedsStationRespawn = e.NeedsStationRespawn,
                     RespawnStationNetId = e.RespawnStationNetId,
                     ModsMismatch = e.ModsMismatch,
+                    IsCoordinator = e.IsCoordinator,
+                    IsAdmin = e.IsAdmin,
                     RttMs = oldRtt.TryGetValue(e.IdentityId, out var rtt) ? rtt : -1,
                 };
             }

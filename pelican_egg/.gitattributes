@@ -1,0 +1,7 @@
+# These files are consumed inside a Linux Docker container — they MUST stay LF, or the
+# shebang becomes `#!/bin/bash\r` and the container fails with "bad interpreter".
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+.dockerignore text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf

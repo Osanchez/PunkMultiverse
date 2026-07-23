@@ -84,10 +84,28 @@ namespace PunkMultiverse.Sync
                 }
                 _shipManager = sm;
                 _level = level;
-                LocalShip = sm.Ships[0];
-                ShipsBySlot[session.LocalSlot] = LocalShip;
 
-                foreach (var p in session.Players.Where(p => p != null && p.Connected && !p.IsLocal).OrderBy(p => p.Slot))
+                if (NetConfig.IsCoordinator)
+                {
+                    // Dedicated coordinator plays nobody: remove the vanilla-spawned local ship
+                    // through the proven disconnect-removal path (scrubs interactions, deregisters,
+                    // destroys the EntityData) BEFORE go-live, so no ghost ship or residency
+                    // footprint ever exists. LocalShip stays null; ShipSync.Tick's HasBody=false
+                    // path (built for dead players) covers the coordinator's state sends.
+                    var vanillaShip = sm.Ships[0];
+                    LocalShip = null;
+                    Plugin.Log.LogInfo("[Ships] coordinator mode — removing the vanilla local ship (server plays nobody)");
+                    DestroyShipObject(vanillaShip, (byte)session.LocalSlot, "coordinator is shipless");
+                }
+                else
+                {
+                    LocalShip = sm.Ships[0];
+                    ShipsBySlot[session.LocalSlot] = LocalShip;
+                }
+
+                // Coordinator peers get no puppet anywhere — there is nobody to portray.
+                foreach (var p in session.Players.Where(p => p != null && p.Connected && !p.IsLocal
+                                                             && !p.IsCoordinator).OrderBy(p => p.Slot))
                     SpawnPuppet(p.Slot);
 
                 ApplyThemes(sm, session);
@@ -145,7 +163,8 @@ namespace PunkMultiverse.Sync
             {
                 // ContainsKey, not a null check: a destroyed-but-known ship is the
                 // death/respawn flow, which owns that slot's lifecycle.
-                if (p == null || !p.Connected || p.IsLocal || ShipsBySlot.ContainsKey(p.Slot)) continue;
+                if (p == null || !p.Connected || p.IsLocal || p.IsCoordinator
+                    || ShipsBySlot.ContainsKey(p.Slot)) continue;
                 try
                 {
                     // A rejoiner still within its reclaim window reuses the hidden puppet instead of

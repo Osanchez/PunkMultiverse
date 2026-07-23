@@ -51,6 +51,8 @@ namespace PunkMultiverse.Protocol
         public bool NeedsStationRespawn;
         public int RespawnStationNetId;
         public bool ModsMismatch; // joiner's plugin set differs from the host's (Warn policy)
+        public bool IsCoordinator; // dedicated shipless server slot: clients spawn no puppet for it
+        public bool IsAdmin;       // session admin (first joiner of a coordinator session): host-like UI
 
         public void Write(NetWriter w)
         {
@@ -64,6 +66,8 @@ namespace PunkMultiverse.Protocol
             w.WriteBool(NeedsStationRespawn);
             w.WriteVarUInt((uint)RespawnStationNetId);
             w.WriteBool(ModsMismatch);
+            w.WriteBool(IsCoordinator);
+            w.WriteBool(IsAdmin);
         }
 
         public static RosterEntry Read(NetReader r) => new RosterEntry
@@ -78,12 +82,15 @@ namespace PunkMultiverse.Protocol
             NeedsStationRespawn = r.ReadBool(),
             RespawnStationNetId = (int)r.ReadVarUInt(),
             ModsMismatch = r.ReadBool(),
+            IsCoordinator = r.ReadBool(),
+            IsAdmin = r.ReadBool(),
         };
     }
 
     public struct WelcomeMsg
     {
         public byte Slot;
+        public byte HostSlot; // where the host sits — 4 for a dedicated coordinator, 0 for a player-host
         public string HostModVersion;
         public List<RosterEntry> Roster;
 
@@ -91,6 +98,7 @@ namespace PunkMultiverse.Protocol
         {
             w.WriteMsgType(MsgType.Welcome);
             w.WriteByte(Slot);
+            w.WriteByte(HostSlot);
             w.WriteString(HostModVersion);
             w.WriteByte((byte)(Roster?.Count ?? 0));
             if (Roster != null) foreach (var e in Roster) e.Write(w);
@@ -98,7 +106,7 @@ namespace PunkMultiverse.Protocol
 
         public static WelcomeMsg Read(NetReader r)
         {
-            var m = new WelcomeMsg { Slot = r.ReadByte(), HostModVersion = r.ReadString(), Roster = new List<RosterEntry>() };
+            var m = new WelcomeMsg { Slot = r.ReadByte(), HostSlot = r.ReadByte(), HostModVersion = r.ReadString(), Roster = new List<RosterEntry>() };
             int n = r.ReadByte();
             for (int i = 0; i < n; i++) m.Roster.Add(RosterEntry.Read(r));
             return m;
@@ -1604,6 +1612,102 @@ namespace PunkMultiverse.Protocol
             Channel = r.ReadByte(),
             Expected = r.ReadUInt(),
             Received = r.ReadUInt(),
+        };
+    }
+
+    /// <summary>Sidecar parity: the hosting player (party leader) tells a shipless coordinator which
+    /// world to host — the seed and game-settings they chose on the pre-lobby screen. Sent once on
+    /// reaching the coordinator's lobby; the coordinator adopts it before StartRun.</summary>
+    public struct PartyLeaderSettingsMsg
+    {
+        public int Seed;
+        public bool FriendlyFire;
+        public bool HpScaling;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.PartyLeaderSettings);
+            w.WriteInt(Seed);
+            w.WriteBool(FriendlyFire);
+            w.WriteBool(HpScaling);
+        }
+
+        public static PartyLeaderSettingsMsg Read(NetReader r) => new PartyLeaderSettingsMsg
+        {
+            Seed = r.ReadInt(),
+            FriendlyFire = r.ReadBool(),
+            HpScaling = r.ReadBool(),
+        };
+    }
+
+    /// <summary>Sidecar lobby-gated joins (#2): the party leader relays the discovery lobby's current
+    /// member SteamID64s to the shipless coordinator, which can't query the Steam lobby itself. The
+    /// coordinator admits a HELLO only from a peer in this set (once it has ever received one). Re-sent
+    /// whenever lobby membership changes, so a freshly-invited friend is admitted within a lobby tick.</summary>
+    public struct LobbyMembersMsg
+    {
+        public ulong[] Members;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.LobbyMembers);
+            var m = Members ?? System.Array.Empty<ulong>();
+            w.WriteByte((byte)System.Math.Min(m.Length, byte.MaxValue));
+            for (int i = 0; i < m.Length && i < byte.MaxValue; i++) w.WriteULong(m[i]);
+        }
+
+        public static LobbyMembersMsg Read(NetReader r)
+        {
+            int n = r.ReadByte();
+            var ids = new ulong[n];
+            for (int i = 0; i < n; i++) ids[i] = r.ReadULong();
+            return new LobbyMembersMsg { Members = ids };
+        }
+    }
+
+    /// <summary>What an <see cref="AdminCommandMsg"/> asks the coordinator to do.</summary>
+    public enum AdminCmd : byte { None = 0, StartRun = 1, Kick = 2 }
+
+    /// <summary>Coordinator -> one player: your private session-admin capability token. Sent once when
+    /// the player is promoted (first real joiner, or a handoff). The token is the ONLY thing that
+    /// authorizes host-like commands, so it never appears in the roster — only the boolean IsAdmin does.
+    /// Transport-agnostic by design: it does not trust the peer id / Steam identity, so it holds for the
+    /// standalone LiteNetLib/UDP server where identities aren't vouched.</summary>
+    public struct AdminGrantMsg
+    {
+        public ulong Token;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.AdminGrant);
+            w.WriteULong(Token);
+        }
+
+        public static AdminGrantMsg Read(NetReader r) => new AdminGrantMsg { Token = r.ReadULong() };
+    }
+
+    /// <summary>Admin player -> coordinator: run a host-like command, proven by the capability token.
+    /// The coordinator performs it only when the token matches the current grant, so force-enabling the
+    /// UI on a modded client changes nothing without the secret token.</summary>
+    public struct AdminCommandMsg
+    {
+        public ulong Token;
+        public AdminCmd Command;
+        public byte Arg;      // Kick: target slot
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.AdminCommand);
+            w.WriteULong(Token);
+            w.WriteByte((byte)Command);
+            w.WriteByte(Arg);
+        }
+
+        public static AdminCommandMsg Read(NetReader r) => new AdminCommandMsg
+        {
+            Token = r.ReadULong(),
+            Command = (AdminCmd)r.ReadByte(),
+            Arg = r.ReadByte(),
         };
     }
 
