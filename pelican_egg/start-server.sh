@@ -41,6 +41,11 @@ GAME_STAGE="${GAME_STAGE:-/opt/game}"                 # where the image baked th
 STOP_GRACE_SECONDS="${STOP_GRACE_SECONDS:-20}"        # shutdown: seconds to wait for a clean exit before wineserver -k
 WINEDEBUG="${WINEDEBUG:--all}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"                          # extra Unity/Punk.exe args
+# winhttp=n,b makes Wine load the LOCAL winhttp.dll (the BepInEx/Doorstop proxy in the game dir)
+# in preference to its own builtin. Without it, Doorstop never injects, BepInEx never loads
+# (BepInEx/LogOutput.log stays empty), the mod/coordinator never starts, and the game just sits at
+# the main menu. This is THE fix for running BepInEx games under Wine/Proton.
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-winhttp=n,b}"
 export WINEDEBUG WINEPREFIX="${WINEPREFIX:-/home/container/.wine}" DISPLAY="${DISPLAY:-:0}"
 
 PLUGIN_DIR="${GAME_DIR}/BepInEx/plugins/PunkMultiverse"
