@@ -34,16 +34,22 @@ game doesn't try to bounce through the Steam client at launch.
 
 ### 1. Build and push the image
 
-The egg points at a Docker image you host. Build and push it (I can help wire up Docker Hub — just say the word):
+The egg points at the Docker Hub image `docker.io/osanchezdev/punk-punkmultiverse:latest`. Build and
+push it from this folder:
 
 ```bash
+# One-time auth: log in with your Docker Hub username + a Personal Access Token as the password.
+# Create the token at https://app.docker.com/settings/personal-access-tokens (scope: Read & Write).
+docker login -u osanchezdev
+
 cd pelican_egg
-docker build -t yourdockerhubuser/punkmv-server:latest .
-docker push yourdockerhubuser/punkmv-server:latest
+docker build -t osanchezdev/punk-punkmultiverse:latest .
+docker push osanchezdev/punk-punkmultiverse:latest
 ```
 
-Then edit `docker_images` in `egg-punk-multiverse.json` to match the tag you pushed (the default is
-the placeholder `docker.io/yourdockerhubuser/punkmv-server:latest`).
+`docker login` stores the credential locally (in `~/.docker/config.json` or the OS keychain), so you
+only do it once per machine. If you tag a different version (e.g. `:v0.1.130`), update `docker_images`
+in `egg-punk-multiverse.json` to match.
 
 ### 2. Import the egg
 
@@ -116,9 +122,12 @@ The port is the panel's primary allocation (`SERVER_PORT`), mapped to the mod's 
 - **Startup / done** — the panel marks the server "running" when it sees `[Udp] hosting on` in the
   console (the coordinator is listening, even before anyone joins). `start-server.sh` streams the
   BepInEx log to stdout so the console and this regex work.
-- **Stop** — the panel sends `^C`; `start-server.sh` traps it, gives the game `STOP_GRACE_SECONDS`
-  to flush its economy save via Unity's shutdown, then `wineserver -k`. (A dedicated in-mod `quit`
-  devcmd for a fully clean save-and-exit is a recommended follow-up — see below.)
+- **Stop / Restart** — the panel sends `^C`; `start-server.sh` traps it and (when admin commands
+  are enabled) writes `quit` to the command file. The mod's `quit` devcmd ends the session — saving
+  the economy stash and sending clients a clean disconnect — then exits the process. If the game
+  hasn't exited within `STOP_GRACE_SECONDS`, the script escalates to a signal and finally
+  `wineserver -k`. Restart is a stop followed by a fresh start; stale command-file leftovers are
+  cleared on boot so a restart can't loop.
 - **Admin commands** — with `ENABLE_ADMIN_COMMANDS=1` you can drive the running server by writing
   devcmds into `BepInEx/plugins/PunkMultiverse/devcmd.txt` (e.g. `status`, `roster`, `start`,
   `spawn ...`). Output goes to `devout.txt` and the console.
@@ -147,7 +156,5 @@ Watch for `[Udp] hosting on *:7778`. Then, from a normal game client with `Trans
 - **No password gate yet.** Anyone who can reach the port and passes the mod-version check can join
   (the transport's connection key filters stray packets, it is not a password). A server password is
   a future mod feature.
-- **Clean shutdown is best-effort.** Adding a `quit` devcmd to the mod (save economy + `Application.Quit`)
-  would make Stop fully graceful; the egg already writes to `devcmd.txt` on stop so it's ready for it.
 - **WAN play needs a routable port** (port-forward or a VPS/cloud host). localhost/LAN works out of
   the box.

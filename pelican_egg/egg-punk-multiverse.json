@@ -18,7 +18,7 @@
     ],
     "features": [],
     "docker_images": {
-        "PUNK Multiverse (Wine) - replace with your pushed tag": "docker.io/yourdockerhubuser/punkmv-server:latest"
+        "PUNK Multiverse (Wine)": "docker.io/osanchezdev/punk-punkmultiverse:latest"
     },
     "file_denylist": [],
     "startup_commands": {

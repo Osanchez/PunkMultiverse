@@ -30,12 +30,19 @@ namespace PunkMultiverse.Core
     ///        tp &lt;x&gt; &lt;y&gt; | tp rel dx dy    teleport the local ship
     ///        autofly &lt;seconds&gt;            re-arm the AutoFly scripted flight
     ///        say &lt;text&gt;                   echo a marker line into the log
+    ///        quit | stop | shutdown       clean shutdown: end session (save + notify), then exit
     ///    Every execution logs "[Dev] ..." so scenarios are assertable from LogOutput.log.
     /// </summary>
     internal static class DevTools
     {
         private static float _nextPollAt;
         private static bool _warnedPath;
+
+        // Deferred-quit deadline (unscaledTime). `quit`/`stop`/`shutdown` ends the session
+        // synchronously (economy save + client disconnect packets) then arms this so the process
+        // exits a beat later — long enough for the outgoing UDP disconnect datagrams to leave the
+        // socket before teardown. -1 = not armed. Deliberately NOT cleared by Reset().
+        private static float _quitAt = -1f;
 
         /// <summary>Dev shield for sweep tests: the local ship's damage is BLOCKED at the
         /// routing chokepoints (DamageSync), so every incoming hit still logs its
@@ -117,6 +124,13 @@ namespace PunkMultiverse.Core
 
         public static void Tick(NetSession session)
         {
+            if (_quitAt >= 0f && Time.unscaledTime >= _quitAt)
+            {
+                _quitAt = -1f;
+                Plugin.Log.LogInfo("[Dev] quit grace elapsed — exiting process");
+                Application.Quit();
+                return;
+            }
             TickFire();
             string file = NetConfig.CommandFile != null ? NetConfig.CommandFile.Value : "";
             if (string.IsNullOrEmpty(file)) return;
@@ -307,6 +321,20 @@ namespace PunkMultiverse.Core
                     Out($"ready {(want ? "ON" : "OFF")}");
                     return;
                 }
+                case "quit":
+                case "stop":
+                case "shutdown":
+                    // Clean process shutdown for the dedicated server: end the session (as host
+                    // this broadcasts SessionEnded + disconnect packets to clients and saves the
+                    // economy stash synchronously), then exit after a short grace so the outgoing
+                    // datagrams flush. The container stop hook writes this instead of hard-killing
+                    // Wine, so panel Stop/Restart preserves state.
+                    Out("quit: ending session and shutting down");
+                    Plugin.Log.LogInfo("[Dev] quit requested — ending session and exiting");
+                    try { session.StopSession("server shutdown"); }
+                    catch (Exception e) { Plugin.Log.LogWarning($"[Dev] StopSession during quit failed: {e.Message}"); }
+                    _quitAt = Time.unscaledTime + 0.5f;
+                    return;
                 case "uploadlogs":
                     // Tester diagnostics pipeline: gzip + PUT this machine's BepInEx log to the
                     // write-only S3 prefix, grouped under the shared run id (see LogUpload).

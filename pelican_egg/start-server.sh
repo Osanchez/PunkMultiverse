@@ -109,7 +109,10 @@ set_cfg "Debug"     "AutoLaunchRun"    "$(bool "${AUTO_START_RUN}")" "${CFG}"
 set_cfg "Debug"     "SyncDiagnostics"  "$(bool "${SYNC_DIAGNOSTICS}")" "${CFG}"
 if [[ "${ENABLE_ADMIN_COMMANDS}" == "1" || "${ENABLE_ADMIN_COMMANDS,,}" == "true" ]]; then
     set_cfg "Debug" "CommandFile" "devcmd.txt" "${CFG}"
+    # Clear the command file AND any crash-leftover .consuming file — a stale `quit` drained on
+    # boot would make a freshly (re)started server immediately exit again (restart loop).
     : > "${PLUGIN_DIR}/devcmd.txt"
+    rm -f "${PLUGIN_DIR}/devcmd.txt.consuming"
 else
     set_cfg "Debug" "CommandFile" "" "${CFG}"
 fi
@@ -154,16 +157,27 @@ TAIL_PID=$!
 
 # --------------------------------------------------------------------- graceful shutdown
 shutdown() {
-    log "stop requested — signaling the game to exit (grace ${STOP_GRACE_SECONDS}s)"
-    # Signal Wine and let Unity's OnApplicationQuit run the mod's teardown (StopSession →
-    # EconomyStash.Save). We deliberately do NOT push a devcmd here: a network-bound verb could
-    # hang the stop. A dedicated in-mod `quit` verb (save + Application.Quit) is the clean
-    # follow-up if teardown-on-signal proves unreliable under Wine.
-    kill -TERM "${WINE_PID}" 2>/dev/null || true
+    log "stop requested — asking the coordinator to save + exit (grace ${STOP_GRACE_SECONDS}s)"
+    if [[ "${ENABLE_ADMIN_COMMANDS}" == "1" || "${ENABLE_ADMIN_COMMANDS,,}" == "true" ]]; then
+        # Preferred path: the mod polls devcmd.txt at 2 Hz; `quit` runs StopSession (saves the
+        # economy stash, tells clients) then exits the process cleanly — no signal into Wine.
+        printf 'quit\n' > "${PLUGIN_DIR}/devcmd.txt" 2>/dev/null || true
+    else
+        # No command file: fall back to signaling Wine and letting Unity's OnApplicationQuit
+        # run the mod teardown.
+        kill -TERM "${WINE_PID}" 2>/dev/null || true
+    fi
+    # Wait for the game to exit on its own (the clean path).
     for _ in $(seq 1 "${STOP_GRACE_SECONDS}"); do
         kill -0 "${WINE_PID}" 2>/dev/null || break
         sleep 1
     done
+    # Still alive after the grace window: escalate to a signal, then hard-stop Wine.
+    if kill -0 "${WINE_PID}" 2>/dev/null; then
+        log "grace elapsed — forcing shutdown"
+        kill -TERM "${WINE_PID}" 2>/dev/null || true
+        sleep 2
+    fi
     wineserver -k 2>/dev/null || true
     kill "${TAIL_PID}" 2>/dev/null || true
     [[ -n "${XVFB_PID:-}" ]] && kill "${XVFB_PID}" 2>/dev/null || true
