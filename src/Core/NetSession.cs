@@ -836,6 +836,24 @@ namespace PunkMultiverse.Core
         private void TryFinalizeLevelReadyVisual()
         {
             if (!_levelReadyVisualPending || State != SessionState.Loading) return;
+
+            // A headless coordinator (null graphics device) never draws tiles, so there is no
+            // variant table to hash. It sits out the VISUAL audit — reporting VisualVariantCount 0,
+            // the "not applicable" marker that SameGeneration skips — while still contributing its
+            // DATA fingerprint (terrain/entity/plant). The rendering clients cross-check visuals
+            // against each other. Without this the coordinator would wait 3s then abort the run.
+            if (NetConfig.IsCoordinator)
+            {
+                _levelReadyVisualPending = false;
+                _localLevelReady.VisualVariantCount = 0;
+                _localLevelReady.VisualVariantDigest = 0;
+                _levelChecksums[HostSlot] = _localLevelChecksum;
+                _levelFingerprints[HostSlot] = _localLevelReady;
+                Plugin.Log.LogInfo("[Determinism] coordinator: data fingerprint only (headless, no visual audit)");
+                CheckGoLive();
+                return;
+            }
+
             var visual = DeterminismAudit.CaptureVisual(log: false);
             if (visual.VariantCount == 0)
             {
@@ -975,7 +993,9 @@ namespace PunkMultiverse.Core
         private static bool SameGeneration(LevelReadyMsg a, LevelReadyMsg b) =>
             a.Checksum == b.Checksum && a.EntityCount == b.EntityCount && a.EntityDigest == b.EntityDigest &&
             a.PlantCount == b.PlantCount && a.PlantDigest == b.PlantDigest &&
-            a.VisualVariantCount == b.VisualVariantCount && a.VisualVariantDigest == b.VisualVariantDigest;
+            // Visual (tile-variant) hashes are only comparable when BOTH machines rendered; a
+            // headless coordinator reports VisualVariantCount 0 and sits out the visual check.
+            (a.VisualVariantCount == 0 || b.VisualVariantCount == 0 || SameVisualGeneration(a, b));
 
         private static bool SameVisualGeneration(LevelReadyMsg a, LevelReadyMsg b) =>
             a.VisualVariantCount == b.VisualVariantCount && a.VisualVariantDigest == b.VisualVariantDigest;
@@ -1549,9 +1569,11 @@ namespace PunkMultiverse.Core
                     }
                 }
 
-                // DEV autostart: clickless loadout pick while loading.
-                if (State == SessionState.Loading && NetConfig.AutoReady.Value && !_autoPicked
-                    && Time.unscaledTime >= _autoPickAt)
+                // Clickless loadout pick while loading: DEV autostart (AutoReady), OR a headless
+                // coordinator which has no UI to click — without this its loadout selector sits
+                // open forever, its level never generates, and the whole party hangs in Loading.
+                if (State == SessionState.Loading && !_autoPicked && Time.unscaledTime >= _autoPickAt
+                    && (NetConfig.AutoReady.Value || NetConfig.IsCoordinator))
                 {
                     if (RunStarter.TryAutoPickLoadout()) _autoPicked = true;
                     else _autoPickAt = Time.unscaledTime + 1f;
