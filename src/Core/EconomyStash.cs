@@ -79,6 +79,9 @@ namespace PunkMultiverse.Core
                     bw.Write(blob);
                 }
             }
+            // Diagnostic (inventory/stash-loss investigation 2026-07-23): confirms a snapshot was
+            // written for THIS run seed, so a later "skipping restore" seed-mismatch is attributable.
+            Plugin.Log.LogInfo($"[Stash] saved run {seed} (vault {vaultBytes.Length}B, run {runBytes.Length}B, grid {gridBytes.Length}B)");
         }
 
         /// <summary>Called after a rejoin goes live; restores only when the stash matches the run.</summary>
@@ -87,14 +90,23 @@ namespace PunkMultiverse.Core
             try
             {
                 var path = PathFor();
-                if (!File.Exists(path)) return;
+                if (!File.Exists(path))
+                {
+                    Plugin.Log.LogInfo($"[Stash] no stash file at {path} — nothing to restore for run {seed}");
+                    return;
+                }
                 byte[] vaultBytes, runBytes, gridBytes;
                 using (var fs = new FileStream(path, FileMode.Open))
                 using (var br = new BinaryReader(fs))
                 {
-                    if (br.ReadInt32() != seed)
+                    int storedSeed = br.ReadInt32();
+                    if (storedSeed != seed)
                     {
-                        Plugin.Log.LogInfo("[Stash] stash is from a different run — skipping restore");
+                        // Inventory/stash-loss investigation 2026-07-23: this exact line is the
+                        // symptom — a leave->migrate->rejoin that lands here means the run seed the
+                        // rejoining player was given (current) does not match the seed their leave
+                        // snapshot was saved under (stored). Log both so the cause is unambiguous.
+                        Plugin.Log.LogWarning($"[Stash] seed mismatch — stored={storedSeed} current={seed}; skipping restore (inventory/stash will appear lost)");
                         return;
                     }
                     vaultBytes = br.ReadBytes(br.ReadInt32());

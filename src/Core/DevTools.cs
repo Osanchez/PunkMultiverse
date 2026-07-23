@@ -53,6 +53,7 @@ namespace PunkMultiverse.Core
         internal static void Reset()
         {
             GodMode = false;
+            Patches.MenuMutex.Reset(); // clear pause/item-wheel flags so they can't stick across runs
         }
 
         /// <summary>Runs at the poll cadence while god is armed: re-assert infinite weapon

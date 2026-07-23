@@ -945,6 +945,7 @@ namespace PunkMultiverse.Core
             if (_isRejoin)
             {
                 _isRejoin = false;
+                Plugin.Log.LogInfo($"[Stash] rejoin go-live for run {CurrentRunSeed} — attempting economy restore");
                 EconomyStash.TryRestore(CurrentRunSeed);
                 // Spawn at the party's latest unlocked station instead of the run start.
                 if (_spawnStationNetId != 0) Sync.ShipSync.TeleportLocalShip(_spawnStationNetId);
@@ -3136,7 +3137,13 @@ namespace PunkMultiverse.Core
             if (wasReattaching)
             {
                 _reattaching = false;
-                Plugin.Log.LogInfo($"[Session] reattached to new host (slot {welcome.Slot}, host slot {HostSlot})");
+                // Reconnect-in-place / host-migration reattach: the run never stopped, so the live
+                // in-memory economy is authoritative and we deliberately do NOT re-restore from the
+                // stash (that would roll back to the last 60s snapshot). If a tester reports lost
+                // inventory after leave->migrate->rejoin, this line firing (instead of a "[Stash]
+                // rejoin go-live") is the tell that the reconnect took the reattach path with a
+                // torn-down economy — see the inventory-loss investigation.
+                Plugin.Log.LogInfo($"[Session] reattached to new host (slot {welcome.Slot}, host slot {HostSlot}) — run continues in place; economy kept as-is (no stash restore on this path)");
                 RosterChanged?.Invoke();
                 return; // still InGame — the run never stopped
             }
