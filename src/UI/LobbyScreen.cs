@@ -117,6 +117,7 @@ namespace PunkMultiverse.UI
         }
 
         private SessionState _lastState;
+        private float _loadingSince; // when State last entered Loading — delays the Esc hatch
 
         private void OnSessionState(SessionState state)
         {
@@ -126,6 +127,8 @@ namespace PunkMultiverse.UI
                 if (!Visible && !quiet) Show();
             }
             if (state == SessionState.Loading || state == SessionState.InGame) Hide();
+            if (state == SessionState.Loading && _lastState != SessionState.Loading)
+                _loadingSince = Time.unscaledTime; // arms the Esc-to-leave hatch (see Update)
             // Session died mid-run (host quit / connection lost): surface it instead of silently
             // letting the player continue in a now-solo world.
             if (state == SessionState.Offline && _lastState == SessionState.InGame
@@ -286,10 +289,13 @@ namespace PunkMultiverse.UI
         private void Update()
         {
             // Escape hatch: a client stuck on the loading screen (e.g. a host that never reaches
-            // go-live) can press Esc/B to leave immediately, instead of being locked out until the
-            // 120s go-live timeout. Runs even while our panel is hidden behind the loading screen.
+            // go-live) can press Esc/B to leave, instead of being locked out until the 120s
+            // go-live timeout. Runs even while our panel is hidden behind the loading screen.
+            // ARMS ONLY AFTER 20s of Loading: a healthy join finishes well inside that, so a
+            // habitual Esc during a normal loading screen can't dump the player out of the run.
             var sess = NetSession.Instance;
-            if (sess != null && sess.State == SessionState.Loading && !sess.IsHost)
+            if (sess != null && sess.State == SessionState.Loading && !sess.IsHost
+                && Time.unscaledTime - _loadingSince > 20f)
             {
                 var k = Keyboard.current; var g0 = Gamepad.current;
                 if ((k != null && k.escapeKey.wasPressedThisFrame)
