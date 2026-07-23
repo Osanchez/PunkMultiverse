@@ -59,6 +59,14 @@ namespace PunkMultiverse.UI
         private TMP_Text _hostLobbyLabel;
         private TMP_Text _ffOff, _ffOn, _hpOff, _hpOn;
         private bool _seedSetupOpen;
+        // DIRECT CONNECT screen (join a Udp server by IP:port — no config editing).
+        private GameObject _serverPanel;
+        private bool _serverSetupOpen;
+        private TMP_InputField _ipInput;
+        private TMP_InputField _portInput;
+        private TMP_Text _connectLabel;   // CONNECT button on the server panel
+        private TMP_Text _directLabel;    // DIRECT CONNECT button on the connect panel
+        private bool _awaitingDirect;     // a direct-connect attempt is in flight (toast on failure)
         private bool _friendlyFire;
         private bool _hpScaling = true;
         private byte _localColor;
@@ -123,6 +131,19 @@ namespace PunkMultiverse.UI
             if (state == SessionState.Offline && _lastState == SessionState.InGame
                 && !string.IsNullOrEmpty(NetSession.Instance?.LastError))
                 Show();
+            // Direct-connect attempt resolved. Connecting -> Offline means it timed out / was
+            // refused: toast the reason and return to the DIRECT CONNECT screen to retry. (The
+            // Offline that JoinDirect itself emits comes from Lobby/None, never Connecting, so it
+            // can't false-positive here.)
+            if (_awaitingDirect && state == SessionState.Offline && _lastState == SessionState.Connecting)
+            {
+                _awaitingDirect = false;
+                var err = NetSession.Instance?.LastError ?? "Could not reach the server.";
+                Toast.Show(err.ToUpperInvariant(), 6f);
+                if (!Visible) Show();
+                _serverSetupOpen = true; // after Show() (which resets it) so we land on the retry screen
+            }
+            if (_awaitingDirect && state == SessionState.Lobby) _awaitingDirect = false; // joined
             _lastState = state;
             Refresh();
         }
@@ -138,6 +159,7 @@ namespace PunkMultiverse.UI
         {
             EnsureBuilt();
             _seedSetupOpen = false;
+            _serverSetupOpen = false;
             _nextRejoinProbeAt = 0f; // probe immediately on open
             _canvasGo.SetActive(true);
             SetMenuBlocked(true);
@@ -209,6 +231,13 @@ namespace PunkMultiverse.UI
             if (panel == null || !panel.activeInHierarchy) return;
             var es = UnityEngine.EventSystems.EventSystem.current;
             if (es == null) return;
+
+            // Direct-connect: land on the address field so you can type immediately.
+            if (panel == _serverPanel && _ipInput != null && _ipInput.gameObject.activeInHierarchy)
+            {
+                es.SetSelectedGameObject(_ipInput.gameObject);
+                return;
+            }
 
             var preferred = UiTheme.ButtonOf(
                 panel == _lobbyPanel ? _readyLabel
@@ -329,6 +358,7 @@ namespace PunkMultiverse.UI
         {
             if (_lobbyPanel != null && _lobbyPanel.activeSelf) return _lobbyPanel;
             if (_seedPanel != null && _seedPanel.activeSelf) return _seedPanel;
+            if (_serverPanel != null && _serverPanel.activeSelf) return _serverPanel;
             return _connectPanel;
         }
 
@@ -339,6 +369,7 @@ namespace PunkMultiverse.UI
                 && (session.State == SessionState.Lobby || session.State == SessionState.Connecting);
             if (inLobby) { Leave(); return; }
             if (_seedSetupOpen) { _seedSetupOpen = false; Refresh(); return; }
+            if (_serverSetupOpen) { _serverSetupOpen = false; Refresh(); return; }
             Hide();
         }
 
@@ -394,9 +425,11 @@ namespace PunkMultiverse.UI
 
             BuildConnectPanel(_window.transform);
             BuildSeedPanel(_window.transform);
+            BuildServerPanel(_window.transform);
             BuildLobbyPanel(_window.transform);
             _lobbyPanel.SetActive(false);
             _seedPanel.SetActive(false);
+            _serverPanel.SetActive(false);
 
             // BACK/LEAVE sits just below the window's bottom-left corner — anchored to the
             // window, not the screen, so it can't overlap the modal at narrower aspect ratios.
@@ -465,27 +498,76 @@ namespace PunkMultiverse.UI
             MakeHeader(_connectPanel.transform, "PUNK MULTIVERSE — ONLINE CO-OP");
 
             var hint = UiTheme.MakeText(_connectPanel.transform, "Hint",
-                "HOST A LOBBY AND SEND THE CODE TO YOUR FRIENDS,\nOR COPY THEIR CODE AND JOIN FROM CLIPBOARD.",
+                "HOST A LOBBY, JOIN A FRIEND'S CODE FROM YOUR CLIPBOARD,\nOR DIRECT-CONNECT TO A SERVER BY ITS ADDRESS.",
                 19, UiTheme.TextBody);
             PlaceTop(hint.rectTransform, -122, 60);
 
             _hostGameLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Host", "HOST GAME",
-                new Vector2(0, 96), new Vector2(620, 92), ShowSeedSetup, 38);
+                new Vector2(0, 128), new Vector2(620, 92), ShowSeedSetup, 38);
             _joinLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Join", "JOIN FROM CLIPBOARD",
-                new Vector2(0, -18), new Vector2(620, 92), () => NetSession.Instance.JoinByCode(null), 38);
+                new Vector2(0, 26), new Vector2(620, 92), () => NetSession.Instance.JoinByCode(null), 38);
+            _directLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Direct", "DIRECT CONNECT",
+                new Vector2(0, -76), new Vector2(620, 92), ShowServerSetup, 38);
 
             // Only offered while a liveness probe says the remembered session still exists
             // (disconnect / crash / mid-run quit); see RejoinMemory + ProbeRejoinTarget.
             _rejoinLabel = UiTheme.MakeButton(_connectPanel.transform, "Btn_Rejoin", "REJOIN LAST SESSION",
-                new Vector2(0, -124), new Vector2(620, 74), () => NetSession.Instance.RejoinLastSession(), 20);
+                new Vector2(0, -178), new Vector2(620, 70), () => NetSession.Instance.RejoinLastSession(), 20);
             var rejoinNote = UiTheme.MakeText(_connectPanel.transform, "RejoinNote",
                 "YOUR LAST SESSION IS STILL RUNNING — JUMP BACK IN", 14, UiTheme.TextFaint);
             var nrt = rejoinNote.rectTransform;
             nrt.anchorMin = nrt.anchorMax = new Vector2(0.5f, 0.5f);
             nrt.pivot = new Vector2(0.5f, 0.5f);
-            nrt.anchoredPosition = new Vector2(0, -178);
+            nrt.anchoredPosition = new Vector2(0, -226);
             nrt.sizeDelta = new Vector2(900, 22);
             _rejoinNote = rejoinNote.gameObject;
+        }
+
+        // ---------------------------------------------------------------- direct connect
+
+        private void BuildServerPanel(Transform parent)
+        {
+            _serverPanel = MakeGroup(parent, "DirectConnect");
+            MakeHeader(_serverPanel.transform, "DIRECT CONNECT — JOIN A SERVER");
+
+            var hint = UiTheme.MakeText(_serverPanel.transform, "Hint",
+                "ENTER THE SERVER'S ADDRESS AND PORT, THEN CONNECT.", 19, UiTheme.TextBody);
+            PlaceTop(hint.rectTransform, -108, 40);
+
+            var ipRow = MakeSettingsRow(_serverPanel.transform, "SERVER ADDRESS",
+                "THE HOST'S PUBLIC IP OR HOSTNAME", 96);
+            _ipInput = MakeInput(ipRow, "IpInput", new Vector2(150, 0), new Vector2(440, 58),
+                "e.g. 203.0.113.5", TMP_InputField.ContentType.Standard, 64, 22);
+
+            var portRow = MakeSettingsRow(_serverPanel.transform, "PORT",
+                "UDP PORT (DEFAULT 7778)", -20);
+            _portInput = MakeInput(portRow, "PortInput", new Vector2(150, 0), new Vector2(220, 58),
+                "7778", TMP_InputField.ContentType.IntegerNumber, 5, 22);
+
+            _connectLabel = UiTheme.MakeButton(_serverPanel.transform, "Btn_Connect", "CONNECT",
+                new Vector2(0, -170), new Vector2(500, 92), OnDirectConnect, 38);
+        }
+
+        private void ShowServerSetup()
+        {
+            _serverSetupOpen = true;
+            if (_portInput != null && string.IsNullOrEmpty(_portInput.text)) _portInput.text = "7778";
+            Refresh();
+        }
+
+        private void OnDirectConnect()
+        {
+            string host = _ipInput != null ? _ipInput.text.Trim() : "";
+            string portStr = _portInput != null ? _portInput.text.Trim() : "";
+            if (string.IsNullOrEmpty(host)) { Toast.Show("ENTER A SERVER ADDRESS", 4f); return; }
+            if (!int.TryParse(portStr, out int port) || port < 1 || port > 65535)
+            {
+                Toast.Show("ENTER A VALID PORT (1-65535)", 4f);
+                return;
+            }
+            _awaitingDirect = true; // a Connecting -> Offline after this = failure -> toast + return
+            NetSession.Instance.JoinDirect(host, port);
+            Refresh();
         }
 
         // ---------------------------------------------------------------- game settings
@@ -605,8 +687,15 @@ namespace PunkMultiverse.UI
         }
 
         private TMP_InputField MakeSeedInput(Transform parent, Vector2 centerOffset, Vector2 size)
+            => MakeInput(parent, "SeedInput", centerOffset, size, "RANDOM",
+                         TMP_InputField.ContentType.IntegerNumber, 9);
+
+        /// <summary>Themed text-entry chip (same look as the seed field): chip-sprite background,
+        /// masked text area, placeholder, accent caret. Nav-mode None (grids wire it explicitly).</summary>
+        private TMP_InputField MakeInput(Transform parent, string name, Vector2 centerOffset, Vector2 size,
+            string placeholder, TMP_InputField.ContentType contentType, int charLimit, int fontSize = 24)
         {
-            var go = new GameObject("SeedInput", typeof(RectTransform));
+            var go = new GameObject(name, typeof(RectTransform));
             go.transform.SetParent(parent, false);
             var rt = (RectTransform)go.transform;
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
@@ -631,10 +720,10 @@ namespace PunkMultiverse.UI
             area.offsetMax = new Vector2(-16, -8);
             areaGo.AddComponent<RectMask2D>();
 
-            var text = UiTheme.MakeText(areaGo.transform, "Text", "", 24, UiTheme.TextBright);
+            var text = UiTheme.MakeText(areaGo.transform, "Text", "", fontSize, UiTheme.TextBright);
             UiTheme.Stretch(text.rectTransform);
 
-            var ph = UiTheme.MakeText(areaGo.transform, "Placeholder", "RANDOM", 24, new Color(1f, 1f, 1f, 0.28f));
+            var ph = UiTheme.MakeText(areaGo.transform, "Placeholder", placeholder, fontSize, new Color(1f, 1f, 1f, 0.28f));
             UiTheme.Stretch(ph.rectTransform);
 
             var input = go.AddComponent<TMP_InputField>();
@@ -642,8 +731,8 @@ namespace PunkMultiverse.UI
             input.textViewport = area;
             input.textComponent = text;
             input.placeholder = ph;
-            input.contentType = TMP_InputField.ContentType.IntegerNumber;
-            input.characterLimit = 9;
+            input.contentType = contentType;
+            input.characterLimit = charLimit;
             input.caretColor = UiTheme.Accent;
             input.customCaretColor = true;
             input.selectionColor = new Color(UiTheme.Accent.r, UiTheme.Accent.g, UiTheme.Accent.b, 0.45f);
@@ -882,16 +971,18 @@ namespace PunkMultiverse.UI
             if (_canvasGo == null || !_canvasGo.activeSelf) return;
             var session = NetSession.Instance;
             bool inLobby = session.State == SessionState.Lobby || session.State == SessionState.Connecting;
-            if (inLobby) _seedSetupOpen = false;
-            bool showRejoin = !inLobby && !_seedSetupOpen && _rejoinAvailable;
+            if (inLobby) { _seedSetupOpen = false; _serverSetupOpen = false; }
+            bool showRejoin = !inLobby && !_seedSetupOpen && !_serverSetupOpen && _rejoinAvailable;
             if (_rejoinButton != null) _rejoinButton.SetActive(showRejoin);
             if (_rejoinNote != null) _rejoinNote.SetActive(showRejoin);
-            _connectPanel.SetActive(!inLobby && !_seedSetupOpen);
+            _connectPanel.SetActive(!inLobby && !_seedSetupOpen && !_serverSetupOpen);
             if (_seedPanel != null) _seedPanel.SetActive(!inLobby && _seedSetupOpen);
+            if (_serverPanel != null) _serverPanel.SetActive(!inLobby && _serverSetupOpen);
             _lobbyPanel.SetActive(inLobby);
 
             _title.text = _titleShadow.text =
-                inLobby ? "LOBBY" : _seedSetupOpen ? "GAME SETTINGS" : "PLAY ONLINE";
+                inLobby ? "LOBBY" : _seedSetupOpen ? "GAME SETTINGS"
+                : _serverSetupOpen ? "DIRECT CONNECT" : "PLAY ONLINE";
             if (_backLabel != null) _backLabel.text = inLobby ? "LEAVE" : "BACK";
             if (_padHintLabel != null) _padHintLabel.text = inLobby ? "LEAVE" : "BACK";
 
@@ -997,7 +1088,15 @@ namespace PunkMultiverse.UI
             {
                 grid.Add(new Selectable[] { UiTheme.ButtonOf(_hostGameLabel) });
                 grid.Add(new Selectable[] { UiTheme.ButtonOf(_joinLabel) });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_directLabel) });
                 grid.Add(new Selectable[] { UiTheme.ButtonOf(_rejoinLabel) });
+                grid.Add(new Selectable[] { back });
+            }
+            else if (_serverPanel != null && _serverPanel.activeSelf)
+            {
+                grid.Add(new Selectable[] { _ipInput });
+                grid.Add(new Selectable[] { _portInput });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_connectLabel) });
                 grid.Add(new Selectable[] { back });
             }
             else if (_seedPanel != null && _seedPanel.activeSelf)

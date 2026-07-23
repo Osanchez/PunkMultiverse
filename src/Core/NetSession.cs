@@ -96,7 +96,12 @@ namespace PunkMultiverse.Core
         internal string ResolvedTransport =>
             NetConfig.IsCoordinator ? NetConfig.EnvCoordinatorTransport
             : _sidecarSession ? _sidecarTransport
-            : _lobbyServerTransport ?? NetConfig.Transport.Value;
+            : _directTransport ?? _lobbyServerTransport ?? NetConfig.Transport.Value;
+
+        // Per-session transport override for a direct IP:port connect from the PLAY ONLINE screen.
+        // Lets a player join a Udp server by typing an address — no config edit, no persisted
+        // change to their default transport. Cleared on StopSession like _lobbyServerTransport.
+        private string _directTransport;
 
         public bool UsingSteam => ResolvedTransport.Equals("Steam", StringComparison.OrdinalIgnoreCase);
 
@@ -391,6 +396,18 @@ namespace PunkMultiverse.Core
         }
 
         /// <summary>Join: Steam = decode lobby code (null = clipboard); loopback = address (null = config default).</summary>
+        /// <summary>Direct-connect to a Udp server by address (PLAY ONLINE -> DIRECT CONNECT).
+        /// Forces the Udp transport for this session only — the player never edits config. On an
+        /// unreachable server the join times out (ConnectTimeout) and Fail() sets LastError, which
+        /// the UI surfaces as a toast. host may be an IP or hostname; port is validated by caller.</summary>
+        public void JoinDirect(string host, int port)
+        {
+            if (State != SessionState.Offline) StopSession("direct connect"); // clears prior overrides
+            _directTransport = "Udp"; // set AFTER StopSession so it survives into the join
+            LastError = null;
+            JoinSession($"{host.Trim()}:{port}");
+        }
+
         public void JoinByCode(string codeOrAddress)
         {
             LastError = null;
@@ -1223,7 +1240,7 @@ namespace PunkMultiverse.Core
             bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
             _sidecarSession = false; // future sessions choose their transport from config again
             _haveLeaderSettings = false; _leaderSettingsSent = false;
-            _lobbyServerTransport = null; _serverLobbyRequested = false; _allowlistDirty = false;
+            _lobbyServerTransport = null; _directTransport = null; _serverLobbyRequested = false; _allowlistDirty = false;
             _allowedPeers = null;
             _adminSlot = -1; _adminToken = 0; _localAdminToken = 0;
 
