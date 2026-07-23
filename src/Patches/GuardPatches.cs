@@ -83,11 +83,38 @@ namespace PunkMultiverse.Patches
         [HarmonyPatch(typeof(PauseScreen), "Open")]
         internal static class NetRunPauseButtons
         {
-            private static void Postfix(PauseScreen __instance)
+            // Guard the co-op pause overlay against the two ways it softlocks input in a LIVE
+            // (non-frozen) world — the tester's "pause + item wheel" report (2026-07-23):
+            //   * PauseScreen.Update calls Open() with NO !isOpen guard, so pressing pause again
+            //     while already paused re-runs UIScreen.Open, which re-captures previousActionMap as
+            //     the CURRENT (UI menu) map — on close the local player is stranded on the menu map
+            //     with no menu open and all gameplay input dead. (Vanilla never sees this: frozen
+            //     time keeps the pause action from re-firing.)
+            //   * Opening pause on top of an already-open item wheel lets two independent input
+            //     owners (UIScreen's SwitchCurrentActionMap vs ConsumableWheel's raw Enable/Disable)
+            //     fight over the same action maps.
+            // Skip the open body in both cases; __state carries that decision to the postfix.
+            private static bool Prefix(PauseScreen __instance, out bool __state)
             {
+                __state = false;
+                if (!NetSession.Active) return true; // single-player pause unchanged
+                bool alreadyOpen = Traverse.Create(__instance).Field("isOpen").GetValue<bool>();
+                if (alreadyOpen || MenuMutex.WheelOpen)
+                {
+                    __state = true; // redundant/overlapping — skip body AND the postfix re-layout
+                    Plugin.Log.LogDebug($"[Pause] suppressed pause open (alreadyOpen={alreadyOpen} wheelOpen={MenuMutex.WheelOpen})");
+                    return false;
+                }
+                return true;
+            }
+
+            private static void Postfix(PauseScreen __instance, bool __state)
+            {
+                if (__state) return; // the prefix suppressed this open
                 try
                 {
                     if (!NetSession.Active) return; // single-player pause unchanged
+                    MenuMutex.PauseOpen = true;
                     // The slot freed by hiding RESTART becomes SEND LOGS: uploads this machine's
                     // log under the shared run id so every player's view of one session lands in
                     // one folder. Toast reports the outcome (sent / saved locally / rate-limited).
@@ -116,10 +143,12 @@ namespace PunkMultiverse.Patches
                 if (ship == null) return;
                 foreach (var shipInput in ship.GetComponentsInChildren<ShipInput>(true))
                 {
-                    var t = Traverse.Create(shipInput);
-                    var map = (t.Property("ShipControlActionMap").GetValue()
-                               ?? t.Field("ShipControlActionMap").GetValue()) as InputActionMap;
-                    if (map != null && !map.enabled) map.Enable();
+                    // ShipControlActionMap is a ShipActionMap WRAPPER (derives from object, not
+                    // InputActionMap), so the old `as InputActionMap` cast was always null and this
+                    // whole method silently did nothing — pausing in a net run actually left the
+                    // player frozen-input in a live world. Use the wrapper's own Enabled/Enable().
+                    var map = shipInput.ShipControlActionMap;
+                    if (map != null && !map.Enabled) map.Enable();
                 }
             }
         }
