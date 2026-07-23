@@ -214,7 +214,12 @@ namespace PunkMultiverse.Core
             else if (mode.Equals("Join", StringComparison.OrdinalIgnoreCase))
             {
                 yield return new WaitForSecondsRealtime(3f);
-                JoinByCode(null);
+                // Deterministic for harnesses: AutoStart=Join targets the CONFIGURED default,
+                // NEVER the clipboard (JoinByCode(null)'s paste fallback once hijacked a
+                // two-instance repro with a stray copied hostname).
+                bool udp = ResolvedTransport.Equals("Udp", StringComparison.OrdinalIgnoreCase);
+                JoinSession(udp ? $"{NetConfig.UdpAddress.Value}:{NetConfig.UdpPort.Value}"
+                                : $"{NetConfig.LoopbackHost.Value}:{NetConfig.LoopbackPort.Value}");
             }
         }
 

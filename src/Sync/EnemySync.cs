@@ -185,6 +185,10 @@ namespace PunkMultiverse.Sync
         private const float StarvedCandidateResidence = 2f;
         private const float StarvedCandidateRecheck = 1f;
         private const float StarvedRequestRetry = 2f;
+        // How long a DORMANT starving puppet waits for the residency->lease->wake chain before the
+        // starved-rescue treats it like any other starved entity. Generous: the chain normally
+        // lands within a second or two; only genuinely-missed entities cross this line.
+        private const float StarvedDormantPatience = 10f;
         // Starvation is judged in seconds; scanning every LiveEntities entry with GetComponent
         // calls at the 30 Hz state rate was a steady frame tax for zero extra detection value.
         private const float StarvedScanInterval = 0.5f;
@@ -2924,10 +2928,17 @@ namespace PunkMultiverse.Sync
                 if (puppet.PuppetAge < staleAfter || puppet.SnapshotAge < staleAfter) continue;
                 if (NextStarvedRequestAt.TryGetValue(netId, out float next) && now < next) continue;
 
-                // Dormant entities are owed nothing: nobody simulates them by agreement, and
-                // since WE hold the live object our residency report is already driving an
-                // activation grant. Requesting per-entity promotion here would race it.
-                if (OwnerOf(netId) == AuthorityManager.DormantOwner)
+                // Dormant entities are owed nothing BY AGREEMENT — the residency->lease->wake
+                // chain is supposed to activate them. But that assumption is field-disproven on
+                // the dedicated server (2026-07-23): under a slow/hitchy host with real loss,
+                // entities streaming in around a moving player fell through the chain PERMANENTLY
+                // — 100k+ starved frames, zero rescues, frozen unkillable enemies at point-blank
+                // range. Patience first (the chain normally lands within seconds); after that,
+                // fall through and rescue like any other starved puppet. The distance/stability
+                // gate below still applies, and the host re-validates before granting — a far-away
+                // legitimately-dormant statue is never stolen by this.
+                if (OwnerOf(netId) == AuthorityManager.DormantOwner
+                    && puppet.PuppetAge < StarvedDormantPatience)
                 {
                     NextStarvedRequestAt[netId] = now + StarvedRequestRetry;
                     continue;
