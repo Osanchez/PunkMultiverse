@@ -32,26 +32,12 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# PUNK Multiverse install script.\n#\n# IMPORTANT: PUNK is a Steam *playtest* (appid 2850470). Playtest depots are NOT downloadable\n# with `steamcmd +login anonymous`, so - unlike a normal games-steamcmd egg - this install does\n# NOT fetch the game. You only need to provide the BASE GAME (Punk.exe + Punk_Data/ +\n# MonoBleedingEdge/ + UnityPlayer.dll) - BepInEx and the mod are provided automatically by the\n# server image at boot (BepInEx is baked in; the mod self-updates from GitHub releases).\n# Provide the base game one of two ways:\n#   (A) Set GAME_FILES_URL to a zip/tar of the game; this script downloads+extracts it.\n#   (B) Leave it blank and upload the files to the server root via the panel File Manager / SFTP.\nset -e\napt -y update\napt -y --no-install-recommends install curl tar unzip xz-utils ca-certificates findutils\nmkdir -p /mnt/server\ncd /mnt/server\n\nif [ -n \"${GAME_FILES_URL}\" ]; then\n    echo \"Downloading game files from ${GAME_FILES_URL}\"\n    TMP=/tmp/punkmv-game.archive\n    curl -sSL -o \"${TMP}\" \"${GAME_FILES_URL}\"\n    case \"${GAME_FILES_URL}\" in\n        *.zip)           unzip -o \"${TMP}\" -d /mnt/server ;;\n        *.tar.gz|*.tgz)  tar -xzf \"${TMP}\" -C /mnt/server ;;\n        *.tar.xz)        tar -xJf \"${TMP}\" -C /mnt/server ;;\n        *.tar)           tar -xf  \"${TMP}\" -C /mnt/server ;;\n        *) echo \"Unknown archive type; left ${TMP} in place for manual handling\" ;;\n    esac\n    rm -f \"${TMP}\"\n    # If the archive wrapped everything in one top-level folder, flatten so Punk.exe is at root.\n    if [ ! -f /mnt/server/Punk.exe ]; then\n        DIR=$(find /mnt/server -maxdepth 3 -name Punk.exe -printf '%h\\n' 2>/dev/null | head -n1)\n        if [ -n \"${DIR}\" ] && [ \"${DIR}\" != \"/mnt/server\" ]; then\n            echo \"Flattening ${DIR} -> /mnt/server\"\n            cp -a \"${DIR}/.\" /mnt/server/\n        fi\n    fi\nfi\n\nif [ -f /mnt/server/Punk.exe ]; then\n    echo \"OK: Punk.exe present. BepInEx + mod are provided by the image at boot.\"\nelse\n    echo \"======================================================================\"\n    echo \" No Punk.exe found yet.\"\n    echo \" Upload the BASE GAME to the server root: Punk.exe, Punk_Data/,\"\n    echo \" MonoBleedingEdge/, UnityPlayer.dll. You do NOT need BepInEx or the mod -\"\n    echo \" the image installs BepInEx and self-updates the mod from GitHub on boot.\"\n    echo \" See pelican_egg/README.md.\"\n    echo \"======================================================================\"\nfi\necho \"Install step complete.\"\n",
+            "script": "#!/bin/bash\n# PUNK Multiverse install script.\n#\n# Nothing to install here: the base game AND BepInEx are baked into the server image, and the mod\n# self-updates from GitHub on boot. This step runs in a separate installer container that has no\n# access to the image's baked files, so it just prepares the data directory and exits.\nset -e\nmkdir -p /mnt/server\necho \"Nothing to install: the base game + BepInEx are baked into the server image, and the mod\"\necho \"self-updates from GitHub on boot. The game is copied into place on first start.\"\necho \"Install step complete.\"\n",
             "container": "ghcr.io/parkervcp/installers:debian",
             "entrypoint": "bash"
         }
     },
     "variables": [
-        {
-            "sort": 1,
-            "name": "Game Files URL",
-            "description": "Optional. A direct URL to a .zip / .tar.gz / .tar.xz of the BASE PUNK game (Punk.exe, Punk_Data/, MonoBleedingEdge/, UnityPlayer.dll). Downloaded and extracted at install time. Leave blank to upload the files yourself via File Manager / SFTP. You do NOT need to include BepInEx or the mod - the image installs BepInEx and self-updates the mod from GitHub. PUNK is a Steam playtest and CANNOT be fetched by SteamCMD.",
-            "env_variable": "GAME_FILES_URL",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": [
-                "nullable",
-                "string",
-                "max:512"
-            ]
-        },
         {
             "sort": 15,
             "name": "Mod Auto-Update",

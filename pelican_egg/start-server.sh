@@ -36,6 +36,7 @@ MOD_VERSION="${MOD_VERSION:-latest}"                  # "latest" or a release ta
 MOD_RELEASE_REPO="${MOD_RELEASE_REPO:-Osanchez/PunkMultiverse}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"                      # optional: lifts API rate limits / private repos
 BEPINEX_STAGE="${BEPINEX_STAGE:-/opt/bepinex}"        # where the image baked the loader
+GAME_STAGE="${GAME_STAGE:-/opt/game}"                 # where the image baked the base game
 
 STOP_GRACE_SECONDS="${STOP_GRACE_SECONDS:-20}"        # shutdown: seconds to wait for a clean exit before wineserver -k
 WINEDEBUG="${WINEDEBUG:--all}"
@@ -51,18 +52,23 @@ VERSION_MARKER="${PLUGIN_DIR}/.installed_version"
 log() { echo "[server] $*"; }
 fail() { echo "[server][FATAL] $*" >&2; exit 1; }
 
-# --------------------------------------------------------------------- preflight: base game
+# --------------------------------------------------------------------- provision base game
 cd "${GAME_DIR}" || fail "GAME_DIR '${GAME_DIR}' does not exist"
+
+# The base game is baked into the image at ${GAME_STAGE}. Pelican mounts a persistent volume over
+# /home/container that would shadow anything COPY'd there in the image, so the game is copied in
+# here on first boot. The volume persists, so later boots find Punk.exe and skip the copy.
+if [[ ! -f "${GAME_DIR}/${STARTUP_EXE}" && -f "${GAME_STAGE}/${STARTUP_EXE}" ]]; then
+    log "installing baked base game (first boot) from ${GAME_STAGE}"
+    cp -a "${GAME_STAGE}/." "${GAME_DIR}/"
+    log "base game installed ($(du -sh "${GAME_DIR}" 2>/dev/null | cut -f1))"
+fi
 
 if [[ ! -f "${GAME_DIR}/${STARTUP_EXE}" ]]; then
     echo "======================================================================"
-    echo " Base game not found: ${GAME_DIR}/${STARTUP_EXE} is missing."
-    echo ""
-    echo " PUNK is a Steam playtest and cannot be fetched by SteamCMD. Upload the"
-    echo " base game (Punk.exe, Punk_Data/, MonoBleedingEdge/, UnityPlayer.dll) to the"
-    echo " server root, then restart. BepInEx and the mod are provided automatically by"
-    echo " this image — you do NOT need to install them yourself."
-    echo " See pelican_egg/README.md for the exact file list."
+    echo " Base game not found: ${GAME_DIR}/${STARTUP_EXE} is missing, and none is"
+    echo " baked at ${GAME_STAGE}. This image should include the game; rebuild it with"
+    echo " build-image.sh (which stages the base game from a local install)."
     echo "======================================================================"
     fail "no game executable"
 fi

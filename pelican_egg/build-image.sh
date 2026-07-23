@@ -36,7 +36,24 @@ cp -f  "${GAME_DIR}/winhttp.dll"         "${STAGE}/winhttp.dll"
 cp -f  "${GAME_DIR}/doorstop_config.ini" "${STAGE}/doorstop_config.ini"
 cp -f  "${GAME_DIR}/.doorstop_version"   "${STAGE}/.doorstop_version"
 cp -rf "${GAME_DIR}/BepInEx/core"        "${STAGE}/BepInEx/core"
-echo "    staged: $(du -sh "${STAGE}" | cut -f1)"
+echo "    staged loader: $(du -sh "${STAGE}" | cut -f1)"
+
+# --- stage the base game (baked into the image; NOT the mod, NOT BepInEx) -----------------------
+GAME_STAGE="${HERE}/_game_stage"
+echo "==> staging base game into _game_stage/"
+for f in Punk.exe UnityPlayer.dll; do
+    [[ -f "${GAME_DIR}/${f}" ]] || { echo "ERROR: ${GAME_DIR}/${f} not found"; exit 1; }
+done
+for d in Punk_Data MonoBleedingEdge; do
+    [[ -d "${GAME_DIR}/${d}" ]] || { echo "ERROR: ${GAME_DIR}/${d} not found"; exit 1; }
+done
+rm -rf "${GAME_STAGE}"
+mkdir -p "${GAME_STAGE}"
+cp -f  "${GAME_DIR}/Punk.exe"        "${GAME_STAGE}/Punk.exe"
+cp -f  "${GAME_DIR}/UnityPlayer.dll" "${GAME_STAGE}/UnityPlayer.dll"
+cp -rf "${GAME_DIR}/Punk_Data"       "${GAME_STAGE}/Punk_Data"
+cp -rf "${GAME_DIR}/MonoBleedingEdge" "${GAME_STAGE}/MonoBleedingEdge"
+echo "    staged game: $(du -sh "${GAME_STAGE}" | cut -f1)"
 
 # --- build -------------------------------------------------------------------------------------
 echo "==> docker build"

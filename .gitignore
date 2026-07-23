@@ -9,3 +9,4 @@ refs-staging/
 
 # pelican_egg image build stages the BepInEx loader here (binaries, do not commit)
 pelican_egg/_bepinex_stage/
+pelican_egg/_game_stage/

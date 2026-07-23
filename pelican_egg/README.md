@@ -23,10 +23,15 @@ game doesn't try to bounce through the Steam client at launch.
 
 ## What you supply vs. what the image provides
 
-To keep things easy and self-updating, the image provisions everything except the copyrighted game:
+To keep things easy and self-updating, everything is provisioned automatically — there is nothing to
+configure to get the game onto the server:
 
-- **You supply: the base game only** — `Punk.exe`, `Punk_Data/`, `MonoBleedingEdge/`,
-  `UnityPlayer.dll`. (The playtest can't be redistributed in a public image, so it can't be baked in.)
+- **The base game is baked into the image** (`Punk.exe`, `Punk_Data/`, `MonoBleedingEdge/`,
+  `UnityPlayer.dll`, staged at `/opt/game`). On first boot `start-server.sh` copies it into
+  `/home/container` (Pelican's volume mounts over `/home/container`, which would otherwise shadow
+  anything placed there in the image). No download, no S3, no `GAME_FILES_URL`. **Note:** this bakes
+  the PUNK *playtest* build into the image — keep the image's Docker Hub repo scoped to who should
+  have it (a public repo makes the playtest `docker pull`-able by anyone).
 - **The image provides: BepInEx** — the Doorstop loader (`winhttp.dll`) + `BepInEx/core` are baked
   into the image and overlaid onto your game files at boot, so even a *vanilla* game copy becomes
   mod-ready. You never install BepInEx yourself.
@@ -71,29 +76,24 @@ GitHub at boot.
 
 Panel → **Admin → Eggs → Import Egg** → upload `egg-punk-multiverse.json`.
 
-### 3. Create a server and give it the base game
+### 3. Create a server
 
-Create a server from the egg, then provide **just the base game** (no BepInEx, no mod) one of two ways:
+Create a server from the egg, **install it, and start it** — that's it. The base game (baked into
+the image) is copied into place on first boot, BepInEx is overlaid, and the mod self-updates. No
+game upload, no download, nothing to configure.
 
-- **(A) Game Files URL** — set the `GAME_FILES_URL` variable to a direct link to a `.zip` /
-  `.tar.gz` / `.tar.xz` of the base PUNK folder. The install step downloads and extracts it (and
-  flattens a single wrapping folder so `Punk.exe` lands at the server root). Host the archive
-  somewhere the container can reach (S3, a release asset, your own web server).
-- **(B) Manual upload** — leave `GAME_FILES_URL` blank, then upload the files to the server root via
-  the panel File Manager or SFTP.
-
-**The files the server needs** (base game only):
+The baked base game (staged at `/opt/game` in the image) is only:
 
 ```
 Punk.exe
 UnityPlayer.dll
-Punk_Data/                  <- the whole folder
+Punk_Data/                  <- the whole folder (steam_api64.dll lives here)
 MonoBleedingEdge/           <- the whole folder (game's Mono runtime)
 ```
 
-You do **not** need `steam_appid.txt` (the server writes it), the Steam client, BepInEx, or the mod —
-the image overlays BepInEx and self-updates the mod on boot. (If you do upload a full modded install,
-that's fine too; the overlay is idempotent and `INSTALL_BEPINEX=0` lets you keep the copy's own loader.)
+You do **not** need `steam_appid.txt` (the server writes it), the Steam client, BepInEx, or the mod.
+To ship a new game build, rebuild the image with `build-image.sh` (it re-stages the base game from
+your local install) and push — servers pick it up when the node pulls the new image.
 
 ## How players connect
 
@@ -111,7 +111,6 @@ itself. World settings (seed, friendly-fire) are chosen by that admin, not by th
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `GAME_FILES_URL` | *(blank)* | Install-time URL of a zip/tar of the base game. Blank = upload manually. |
 | `MOD_AUTO_UPDATE` | `1` | `1` = check GitHub for a newer mod build each boot; `0` = keep the installed one. |
 | `MOD_VERSION` | `latest` | `latest` or a release tag (e.g. `v0.1.131`) to pin the mod build. |
 | `MOD_RELEASE_REPO` | `Osanchez/PunkMultiverse` | GitHub owner/repo the mod is pulled from. |

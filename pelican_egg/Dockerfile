@@ -52,6 +52,12 @@ RUN dpkg --add-architecture i386 \
 # releases at runtime (self-updating), so it is deliberately NOT baked here.
 COPY _bepinex_stage/ /opt/bepinex/
 
+# Baked base game (staged by build-image.sh from a local install). Copied to /home/container on
+# first boot by start-server.sh — Pelican mounts a volume over /home/container that would shadow
+# anything placed there directly. This is the PUNK playtest build; keep the image appropriately
+# scoped to who should have it.
+COPY _game_stage/ /opt/game/
+
 COPY entrypoint.sh /entrypoint.sh
 COPY start-server.sh /start-server.sh
 RUN chmod 0755 /entrypoint.sh /start-server.sh
