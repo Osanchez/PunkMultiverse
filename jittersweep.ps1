@@ -40,6 +40,7 @@ New-Item -ItemType Directory -Force $ArtDir | Out-Null
 $Report = Join-Path $ArtDir "jittersweep-report.txt"
 $script:HostPid = 0
 $script:ClientPid = 0
+$script:RenderResults = @()
 
 function Log([string]$msg) {
     $line = "[{0:HH:mm:ss}] {1}" -f (Get-Date), $msg
@@ -173,8 +174,30 @@ try {
         if ($ids.Count -eq 0) { Log "  ${type}: spawn produced no visible entities (skipped)"; continue }
         $pokes = ($ids | ForEach-Object { "poke $_ 1" }) -join "`n"
         Cmd $HostPlug $pokes
-        Log "  ${type}: $($ids.Count) spawned + poked, dwelling ${DwellSec}s"
+        Start-Sleep -Seconds 2
+        # RENDER-level pass (the 2026-07-22 lesson: fixed-step metrics are structurally blind
+        # to what is DRAWN between physics steps — the per-snapshot transform-teleport bug
+        # measured 0.9 u/s on jitterstats while leaping 221-390 u/s on screen). Sample the SAME
+        # entity's drawn pose on owner and puppet simultaneously during the dwell; the puppet
+        # must match the owner's frame-level smoothness, not just its physics-step path.
+        $probe = $ids[0]
+        $probeSecs = [Math]::Max(5, $DwellSec - 3)
+        Clear-Content (Join-Path $HostPlug "devout.txt") -ErrorAction SilentlyContinue
+        Clear-Content (Join-Path $ClientPlug "devout.txt") -ErrorAction SilentlyContinue
+        Cmd $HostPlug "rendersmooth $probe $probeSecs"
+        Cmd $ClientPlug "rendersmooth $probe $probeSecs"
+        Log "  ${type}: $($ids.Count) spawned + poked, dwelling ${DwellSec}s (rendersmooth #$probe both sides)"
         Start-Sleep -Seconds $DwellSec
+        foreach ($side in @(@($HostPlug, "owner"), @($ClientPlug, "puppet"))) {
+            foreach ($line in (ReadDevout $side[0])) {
+                if ($line -match "rendersmooth #\d+: [0-9.]+s (\d+) frames.*mean=([0-9.]+) max=[0-9.]+ u/s CV=([0-9.]+) \| stall%=([0-9.]+) \| rotWasted=([0-9.]+)") {
+                    $script:RenderResults += [pscustomobject]@{
+                        Type = $type; Side = $side[1]; Frames = [int]$Matches[1]; Mean = [double]$Matches[2]
+                        CV = [double]$Matches[3]; Stall = [double]$Matches[4]; RotWasted = [double]$Matches[5]
+                    }
+                }
+            }
+        }
         # Kill: two heavy pokes each (some types shield/phase; leftovers noted by next census).
         $kills = ($ids | ForEach-Object { "poke $_ 999" }) -join "`n"
         Cmd $HostPlug $kills
@@ -202,6 +225,32 @@ try {
         elseif ($jit -gt 10) { $verdict = "FAIL"; $fails++ }
         elseif ($jit -gt 2 -or $avg -gt 3.0) { $verdict = "WARN" }
         Log ("{0,-18} {1,-28} avg={2,-6} peak={3,-6} jitter%={4,-5} windows={5}" -f $verdict, $t, $avg, $peak, $jit, $win)
+    }
+    Log ""
+    Log "==================== DRAWN-POSE SMOOTHNESS (owner vs puppet) ===================="
+    # Everything is judged RELATIVE to the owner's own drawn motion — stop-go burst movers
+    # legitimately stall 50-90% of frames ON THE OWNER TOO (Cross lunge family), and CV on a
+    # near-stationary entity is numeric noise. Puppet == owner is the pass condition, always.
+    Log "movers only: puppet stall > owner+15pts = FAIL; CV ratio > 2x = FAIL, > 1.5x = WARN"
+    foreach ($type in ($script:RenderResults | Select-Object -ExpandProperty Type -Unique)) {
+        $owner  = $script:RenderResults | Where-Object { $_.Type -eq $type -and $_.Side -eq "owner" }  | Select-Object -First 1
+        $puppet = $script:RenderResults | Where-Object { $_.Type -eq $type -and $_.Side -eq "puppet" } | Select-Object -First 1
+        if ($null -eq $puppet) { Log ("INFO               {0,-28} no puppet sample (out of client view / died early)" -f $type); continue }
+        $verdict = "PASS"
+        $ratioTxt = "n/a"
+        if ($puppet.Frames -lt 200) { $verdict = "INFO(short)" }
+        elseif ($puppet.Mean -lt 1) { $verdict = "INFO(stationary)" }
+        elseif ($null -ne $owner -and ($puppet.Stall - $owner.Stall) -gt 15) { $verdict = "FAIL"; $fails++ }
+        elseif ($null -eq $owner -and $puppet.Stall -gt 25) { $verdict = "FAIL"; $fails++ }
+        elseif ($null -ne $owner -and $owner.CV -gt 0.05) {
+            $ratio = $puppet.CV / $owner.CV
+            $ratioTxt = "{0:0.0}x" -f $ratio
+            if ($ratio -gt 2.0 -and $puppet.CV -gt 0.8) { $verdict = "FAIL"; $fails++ }
+            elseif ($ratio -gt 1.5 -and $puppet.CV -gt 0.8) { $verdict = "WARN" }
+        }
+        $ownerTxt = if ($null -ne $owner) { "CV={0:0.00} stall={1:0.0}%" -f $owner.CV, $owner.Stall } else { "no owner sample" }
+        Log ("{0,-18} {1,-28} mean={2:0.0}u/s owner[{3}] puppet[CV={4:0.00} stall={5:0.0}% rot={6:0.0}deg/s] ratio={7}" -f `
+            $verdict, $type, $puppet.Mean, $ownerTxt, $puppet.CV, $puppet.Stall, $puppet.RotWasted, $ratioTxt)
     }
     # A lone sub-0.9x [Clock] line paired with a >1x catch-up is a load hitch (the sweep's
     # spawn/kill churn), not vsync dilation. Only sustained dilation (<0.8x) poisons numbers.
