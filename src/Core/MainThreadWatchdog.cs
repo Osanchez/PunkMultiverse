@@ -243,14 +243,23 @@ namespace PunkMultiverse.Core
             _captureWorker.Start();
         }
 
+        private static bool _stackFailureAnnounced;
+
         private static void FlushStackResult()
         {
             if (!_captureDone) return;
             _captureDone = false;
             if (_captureResult != null)
                 Emit($"[Hitch] id={_captureHitchId} main-stack:\n{_captureResult}");
-            else
-                Emit($"[Hitch] id={_captureHitchId} main-stack-failed={_captureError ?? "unknown"} fallback=phase-marker");
+            else if (!_stackFailureAnnounced)
+            {
+                // Environments whose Mono can't walk another thread's stack (Wine, some players'
+                // runtimes) throw the same error on EVERY hitch — announce the degradation once;
+                // phase markers stay on every hitch line and carry the useful signal anyway.
+                _stackFailureAnnounced = true;
+                Emit($"[Hitch] id={_captureHitchId} main-stack-failed={_captureError ?? "unknown"} — " +
+                     "stack capture unsupported on this runtime; falling back to phase markers for this session");
+            }
         }
 
         private static void Emit(string line)

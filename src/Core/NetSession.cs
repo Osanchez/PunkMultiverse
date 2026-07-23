@@ -713,6 +713,10 @@ namespace PunkMultiverse.Core
         private ulong _localLevelChecksum;
         private LevelReadyMsg _localLevelReady;
         private float _nextLevelReadyRetryAt;
+        // Go-live wedge diagnosis: per-type count of messages received while this client waits in
+        // Loading (see the [Recv] reporter in Update). Reset in BeginRun.
+        private readonly Dictionary<MsgType, int> _loadingRecv = new Dictionary<MsgType, int>();
+        private float _nextLoadingRecvLogAt;
         private bool _levelReadyVisualPending;
         private float _levelReadyVisualStartedAt;
 
@@ -782,6 +786,8 @@ namespace PunkMultiverse.Core
             _nextGoLiveRecoveryAt.Clear();
             _goLiveRecoverySends.Clear();
             _nextGoLiveDiagAt = 0f;
+            _loadingRecv.Clear();
+            _nextLoadingRecvLogAt = 0f;
             _hasLocalLevelChecksum = false;
             _localLevelChecksum = 0;
             _localLevelReady = default;
@@ -1634,6 +1640,20 @@ namespace PunkMultiverse.Core
                     && Time.unscaledTime >= _nextLevelReadyRetryAt)
                     SendLevelReady();
 
+                // Go-live wedge diagnosis (dedicated server, 2026-07-23): while a client waits in
+                // Loading, report what has actually ARRIVED every 5s — including "nothing". Split
+                // decisively: all-zeros = server's burst never reaches us (transport wedge);
+                // manifest/baseline counts without GoLive = the burst lands but GO_LIVE is lost.
+                if (State == SessionState.Loading && !IsHost && _hasLocalLevelChecksum
+                    && Time.unscaledTime >= _nextLoadingRecvLogAt)
+                {
+                    _nextLoadingRecvLogAt = Time.unscaledTime + 5f;
+                    Plugin.Log.LogInfo(_loadingRecv.Count == 0
+                        ? "[Recv] loading-window: nothing received since LEVEL_READY"
+                        : "[Recv] loading-window: " + string.Join(" ",
+                            _loadingRecv.Select(kv => $"{kv.Key}={kv.Value}")));
+                }
+
                 // Black-screen watchdog: level is generated and LEVEL_READY retries at 1 Hz, but
                 // go-live never completed. Tear down cleanly to the menu instead of leaving the
                 // player on an unresponsive black screen (they can rejoin — the slot is reserved).
@@ -2235,6 +2255,12 @@ namespace PunkMultiverse.Core
             try { type = _reader.ReadMsgType(); }
             catch { return; }
             NetStats.AddIn((byte)type, payload.Count);
+            // Loading-window receive tally — see the [Recv] reporter in Update.
+            if (!IsHost && State == SessionState.Loading)
+            {
+                _loadingRecv.TryGetValue(type, out int seen);
+                _loadingRecv[type] = seen + 1;
+            }
             try
             {
                 Dispatch(peer, channel, type);
