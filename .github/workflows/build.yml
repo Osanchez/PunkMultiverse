@@ -13,6 +13,7 @@ on:
       - '**.md'
       - '.gitignore'
       - 'LICENSE'
+      - 'pelican_egg/**'   # server-deploy assets (egg/Dockerfile/scripts) — not part of the mod DLL
   workflow_dispatch:
 
 permissions:

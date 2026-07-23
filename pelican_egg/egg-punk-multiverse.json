@@ -178,15 +178,15 @@
         {
             "sort": 6,
             "name": "Enemy HP Scaling / Player",
-            "description": "Enemy max-health multiplier added per connected player (1 + value*players), fixed at run start. Mod config key EnemyHealthScalePerPlayer. Default 0.25.",
+            "description": "Enemy max-health multiplier added per connected player (1 + value*players), fixed at run start. Mod config key EnemyHealthScalePerPlayer. Decimal, e.g. 0.25. Leave blank to use 0.25.",
             "env_variable": "HP_SCALING_PER_PLAYER",
             "default_value": "0.25",
             "user_viewable": true,
             "user_editable": true,
             "rules": [
-                "required",
-                "numeric",
-                "between:0,4"
+                "nullable",
+                "string",
+                "max:6"
             ]
         },
         {

@@ -13,7 +13,7 @@ csproj="PunkMultiverse.csproj"
 [ -f "$csproj" ] || exit 0
 
 # Doc-only commit? CI won't build it; don't burn a version.
-if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$)'; then
+if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$|^pelican_egg/)'; then
     exit 0
 fi
 
