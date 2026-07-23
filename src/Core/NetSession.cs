@@ -717,6 +717,7 @@ namespace PunkMultiverse.Core
         // Loading (see the [Recv] reporter in Update). Reset in BeginRun.
         private readonly Dictionary<MsgType, int> _loadingRecv = new Dictionary<MsgType, int>();
         private float _nextLoadingRecvLogAt;
+        private float _nextMeshDropLogAt; // throttles the mesh-filter drop tripwire in Dispatch
         private bool _levelReadyVisualPending;
         private float _levelReadyVisualStartedAt;
 
@@ -2289,7 +2290,19 @@ namespace PunkMultiverse.Core
             if (!IsHost && State >= SessionState.Loading)
             {
                 ulong hostPeer = _players[HostSlot]?.PeerId ?? 0;
-                if (peer != hostPeer && type != MsgType.EntityStateBundle) return;
+                if (peer != hostPeer && type != MsgType.EntityStateBundle)
+                {
+                    // Tripwire (2026-07-23): a mis-resolved hostPeer silently ate the entire
+                    // go-live burst for days. A drop here is either a misbehaving mesh peer or a
+                    // broken host resolution — say so instead of eating it silently.
+                    if (Time.unscaledTime >= _nextMeshDropLogAt)
+                    {
+                        _nextMeshDropLogAt = Time.unscaledTime + 10f;
+                        Plugin.Log.LogWarning($"[Session] dropped {type} from non-host peer {peer} " +
+                            $"(hostPeer={hostPeer}, HostSlot={HostSlot}) — mesh peers may only send entity snapshots");
+                    }
+                    return;
+                }
             }
 
             switch (type)
@@ -2988,7 +3001,13 @@ namespace PunkMultiverse.Core
             if (modsMismatch) UI.Toast.Show($"{hello.Name} JOINED WITH A DIFFERENT MOD SET", 5f);
 
             _writer.Reset();
-            new WelcomeMsg { Slot = (byte)slot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
+            // HostSlot MUST ride every Welcome. This fresh-join site omitted it (struct default 0)
+            // while the rejoin/reattach sites set it — invisible for every player-host (host really
+            // is slot 0), but a dedicated coordinator hosts from slot 4: the client then resolved
+            // "the host's peer" as ITSELF, and its mesh filter silently ate every Control message
+            // once Loading began — manifest, baseline, and 57 GO_LIVEs (2026-07-23 run). The
+            // three-day dedicated-server "client never goes live" hunt ends here.
+            new WelcomeMsg { Slot = (byte)slot, HostSlot = HostSlot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
             SendReliable(peer, NetChannel.Control, _writer.ToSegment());
             BroadcastLobbyState();
             RosterChanged?.Invoke();
