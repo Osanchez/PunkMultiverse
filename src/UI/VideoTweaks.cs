@@ -96,6 +96,7 @@ namespace PunkMultiverse.UI
         {
             private static void Postfix()
             {
+                if (NetConfig.IsCoordinator) return; // server: ServerFrameRateCap owns the cap
                 ApplyFpsLimit();
                 // The window style is rebuilt a beat after the mode switch — reapply next frame.
                 NetSession.Instance?.StartCoroutine(ReapplyNextFrame());
@@ -166,6 +167,7 @@ namespace PunkMultiverse.UI
             {
                 try
                 {
+                    if (NetConfig.IsCoordinator) return; // headless: no options UI to decorate
                     if (__instance.transform.Find("PunkMV_FpsLimitRow") != null) return; // once
                     var vsyncRow = VsyncRowF(__instance);
                     if (vsyncRow == null) return;

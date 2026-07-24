@@ -89,14 +89,29 @@ namespace PunkMultiverse
             }
             catch { }
 
-            // Video QoL: fps cap (defaults to the monitor's refresh) + resizable window. The
-            // window handle is only capturable while the window is active — grab it now, at
-            // launch focus; SettingsManager.Apply postfixes re-assert both on later changes.
-            UI.VideoTweaks.CaptureWindowHandle();
-            UI.VideoTweaks.ApplyFpsLimit();
-            UI.VideoTweaks.ApplyResizableWindow();
+            if (NetConfig.IsCoordinator)
+            {
+                // Dedicated server: no player, no monitor, no hotkeys — client video features
+                // stand down (the fps-limit fallback used to log a meaningless "MAX (240)" here,
+                // Omar 2026-07-24). What a headless server DOES need is a frame cap: uncapped
+                // null-gfx Unity idles at 1000+ fps of pure CPU waste.
+                int cap = NetConfig.ServerFrameRateCap.Value;
+                if (cap > 0) UnityEngine.Application.targetFrameRate = cap;
+                Log.LogInfo($"{Name} v{Version} — dedicated coordinator (transport: {NetConfig.Transport.Value}, " +
+                    $"frame cap {(cap > 0 ? cap + " fps" : "none")}). Admin via devcmd.txt / panel console; " +
+                    "`uploadlogs` sends this server's log for the current run id.");
+            }
+            else
+            {
+                // Video QoL: fps cap (defaults to the monitor's refresh) + resizable window. The
+                // window handle is only capturable while the window is active — grab it now, at
+                // launch focus; SettingsManager.Apply postfixes re-assert both on later changes.
+                UI.VideoTweaks.CaptureWindowHandle();
+                UI.VideoTweaks.ApplyFpsLimit();
+                UI.VideoTweaks.ApplyResizableWindow();
 
-            Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F9 = net overlay, F10 = sync diagnostics. F8 (or the pause menu in a net run) sends this machine's log for the current run id.");
+                Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F9 = net overlay, F10 = sync diagnostics. F8 (or the pause menu in a net run) sends this machine's log for the current run id.");
+            }
         }
 
         // Hot-reload teardown contract: kill the runtime object (stops the session + transport via

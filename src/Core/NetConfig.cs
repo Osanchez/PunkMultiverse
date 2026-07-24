@@ -60,6 +60,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> ClockGuardEnabled;
         public static ConfigEntry<bool> CoordinatorMode;
         public static ConfigEntry<float> EmptyServerResetSeconds;
+        public static ConfigEntry<int> ServerFrameRateCap;
         public static ConfigEntry<int> FpsLimit;
         public static ConfigEntry<bool> ResizableWindow;
         public static ConfigEntry<bool> HostViaSidecar;
@@ -253,6 +254,11 @@ namespace PunkMultiverse
                 "until the direct-UDP transport lands, so remote friends cannot join a sidecar " +
                 "session yet. Your pre-lobby seed/settings choices do not reach the sidecar yet " +
                 "(coordinator uses defaults).");
+            ServerFrameRateCap = cfg.Bind("Session", "ServerFrameRateCap", 120,
+                "Dedicated coordinator only: cap the server's frame rate. Headless Unity runs " +
+                "UNCAPPED otherwise (1000+ fps idling in the lobby, pure wasted CPU). 120 keeps " +
+                "the 20Hz state pipeline and transport drain responsive (<=8ms poll latency) at a " +
+                "fraction of the cost. 0 = uncapped.");
             EmptyServerResetSeconds = cfg.Bind("Session", "EmptyServerResetSeconds", 120f,
                 "Dedicated server only: if a run is in progress and NO players have been connected " +
                 "for this many seconds, end the abandoned run and return the server to a fresh " +
