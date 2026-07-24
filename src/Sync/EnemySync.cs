@@ -922,7 +922,13 @@ namespace PunkMultiverse.Sync
             foreach (var kv in LiveEntities)
             {
                 if (kv.Value == null) continue;
-                if (!AuthorityManager.TrySegmentOf(kv.Key, out var key) || !DirtyOwnershipSegments.Contains(key)) continue;
+                // Live-position segment (math + dict) instead of TrySegmentOf's native GetEntity —
+                // this pass runs per lease wave over every live entity (see the collect-loop note
+                // on the same storm, 2026-07-24).
+                Vector2 flushPos;
+                if (LiveRefs.TryGetValue(kv.Key, out var refs) && refs.Rb != null) flushPos = refs.Rb.position;
+                else flushPos = kv.Value.transform.position;
+                if (!DirtyOwnershipSegments.Contains(AuthorityManager.SegmentOf(flushPos))) continue;
                 if (!NetIds.TryGetInstanceId(kv.Key, out int instanceId)) continue;
                 bool wasPuppet = kv.Value.GetComponent<RemoteEntityPuppet>() != null;
                 ApplyOwnership(kv.Key, instanceId);
@@ -1641,7 +1647,24 @@ namespace PunkMultiverse.Sync
             foreach (var netId in SpawnedUnitCandidates())
             {
                 if (KilledNetIds.Contains(netId)) continue;
-                bool currentlyMine = OwnerOf(netId) == session.LocalSlot;
+                // Ownership WITHOUT the native path: OwnerOf(netId) resolves the entity's DATA
+                // position via a native GetEntity per candidate per 20Hz tick — measured at
+                // 7.5-11.4ms/tick on a rendering client (the "fps bounces to 90 online" report,
+                // 2026-07-24; same storm the coordinator-skip removed server-side). The live
+                // Rigidbody2D position (LiveRefs, managed) drives the SAME segment lookup the
+                // send path already groups by, so use it: math + two dict probes, zero interop.
+                bool currentlyMine;
+                if (FixedOwners.Contains(netId))
+                    currentlyMine = Owners.TryGetValue(netId, out byte fixedOwner)
+                        && fixedOwner == session.LocalSlot;
+                else if (LiveRefs.TryGetValue(netId, out var posRefs) && posRefs.Entity != null)
+                {
+                    var livePos = posRefs.Rb != null ? posRefs.Rb.position
+                        : (Vector2)posRefs.Entity.transform.position;
+                    currentlyMine = AuthorityManager.OwnerOf(AuthorityManager.SegmentOf(livePos))
+                        == session.LocalSlot;
+                }
+                else continue; // no live object — nothing to collect either way
                 bool boundaryHandoff = false;
                 AuthorityManager.SegmentKey sourceSegment = default;
                 if (!currentlyMine)
