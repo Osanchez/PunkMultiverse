@@ -31,7 +31,10 @@ namespace PunkMultiverse.Core
 
         internal static void SetRun(int seed, ulong hostIdentity)
         {
-            string next = $"{(uint)seed:X8}-{(hostIdentity & 0xFFFF):X4}";
+            // Date prefix makes the S3 console navigable ("which run was last night's?") — the
+            // hash alone wasn't (Omar, 2026-07-23). UTC date at go-live: every machine of a run
+            // stamps the same folder except the midnight-straddle edge, which is acceptable.
+            string next = $"{DateTime.UtcNow:yyyy-MM-dd}_{(uint)seed:X8}-{(hostIdentity & 0xFFFF):X4}";
             if (next != RunId) { _sendsThisRun = 0; _nextAllowedSendAt = 0f; } // fresh run, fresh budget
             RunId = next;
             Plugin.Log.LogInfo($"[Diag] run id {RunId} — quote this in reports; SEND LOGS / F8 uploads this machine's log");

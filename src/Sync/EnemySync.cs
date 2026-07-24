@@ -312,6 +312,16 @@ namespace PunkMultiverse.Sync
         internal static int SendStateCount => LastSentState.Count;
         internal static int SendPriorityCount => SendPriority.Count;
 
+        /// <summary>Any fixed-owner entity (minion etc.) assigned to this slot? FixedOwners holds
+        /// every slot's minions — a per-slot check keeps the coordinator's collect-skip alive
+        /// while players run summoner builds.</summary>
+        private static bool AnyFixedOwnedBy(byte slot)
+        {
+            foreach (int netId in FixedOwners)
+                if (Owners.TryGetValue(netId, out byte owner) && owner == slot) return true;
+            return false;
+        }
+
         /// <summary>One-line send/receive truth for a single entity — the dev harness `sync`
         /// command. Answers "is the owner collecting this at all / is the viewer receiving"
         /// without log archaeology.</summary>
@@ -1613,6 +1623,19 @@ namespace PunkMultiverse.Sync
 
             var egm = TryGetEgm();
             if (egm == null) return;
+
+            // Shipless coordinator that owns nothing (the steady state: leases live with the
+            // players): every candidate would resolve OwnerOf -> TrySegmentOf -> a native
+            // GetEntity call, then fail the `owner != LocalSlot` gate — measured at 20-30ms
+            // per frame under Wine with 2 players (the relay-burstiness root, 2026-07-23).
+            // Skip the loop outright; a lease naming us (declined handoff etc.) re-enables it.
+            if (NetConfig.IsCoordinator
+                && !AuthorityManager.AnyLeaseOwnedBy((byte)session.LocalSlot)
+                && !AnyFixedOwnedBy((byte)session.LocalSlot))
+            {
+                NetProfiler.Mark("EnemySync.Collect");
+                return;
+            }
 
             var groups = GroupScratch;
             foreach (var netId in SpawnedUnitCandidates())
@@ -2918,6 +2941,13 @@ namespace PunkMultiverse.Sync
 
         private static void DetectStarvedPuppets(NetSession session)
         {
+            // A shipless coordinator can never rescue a starving puppet — the stability gate
+            // requires a live local ship (`gate=no-local-ship` on every entry) — so the scan is
+            // pure deferral work: LiveEntities x 2 GetComponents every 0.5s under Wine, for
+            // nothing. Host-side promotion for OTHER peers' requests lives elsewhere and is
+            // unaffected.
+            if (NetConfig.IsCoordinator) return;
+
             float now = Time.unscaledTime;
             if (_availabilityRecoveryReadyAt <= 0)
             {

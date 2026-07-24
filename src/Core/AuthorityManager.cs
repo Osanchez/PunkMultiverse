@@ -154,6 +154,17 @@ namespace PunkMultiverse.Core
         /// <summary>[Growth] watchdog input — see EnemySync.SendStateCount.</summary>
         internal static int EntitySegmentCacheCount => EntitySegments.Count;
 
+        /// <summary>Does any segment lease name this slot? Cheap managed scan (≤ a few hundred
+        /// leases) — lets a shipless coordinator skip the entire per-candidate collect loop
+        /// instead of resolving OwnerOf (a native GetEntity per candidate) 20x/s for entities
+        /// it structurally never owns.</summary>
+        internal static bool AnyLeaseOwnedBy(byte slot)
+        {
+            foreach (var kv in Leases)
+                if (kv.Value.Owner == slot) return true;
+            return false;
+        }
+
         internal static bool TrySegmentOf(int netId, out SegmentKey key)
         {
             if (NetIds.TryGetInstanceId(netId, out int instanceId))
