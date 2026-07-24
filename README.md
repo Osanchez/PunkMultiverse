@@ -170,7 +170,7 @@ run rather than desync into one.
 - **In game:** hold **Tab** for the scoreboard; **F9** net overlay; **F10** sync
   diagnostics; **F8** uploads your log for the current run id.
 
-See **[TESTING.md](TESTING.md)** for the test checklist and two-instance solo setup.
+See **[TESTING.md](docs/TESTING.md)** for the test checklist and two-instance solo setup.
 
 ## Building from source
 
