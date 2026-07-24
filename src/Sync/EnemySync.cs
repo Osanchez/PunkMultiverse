@@ -104,6 +104,25 @@ namespace PunkMultiverse.Sync
         /// <summary>Streamed-in replica count — bounded by the resident world; unbounded growth is a
         /// registration leak (dead entities never removed).</summary>
         internal static int LiveEntityCount => LiveEntities.Count;
+
+        /// <summary>Nearest live enemy Unit to <paramref name="from"/> beyond 2u — the `tpnearest`
+        /// benchmark helper. Returns 0 when none.</summary>
+        internal static int NearestLiveUnit(Vector2 from, out Vector2 pos)
+        {
+            float bestSq = float.PositiveInfinity;
+            int bestId = 0;
+            pos = default;
+            foreach (var kv in LiveEntities)
+            {
+                var se = kv.Value;
+                if (se == null) continue;
+                if (!LiveRefs.TryGetValue(kv.Key, out var refs) || refs.Unit == null) continue;
+                Vector2 p = refs.Rb != null ? refs.Rb.position : (Vector2)se.transform.position;
+                float dSq = (p - from).sqrMagnitude;
+                if (dSq > 4f && dSq < bestSq) { bestSq = dSq; pos = p; bestId = kv.Key; }
+            }
+            return bestId;
+        }
         private static readonly Dictionary<int, List<EntityIdentityRegistration>> Lifetimes
             = new Dictionary<int, List<EntityIdentityRegistration>>();
         private static readonly HashSet<int> SeenLifetimeNetIds = new HashSet<int>();

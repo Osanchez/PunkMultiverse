@@ -204,6 +204,42 @@ namespace PunkMultiverse.Core
         //             aliasing signature: at 240fps/50Hz physics without interpolation ~80%)
         //  - speedCV: stddev/mean of per-frame speed (burstiness of drawn motion)
         //  - rotWasted: |angle steps| summed minus net rotation, per second (facing twitch)
+        /// <summary>On-demand render-fps benchmark (`fpsbench` devcmd). One sample per drawn
+        /// frame; the BENCH: line is stable for harness parsing.</summary>
+        private static System.Collections.IEnumerator FpsBench(float secs)
+        {
+            var samples = new List<float>(16384);
+            float start = Time.unscaledTime;
+            yield return null; // skip the partial frame the command landed in
+            float prev = Time.unscaledTime;
+            while (Time.unscaledTime - start < secs)
+            {
+                yield return null;
+                float now = Time.unscaledTime;
+                samples.Add((now - prev) * 1000f);
+                prev = now;
+            }
+            if (samples.Count < 10) { Out("BENCH: too few frames"); yield break; }
+            samples.Sort();
+            int n = samples.Count;
+            float sum = 0f; foreach (var s in samples) sum += s;
+            float avg = sum / n;
+            float P(double q) => samples[Mathf.Clamp((int)(n * q), 0, n - 1)];
+            int over240 = 0, over144 = 0, over120 = 0, over90 = 0;
+            foreach (var s in samples)
+            {
+                if (s > 1000f / 240f) over240++;
+                if (s > 1000f / 144f) over144++;
+                if (s > 1000f / 120f) over120++;
+                if (s > 1000f / 90f) over90++;
+            }
+            Out(string.Format(CultureInfo.InvariantCulture,
+                "BENCH: {0:0.0}s frames={1} avgFps={2:0.0} | frameMs p50={3:0.00} p95={4:0.00} p99={5:0.00} max={6:0.0} " +
+                "| slowerThan 240Hz={7:0.0}% 144Hz={8:0.0}% 120Hz={9:0.0}% 90Hz={10:0.0}%",
+                secs, n, 1000f / avg, P(0.50), P(0.95), P(0.99), samples[n - 1],
+                100f * over240 / n, 100f * over144 / n, 100f * over120 / n, 100f * over90 / n));
+        }
+
         private static System.Collections.IEnumerator RenderSmooth(int netId, Transform t, float secs)
         {
             int frames = 0, stallFrames = 0, movingFrames = 0;
@@ -428,6 +464,40 @@ namespace PunkMultiverse.Core
                     if (mpRb == null) { Out($"motionprofile: #{mpId} has no rigidbody"); return; }
                     Out($"motionprofile: sampling #{mpId} for {mpSecs:0.0}s...");
                     session.StartCoroutine(MotionProfile(mpId, mpRb, Mathf.Clamp(mpSecs, 1f, 20f)));
+                    return;
+                }
+                case "fpsbench":
+                {
+                    // Render-fps benchmark: sample every drawn frame for N seconds, report the
+                    // distribution. The [Frame] instrumentation aggregates 30s windows; this is
+                    // the on-demand, harness-parsable version (BENCH: prefix).
+                    float fbSecs = 20f;
+                    if (parts.Length >= 2) float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out fbSecs);
+                    Out($"fpsbench: sampling {fbSecs:0.0}s...");
+                    session.StartCoroutine(FpsBench(Mathf.Clamp(fbSecs, 2f, 120f)));
+                    return;
+                }
+                case "tpnearest":
+                {
+                    // Teleport beside the nearest live enemy Unit — the calm alternative to
+                    // autofly for combat-adjacent benchmarking (Omar: "teleport to nearby
+                    // enemies and hover"). Ship arrives with zero velocity and just hovers.
+                    var ship = ShipSync.LocalShip;
+                    if (ship == null) { Out("tpnearest: no local ship"); return; }
+                    Vector2 here = ship.transform.position;
+                    int bestId = EnemySync.NearestLiveUnit(here, out Vector2 best);
+                    if (bestId == 0) { Out("tpnearest: no live enemy found"); return; }
+                    float bestSq = (best - here).sqrMagnitude;
+                    var dst = best + new Vector2(0f, 6f); // hover above, out of contact damage
+                    ship.Unit.ComponentData.entity.MoveTo(dst);
+                    var shipRb = ship.GetComponent<Rigidbody2D>();
+                    if (shipRb != null)
+                    {
+                        RemoteEntityPuppet.TeleportWithChildren(shipRb, dst);
+                        shipRb.linearVelocity = Vector2.zero;
+                    }
+                    ship.transform.position = dst;
+                    Out($"tpnearest: -> #{bestId} at {best.x:0.0},{best.y:0.0} (dist was {Mathf.Sqrt(bestSq):0.0})");
                     return;
                 }
                 case "rendersmooth":
