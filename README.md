@@ -1,213 +1,304 @@
 # PunkMultiverse
 
-**Online co-op for PUNK — up to 4 players.**
-Host a Steam lobby and send a friend a code, or run a 24/7 dedicated server anyone can
-join by IP — same world, same enemies, same progression; your own ship, loot, and build.
+Four-player online co-op retrofitted into **PUNK** — a closed-source Unity game with no
+multiplayer, no source access, and no server build — as a single BepInEx plugin.
 
-Inspired by [Noita Entangled Worlds](https://github.com/IntQuant/noita_entangled_worlds),
-built as a single BepInEx plugin — one DLL, no companion app, no port forwarding for
-Steam play.
+The same assembly runs as a player's client, as a listen host, and as a headless dedicated
+server. Players join a friend's Steam lobby with a pasted code or a public server with an
+IP; the world, the enemies, and the destruction are shared, while loot and builds stay
+personal.
 
-## Features
+- **Scope:** ~30k lines of C#, one DLL, four transports, 4 players per session.
+- **Deployment:** Steam P2P, or a Dockerized headless server (Wine) on a Pelican panel.
+- **Measured:** flat server cost from 1→3 players (3.3 / 2.9 / 3.3 ms per frame),
+  0.1 ms/tick client sync overhead, ~7 ms snapshot jitter through the full stack.
 
-- **Lobby in the main menu** — PLAY ONLINE → GAME SETTINGS (world seed: type, paste, or
-  random; friendly fire; enemy HP scaling) → host, copy a code, friends join from
-  clipboard or a Steam invite. Ship colors, ready-up, kick. Full controller navigation.
-- **One join button, any server** — JOIN auto-detects whatever you paste: a `PMV-` lobby
-  code joins over Steam, an `ip:port` direct-connects to a dedicated server, a SteamID64
-  targets a server identity. There's also a DIRECT CONNECT screen with address/port
-  fields and a PASTE button. Players never edit config to join anything.
-- **Dedicated servers** — the same mod runs headless in Docker (Wine) as a shipless
-  coordinator: 24/7 sessions that survive everyone leaving, auto-reset after a party
-  wipe or abandonment, and self-update from GitHub releases. Ships as a Pelican egg.
-- **One shared world** — identical seed-generated terrain (fingerprint-verified before
-  the run starts), synced destruction, shared station upgrades, merged map exploration.
-- **Real co-op combat** — every enemy is simulated exactly once, damage applies exactly
-  once through the game's full pipeline, and you only get hit by shots that visibly
-  reach you on your own screen.
-- **Per-player economy** — drops, gold, vault, and shop are yours alone; progression is
-  shared, purchases are not.
-- **Drop-proof, host included** — crashed players rejoin the same run with their build
-  restored; late joiners enter mid-run; host migration keeps the run alive if the host
-  disappears; a REJOIN button appears whenever your last session still exists.
-- **Quality of life** — an FPS LIMIT setting added to the game's own video options
-  (default: your monitor's refresh rate, adjustable down to 60), a freely resizable
-  game window in windowed mode, name labels/off-screen arrows/scoreboard/death
-  spectating, and honest-clock protection when the game window loses focus.
-- **Version & mod-set safety, auto-updates** — everyone must run the same mod version;
-  new releases download at startup and apply on next launch (previous build kept as
-  `.bak` for rollback). Joiners' other BepInEx mods are policed per host policy.
+Player-facing docs: **[Install & play](docs/PLAYING.md)** · Test plans:
+**[TESTING.md](docs/TESTING.md)** · Deep dives: **[docs/](docs/)**
 
-## Installation (players)
+---
 
-1. Install [BepInEx 6 (Unity Mono)](https://github.com/BepInEx/BepInEx) into your
-   `PUNK Playtest` folder.
-2. Download the latest zip from [Releases](https://github.com/Osanchez/PunkMultiverse/releases)
-   and extract over the game folder (a single `PunkMultiverse.dll` lands in
-   `BepInEx/plugins/PunkMultiverse/`).
-3. Launch through Steam — **PLAY ONLINE** appears in the main menu, with the mod version
-   and update status at the bottom.
+## 1. The problem
 
-### Configuration
+Adding co-op to a finished single-player game is not "add sockets." The constraints below
+determined nearly every decision that follows.
 
-`BepInEx/plugins/PunkMultiverse/config.cfg` (created on first launch). Highlights:
+| Constraint | Consequence |
+|---|---|
+| **No source code.** The game is shipped IL; all integration is Harmony patching against decompiled internals. | Never reimplement game logic. Damage, physics, AI, and loot must run through the vanilla code paths, or single-player and multiplayer diverge in behavior. |
+| **The world is 4,000,000 destructible cells** plus ~7,000 entities. | Replicating world state is off the table. The only affordable model is *deterministic generation + divergence replication*. |
+| **The engine is single-threaded** and the game was never written to be authoritative. | Anything that must not stall (packet relay) has to leave the frame loop; anything expensive (ownership lookups) must not touch engine APIs per-entity per-tick. |
+| **Players are not sysadmins.** | Zero configuration to join anything: no port forwarding for Steam play, no transport selection, no config file editing. One paste. |
+| **Windows-only build, playtest branch.** | The dedicated server is the same Windows binary under Wine in a container. Platform overhead is a cost to design around, not eliminate. |
+| **Sessions are long and unattended.** | No unbounded growth anywhere, and a server with nobody at the keyboard must recover from every terminal state by itself. |
 
-- `[Update] AutoUpdate` — auto-download releases (default on).
-- `[Session] ModManifestPolicy` — `Reject` (default) / `Warn` / `Ignore` joiners whose
-  BepInEx mod set differs from the host's.
-- `[Video] FpsLimit` / `ResizableWindow` — the in-game FPS LIMIT row's backing value
-  (0 = monitor max) and the windowed-mode resize frame.
-- `[Diag] LogLevel` — `Normal` (default), `Verbose` (full instrumentation for bug
-  reports), `Quiet`. Warning-class watchdogs run at every level.
+---
 
-## Dedicated servers
+## 2. System model
 
-`pelican_egg/` contains everything to run a server on the [Pelican](https://pelican.dev)
-panel: a Docker image (Wine + the baked game) that boots headless, self-updates the mod
-from releases, and exposes gameplay knobs as egg variables (port, HP scaling, empty-server
-reset, frame cap, log level, admin command file). Players join it with DIRECT CONNECT —
-no Steam required on the server. See `pelican_egg/README.md`.
+A star: every client holds exactly one session link to the host. Clients never exchange
+control traffic with each other; the host is the single ordering point for durable facts.
 
-## Architecture — the design decisions and why
-
-### One DLL, many transports
-The mod ships as a single assembly (LiteNetLib is merged in and internalized at build
-time) because install friction and dependency conflicts kill mods; internalizing means
-another mod shipping its own LiteNetLib can never collide. Underneath, one star-topology
-session runs over interchangeable transports — Steam P2P (friends), SteamServer/SDR
-(server identities), raw UDP via LiteNetLib (dedicated/LAN), loopback (dev) — selected
-automatically from what the player pastes, never from config, because "it just works"
-beats a settings page.
-
-### Generate the world, sync the differences
-Every machine generates the identical world from a replicated seed, verified by
-terrain/entity/plant/visual fingerprints at a go-live barrier before anyone plays.
-Syncing a 4-million-cell world is intractable; syncing *divergence from a deterministic
-baseline* is cheap. A headless server contributes data-only fingerprints (it renders
-nothing), and rendering clients cross-check visuals against each other. Entity identity
-is a deterministic instance counter — never position — so identity survives movement.
-
-### Simulation is distributed; the server is a referee
-The world is a fixed grid of 25-unit segments. The host grants **leases** (segment →
-owner) only within each player's *reported residency* — the segments their game actually
-has loaded — because simulation capability is streaming-dependent: authority anywhere
-else would be authority without a simulator. Enemies near you are simulated *by you* at
-full fidelity; segments nobody streams go **dormant** (first-class state: frozen by
-agreement, costing nothing). The dedicated server therefore owns almost nothing — it
-referees leases, relays state, and enforces the barrier, which is why a modest Wine box
-scales flat with player count. A slow-polled rescue promotes ownership of any puppet
-starving near a live player, so no entity can fall through the cracks permanently.
-
-### Lookups filter coarse-to-fine, dictionaries over engine calls
-All hot-path spatial questions run big-filter-first: player position → nearby segment
-buckets (a reverse index maintained from positions the sync loops already read) →
-entities. Ownership resolution is pure math plus dictionary probes — native engine
-queries were measured at whole milliseconds per tick on both server and clients and are
-now confined to cold-path fallbacks. Per-entity component references are cached once per
-lifetime; nothing re-discovers immutable facts at 20Hz.
-
-### Packets on a metronome
-On the dedicated server, high-volume presentation state (ship and entity snapshots) is
-relayed by a dedicated thread fed directly from the socket callback — never from the
-frame loop — so relay cadence is immune to main-thread stalls. This is the discipline
-real game servers hold: the network never waits for the simulation. Sends flush on a
-1ms transport tick with explicit wakeups; the headless server itself is frame-capped
-(default 120fps) because an uncapped null-graphics Unity burns CPU for nothing.
-
-### Presentation: honest clocks, measured delays, loss that heals itself
-Snapshots carry the **sender's** timestamps so puppets interpolate on the sender's even
-spacing rather than replaying network jitter as motion. Cross-machine time mapping uses
-an NTP-style (Mills) clock filter — offsets chase the *minimum*-transit sample of a
-sliding window, exploiting the fact that network delay noise is one-sided. Each puppet's
-interpolation delay targets the **98th percentile of actually-observed snapshot
-lateness** (NetEQ-style) instead of heuristic multipliers — exactly enough buffer for
-the real network, re-derived continuously. The unreliable state channel carries XOR
-parity (one per four packets), so any single loss reconstructs on arrival without a
-retransmit round-trip. Rendering uses Hermite interpolation with error decay, and a
-render-level benchmark (`fpsbench`) exists because fixed-step metrics provably cannot
-see render-level jitter.
-
-### Reliability where it's owed, idempotence everywhere
-Four channels: Control, Events, and Combat are independent reliable-ordered streams (so
-a terrain burst can never head-of-line-block combat), state is unreliable. Durable facts
-— kills, terrain diffs, runtime spawns, progression — replicate as **idempotent events
-kept as ledgers** on every machine, which is what makes rejoin, late join, and host
-migration the same operation: replay the ledgers. Terrain catch-up streams
-nearest-the-player-first under a byte budget, so even a fully-converted map syncs
-without cutoffs.
-
-### Damage happens on the victim's machine
-Enemy fire hit-detects against you locally; player-vs-player routes to the victim's
-authority — always through the vanilla damage pipeline. This buys fairness (you're only
-hit by what visibly reached you) and correctness (shields, armor, and effects behave
-exactly like single-player) without reimplementing any game logic.
-
-### The server is the same game, operated like a service
-The dedicated coordinator is the unmodified game under Wine, seated in a reserved
-non-player slot — one codebase, no server fork to maintain. The first joiner becomes
-session admin (token-verified) and drives START; party wipes and abandoned runs reset
-the server to a fresh lobby automatically, because a server with no human at it must
-never need one. Everything is observable and drivable remotely: watchdogs for clock
-drift, memory growth, jitter, and hitches run at every log level; every player's
-diagnostics upload to one dated S3 folder per run (the host stamps the folder date so
-skewed clocks and midnight joins can't split a session); a command file and panel API
-allow full remote administration.
-
-### Safety rails
-Version-locked handshakes (exact mod + protocol match), mod-manifest policing, staged
-auto-updates with rollback, and a determinism barrier that refuses to start a diverged
-run rather than desync into one.
-
-## Playing
-
-- **Host (Steam):** PLAY ONLINE → HOST LOBBY → GAME SETTINGS → COPY CODE → friends join
-  from clipboard or Steam invite → START GAME. Solo starts work; friends join mid-run.
-- **Join anything:** copy what your host sent (lobby code or `ip:port`) → PLAY ONLINE →
-  JOIN FROM CLIPBOARD. Or DIRECT CONNECT and type/paste the address.
-- **Reconnect:** the REJOIN button appears whenever your last session is still alive.
-- **When you die:** camera follows an alive teammate; **Q/E** cycle; party wipe ends the
-  run to the lobby for another go.
-- **In game:** hold **Tab** for the scoreboard; **F9** net overlay; **F10** sync
-  diagnostics; **F8** uploads your log for the current run id.
-
-See **[TESTING.md](docs/TESTING.md)** for the test checklist and two-instance solo setup.
-
-## Building from source
-
-Requires the .NET SDK. The repo expects to sit inside the game install
-(`...\PUNK Playtest\PunkMultiverse\`); otherwise pass `-GameDir`.
-
-```powershell
-powershell -File build.ps1            # Release build + deploy to BepInEx\plugins
-powershell -File build.ps1 -Debug     # Debug + pdb
-powershell -File build.ps1 -Zip       # + dist\PunkMultiverse-vX.Y.Z.zip
+```
+   Steam P2P / SDR / raw UDP / loopback
+                    │
+   ┌──────────┐     │     ┌──────────┐
+   │ Client A │◄────┼────►│   HOST   │◄────► │ Client C │
+   └──────────┘     │     │  (slot 0 │       └──────────┘
+   ┌──────────┐     │     │   or a   │
+   │ Client B │◄────┴────►│ shipless │
+   └──────────┘           │  server) │
+                          └──────────┘
+        simulation lives with the clients, not the host
 ```
 
-LiteNetLib is merged into the output DLL by an ILRepack post-build step (see
-`ILRepack.targets`). Reference DLLs come from your game install and are never committed.
+**Two host flavors, one code path.** A *listen host* is a player in slot 0. A *dedicated
+coordinator* is the same build seated in a reserved non-player slot (4), shipless: it
+simulates nobody, owns nothing, and exists to referee. No server fork exists to maintain.
 
-## CI / Releases
+**Four transports behind one interface** (`ITransport`): Steam P2P (friends), SteamServer
+over SDR (server identities), raw UDP via LiteNetLib (dedicated/LAN), and loopback (tests).
+Selection is inferred from what the player pasted — a `PMV-` code, an `ip:port`, or a
+SteamID64 — never from configuration.
 
-Every push to `main` builds and publishes a release zip via GitHub Actions; the
-proprietary reference DLLs come from a private refs bundle (`tools\update-refs.ps1`,
-`REFS_TOKEN` secret). Versioning is automatic: a pre-commit hook bumps the csproj
-`<Version>` on every non-docs commit, and the build bakes it into the handshake, lobby
-data, menu banner, and zip name — one source of truth.
+---
 
-## Known behavior / limitations
+## 3. Consistency model
 
-- Loot, gold, vault, and shop stock are per-player **by design**.
-- Menus don't pause the world in multiplayer; slow-mo effects are disabled; the vanilla
-  suspend-save is replaced by the continuous run auto-save.
-- Host migration engages mid-run only; lobby/loading sessions are cheap to recreate.
-- Kicks aren't bans. Other installed mods are policed but never synced. Daily-challenge
-  runs aren't supported in net runs yet.
-- Dedicated servers are open by design: anyone with the address and a matching mod
-  version can join.
+### Generate the world; replicate only the divergence
+Each machine generates the world locally from a replicated seed. What crosses the wire is
+the *delta* from that deterministic baseline: destroyed terrain cells, kills, runtime
+spawns, progression.
+
+Determinism is verified rather than assumed. Before anyone plays, every machine reports a
+fingerprint — terrain checksum, entity count + digest, plant count + digest, and a rendered
+tile-variant digest — and the host holds a **go-live barrier** until they match. A mismatch
+aborts the run with the differing values named; the alternative (starting a session that is
+already diverged) produces bugs no amount of runtime healing can fix. A headless server,
+which renders nothing, contributes data-only fingerprints and sits out the visual check
+while rendering clients cross-check visuals against each other.
+
+### Identity is deterministic, never positional
+Entities are keyed by a deterministic instance counter assigned during generation, exchanged
+as a manifest at go-live. Position-based identity was tried and abandoned: it cannot survive
+movement, and it silently mismatches under floating-point drift.
+
+---
+
+## 4. Authority: leases, residency, dormancy
+
+The world is a fixed grid of 25-unit **segments**. Authority is granted per segment, not per
+entity, and only to a peer whose game currently has that segment streamed in.
+
+```
+ residency reports (per client)      lease table (host)        simulation
+ "I have segments loaded: {…}"  ──►  segment → (owner, epoch)  ──►  owner runs the AI,
+                                                                    everyone else runs a
+                                                                    muted interpolated puppet
+```
+
+**Why residency gates authority.** Simulation capability is streaming-dependent — a client
+whose game has unloaded a region physically cannot simulate it. Granting authority outside
+reported residency produces owners that cannot exercise ownership, which manifests as frozen
+enemies. Leases therefore only ever land inside residency, with a short grace window to
+absorb one-frame streaming flicker.
+
+**Dormancy is a first-class state.** Segments nobody streams are owned by nobody and frozen
+by agreement. This is what makes a 7,000-entity world cheap: only the ~150 entities near
+players are live at any moment, and the rest cost exactly zero.
+
+**Handoff is prepared, not assumed.** Crossing a boundary triggers prepare → ack → commit
+with epochs; receivers reject state stamped with a stale epoch, which is what prevents two
+machines from briefly simulating the same enemy (split-brain).
+
+**Rescue for the gaps.** A slow poll looks for puppets near a live player that have stopped
+receiving updates and promotes ownership locally after a patience window — the safety net for
+any entity that falls between the lease machinery's cracks.
+
+**Rejected alternatives:** *server-authoritative simulation* (the server would have to run
+the whole game — impossible on the target hardware, and it would add a round-trip to every
+local action); *closest-player-owns recomputed continuously* (thrashes ownership at
+boundaries and fabricates authority for peers that unloaded the area).
+
+---
+
+## 5. The wire
+
+| Channel | Delivery | Carries |
+|---|---|---|
+| **Control** | reliable ordered | handshake, roster, run start, go-live, manifests, baselines |
+| **Events** | reliable ordered | kills, terrain diffs, progression, lease traffic, residency |
+| **Combat** | reliable ordered | fire, impacts, damage requests |
+| **State** | unreliable + FEC | ship and entity snapshots (20 Hz) |
+
+Separate ordered streams exist so a terrain burst can never head-of-line block a combat
+event. State is unreliable by design: a snapshot that arrives late is worthless, so it is
+never retransmitted — the interpolation buffer and parity handle loss instead.
+
+**Send scheduling is a priority accumulator, not fixed tiers.** Each entity accrues send
+weight per tick (combat proximity, movement, distance); it transmits when the accumulator
+fills. Skipped entities keep accruing, so nothing starves, and rates degrade continuously
+rather than snapping between tiers. Per-viewer byte budgets then cap the presentation plane
+per link, and interest routing drops groups the receiver has no residency in — coarse filter
+first, always.
+
+---
+
+## 6. Presentation pipeline
+
+Smoothness is a separate problem from correctness, and it is solved with three well-known
+techniques rather than heuristics:
+
+1. **Sender-stamped snapshots.** Snapshots carry the *sender's* clock, so puppets interpolate
+   on the sender's even spacing instead of replaying network jitter as motion.
+2. **NTP-style clock filtering** (Mills). Cross-machine offset chases the *minimum*-transit
+   sample of a sliding window through a bounded slew, exploiting the fact that transit noise
+   is one-sided — packets arrive late, never early. Averaging every sample (the naive
+   approach) feeds queueing noise straight into the rendered timeline.
+3. **Percentile playout targeting** (NetEQ-style). Interpolation delay tracks the **p98 of
+   observed snapshot lateness** over a sliding window: precisely enough buffer for the
+   network actually present, re-derived continuously, instead of a guessed safety multiplier.
+
+Loss is absorbed by **XOR forward error correction** on the state channel — one parity packet
+per four, so any single loss in a group reconstructs on arrival with no retransmit
+round-trip. At single-digit KB/s, the ~25% overhead is free; the latency it saves is not.
+
+Rendering interpolates with Hermite curves and decays positional error rather than snapping.
+Because fixed-step metrics cannot observe render-level judder, the mod carries a render-frame
+benchmark (`fpsbench`) that samples every drawn frame and reports the distribution.
+
+---
+
+## 7. Convergence, failure, and recovery
+
+**Durable facts are idempotent events kept as ledgers** on every machine — kills, terrain
+diffs, runtime spawns, progression. That single choice collapses three features into one
+mechanism:
+
+- **Late join** — replay the ledgers.
+- **Rejoin after a crash** — replay the ledgers; the slot was reserved, the build restored.
+- **Host migration** — a client is elected, and it already holds identical ledgers to serve.
+
+Terrain catch-up streams nearest-the-player-first under a per-frame byte budget with
+backpressure, so a fully converted map converges without a size cutoff and the area around a
+joining player is correct within seconds.
+
+**Damage resolves on the victim's machine**, always through the vanilla pipeline: enemy fire
+hit-tests locally against you; player-vs-player routes to the victim's authority. This makes
+"you are only hit by shots that visibly reached you" true by construction, and keeps shields,
+armor, and effects identical to single-player.
+
+**Failure modes are explicit:**
+
+| Failure | Behavior |
+|---|---|
+| Client disconnects | Slot reserved; puppet suspended; entities it owned re-lease or go dormant |
+| Host disconnects (Steam) | Lobby ownership election promotes a client; same code keeps working |
+| Peer's world diverges | Generation barrier refuses the run; rejoin with a mismatched world is rejected |
+| Entity stops receiving updates | Starved-puppet rescue promotes ownership near a live player |
+| Party wipes / everyone leaves | Dedicated server ends the run and returns to a fresh lobby by itself |
+
+---
+
+## 8. The engine boundary: what makes it fast
+
+Two rules produced the measured numbers, both learned by profiling rather than intuition:
+
+**Never call the engine to answer a question you already know.** Resolving "who owns this
+enemy" through the game's entity database cost a native interop call per entity per tick —
+milliseconds per frame on both server and clients. Ownership now resolves from cached
+component references and a segment computed from the live physics position: arithmetic plus
+dictionary probes. Immutable per-entity facts are captured once at registration, never
+rediscovered at 20 Hz.
+
+**Filter coarse-to-fine, always.** Spatial questions start from the player's position, narrow
+to nearby segment buckets via a reverse index (maintained from positions the sync loops
+already read), and only then touch entities. Scans proportional to "everything alive" were
+replaced by scans proportional to "what is near the thing asking."
+
+**Packets ride a metronome, not the frame loop.** On the dedicated server, high-volume state
+is relayed by a dedicated thread fed from the socket callback, so relay cadence is immune to
+main-thread stalls — the discipline real game servers hold. The transport flushes on a 1 ms
+tick with explicit wakeups, and the headless server is frame-capped because an uncapped
+null-graphics Unity burns CPU for nothing.
+
+### Measured
+
+| Metric | Result |
+|---|---|
+| Server frame cost, 1 / 2 / 3 players | 3.3 / 2.9 / 3.3 ms — flat with player count |
+| Mod overhead on the server | 0.3–0.6 ms per frame |
+| Client sync overhead (`EnemySync.Collect`) | 0.1 ms/tick avg, 0.3 ms max |
+| Client frame rate, hovering in combat (dedicated server) | 225 fps avg, p99 8.7 ms |
+| Snapshot jitter, full stack incl. Wine container, LAN | 6.8–7.9 ms |
+| Snapshot jitter over the public internet | ~60 ms — attributed to the WAN path by differential measurement, not the software |
+
+---
+
+## 9. Operations and observability
+
+The system is designed to be debugged from logs and driven remotely, because most failures
+happen on someone else's machine.
+
+- **Always-on watchdogs** (every log level): clock dilation, main-thread hitches with phase
+  attribution, unbounded-collection growth, puppet jitter, go-live stalls, transport backlog.
+- **Tiered logging** — `Normal` keeps events and warnings while slowing periodic
+  instrumentation; `Verbose` restores full-rate telemetry for bug reports; live-switchable.
+- **One folder per run** — any player uploads a gzipped log with a keystroke; the host stamps
+  the run's date so every participant's log lands in the same S3 folder regardless of clock
+  skew or when they joined.
+- **Remote administration** — a watched command file and the panel API expose server state,
+  restarts, and dev commands (`fpsbench`, `udpstats`, `sync`, `owner`, teleport helpers).
+- **Test harnesses** — headless bot fleets join a real or local server, drive scripted load,
+  and report the same counters players produce, which is how the scaling and jitter numbers
+  above were obtained.
+
+---
+
+## 10. Dedicated server
+
+`pelican_egg/` builds a container that runs the Windows game headless under Wine with Xvfb,
+self-updates the mod from GitHub releases at boot, and maps gameplay knobs to panel variables
+(port, HP scaling, empty-server reset, frame cap, log level, admin commands). The first
+joining player becomes token-verified session admin and starts runs; the server resets itself
+to a fresh lobby after a wipe or an abandoned session. Players connect with DIRECT CONNECT —
+no Steam involvement on the server side.
+
+---
+
+## 11. Build and release
+
+One assembly is shipped: LiteNetLib is merged in and **internalized** at build time
+(`ILRepack.targets`), so installation is a single DLL and another mod shipping its own copy
+of the same library cannot collide. A pre-commit hook bumps the version, and the build bakes
+it into the handshake, lobby data, menu banner, and release artifact — one source of truth,
+so a version mismatch is impossible to ship. Every push to `main` publishes a release; the
+proprietary reference assemblies come from a private bundle and are never committed.
+
+```powershell
+powershell -File build.ps1          # build + deploy into BepInEx\plugins
+powershell -File build.ps1 -Zip     # + dist\PunkMultiverse-vX.Y.Z.zip
+```
+
+---
+
+## 12. Repo map
+
+| Path | Contents |
+|---|---|
+| `src/Core/` | Session, transports selection, authority manager, clock sync, config, diagnostics, update/log pipelines |
+| `src/Sync/` | Entity/ship/world/projectile/economy replication, puppets, adaptive timing |
+| `src/Transport/` | `ITransport` implementations (Steam, SteamServer, LiteNetLib UDP, loopback) |
+| `src/Protocol/` | Wire messages, reader/writer, channel and sequencing contracts |
+| `src/Patches/` | Harmony patches against the game's internals |
+| `src/UI/` | Lobby, direct connect, HUD, scoreboard, video options integration |
+| `pelican_egg/` | Dedicated-server image, egg definition, boot script |
+| `docs/` | Design specs, subsystem deep dives, test plans, player guide |
+
+---
 
 ## Credits
 
-- [IntQuant/noita_entangled_worlds](https://github.com/IntQuant/noita_entangled_worlds) —
-  the blueprint for the lobby UX and the proximity-authority model.
-- The PUNK modding docs and my earlier mods in the Mods repo — this builds directly on
-  the ship-spawning recipe from my local four-player mod (PunkFourPlayer).
+- [IntQuant/noita_entangled_worlds](https://github.com/IntQuant/noita_entangled_worlds) — the
+  blueprint for the lobby UX and proximity-authority model.
+- The PUNK modding docs, and the ship-spawning work from an earlier local four-player mod.
