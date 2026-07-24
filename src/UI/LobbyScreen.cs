@@ -328,6 +328,8 @@ namespace PunkMultiverse.UI
             }
             _seedFocusGrace = seedFocused;
 
+            HandlePadNavigation(gp);
+
             // REJOIN liveness: while the connect panel is up, re-ask every few seconds whether
             // the remembered session still exists — the button appears/disappears live. The
             // Steam probe is async; "no reply" leaves the button hidden (the safe default).
@@ -374,6 +376,64 @@ namespace PunkMultiverse.UI
                     bool inRow = selected != null && selected.transform.IsChildOf(row.Root);
                     row.Label.color = inRow ? UiTheme.Accent : UiTheme.TextBody;
                 }
+            }
+        }
+
+        // ---------------------------------------------------------------- controller navigation
+        //
+        // PUNK's own menus never run EventSystem navigation (the game drives them its own way),
+        // so the scene's input module never translates stick/d-pad into UI moves for OUR
+        // Selectables — controller users saw completely dead PLAY ONLINE screens (field report
+        // 2026-07-23). Poll the pad ourselves and walk the explicitly wired navigation graph.
+        private float _padNavNextAt;
+
+        private void HandlePadNavigation(Gamepad gp)
+        {
+            if (gp == null) return;
+            var es = UnityEngine.EventSystems.EventSystem.current;
+            if (es == null) return;
+
+            var selectedGo = es.currentSelectedGameObject;
+            // While a text field is actively being edited, leave input to it (arrows move the
+            // caret; A/submit ends the edit via the field's own handler).
+            var editing = selectedGo != null ? selectedGo.GetComponent<TMP_InputField>() : null;
+            if (editing != null && editing.isFocused) return;
+
+            // A = activate the focused control (Button.onClick / input-field edit).
+            if (gp.buttonSouth.wasPressedThisFrame && selectedGo != null)
+            {
+                UnityEngine.EventSystems.ExecuteEvents.Execute(selectedGo,
+                    new UnityEngine.EventSystems.BaseEventData(es),
+                    UnityEngine.EventSystems.ExecuteEvents.submitHandler);
+                return;
+            }
+
+            // D-pad or left stick moves the selection, with hold-to-repeat.
+            Vector2 v = gp.dpad.ReadValue() + gp.leftStick.ReadValue();
+            int mx = Mathf.Abs(v.x) > 0.5f ? (int)Mathf.Sign(v.x) : 0;
+            int my = Mathf.Abs(v.y) > 0.5f ? (int)Mathf.Sign(v.y) : 0;
+            if (mx == 0 && my == 0) { _padNavNextAt = 0f; return; }
+            float now = Time.unscaledTime;
+            bool fresh = _padNavNextAt <= 0f;
+            if (!fresh && now < _padNavNextAt) return;
+            _padNavNextAt = now + (fresh ? 0.4f : 0.16f);
+
+            var current = selectedGo != null && selectedGo.activeInHierarchy
+                ? selectedGo.GetComponent<Selectable>() : null;
+            if (current == null || !current.IsInteractable())
+            {
+                SelectFirstIn(ActivePanel()); // nothing focused yet — land somewhere useful
+                return;
+            }
+            Selectable next =
+                my > 0 ? current.FindSelectableOnUp()
+                : my < 0 ? current.FindSelectableOnDown()
+                : mx < 0 ? current.FindSelectableOnLeft()
+                : current.FindSelectableOnRight();
+            if (next != null && next.gameObject.activeInHierarchy && next.IsInteractable())
+            {
+                UiTheme.PlayClick();
+                es.SetSelectedGameObject(next.gameObject);
             }
         }
 
