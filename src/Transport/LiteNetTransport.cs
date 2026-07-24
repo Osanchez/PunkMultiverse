@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using LiteNetLib;
+using PunkMultiverse.Protocol;
 
 namespace PunkMultiverse.Transport
 {
@@ -17,9 +18,15 @@ namespace PunkMultiverse.Transport
     /// A 1-byte NetChannel prefix travels in the payload (the SteamServerTransport pattern) so
     /// the receive side never has to reverse-map delivery metadata.
     ///
-    /// Threading: LiteNetLib services the socket on its own thread and queues events;
-    /// PollEvents dispatches them on the main thread from Poll() — same shape as the
-    /// ReceivePump used by the other transports (background receive, main-thread dispatch).
+    /// Threading (v0.1.156 — the "packets on a metronome" fix): LiteNetLib services the socket
+    /// on its own logic thread; callbacks fire UNSYNCED on that thread. The host FAST-RELAYS
+    /// high-volume State traffic (ShipState / EntityStateBundle) to the other peers directly in
+    /// the receive callback — relay cadence is therefore immune to main-thread frame stalls,
+    /// which on the Wine coordinator ran 140-600ms and turned relayed state into bursts (the
+    /// multiplayer "lost frames": jitter -> interp underruns at every client, 2026-07-23).
+    /// Everything is ALSO queued (a copy) for main-thread dispatch from Poll(), preserving the
+    /// existing NetSession pipeline; the host consumes fast-relayed state itself that way, and
+    /// NetSession skips its own main-thread relay for the fast-pathed types (InlineStateRelay).
     ///
     /// Peer ids: host is always 1 (the loopback convention NetSession expects); clients get
     /// 2 + LiteNetLib's per-manager peer id. A client learns its own id from NetPeer.RemoteId
@@ -44,6 +51,72 @@ namespace PunkMultiverse.Transport
         private readonly Dictionary<int, ulong> _idByPeer = new Dictionary<int, ulong>();
         private readonly Dictionary<ulong, NetPeer> _peerById = new Dictionary<ulong, NetPeer>();
         private byte[] _sendBuf = new byte[64 * 1024];
+
+        // Unsynced-callback plumbing: events arrive on LiteNetLib's logic thread and are queued
+        // here for main-thread dispatch in Poll(). The peer maps above are mutated ONLY on the
+        // main thread (during drain) so main-thread Send() never races a socket-thread write.
+        private enum EvtKind : byte { Connected, Disconnected, Data }
+        private struct Evt
+        {
+            public EvtKind Kind;
+            public ulong From;
+            public NetChannel Channel;
+            public byte[] Data;      // Data events: payload WITHOUT the channel prefix
+            public NetPeer Peer;     // Connected events: to seat in the maps on drain
+            public bool RemoteClose; // Disconnected events
+        }
+        private readonly System.Collections.Concurrent.ConcurrentQueue<Evt> _events
+            = new System.Collections.Concurrent.ConcurrentQueue<Evt>();
+
+        /// <summary>True while hosting: ShipState/EntityStateBundle are relayed to the other
+        /// peers by the relay thread — NetSession must NOT relay them again on the main thread.</summary>
+        public bool InlineStateRelay => IsHost;
+
+        // Dedicated relay thread. Targets are a volatile immutable snapshot rebuilt by the
+        // main thread on every connect/disconnect drain — the relay thread only ever reads the
+        // array reference, so no locks and no racing LiteNetLib's own peer list.
+        private struct RelayItem { public int SenderPeerId; public byte[] Data; }
+        private readonly System.Collections.Concurrent.ConcurrentQueue<RelayItem> _relayQueue
+            = new System.Collections.Concurrent.ConcurrentQueue<RelayItem>();
+        private readonly System.Threading.AutoResetEvent _relaySignal = new System.Threading.AutoResetEvent(false);
+        private System.Threading.Thread _relayThread;
+        private volatile bool _relayRunning;
+        private volatile NetPeer[] _relayTargets = new NetPeer[0];
+
+        private void StartRelayThread()
+        {
+            _relayRunning = true;
+            _relayThread = new System.Threading.Thread(RelayLoop) { IsBackground = true, Name = "PunkMV-StateRelay" };
+            _relayThread.Start();
+        }
+
+        private void RelayLoop()
+        {
+            while (_relayRunning)
+            {
+                _relaySignal.WaitOne(250); // wake on signal; periodic wake checks shutdown
+                while (_relayQueue.TryDequeue(out var item))
+                {
+                    var targets = _relayTargets;
+                    for (int i = 0; i < targets.Length; i++)
+                    {
+                        var t = targets[i];
+                        if (t == null || t.Id == item.SenderPeerId
+                            || t.ConnectionState != ConnectionState.Connected) continue;
+                        try { t.Send(item.Data, 0, item.Data.Length, DeliveryMethod.Unreliable); }
+                        catch { /* peer mid-teardown — the next snapshot rebuild drops it */ }
+                    }
+                }
+            }
+        }
+
+        private void RebuildRelayTargets()
+        {
+            var arr = new NetPeer[_peerById.Count];
+            int i = 0;
+            foreach (var kv in _peerById) arr[i++] = kv.Value;
+            _relayTargets = arr;
+        }
 
         public bool IsRunning { get; private set; }
         public bool IsHost { get; private set; }
@@ -75,6 +148,7 @@ namespace PunkMultiverse.Transport
                 UnconnectedMessagesEnabled = false,
                 IPv6Enabled = false,         // Docker/LAN target; avoids dual-stack bind surprises
                 EnableStatistics = true,     // loss/resend counters for the reliable-backlog probe
+                UnsyncedEvents = true,       // callbacks on the logic thread -> fast State relay
             };
             return m;
         }
@@ -166,7 +240,8 @@ namespace PunkMultiverse.Transport
             IsHost = true;
             IsRunning = true;
             LocalPeerId = HostPeerId;
-            Plugin.Log.LogInfo($"[Udp] hosting on *:{_port} (LiteNetLib)");
+            StartRelayThread();
+            Plugin.Log.LogInfo($"[Udp] hosting on *:{_port} (LiteNetLib, threaded state relay)");
         }
 
         public void StartClient(string address)
@@ -234,7 +309,7 @@ namespace PunkMultiverse.Transport
 
         public void Poll()
         {
-            _manager?.PollEvents();
+            DrainEvents(); // UnsyncedEvents mode: callbacks already fired on the logic thread
             ProbeReliableBacklog();
             // Client-side auto-reconnect after a host stall — the contract the reconnect-in-
             // place policy (BeginLoopbackReconnect) expects from non-Steam transports. Armed
@@ -252,11 +327,18 @@ namespace PunkMultiverse.Transport
         public void Stop()
         {
             IsRunning = false;
+            _relayRunning = false;
+            _relaySignal.Set();
+            try { _relayThread?.Join(500); } catch { }
+            _relayThread = null;
             try { _manager?.Stop(true); } catch { }
             _manager = null;
             _hostPeer = null;
             _idByPeer.Clear();
             _peerById.Clear();
+            _relayTargets = new NetPeer[0];
+            while (_events.TryDequeue(out _)) { }     // stale events must not leak into a new session
+            while (_relayQueue.TryDequeue(out _)) { }
         }
 
         public void Dispose() => Stop();
@@ -269,68 +351,132 @@ namespace PunkMultiverse.Transport
             request.AcceptIfKey(ConnectionKey);
         }
 
+        // ---- callbacks below run on LiteNetLib's LOGIC THREAD (UnsyncedEvents) ----
+
         void INetEventListener.OnPeerConnected(NetPeer peer)
         {
-            if (IsHost)
-            {
-                ulong id = (ulong)(peer.Id + 2); // 1 is the host; LiteNetLib ids are 0-based
-                _idByPeer[peer.Id] = id;
-                _peerById[id] = peer;
-                Plugin.Log.LogInfo($"[Udp] peer {id} connected ({peer.Address}:{peer.Port})");
-                PeerConnected?.Invoke(id);
-            }
-            else
-            {
-                _hostPeer = peer;
-                _reconnectAtTick = -1;
-                // RemoteId = our id inside the host's manager — the same number the host
-                // computes, so both sides agree on who we are before the HELLO goes out.
-                LocalPeerId = (ulong)(peer.RemoteId + 2);
-                Plugin.Log.LogInfo($"[Udp] connected to host as peer {LocalPeerId}");
-                PeerConnected?.Invoke(HostPeerId);
-            }
+            // Map/roster mutations happen on drain (main thread); only note the arrival here.
+            _events.Enqueue(new Evt { Kind = EvtKind.Connected, Peer = peer });
         }
 
         void INetEventListener.OnPeerDisconnected(NetPeer peer, DisconnectInfo info)
         {
-            LastDisconnectWasRemote = info.Reason == DisconnectReason.RemoteConnectionClose
-                                   || info.Reason == DisconnectReason.DisconnectPeerCalled;
-            if (IsHost)
+            bool remote = info.Reason == DisconnectReason.RemoteConnectionClose
+                       || info.Reason == DisconnectReason.DisconnectPeerCalled;
+            _events.Enqueue(new Evt
             {
-                if (_idByPeer.TryGetValue(peer.Id, out ulong id))
-                {
-                    _idByPeer.Remove(peer.Id);
-                    _peerById.Remove(id);
-                    // Probe tracking too: LiteNetLib never reuses peer ids, so without this a
-                    // long-lived server accrues one dead entry per connection ever made.
-                    _lastDepth.Remove(id);
-                    _stalledSinceTick.Remove(id);
-                    Plugin.Log.LogInfo($"[Udp] peer {id} disconnected ({info.Reason})");
-                    PeerDisconnected?.Invoke(id);
-                }
-            }
-            else
-            {
-                _hostPeer = null;
-                // A timeout means the host may just be stalled — arm the reconnect loop.
-                _reconnectAtTick = LastDisconnectWasRemote ? -1 : Environment.TickCount + 2000;
-                Plugin.Log.LogInfo($"[Udp] host connection lost ({info.Reason})");
-                PeerDisconnected?.Invoke(HostPeerId);
-            }
+                Kind = EvtKind.Disconnected,
+                From = IsHost ? (ulong)(peer.Id + 2) : HostPeerId,
+                RemoteClose = remote,
+            });
         }
 
         void INetEventListener.OnNetworkReceive(NetPeer peer, NetPacketReader reader,
             byte channelNumber, DeliveryMethod deliveryMethod)
         {
             int size = reader.UserDataSize;
-            if (size < 1) return;
-            var channel = (NetChannel)reader.RawData[reader.UserDataOffset];
-            ulong from = IsHost
-                ? (_idByPeer.TryGetValue(peer.Id, out ulong id) ? id : 0)
-                : HostPeerId;
-            if (from == 0) return; // data from a peer we never admitted
-            DataReceived?.Invoke(from, channel,
-                new ArraySegment<byte>(reader.RawData, reader.UserDataOffset + 1, size - 1));
+            if (size < 2) return; // channel prefix + at least a message type
+            int off = reader.UserDataOffset;
+            var channel = (NetChannel)reader.RawData[off];
+
+            // One copy serves both consumers: [0] = channel prefix + payload. The relay thread
+            // resends the whole wire frame; main-thread dispatch reads from offset 1.
+            var data = new byte[size];
+            Buffer.BlockCopy(reader.RawData, off, data, 0, size);
+
+            // FAST RELAY (host): high-volume presentation state goes to a DEDICATED relay thread
+            // — never sent from inside this callback. First attempt relayed here directly and
+            // deadlocked the whole process (lock-order inversion between the callback-context
+            // sends and a main-thread reliable burst during a mid-run join, 2026-07-24). The
+            // relay thread uses the same documented-safe cross-thread Send() as the main thread.
+            // ONLY these two types — other State traffic (summaries, pulses) has host-only or
+            // relay-all-with-validation semantics that stay on the main thread.
+            if (IsHost && channel == NetChannel.State && size >= 2)
+            {
+                var msgType = (MsgType)data[1];
+                if (msgType == MsgType.ShipState || msgType == MsgType.EntityStateBundle)
+                {
+                    _relayQueue.Enqueue(new RelayItem { SenderPeerId = peer.Id, Data = data });
+                    _relaySignal.Set();
+                }
+            }
+
+            _events.Enqueue(new Evt
+            {
+                Kind = EvtKind.Data,
+                From = IsHost ? (ulong)(peer.Id + 2) : HostPeerId,
+                Channel = channel,
+                Data = data,
+            });
+        }
+
+        // ---- main-thread drain (called from Poll) ----
+
+        private void DrainEvents()
+        {
+            while (_events.TryDequeue(out var e))
+            {
+                switch (e.Kind)
+                {
+                    case EvtKind.Connected:
+                        if (IsHost)
+                        {
+                            ulong id = (ulong)(e.Peer.Id + 2); // 1 is the host; lib ids are 0-based
+                            _idByPeer[e.Peer.Id] = id;
+                            _peerById[id] = e.Peer;
+                            RebuildRelayTargets();
+                            Plugin.Log.LogInfo($"[Udp] peer {id} connected ({e.Peer.Address}:{e.Peer.Port})");
+                            PeerConnected?.Invoke(id);
+                        }
+                        else
+                        {
+                            _hostPeer = e.Peer;
+                            _reconnectAtTick = -1;
+                            // RemoteId = our id inside the host's manager — the same number the
+                            // host computes, so both sides agree before the HELLO goes out.
+                            LocalPeerId = (ulong)(e.Peer.RemoteId + 2);
+                            Plugin.Log.LogInfo($"[Udp] connected to host as peer {LocalPeerId}");
+                            PeerConnected?.Invoke(HostPeerId);
+                        }
+                        break;
+
+                    case EvtKind.Disconnected:
+                        LastDisconnectWasRemote = e.RemoteClose;
+                        if (IsHost)
+                        {
+                            if (_peerById.Remove(e.From))
+                            {
+                                _idByPeer.Remove((int)(e.From - 2));
+                                RebuildRelayTargets();
+                                // Probe tracking too: the lib never reuses peer ids, so a
+                                // long-lived server would accrue one dead entry per connection.
+                                _lastDepth.Remove(e.From);
+                                _stalledSinceTick.Remove(e.From);
+                                Plugin.Log.LogInfo($"[Udp] peer {e.From} disconnected ({(e.RemoteClose ? "remote close" : "timeout")})");
+                                PeerDisconnected?.Invoke(e.From);
+                            }
+                        }
+                        else
+                        {
+                            _hostPeer = null;
+                            // A timeout means the host may just be stalled — arm the reconnect loop.
+                            _reconnectAtTick = e.RemoteClose ? -1 : Environment.TickCount + 2000;
+                            Plugin.Log.LogInfo($"[Udp] host connection lost ({(e.RemoteClose ? "remote close" : "timeout")})");
+                            PeerDisconnected?.Invoke(HostPeerId);
+                        }
+                        break;
+
+                    case EvtKind.Data:
+                        // Admission check at drain time (maps are main-thread-owned): host drops
+                        // data from peers whose Connected event hasn't seated them yet this drain
+                        // only if they've since vanished — same-drain ordering seats them first.
+                        if (IsHost && !_peerById.ContainsKey(e.From)) break;
+                        // e.Data[0] is the channel prefix (kept so the relay thread can resend
+                        // the whole wire frame); dispatch hands out the payload after it.
+                        DataReceived?.Invoke(e.From, e.Channel, new ArraySegment<byte>(e.Data, 1, e.Data.Length - 1));
+                        break;
+                }
+            }
         }
 
         void INetEventListener.OnNetworkError(IPEndPoint endPoint, SocketError socketError)

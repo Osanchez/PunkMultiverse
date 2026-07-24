@@ -119,6 +119,11 @@ namespace PunkMultiverse.Core
         // cleared on StopSession.
         private string _directConnectCode;
 
+        /// <summary>True when the Udp transport is fast-relaying ShipState/EntityStateBundle on
+        /// its socket thread — main-thread relay for those types must stand down.</summary>
+        private bool InlineStateRelayActive =>
+            _transport is Transport.LiteNetTransport lnt && lnt.InlineStateRelay;
+
         /// <summary>Transport health snapshot for the `udpstats` devcmd (Udp transport only).</summary>
         internal string TransportHealth() =>
             _transport is Transport.LiteNetTransport udp ? udp.DescribeHealth()
@@ -2408,7 +2413,9 @@ namespace PunkMultiverse.Core
                 case MsgType.ShipState:
                 {
                     var state = ShipStateMsg.Read(_reader);
-                    RelayToOthers(peer, channel, reliable: false);
+                    // Udp transport fast-relays ShipState on the socket thread (immune to frame
+                    // stalls) — relaying again here would double-deliver.
+                    if (!InlineStateRelayActive) RelayToOthers(peer, channel, reliable: false);
                     Sync.ShipSync.ApplyShipState(state);
                     break;
                 }
@@ -2737,8 +2744,10 @@ namespace PunkMultiverse.Core
                         if (!fromHost) Sync.EnemySync.NoteDirectBundle(peer, bundle, this);
                     }
                     // Route before touching host-side puppets/data. Large-room apply work must not
-                    // sit on the latency-critical owner -> host -> viewer path.
-                    if (IsHost)
+                    // sit on the latency-critical owner -> host -> viewer path. On the Udp
+                    // transport the socket thread already fast-relayed the raw bundle (viewers'
+                    // own interest filters drop what the trim would have) — don't route it twice.
+                    if (IsHost && !InlineStateRelayActive)
                     {
                         float relayStarted = Time.realtimeSinceStartup;
                         Sync.EnemySync.ForwardEntityStateBundle(this, bundle, peer);
