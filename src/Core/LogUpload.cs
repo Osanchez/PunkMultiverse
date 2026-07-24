@@ -29,12 +29,17 @@ namespace PunkMultiverse.Core
         /// Survives StopSession deliberately — crash/quit is exactly when logs get uploaded.</summary>
         internal static string RunId { get; private set; } = "no-run";
 
-        internal static void SetRun(int seed, ulong hostIdentity)
+        internal static void SetRun(int seed, ulong hostIdentity, int runDateUtc)
         {
             // Date prefix makes the S3 console navigable ("which run was last night's?") — the
-            // hash alone wasn't (Omar, 2026-07-23). UTC date at go-live: every machine of a run
-            // stamps the same folder except the midnight-straddle edge, which is acceptable.
-            string next = $"{DateTime.UtcNow:yyyy-MM-dd}_{(uint)seed:X8}-{(hostIdentity & 0xFFFF):X4}";
+            // hash alone wasn't (Omar, 2026-07-23). The date is the HOST's go-live UTC date,
+            // shared over the wire in START_RUN, so every machine of a run — skewed clocks,
+            // past-midnight late joins, day-later rejoins — writes the SAME folder. Local time
+            // only as a fallback for a zero (defensive; all shipping builds transmit it).
+            string date = runDateUtc > 0
+                ? $"{runDateUtc / 10000:D4}-{runDateUtc / 100 % 100:D2}-{runDateUtc % 100:D2}"
+                : DateTime.UtcNow.ToString("yyyy-MM-dd");
+            string next = $"{date}_{(uint)seed:X8}-{(hostIdentity & 0xFFFF):X4}";
             if (next != RunId) { _sendsThisRun = 0; _nextAllowedSendAt = 0f; } // fresh run, fresh budget
             RunId = next;
             Plugin.Log.LogInfo($"[Diag] run id {RunId} — quote this in reports; SEND LOGS / F8 uploads this machine's log");

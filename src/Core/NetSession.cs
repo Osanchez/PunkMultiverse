@@ -22,7 +22,8 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 14; // 14 = main's 13 (EntityFireMsg.WeaponHash, fire
+        public const int ProtocolVersion = 15; // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder
+                                                // date). 14 = main's 13 (EntityFireMsg.WeaponHash, fire
                                                 // fidelity) + this branch's sidecar/admin additions
                                                 // (RosterEntry.IsAdmin, LobbyMembers 88, AdminGrant 89,
                                                 // AdminCommand 90) — both 13s were parallel, distinct
@@ -753,6 +754,12 @@ namespace PunkMultiverse.Core
             if (EnemyHpMult > 1f)
                 Plugin.Log.LogInfo($"[Run] enemy HP x{EnemyHpMult:F2} ({playerCount} players)");
 
+            // The HOST is the single source of the run's folder date — transmitted so a client
+            // with a skewed clock (or joining after UTC midnight) still uploads to the same
+            // S3 folder as everyone else.
+            var utc = DateTime.UtcNow;
+            CurrentRunDateUtc = utc.Year * 10000 + utc.Month * 100 + utc.Day;
+
             _writer.Reset();
             new StartRunMsg
             {
@@ -761,6 +768,7 @@ namespace PunkMultiverse.Core
                 IsResume = false, // wire field kept for compatibility; save-based resume removed
                 SpawnStationNetId = 0,
                 EnemyHpMult = EnemyHpMult,
+                RunDateUtc = CurrentRunDateUtc,
             }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
             _isRejoin = false;
@@ -775,6 +783,7 @@ namespace PunkMultiverse.Core
                                       // terrain always streams from the host either way
             _spawnStationNetId = msg.SpawnStationNetId;
             EnemyHpMult = msg.EnemyHpMult > 0f ? msg.EnemyHpMult : 1f;
+            CurrentRunDateUtc = msg.RunDateUtc; // host's date — shared S3 folder (see StartRun)
             BeginRun(msg.Seed);
         }
 
@@ -790,6 +799,11 @@ namespace PunkMultiverse.Core
 
         /// <summary>Seed of the run in progress — replayed to rejoining players.</summary>
         public int CurrentRunSeed { get; private set; }
+
+        /// <summary>The host's go-live UTC date (yyyyMMdd), shared via START_RUN so every
+        /// machine's diagnostics upload lands in the same dated S3 folder. Survives to
+        /// rejoin replays (a day-later rejoin still uploads beside the original logs).</summary>
+        public int CurrentRunDateUtc { get; private set; }
 
         private void BeginRun(int seed)
         {
@@ -1082,7 +1096,7 @@ namespace PunkMultiverse.Core
             SetState(SessionState.InGame);
             // Same value on every machine (seed + host identity are already shared): the run id
             // groups all players' `uploadlogs` under one S3 folder and names bug reports.
-            LogUpload.SetRun(CurrentRunSeed, _players[HostSlot]?.IdentityId ?? LocalIdentityId());
+            LogUpload.SetRun(CurrentRunSeed, _players[HostSlot]?.IdentityId ?? LocalIdentityId(), CurrentRunDateUtc);
             Sync.ShipSync.ReleaseStartGate();
             if (_isRejoin)
             {
@@ -3083,6 +3097,7 @@ namespace PunkMultiverse.Core
                     IsRejoin = true,
                     SpawnStationNetId = Sync.ProgressionSync.LatestStationNetId,
                     EnemyHpMult = EnemyHpMult,
+                    RunDateUtc = CurrentRunDateUtc, // original run date — same S3 folder
                 }.Write(_writer);
                 _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
                 if (State == SessionState.InGame)
@@ -3160,6 +3175,7 @@ namespace PunkMultiverse.Core
                 IsRejoin = true,
                 SpawnStationNetId = respawnStation,
                 EnemyHpMult = EnemyHpMult,
+                RunDateUtc = CurrentRunDateUtc, // original run date — same S3 folder
             }.Write(_writer);
             _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true);
             if (State == SessionState.InGame)

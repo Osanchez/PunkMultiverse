@@ -194,6 +194,10 @@ namespace PunkMultiverse.Protocol
         public bool IsResume;          // whole-party resume of a saved run (terrain from local save)
         public int SpawnStationNetId;  // rejoin/late-join spawn checkpoint; 0 = run start
         public float EnemyHpMult;      // enemy max-health multiplier for this run; <=0 = 1x
+        public int RunDateUtc;         // HOST's go-live UTC date as yyyyMMdd — every machine keys
+                                       // its S3 diagnostics folder off this, so a skewed client
+                                       // clock or a past-midnight late join can't split the run's
+                                       // uploads across folders. 0 = fall back to local UTC.
 
         public void Write(NetWriter w)
         {
@@ -203,6 +207,7 @@ namespace PunkMultiverse.Protocol
             w.WriteBool(IsResume);
             w.WriteVarUInt((uint)SpawnStationNetId);
             w.WriteHalf(EnemyHpMult);
+            w.WriteVarUInt((uint)RunDateUtc);
         }
 
         public static StartRunMsg Read(NetReader r) => new StartRunMsg
@@ -212,6 +217,7 @@ namespace PunkMultiverse.Protocol
             IsResume = r.ReadBool(),
             SpawnStationNetId = (int)r.ReadVarUInt(),
             EnemyHpMult = r.ReadHalf(),
+            RunDateUtc = (int)r.ReadVarUInt(),
         };
     }
 
