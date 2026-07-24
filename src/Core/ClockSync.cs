@@ -26,11 +26,18 @@ namespace PunkMultiverse.Core
             double sender = senderMs / 1000.0;
             double sample = Time.unscaledTimeAsDouble - sender;
             if (Offset.TryGetValue(senderSlot, out double offset) && System.Math.Abs(sample - offset) < ReanchorAt)
-                offset += Alpha * (sample - offset);
-            else
-                offset = sample;
-            Offset[senderSlot] = offset;
-            return (float)(sender + offset);
+            {
+                // Map with the PRE-update offset: nudging first meant every packet's own transit
+                // noise leaked straight into its mapped timestamp — under the live server's jittery
+                // transit that wobble reads as sender jitter and inflates every puppet's interp
+                // delay. The nudge still happens (drift tracking), it just applies from the NEXT
+                // snapshot on.
+                double mapped = sender + offset;
+                Offset[senderSlot] = offset + Alpha * (sample - offset);
+                return (float)mapped;
+            }
+            Offset[senderSlot] = sample;
+            return (float)(sender + sample);
         }
 
         /// <summary>Map an event without letting its one-off network jitter perturb snapshot clock calibration.</summary>

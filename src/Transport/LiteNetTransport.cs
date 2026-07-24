@@ -86,7 +86,16 @@ namespace PunkMultiverse.Transport
         private void StartRelayThread()
         {
             _relayRunning = true;
-            _relayThread = new System.Threading.Thread(RelayLoop) { IsBackground = true, Name = "PunkMV-StateRelay" };
+            _relayThread = new System.Threading.Thread(RelayLoop)
+            {
+                IsBackground = true,
+                Name = "PunkMV-StateRelay",
+                // The container runs near its CPU allocation (game sim eats it); an even-priority
+                // relay thread gets descheduled tens of ms — measured as ~60ms client jitter on
+                // the live server vs ~8ms local (2026-07-24). Relay work is microseconds per
+                // packet, so highest priority steals nothing meaningful from the sim.
+                Priority = System.Threading.ThreadPriority.Highest,
+            };
             _relayThread.Start();
         }
 
