@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>PunkMultiverse</AssemblyName>
     <RootNamespace>PunkMultiverse</RootNamespace>
-    <Version>0.1.163</Version>
+    <Version>0.1.164</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -20,9 +20,16 @@
 
   <ItemGroup>
     <!-- LiteNetLib: the "Udp" transport (Docker/LAN/no-Steam). Pure netstandard UDP with
-         reliable-ordered channels; its DLL ships alongside ours (build.ps1 copies it). -->
+         reliable-ordered channels. MERGED into PunkMultiverse.dll post-build (see the
+         MergeLiteNetLib target) so the release is a single DLL; Internalize hides its types
+         from other mods, so a second copy elsewhere can never conflict. -->
     <PackageReference Include="LiteNetLib" Version="1.2.0" />
+    <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.34.2" PrivateAssets="all" />
   </ItemGroup>
+
+  <!-- Single-DLL packaging lives in ILRepack.targets (project root): the ILRepack.Lib package
+       imports that file INSTEAD of running its default merge-everything-in-place target (which
+       lacks our LibraryPath and fails on the BepInEx references). -->
 
   <ItemGroup>
     <Reference Include="BepInEx.Core">      <HintPath>$(BepInExCore)\BepInEx.Core.dll</HintPath>       <Private>false</Private></Reference>

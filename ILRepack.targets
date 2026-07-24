@@ -1,0 +1,21 @@
+<Project>
+  <!-- Imported by ILRepack.Lib.MSBuild.Task in place of its default target (which merges every
+       bin DLL in-place with no library path and fails resolving the BepInEx references).
+       Merges LiteNetLib into PunkMultiverse.dll, INTERNALIZED (its types invisible to other
+       mods — a second LiteNetLib elsewhere can never conflict). Output goes to a SUBFOLDER,
+       never in place: overwriting $(TargetPath) poisons incremental builds (skipped compile ->
+       already-merged input -> duplicate-type errors). build.ps1 deploys merged\PunkMultiverse.dll. -->
+  <Target Name="MergeLiteNetLib" AfterTargets="Build">
+    <ItemGroup>
+      <RepackInput Include="$(TargetPath)" />
+      <RepackInput Include="$(TargetDir)LiteNetLib.dll" />
+      <RepackLib Include="$(TargetDir)" />
+      <RepackLib Include="$(ManagedDir)" />
+      <RepackLib Include="$(BepInExCore)" />
+    </ItemGroup>
+    <MakeDir Directories="$(TargetDir)merged" />
+    <ILRepack Parallel="true" Internalize="true" InputAssemblies="@(RepackInput)"
+              LibraryPath="@(RepackLib)" OutputFile="$(TargetDir)merged\$(TargetFileName)" />
+    <Message Importance="high" Text="ILRepack: LiteNetLib merged into merged\$(TargetFileName) (internalized)" />
+  </Target>
+</Project>

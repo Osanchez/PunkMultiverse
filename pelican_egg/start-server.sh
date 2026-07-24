@@ -155,11 +155,10 @@ update_mod() {
     cp -f "${src}/"*.dll "${PLUGIN_DIR}/" 2>/dev/null || true
     [[ -f "${src}/config.default.cfg" ]] && cp -f "${src}/config.default.cfg" "${PLUGIN_DIR}/config.default.cfg"
     echo "${tag}" > "${VERSION_MARKER}"
+    # LiteNetLib is merged INTO PunkMultiverse.dll since v0.1.164 — drop the stale standalone
+    # copy an older install left behind (harmless if loaded types-wise, but confusing on disk).
+    rm -f "${PLUGIN_DIR}/LiteNetLib.dll"
     log "mod ${tag} installed: $(ls -1 "${PLUGIN_DIR}"/*.dll 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
-    if [[ ! -f "${PLUGIN_DIR}/LiteNetLib.dll" ]]; then
-        log "WARNING: LiteNetLib.dll not present in ${tag} — the Udp transport needs it. Ensure the"
-        log "         LiteNetLib transport is merged to main and released (see README known issues)."
-    fi
     rm -rf "${tmp}"
 }
 update_mod

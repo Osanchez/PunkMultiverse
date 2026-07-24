@@ -74,6 +74,21 @@ namespace PunkMultiverse
             _runtime.AddComponent<SpectatorCam>();
             _runtime.AddComponent<Toast>();
 
+            // LiteNetLib is merged into this assembly (ILRepack, internalized) as of v0.1.164 —
+            // delete the stale standalone DLL an older install left. Safe at this point: the
+            // merged types mean nothing ever loads that file again; boot is also the one moment
+            // it's guaranteed unmapped (self-update can't delete it mid-session).
+            try
+            {
+                var stale = System.IO.Path.Combine(ModFolder.Dir, "LiteNetLib.dll");
+                if (System.IO.File.Exists(stale))
+                {
+                    System.IO.File.Delete(stale);
+                    Log.LogInfo("[Update] removed stale LiteNetLib.dll (merged into the mod since v0.1.164)");
+                }
+            }
+            catch { }
+
             // Video QoL: fps cap (defaults to the monitor's refresh) + resizable window. The
             // window handle is only capturable while the window is active — grab it now, at
             // launch focus; SettingsManager.Apply postfixes re-assert both on later changes.

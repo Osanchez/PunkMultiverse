@@ -31,9 +31,9 @@ $outDir = Join-Path $root "bin\$config"
 $pluginDir = Join-Path $GameDir "BepInEx\plugins\PunkMultiverse"
 New-Item -ItemType Directory -Force $pluginDir | Out-Null
 
-Copy-Item (Join-Path $outDir "PunkMultiverse.dll") $pluginDir -Force
-# Dependency DLLs (LiteNetLib for the Udp transport) ride alongside the plugin.
-Copy-Item (Join-Path $outDir "LiteNetLib.dll") $pluginDir -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $outDir "merged\PunkMultiverse.dll") $pluginDir -Force
+# LiteNetLib is MERGED into PunkMultiverse.dll (ILRepack) - remove any stale standalone copy.
+Remove-Item (Join-Path $pluginDir "LiteNetLib.dll") -Force -ErrorAction SilentlyContinue
 if ($Debug) {
     Copy-Item (Join-Path $outDir "PunkMultiverse.pdb") $pluginDir -Force
 } else {
@@ -48,8 +48,7 @@ if ($Zip) {
     New-Item -ItemType Directory -Force $dist | Out-Null
     $staging = Join-Path $dist "staging\BepInEx\plugins\PunkMultiverse"
     New-Item -ItemType Directory -Force $staging | Out-Null
-    Copy-Item (Join-Path $outDir "PunkMultiverse.dll") $staging -Force
-    Copy-Item (Join-Path $outDir "LiteNetLib.dll") $staging -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $outDir "merged\PunkMultiverse.dll") $staging -Force  # LiteNetLib merged in
     $zipPath = Join-Path $dist "PunkMultiverse-v$version.zip"
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     Compress-Archive -Path (Join-Path $dist "staging\BepInEx") -DestinationPath $zipPath
