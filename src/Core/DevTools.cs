@@ -1221,8 +1221,29 @@ namespace PunkMultiverse.Core
             private static readonly FieldInfo IsOpenedF = AccessTools.Field(typeof(DebugMenu), "isOpened");
             private static readonly FieldInfo ScreenF = AccessTools.Field(typeof(DebugMenu), "screen");
             private static readonly FieldInfo WeaponDropF = AccessTools.Field(typeof(DebugMenu), "weaponDropdown");
+            private static readonly FieldInfo ShowActionF = AccessTools.Field(typeof(DebugMenu), "showDebugInputAction");
             private static readonly MethodInfo SetHoverM = AccessTools.Method(typeof(DebugMenu), "SetShipsHovering");
             private static bool _warned;
+
+            // The PLAYTEST BUILD ships this action live: vanilla F1 disables ship control, sets
+            // ships hovering (reads as "F1 does something with the camera"), drops timescale to
+            // 0.1x and opens the dev screen — for EVERY player, regardless of our config (field
+            // report 2026-07-23). Kill the vanilla binding outright; the config-gated opener in
+            // the Postfix below (which deliberately skips the net-hostile slow-mo) is the only
+            // way F1 does anything.
+            private static void Prefix(DebugMenu __instance)
+            {
+                try
+                {
+                    var action = ShowActionF?.GetValue(__instance) as UnityEngine.InputSystem.InputAction;
+                    if (action != null && action.enabled)
+                    {
+                        action.Disable();
+                        Plugin.Log.LogInfo("[Dev] vanilla F1 debug-menu binding disabled (DebugMenuKey config is the only gate)");
+                    }
+                }
+                catch { }
+            }
 
             private static void Postfix(DebugMenu __instance)
             {
