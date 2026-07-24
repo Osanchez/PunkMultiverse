@@ -39,7 +39,113 @@ namespace PunkMultiverse.Transport
         private const int MaxPeers = 8;
         // The accept key gates random UDP traffic, not security (HELLO still validates
         // protocol + mod versions). Bump if the wire framing here ever changes shape.
-        private const string ConnectionKey = "punkmv-udp-1";
+        // -2: State-channel FEC framing (seq byte + parity packets), 2026-07-24.
+        private const string ConnectionKey = "punkmv-udp-2";
+
+        // ---------------------------------------------------------------- XOR-FEC (State channel)
+        //
+        // The live WAN path measured 16-19% packet loss; every lost State packet is a hole the
+        // interpolation buffer must absorb (underruns -> inflated delay). Low-latency FEC: each
+        // unreliable State packet carries a per-LINK sequence byte, and after every FecGroup of
+        // them one parity packet (XOR of [len:2][payload] blocks, zero-padded) goes out — any
+        // SINGLE loss in the group is reconstructed on arrival of the parity, no retransmit
+        // round-trip. Cost: +1/FecGroup packets (~25%) of a single-digit-KB/s stream.
+        //
+        // Framing (unreliable State only; everything else unchanged):
+        //   data   = [NetChannel.State][seq][payload...]
+        //   parity = [FecParityChannel][startSeq][count][xorBlock...]
+        // Encoders are per-link+direction (main Send + relay thread share them under a lock);
+        // decode rings live on the socket thread only. Recovered payloads are injected into the
+        // normal dispatch queue AND (host) the relay queue — a packet the server never received
+        // could never have been forwarded, so recovery feeds the other clients too.
+        private const byte FecParityChannel = 0xEE;
+        private const int FecGroup = 4;
+        private const int FecBuf = 2048;
+
+        private sealed class FecTx
+        {
+            public readonly object Lock = new object();
+            public byte Seq;
+            public int Count;
+            public byte StartSeq;
+            public int MaxLen;
+            public readonly byte[] Xor = new byte[FecBuf];
+        }
+
+        private sealed class FecRx
+        {
+            // Small ring keyed by wrapping seq byte; socket-thread only.
+            public readonly byte[] Seqs = new byte[16];
+            public readonly byte[][] Frames = new byte[16][]; // full data frame incl. [chan][seq]
+            public int Next;
+        }
+
+        private readonly Dictionary<int, FecTx> _fecTxByPeer = new Dictionary<int, FecTx>();   // host: lib peer id
+        private readonly Dictionary<int, FecRx> _fecRxByPeer = new Dictionary<int, FecRx>();   // host: lib peer id
+        private FecTx _fecTxHost;  // client: single link
+        private FecRx _fecRxHost;
+        private long _fecRecovered, _fecUnrecoverable, _fecParityTx;
+
+        private FecTx GetFecTx(NetPeer target)
+        {
+            if (!IsHost) return _fecTxHost ?? (_fecTxHost = new FecTx());
+            lock (_fecTxByPeer)
+            {
+                if (!_fecTxByPeer.TryGetValue(target.Id, out var tx))
+                    _fecTxByPeer[target.Id] = tx = new FecTx();
+                return tx;
+            }
+        }
+
+        /// <summary>Wrap + send one unreliable State payload on a link, accumulating parity.
+        /// Safe from any thread (per-link lock; NetPeer.Send is thread-safe).</summary>
+        private void SendStateWithFec(NetPeer target, byte[] payload, int offset, int count)
+        {
+            var tx = GetFecTx(target);
+            byte[] frame = new byte[count + 2];
+            frame[0] = (byte)NetChannel.State;
+            byte[] parity = null;
+            int parityLen = 0;
+            lock (tx.Lock)
+            {
+                frame[1] = tx.Seq;
+                if (tx.Count == 0) { tx.StartSeq = tx.Seq; Array.Clear(tx.Xor, 0, tx.MaxLen + 2); tx.MaxLen = 0; }
+                tx.Seq++;
+                // Accumulate [len:2][payload] into the XOR block.
+                int blockLen = count + 2;
+                if (blockLen <= FecBuf)
+                {
+                    tx.Xor[0] ^= (byte)(count & 0xFF);
+                    tx.Xor[1] ^= (byte)((count >> 8) & 0xFF);
+                    for (int i = 0; i < count; i++) tx.Xor[2 + i] ^= payload[offset + i];
+                    if (blockLen > tx.MaxLen + 2) tx.MaxLen = count;
+                    tx.Count++;
+                    if (tx.Count >= FecGroup)
+                    {
+                        parityLen = tx.MaxLen + 2 + 3;
+                        parity = new byte[parityLen];
+                        parity[0] = FecParityChannel;
+                        parity[1] = tx.StartSeq;
+                        parity[2] = (byte)tx.Count;
+                        Buffer.BlockCopy(tx.Xor, 0, parity, 3, tx.MaxLen + 2);
+                        Array.Clear(tx.Xor, 0, tx.MaxLen + 2);
+                        tx.Count = 0;
+                        tx.MaxLen = 0;
+                    }
+                }
+            }
+            Buffer.BlockCopy(payload, offset, frame, 2, count);
+            try
+            {
+                target.Send(frame, 0, frame.Length, DeliveryMethod.Unreliable);
+                if (parity != null)
+                {
+                    target.Send(parity, 0, parityLen, DeliveryMethod.Unreliable);
+                    System.Threading.Interlocked.Increment(ref _fecParityTx);
+                }
+            }
+            catch (TooBigPacketException) { }
+        }
 
         private readonly string _defaultAddress;
         private readonly int _port;
@@ -75,7 +181,7 @@ namespace PunkMultiverse.Transport
         // Dedicated relay thread. Targets are a volatile immutable snapshot rebuilt by the
         // main thread on every connect/disconnect drain — the relay thread only ever reads the
         // array reference, so no locks and no racing LiteNetLib's own peer list.
-        private struct RelayItem { public int SenderPeerId; public byte[] Data; }
+        private struct RelayItem { public int SenderPeerId; public byte[] Data; public int Offset; public int Count; }
         private readonly System.Collections.Concurrent.ConcurrentQueue<RelayItem> _relayQueue
             = new System.Collections.Concurrent.ConcurrentQueue<RelayItem>();
         private readonly System.Threading.AutoResetEvent _relaySignal = new System.Threading.AutoResetEvent(false);
@@ -113,7 +219,9 @@ namespace PunkMultiverse.Transport
                         var t = targets[i];
                         if (t == null || t.Id == item.SenderPeerId
                             || t.ConnectionState != ConnectionState.Connected) continue;
-                        try { t.Send(item.Data, 0, item.Data.Length, DeliveryMethod.Unreliable); sentAny = true; }
+                        // Payload only (source framing stripped) — each target link gets its own
+                        // FEC sequence/parity stream.
+                        try { SendStateWithFec(t, item.Data, item.Offset, item.Count); sentAny = true; }
                         catch { /* peer mid-teardown — the next snapshot rebuild drops it */ }
                     }
                 }
@@ -247,7 +355,10 @@ namespace PunkMultiverse.Transport
                       $"relq={p.GetPacketsCountInReliableQueue(0, true)}/{p.GetPacketsCountInReliableQueue(1, true)}/{p.GetPacketsCountInReliableQueue(2, true)}";
             }
             return $"[Udp] {peers} | mgr sent={s.PacketsSent} recv={s.PacketsReceived} " +
-                   $"bytesOut={s.BytesSent} bytesIn={s.BytesReceived} loss={s.PacketLossPercent}%";
+                   $"bytesOut={s.BytesSent} bytesIn={s.BytesReceived} loss={s.PacketLossPercent}% " +
+                   $"| fec parityTx={System.Threading.Interlocked.Read(ref _fecParityTx)} " +
+                   $"recovered={System.Threading.Interlocked.Read(ref _fecRecovered)} " +
+                   $"unrecoverable={System.Threading.Interlocked.Read(ref _fecUnrecoverable)}";
         }
 
         public void StartHost()
@@ -303,6 +414,13 @@ namespace PunkMultiverse.Transport
             }
             if (target.ConnectionState != ConnectionState.Connected) return false;
 
+            // Unreliable State rides the FEC framing (seq byte + periodic parity).
+            if (!reliable && channel == NetChannel.State)
+            {
+                SendStateWithFec(target, data.Array, data.Offset, data.Count);
+                return true;
+            }
+
             int len = data.Count + 1;
             if (_sendBuf.Length < len) _sendBuf = new byte[Math.Max(len, _sendBuf.Length * 2)];
             _sendBuf[0] = (byte)channel;
@@ -355,6 +473,10 @@ namespace PunkMultiverse.Transport
             _idByPeer.Clear();
             _peerById.Clear();
             _relayTargets = new NetPeer[0];
+            lock (_fecTxByPeer) { _fecTxByPeer.Clear(); }
+            _fecRxByPeer.Clear();
+            _fecTxHost = null;
+            _fecRxHost = null;
             while (_events.TryDequeue(out _)) { }     // stale events must not leak into a new session
             while (_relayQueue.TryDequeue(out _)) { }
         }
@@ -379,6 +501,7 @@ namespace PunkMultiverse.Transport
 
         void INetEventListener.OnPeerDisconnected(NetPeer peer, DisconnectInfo info)
         {
+            _fecRxByPeer.Remove(peer.Id); // this dict is socket-thread-owned; prune here, not on drain
             bool remote = info.Reason == DisconnectReason.RemoteConnectionClose
                        || info.Reason == DisconnectReason.DisconnectPeerCalled;
             _events.Enqueue(new Evt
@@ -395,28 +518,25 @@ namespace PunkMultiverse.Transport
             int size = reader.UserDataSize;
             if (size < 2) return; // channel prefix + at least a message type
             int off = reader.UserDataOffset;
-            var channel = (NetChannel)reader.RawData[off];
+            byte chanByte = reader.RawData[off];
 
-            // One copy serves both consumers: [0] = channel prefix + payload. The relay thread
-            // resends the whole wire frame; main-thread dispatch reads from offset 1.
+            if (chanByte == FecParityChannel)
+            {
+                HandleFecParity(peer, reader.RawData, off, size);
+                return;
+            }
+
+            var channel = (NetChannel)chanByte;
+            // One copy serves all consumers (main dispatch, FEC ring, relay). State frames are
+            // [chan][seq][payload]; everything else stays [chan][payload].
             var data = new byte[size];
             Buffer.BlockCopy(reader.RawData, off, data, 0, size);
 
-            // FAST RELAY (host): high-volume presentation state goes to a DEDICATED relay thread
-            // — never sent from inside this callback. First attempt relayed here directly and
-            // deadlocked the whole process (lock-order inversion between the callback-context
-            // sends and a main-thread reliable burst during a mid-run join, 2026-07-24). The
-            // relay thread uses the same documented-safe cross-thread Send() as the main thread.
-            // ONLY these two types — other State traffic (summaries, pulses) has host-only or
-            // relay-all-with-validation semantics that stay on the main thread.
-            if (IsHost && channel == NetChannel.State && size >= 2)
+            if (channel == NetChannel.State)
             {
-                var msgType = (MsgType)data[1];
-                if (msgType == MsgType.ShipState || msgType == MsgType.EntityStateBundle)
-                {
-                    _relayQueue.Enqueue(new RelayItem { SenderPeerId = peer.Id, Data = data });
-                    _relaySignal.Set();
-                }
+                if (size < 3) return;
+                StoreFecFrame(GetFecRx(peer), data);
+                MaybeRelayState(peer, data);
             }
 
             _events.Enqueue(new Evt
@@ -425,6 +545,99 @@ namespace PunkMultiverse.Transport
                 From = IsHost ? (ulong)(peer.Id + 2) : HostPeerId,
                 Channel = channel,
                 Data = data,
+            });
+        }
+
+        // ---- FEC receive-side helpers (socket thread only) ----
+
+        private FecRx GetFecRx(NetPeer peer)
+        {
+            if (!IsHost) return _fecRxHost ?? (_fecRxHost = new FecRx());
+            if (!_fecRxByPeer.TryGetValue(peer.Id, out var rx))
+                _fecRxByPeer[peer.Id] = rx = new FecRx(); // socket thread owns this dict's writes
+            return rx;
+        }
+
+        private static void StoreFecFrame(FecRx rx, byte[] frame)
+        {
+            rx.Seqs[rx.Next] = frame[1];
+            rx.Frames[rx.Next] = frame;
+            rx.Next = (rx.Next + 1) % rx.Frames.Length;
+        }
+
+        private static byte[] LookupFecFrame(FecRx rx, byte seq)
+        {
+            for (int i = 0; i < rx.Frames.Length; i++)
+                if (rx.Frames[i] != null && rx.Seqs[i] == seq) return rx.Frames[i];
+            return null;
+        }
+
+        /// <summary>FAST RELAY (host): high-volume presentation state goes to the dedicated relay
+        /// thread — never sent from inside the receive callback. ONLY ShipState/EntityStateBundle;
+        /// other State traffic has host-only or validated-relay semantics on the main thread.</summary>
+        private void MaybeRelayState(NetPeer peer, byte[] stateFrame)
+        {
+            if (!IsHost || stateFrame.Length < 3) return;
+            var msgType = (MsgType)stateFrame[2];
+            if (msgType != MsgType.ShipState && msgType != MsgType.EntityStateBundle) return;
+            _relayQueue.Enqueue(new RelayItem
+            {
+                SenderPeerId = peer.Id,
+                Data = stateFrame,
+                Offset = 2,                      // strip [chan][seq]; targets get fresh per-link FEC
+                Count = stateFrame.Length - 2,
+            });
+            _relaySignal.Set();
+        }
+
+        private void HandleFecParity(NetPeer peer, byte[] raw, int off, int size)
+        {
+            if (size < 3 + 3) return; // header + at least [len:2]+1
+            var rx = GetFecRx(peer);
+            byte start = raw[off + 1];
+            int count = raw[off + 2];
+            int blockLen = size - 3;
+            if (count < 2 || count > 8 || blockLen > FecBuf) return;
+
+            int missingIdx = -1;
+            for (int i = 0; i < count; i++)
+            {
+                if (LookupFecFrame(rx, (byte)(start + i)) != null) continue;
+                if (missingIdx >= 0) { _fecUnrecoverable++; return; } // 2+ lost — XOR can't help
+                missingIdx = i;
+            }
+            if (missingIdx < 0) return; // nothing lost in this group
+
+            var block = new byte[blockLen];
+            Buffer.BlockCopy(raw, off + 3, block, 0, blockLen);
+            for (int i = 0; i < count; i++)
+            {
+                if (i == missingIdx) continue;
+                var frame = LookupFecFrame(rx, (byte)(start + i));
+                int payloadLen = frame.Length - 2;
+                block[0] ^= (byte)(payloadLen & 0xFF);
+                block[1] ^= (byte)((payloadLen >> 8) & 0xFF);
+                int limit = Math.Min(payloadLen, blockLen - 2);
+                for (int j = 0; j < limit; j++) block[2 + j] ^= frame[2 + j];
+            }
+            int len = block[0] | (block[1] << 8);
+            if (len < 1 || len + 2 > blockLen) { _fecUnrecoverable++; return; }
+
+            var recovered = new byte[len + 2];
+            recovered[0] = (byte)NetChannel.State;
+            recovered[1] = (byte)(start + missingIdx);
+            Buffer.BlockCopy(block, 2, recovered, 2, len);
+            _fecRecovered++;
+            if (_fecRecovered % 100 == 1)
+                Plugin.Log.LogInfo($"[Udp] fec recovered={_fecRecovered} unrecoverable={_fecUnrecoverable} (lost packets reconstructed from parity)");
+            StoreFecFrame(rx, recovered); // later parities in overlapping windows see it
+            MaybeRelayState(peer, recovered); // the origin's loss starved everyone downstream too
+            _events.Enqueue(new Evt
+            {
+                Kind = EvtKind.Data,
+                From = IsHost ? (ulong)(peer.Id + 2) : HostPeerId,
+                Channel = NetChannel.State,
+                Data = recovered,
             });
         }
 
@@ -465,6 +678,7 @@ namespace PunkMultiverse.Transport
                             if (_peerById.Remove(e.From))
                             {
                                 _idByPeer.Remove((int)(e.From - 2));
+                                lock (_fecTxByPeer) { _fecTxByPeer.Remove((int)(e.From - 2)); }
                                 RebuildRelayTargets();
                                 // Probe tracking too: the lib never reuses peer ids, so a
                                 // long-lived server would accrue one dead entry per connection.
@@ -489,9 +703,9 @@ namespace PunkMultiverse.Transport
                         // data from peers whose Connected event hasn't seated them yet this drain
                         // only if they've since vanished — same-drain ordering seats them first.
                         if (IsHost && !_peerById.ContainsKey(e.From)) break;
-                        // e.Data[0] is the channel prefix (kept so the relay thread can resend
-                        // the whole wire frame); dispatch hands out the payload after it.
-                        DataReceived?.Invoke(e.From, e.Channel, new ArraySegment<byte>(e.Data, 1, e.Data.Length - 1));
+                        // State frames = [chan][fecSeq][payload]; everything else = [chan][payload].
+                        int hdr = e.Channel == NetChannel.State ? 2 : 1;
+                        DataReceived?.Invoke(e.From, e.Channel, new ArraySegment<byte>(e.Data, hdr, e.Data.Length - hdr));
                         break;
                 }
             }

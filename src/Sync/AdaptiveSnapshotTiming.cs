@@ -8,14 +8,28 @@ namespace PunkMultiverse.Sync
     /// to avoid alternating extrapolation/correction. This changes presentation only.</summary>
     internal sealed class AdaptiveSnapshotTiming
     {
+        // PERCENTILE PLAYOUT TARGETING (NetEQ-style, 2026-07-24): the old formula padded the
+        // delay with jitter*2.5 — an EMA heuristic whose safety multiplier overshoots for the
+        // common case. The principled version keeps a window of observed per-snapshot LATENESS
+        // (arrival spacing minus sender spacing, positive = arrived late) and targets the delay
+        // at its p98: exactly enough headroom to cover 98% of observed deliveries, re-derived
+        // continuously from real traffic instead of guessed multipliers. Underrun pressure
+        // still nudges upward when the tail misbehaves (the remaining 2%).
+        private const int LateWindow = 64; // ~3s of samples at 20Hz
+
         private readonly float _minimum;
         private readonly float _maximum;
+        private readonly float[] _lateness = new float[LateWindow];
+        private readonly float[] _sortScratch = new float[LateWindow];
+        private int _lateCount;
+        private int _lateNext;
+        private float _latenessP98;
         private bool _initialized;
         private float _lastSenderTime;
         private float _lastArrivalTime;
         private float _interval;
         private float _gapPeak;
-        private float _jitter;
+        private float _jitter; // retained for instrumentation continuity ([SnapshotLatency] jitterAvg)
         private float _pressure;
 
         internal AdaptiveSnapshotTiming(float minimum, float maximum, float initialInterval)
@@ -27,13 +41,10 @@ namespace PunkMultiverse.Sync
 
         // The delay must clear the WORST recent sender gap, not the mean: the priority
         // accumulator legitimately alternates an entity's cadence (e.g. 33/66ms for a mid
-        // weight), and a mean-based margin (interval*1.35 = 17ms of headroom on a 50ms
-        // stream) leaves render time overtaking the newest snapshot on every long gap —
-        // measured as ~800 interpolation underruns/s, each one an extrapolate-then-yank
-        // micro-pop. The decaying peak covers alternating cadences exactly without
-        // over-delaying steady ones.
+        // weight). gapPeak covers sender-side cadence; the p98 lateness term covers the
+        // network's actual delivery distribution.
         internal float Delay => Mathf.Clamp(
-            Mathf.Max(_interval * 1.35f, _gapPeak * 1.2f) + _jitter * 2.5f + _pressure,
+            Mathf.Max(_interval * 1.35f, _gapPeak * 1.2f) + _latenessP98 * 1.15f + _pressure,
             _minimum, _maximum);
 
         internal void Reset()
@@ -41,6 +52,9 @@ namespace PunkMultiverse.Sync
             _initialized = false;
             _gapPeak = 0f;
             _pressure = 0f;
+            _lateCount = 0;
+            _lateNext = 0;
+            _latenessP98 = 0f;
         }
 
         internal void Observe(float senderTime)
@@ -56,6 +70,15 @@ namespace PunkMultiverse.Sync
                 _gapPeak = Mathf.Max(senderDelta, _gapPeak * 0.985f);
                 _jitter = Mathf.Lerp(_jitter, Mathf.Abs(arrivalDelta - senderDelta), 0.10f);
                 _pressure = Mathf.Max(0f, _pressure - 0.0005f);
+
+                // Lateness sample -> ring -> p98. Sorting 64 floats per snapshot is cheap and
+                // allocation-free (persistent scratch); early samples use what's filled.
+                _lateness[_lateNext] = Mathf.Max(0f, arrivalDelta - senderDelta);
+                _lateNext = (_lateNext + 1) % LateWindow;
+                if (_lateCount < LateWindow) _lateCount++;
+                System.Array.Copy(_lateness, _sortScratch, _lateCount);
+                System.Array.Sort(_sortScratch, 0, _lateCount);
+                _latenessP98 = _sortScratch[Mathf.Clamp((int)(_lateCount * 0.98f), 0, _lateCount - 1)];
             }
             else
             {
