@@ -104,6 +104,7 @@ namespace PunkMultiverse.Transport
             while (_relayRunning)
             {
                 _relaySignal.WaitOne(250); // wake on signal; periodic wake checks shutdown
+                bool sentAny = false;
                 while (_relayQueue.TryDequeue(out var item))
                 {
                     var targets = _relayTargets;
@@ -112,10 +113,13 @@ namespace PunkMultiverse.Transport
                         var t = targets[i];
                         if (t == null || t.Id == item.SenderPeerId
                             || t.ConnectionState != ConnectionState.Connected) continue;
-                        try { t.Send(item.Data, 0, item.Data.Length, DeliveryMethod.Unreliable); }
+                        try { t.Send(item.Data, 0, item.Data.Length, DeliveryMethod.Unreliable); sentAny = true; }
                         catch { /* peer mid-teardown — the next snapshot rebuild drops it */ }
                     }
                 }
+                // Send() only enqueues; the logic loop transmits. Kick it NOW so relayed state
+                // hits the wire this instant instead of on the next (Wine-wobbly) loop tick.
+                if (sentAny) { try { _manager?.TriggerUpdate(); } catch { } }
             }
         }
 
@@ -151,7 +155,12 @@ namespace PunkMultiverse.Transport
             var m = new NetManager(this)
             {
                 AutoRecycle = true,
-                UpdateTime = 10,             // logic tick: acks/resends/flush every 10ms
+                // Send flushes ride this loop (Send() only ENQUEUES) — 10ms was fine on native
+                // Windows but Wine's timer wobble stretched flush spacing into the tens of ms,
+                // the leading suspect for the live server's ~60ms client jitter (local control
+                // ~8ms, CPU unlimited, relay threaded — process of elimination, 2026-07-24).
+                // 1ms + TriggerUpdate() after relay enqueues = tightest cadence the lib offers.
+                UpdateTime = 1,
                 DisconnectTimeout = 10000,   // match loopback's stall tolerance (level load, GC)
                 ChannelsCount = 4,           // one ordered stream per NetChannel
                 UnconnectedMessagesEnabled = false,
