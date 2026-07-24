@@ -60,6 +60,8 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> ClockGuardEnabled;
         public static ConfigEntry<bool> CoordinatorMode;
         public static ConfigEntry<float> EmptyServerResetSeconds;
+        public static ConfigEntry<int> FpsLimit;
+        public static ConfigEntry<bool> ResizableWindow;
         public static ConfigEntry<bool> HostViaSidecar;
 
         /// <summary>True when this process is a dedicated coordinator (a shipless host that plays
@@ -172,6 +174,15 @@ namespace PunkMultiverse
                 "DEV ONLY: name of a command file in the plugin folder polled twice a second for " +
                 "scripted test scenarios (spawn/tp/autofly/say). Empty = off. See docs/harness.md.");
 
+            FpsLimit = cfg.Bind("Video", "FpsLimit", 0,
+                "Frame-rate cap. 0 = MAX (your monitor's refresh rate — the default); any other " +
+                "value caps rendering at that many fps (minimum 60). Adjustable in-game on the " +
+                "VIDEO options tab (new FPS LIMIT row). With VSYNC ON the display sync governs " +
+                "and this cap is inert — that's Unity semantics, not a bug.");
+            ResizableWindow = cfg.Bind("Video", "ResizableWindow", true,
+                "Windowed mode only: make the game window freely resizable (drag edges, maximize " +
+                "button). The game ships with a fixed-border window; this restores the standard " +
+                "Windows frame. No effect in Borderless.");
             TrackerNames = cfg.Bind("Tracker", "Names", true,
                 "Name label in the player's color above remote players' ships.");
             TrackerArrows = cfg.Bind("Tracker", "Arrows", true,

@@ -74,6 +74,13 @@ namespace PunkMultiverse
             _runtime.AddComponent<SpectatorCam>();
             _runtime.AddComponent<Toast>();
 
+            // Video QoL: fps cap (defaults to the monitor's refresh) + resizable window. The
+            // window handle is only capturable while the window is active — grab it now, at
+            // launch focus; SettingsManager.Apply postfixes re-assert both on later changes.
+            UI.VideoTweaks.CaptureWindowHandle();
+            UI.VideoTweaks.ApplyFpsLimit();
+            UI.VideoTweaks.ApplyResizableWindow();
+
             Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F9 = net overlay, F10 = sync diagnostics. F8 (or the pause menu in a net run) sends this machine's log for the current run id.");
         }
 
