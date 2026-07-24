@@ -165,8 +165,24 @@ namespace PunkMultiverse.Core
             return false;
         }
 
+        /// <summary>Entity segment updated from an already-read live position — EnemySync's index
+        /// maintenance (collect loop / snapshot apply) pushes here so EntitySegments is a true,
+        /// continuously-written cache instead of a native-lookup fallback.</summary>
+        internal static void NoteEntitySegment(int netId, SegmentKey key) => EntitySegments[netId] = key;
+
+        /// <summary>Cache-only read (no native fallback) — index bookkeeping wants "where did I
+        /// last file this entity", never a fresh resolve.</summary>
+        internal static bool TryGetCachedSegment(int netId, out SegmentKey key)
+            => EntitySegments.TryGetValue(netId, out key);
+
         internal static bool TrySegmentOf(int netId, out SegmentKey key)
         {
+            // CACHE-FIRST (2026-07-24, Omar's coarse-to-fine review): the index is written every
+            // send tick for live entities and on every applied snapshot for puppets, so a hit is
+            // both fresh and free. The native GetEntity path survives only as a miss fallback
+            // (pre-registration queries, generation-time callers) — it used to run FIRST on
+            // every call, which made every OwnerOf(netId) an engine round-trip.
+            if (EntitySegments.TryGetValue(netId, out key)) return true;
             if (NetIds.TryGetInstanceId(netId, out int instanceId))
             {
                 try
@@ -181,7 +197,7 @@ namespace PunkMultiverse.Core
                 }
                 catch { }
             }
-            return EntitySegments.TryGetValue(netId, out key);
+            return false;
         }
 
         internal static byte OwnerOf(int netId)

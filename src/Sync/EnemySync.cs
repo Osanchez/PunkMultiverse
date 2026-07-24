@@ -105,6 +105,44 @@ namespace PunkMultiverse.Sync
         /// registration leak (dead entities never removed).</summary>
         internal static int LiveEntityCount => LiveEntities.Count;
 
+        // ---------------------------------------------------------------- spatial index
+        //
+        // Reverse index segment -> live netIds (Omar's coarse-to-fine review, 2026-07-24): scans
+        // that only care about entities NEAR something (the starved rescue's 45u gate) walk the
+        // few segment buckets in range instead of every live entity. Written from positions the
+        // hot paths already read: the collect loop (every live candidate, 20Hz) and snapshot
+        // apply (puppets/coordinator). Forward map = AuthorityManager.EntitySegments (shared with
+        // TrySegmentOf's cache-first path). Buckets pruned on unregister; cleared on reset.
+        private static readonly Dictionary<AuthorityManager.SegmentKey, HashSet<int>> SegmentEntities
+            = new Dictionary<AuthorityManager.SegmentKey, HashSet<int>>(64);
+
+        internal static void UpdateEntityIndex(int netId, AuthorityManager.SegmentKey key)
+        {
+            if (AuthorityManager.TryGetCachedSegment(netId, out var old))
+            {
+                if (old.Equals(key)) return; // unchanged — the overwhelmingly common case
+                if (SegmentEntities.TryGetValue(old, out var oldSet))
+                {
+                    oldSet.Remove(netId);
+                    if (oldSet.Count == 0) SegmentEntities.Remove(old);
+                }
+            }
+            AuthorityManager.NoteEntitySegment(netId, key);
+            if (!SegmentEntities.TryGetValue(key, out var set))
+                SegmentEntities[key] = set = new HashSet<int>();
+            set.Add(netId);
+        }
+
+        private static void RemoveFromEntityIndex(int netId)
+        {
+            if (AuthorityManager.TryGetCachedSegment(netId, out var old)
+                && SegmentEntities.TryGetValue(old, out var set))
+            {
+                set.Remove(netId);
+                if (set.Count == 0) SegmentEntities.Remove(old);
+            }
+        }
+
         /// <summary>Nearest live enemy Unit to <paramref name="from"/> beyond 2u — the `tpnearest`
         /// benchmark helper. Returns 0 when none.</summary>
         internal static int NearestLiveUnit(Vector2 from, out Vector2 pos)
@@ -286,6 +324,7 @@ namespace PunkMultiverse.Sync
             _applyingRemote = false;
             LiveEntities.Clear();
             LiveRefs.Clear();
+            SegmentEntities.Clear();
             ClearCandidateClassCache();
             Lifetimes.Clear();
             SeenLifetimeNetIds.Clear();
@@ -577,6 +616,7 @@ namespace PunkMultiverse.Sync
                 Unit = current.GetComponent<Unit>(),
                 Damagable = current.GetComponent<DamagableResource>(),
             };
+            UpdateEntityIndex(netId, AuthorityManager.SegmentOf(current.transform.position));
             registration.MakeCanonical();
             return registration;
         }
@@ -1002,6 +1042,7 @@ namespace PunkMultiverse.Sync
                 LastSentState.Remove(netId);
                 NextStarvedRequestAt.Remove(netId);
                 LastStarvedPromotionAt.Remove(netId);
+                RemoveFromEntityIndex(netId);      // BEFORE ForgetEntity — needs the forward entry
                 AuthorityManager.ForgetEntity(netId);
             }
             // Explicit authority is based on concrete availability. If its simulator streams the
@@ -1680,8 +1721,9 @@ namespace PunkMultiverse.Sync
                 {
                     var livePos = posRefs.Rb != null ? posRefs.Rb.position
                         : (Vector2)posRefs.Entity.transform.position;
-                    currentlyMine = AuthorityManager.OwnerOf(AuthorityManager.SegmentOf(livePos))
-                        == session.LocalSlot;
+                    var liveSeg = AuthorityManager.SegmentOf(livePos);
+                    UpdateEntityIndex(netId, liveSeg); // 20Hz index write from an already-read pos
+                    currentlyMine = AuthorityManager.OwnerOf(liveSeg) == session.LocalSlot;
                 }
                 else continue; // no live object — nothing to collect either way
                 bool boundaryHandoff = false;
@@ -2980,6 +3022,7 @@ namespace PunkMultiverse.Sync
         }
 
         private static float _nextStarvedScanAt;
+        private static readonly List<int> _starvedScanScratch = new List<int>(64); // ring-scan reuse
 
         private static void DetectStarvedPuppets(NetSession session)
         {
@@ -3000,10 +3043,24 @@ namespace PunkMultiverse.Sync
             if (now < _availabilityRecoveryReadyAt || now < _nextStarvedScanAt) return;
             _nextStarvedScanAt = now + StarvedScanInterval;
 
-            foreach (var kv in LiveEntities)
+            // COARSE-TO-FINE (Omar's filter-order review, 2026-07-24): only entities near a live
+            // local ship can pass the stability gate (45u), so walk the segment buckets within
+            // Chebyshev radius 2 of the ship (45u / 25u segments, +margin) instead of touching
+            // every live entity. Was: all ~200 entities x 2 GetComponents every 0.5s; now: the
+            // handful actually in range.
+            var localShip = ShipSync.LocalShip;
+            if (localShip == null) return; // no ship = the gate rejects everything anyway
+            var shipSeg = AuthorityManager.SegmentOf(localShip.transform.position);
+            _starvedScanScratch.Clear();
+            for (int dx = -2; dx <= 2; dx++)
+                for (int dy = -2; dy <= 2; dy++)
+                    if (SegmentEntities.TryGetValue(
+                            new AuthorityManager.SegmentKey(shipSeg.X + dx, shipSeg.Y + dy), out var bucket))
+                        foreach (int id in bucket) _starvedScanScratch.Add(id);
+
+            foreach (int netId in _starvedScanScratch)
             {
-                int netId = kv.Key;
-                var entity = kv.Value;
+                if (!LiveEntities.TryGetValue(netId, out var entity)) continue;
                 if (entity == null || KilledNetIds.Contains(netId)
                     || entity.GetComponent<DuplicateEntityInert>() != null) continue;
                 var puppet = entity.GetComponent<RemoteEntityPuppet>();
@@ -3797,6 +3854,10 @@ namespace PunkMultiverse.Sync
                         () => $"drop {NetDiag.Describe(e.NetId)}: wire position maps to {positionSegment}, group says {transmittedSegment}");
                     continue;
                 }
+                // Accepted-position index write: keeps puppet (and coordinator) entries fresh in
+                // the spatial index without any extra position read — the segment was just
+                // computed for the validation above.
+                UpdateEntityIndex(e.NetId, positionSegment);
                 if (!AuthorityManager.IsStateAuthority(e.NetId, transmittedSegment, msg.Slot, msg.Epoch))
                 {
                     InstrumentationCounters.AuthorityStateDropped();
