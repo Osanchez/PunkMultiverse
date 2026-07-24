@@ -133,8 +133,9 @@ namespace PunkMultiverse
 
             EnemyHealthScalePerPlayer = cfg.Bind("Session", "EnemyHealthScalePerPlayer", 0.25f,
                 "Per-player enemy health scaling used when ENEMY HP SCALING is enabled on the " +
-                "GAME SETTINGS screen: Base Health * (1 + (0.25 * number of players)), counted " +
-                "when the game starts. The host's value applies to the whole session.");
+                "GAME SETTINGS screen: Base Health * (1 + 0.25 * (players - 1)), counted when the " +
+                "game starts — a solo player is the unscaled vanilla baseline. The host's value " +
+                "applies to the whole session.");
 
             CoinDespawnSeconds = cfg.Bind("Session", "CoinDespawnSeconds", 45f,
                 "Co-op only: currency (gold) pickups auto-despawn this many seconds after dropping " +

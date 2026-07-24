@@ -236,7 +236,8 @@ namespace PunkMultiverse.Core
         /// <summary>Host's game-settings choice: scale enemy health by player count.</summary>
         public bool HpScaling { get; private set; }
         /// <summary>Enemy max-health multiplier for the current run, fixed at START GAME:
-        /// 1 + (EnemyHealthScalePerPlayer * connected players). Replicated in START_RUN.</summary>
+        /// 1 + EnemyHealthScalePerPlayer * (connected players - 1) — solo is the vanilla
+        /// baseline. Replicated in START_RUN.</summary>
         public float EnemyHpMult { get; private set; } = 1f;
 
         /// <summary>Rejoin the session this machine last went live in (RejoinMemory) — the
@@ -737,10 +738,12 @@ namespace PunkMultiverse.Core
             int seed = ChosenSeed != 0 ? ChosenSeed : UnityEngine.Random.Range(1, int.MaxValue);
 
             // Enemy health scaling is fixed for the whole run at start:
-            // Base Health * (1 + (EnemyHealthScalePerPlayer * number of players)).
+            // Base Health * (1 + EnemyHealthScalePerPlayer * (players - 1)).
+            // Scaled by EXTRA players beyond the first — a solo player is the vanilla baseline
+            // (the old "* playerCount" gave one player a +25% buffed world).
             int playerCount = _players.Count(p => p != null && p.Connected && !p.IsCoordinator);
             EnemyHpMult = HpScaling
-                ? 1f + Mathf.Max(0f, NetConfig.EnemyHealthScalePerPlayer.Value) * playerCount
+                ? 1f + Mathf.Max(0f, NetConfig.EnemyHealthScalePerPlayer.Value) * Mathf.Max(0, playerCount - 1)
                 : 1f;
             if (EnemyHpMult > 1f)
                 Plugin.Log.LogInfo($"[Run] enemy HP x{EnemyHpMult:F2} ({playerCount} players)");

@@ -63,6 +63,7 @@ namespace PunkMultiverse.UI
         private GameObject _serverPanel;
         private bool _serverSetupOpen;
         private TMP_InputField _ipInput;
+        private TMP_Text _serverPasteLabel;
         private TMP_InputField _portInput;
         private TMP_Text _connectLabel;   // CONNECT button on the server panel
         private TMP_Text _directLabel;    // DIRECT CONNECT button on the connect panel
@@ -560,6 +561,8 @@ namespace PunkMultiverse.UI
                 "THE HOST'S PUBLIC IP OR HOSTNAME", 96);
             _ipInput = MakeInput(ipRow, "IpInput", new Vector2(150, 0), new Vector2(440, 58),
                 "e.g. 203.0.113.5", TMP_InputField.ContentType.Standard, 64, 22);
+            _serverPasteLabel = UiTheme.MakeButton(ipRow, "Btn_PasteAddr", "PASTE",
+                new Vector2(455, 0), new Vector2(150, 54), PasteAddressIntoInputs, 16);
 
             var portRow = MakeSettingsRow(_serverPanel.transform, "PORT",
                 "UDP PORT (DEFAULT 7778)", -20);
@@ -575,6 +578,28 @@ namespace PunkMultiverse.UI
             _serverSetupOpen = true;
             if (_portInput != null && string.IsNullOrEmpty(_portInput.text)) _portInput.text = "7778";
             Refresh();
+        }
+
+        /// <summary>PASTE on the DIRECT CONNECT screen: accepts "host", "host:port", or a full
+        /// sftp/steam-style paste with junk around it — fills both fields.</summary>
+        private void PasteAddressIntoInputs()
+        {
+            var raw = (GUIUtility.systemCopyBuffer ?? "").Trim();
+            if (raw.Length == 0) { Toast.Show("CLIPBOARD IS EMPTY", 3f); return; }
+            // Strip an optional scheme ("udp://", "sftp://"...) and anything after whitespace.
+            int scheme = raw.IndexOf("://", System.StringComparison.Ordinal);
+            if (scheme >= 0) raw = raw.Substring(scheme + 3);
+            int ws = raw.IndexOfAny(new[] { ' ', '\t', '\r', '\n' });
+            if (ws >= 0) raw = raw.Substring(0, ws);
+
+            string host = raw;
+            int colon = raw.LastIndexOf(':');
+            if (colon > 0 && int.TryParse(raw.Substring(colon + 1), out int port) && port > 0 && port <= 65535)
+            {
+                host = raw.Substring(0, colon);
+                if (_portInput != null) _portInput.text = port.ToString();
+            }
+            if (_ipInput != null) _ipInput.text = host;
         }
 
         private void OnDirectConnect()
@@ -1116,7 +1141,7 @@ namespace PunkMultiverse.UI
             }
             else if (_serverPanel != null && _serverPanel.activeSelf)
             {
-                grid.Add(new Selectable[] { _ipInput });
+                grid.Add(new Selectable[] { _ipInput, UiTheme.ButtonOf(_serverPasteLabel) });
                 grid.Add(new Selectable[] { _portInput });
                 grid.Add(new Selectable[] { UiTheme.ButtonOf(_connectLabel) });
                 grid.Add(new Selectable[] { back });
