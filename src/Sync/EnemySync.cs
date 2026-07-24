@@ -306,6 +306,12 @@ namespace PunkMultiverse.Sync
             return AuthorityManager.OwnerOf(netId);
         }
 
+        /// <summary>[Growth] watchdog inputs: per-entity send bookkeeping is pruned on stream-out
+        /// (UnregisterLive), so in steady state these hover near the live-entity count — sustained
+        /// growth on a long-running server means the pruning regressed.</summary>
+        internal static int SendStateCount => LastSentState.Count;
+        internal static int SendPriorityCount => SendPriority.Count;
+
         /// <summary>One-line send/receive truth for a single entity — the dev harness `sync`
         /// command. Answers "is the owner collecting this at all / is the viewer receiving"
         /// without log archaeology.</summary>
@@ -953,6 +959,15 @@ namespace PunkMultiverse.Sync
                 SimulationSegments.Remove(netId);
                 LastSentAt.Remove(netId);
                 LastSentPos.Remove(netId);
+                // Long-running servers: every per-entity SEND bookkeeping entry must die with the
+                // live object, or a session with continuous runtime spawns grows these forever
+                // (each spawn mints a fresh netId). All of it is re-derivable — a re-streamed
+                // entity gets one full send (no delta baseline) and fresh rate-limit windows.
+                SendPriority.Remove(netId);
+                LastSentState.Remove(netId);
+                NextStarvedRequestAt.Remove(netId);
+                LastStarvedPromotionAt.Remove(netId);
+                AuthorityManager.ForgetEntity(netId);
             }
             // Explicit authority is based on concrete availability. If its simulator streams the
             // entity out, clear the exception immediately so another viewer can claim it.

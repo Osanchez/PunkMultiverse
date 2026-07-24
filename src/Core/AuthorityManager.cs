@@ -146,6 +146,14 @@ namespace PunkMultiverse.Core
             return new SegmentKey(Mathf.FloorToInt(p.x / size), Mathf.FloorToInt(p.y / size));
         }
 
+        /// <summary>Drop a stream-out entity's cached segment mapping — without this the cache
+        /// accrues one entry per netId ever queried, unbounded on a long-running server whose
+        /// runtime spawns mint fresh netIds continuously. Re-cached on demand by TrySegmentOf.</summary>
+        internal static void ForgetEntity(int netId) => EntitySegments.Remove(netId);
+
+        /// <summary>[Growth] watchdog input — see EnemySync.SendStateCount.</summary>
+        internal static int EntitySegmentCacheCount => EntitySegments.Count;
+
         internal static bool TrySegmentOf(int netId, out SegmentKey key)
         {
             if (NetIds.TryGetInstanceId(netId, out int instanceId))

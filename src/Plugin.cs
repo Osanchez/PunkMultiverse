@@ -49,6 +49,13 @@ namespace PunkMultiverse
                 Core.DiagWatch.Register("visualProjectiles", () => Sync.ProjectileSync.VisualProjectileCount, floor: 128);
                 Core.DiagWatch.Register("liveReplicas", () => Sync.EnemySync.LiveEntityCount, floor: 400);
                 Core.DiagWatch.Register("capturedLoot", () => Patches.LootDiag.CapturedLootCount, floor: 32);
+                // Long-running-server guards: per-entity send bookkeeping is pruned on stream-out,
+                // so these plateau near the live-entity count; the segment cache plateaus near the
+                // manifest size. Sustained climb = pruning regressed (a marathon session would
+                // otherwise grow them forever, one entry per runtime spawn ever).
+                Core.DiagWatch.Register("sendState", () => Sync.EnemySync.SendStateCount, floor: 512);
+                Core.DiagWatch.Register("sendPriority", () => Sync.EnemySync.SendPriorityCount, floor: 512);
+                Core.DiagWatch.Register("segmentCache", () => Core.AuthorityManager.EntitySegmentCacheCount, floor: 12000);
             };
 
             _harmony = new Harmony(Guid);
