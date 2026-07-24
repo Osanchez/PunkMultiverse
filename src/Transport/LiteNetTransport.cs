@@ -301,6 +301,10 @@ namespace PunkMultiverse.Transport
                 {
                     _idByPeer.Remove(peer.Id);
                     _peerById.Remove(id);
+                    // Probe tracking too: LiteNetLib never reuses peer ids, so without this a
+                    // long-lived server accrues one dead entry per connection ever made.
+                    _lastDepth.Remove(id);
+                    _stalledSinceTick.Remove(id);
                     Plugin.Log.LogInfo($"[Udp] peer {id} disconnected ({info.Reason})");
                     PeerDisconnected?.Invoke(id);
                 }
