@@ -131,12 +131,15 @@ namespace PunkMultiverse.Protocol
         public List<RosterEntry> Roster;
         public int HostSeed;       // 0 = random at start
         public bool FriendlyFire;  // host's game-settings choice; every client enforces it
+        public byte WorldStatus;   // dedicated server only: 0 = n/a, 1 = building the next world,
+                                   // 2 = world pre-built and ready (START skips generation)
 
         public void Write(NetWriter w)
         {
             w.WriteMsgType(MsgType.LobbyState);
             w.WriteInt(HostSeed);
             w.WriteBool(FriendlyFire);
+            w.WriteByte(WorldStatus);
             w.WriteByte((byte)(Roster?.Count ?? 0));
             if (Roster != null) foreach (var e in Roster) e.Write(w);
         }
@@ -147,6 +150,7 @@ namespace PunkMultiverse.Protocol
             {
                 HostSeed = r.ReadInt(),
                 FriendlyFire = r.ReadBool(),
+                WorldStatus = r.ReadByte(),
                 Roster = new List<RosterEntry>(),
             };
             int n = r.ReadByte();
@@ -1672,7 +1676,7 @@ namespace PunkMultiverse.Protocol
     }
 
     /// <summary>What an <see cref="AdminCommandMsg"/> asks the coordinator to do.</summary>
-    public enum AdminCmd : byte { None = 0, StartRun = 1, Kick = 2 }
+    public enum AdminCmd : byte { None = 0, StartRun = 1, Kick = 2, EndRun = 3 }
 
     /// <summary>Coordinator -> one player: your private session-admin capability token. Sent once when
     /// the player is promoted (first real joiner, or a handoff). The token is the ONLY thing that

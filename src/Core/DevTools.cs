@@ -350,6 +350,13 @@ namespace PunkMultiverse.Core
                     Out($"start: admin={session.IsSessionAdmin} allReady={session.AllReady} state={session.State}");
                     session.RequestStart();
                     return;
+                case "endrun":
+                    // End the run for the whole party and return everyone to the lobby (admin
+                    // in-game, host, or the server console). The dedicated server immediately
+                    // starts pre-building the next world.
+                    Out($"endrun: admin={session.IsSessionAdmin} state={session.State}");
+                    session.RequestEndRun();
+                    return;
                 case "ready":
                 {
                     bool want = parts.Length < 2 || !parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);

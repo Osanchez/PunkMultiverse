@@ -64,7 +64,17 @@ namespace PunkMultiverse.Sync
             private static void Postfix(ShipManager __instance, Level level, RunArguments runArguments)
             {
                 var session = NetSession.Instance;
-                if (session == null || !NetSession.Active || session.State != SessionState.Loading) return;
+                // PreGenLoading: a coordinator pre-building the next world runs this scene load
+                // while the session is still in Lobby. Skipping it left _shipManager null for the
+                // whole run — EnsureLatePuppets could never spawn client puppet ships, so the
+                // authority scan saw zero simulators and NOTHING was ever proactively assigned:
+                // every enemy on the dedicated server froze for the full 10s starved-dormant
+                // patience before a client rescue claimed it (field report 2026-07-25). The
+                // vanilla ghost ship also survived. Roster is empty during a pre-build, so this
+                // just captures refs + removes the vanilla ship; puppets spawn at go-live via
+                // EnsureLatePuppets.
+                if (session == null || !NetSession.Active
+                    || (session.State != SessionState.Loading && !session.PreGenLoading)) return;
                 try
                 {
                     Spawn(__instance, level, session);
@@ -95,8 +105,21 @@ namespace PunkMultiverse.Sync
                     // path (built for dead players) covers the coordinator's state sends.
                     var vanillaShip = sm.Ships[0];
                     LocalShip = null;
-                    Plugin.Log.LogInfo("[Ships] coordinator mode — removing the vanilla local ship (server plays nobody)");
-                    DestroyShipObject(vanillaShip, (byte)session.LocalSlot, "coordinator is shipless");
+                    if (session.PreGenLoading)
+                    {
+                        // Pre-build: the roster is empty, so no puppet will pad ShipManager.Ships
+                        // and vanilla AssignHuds (unconditional Ships[0] at OnLevelGenerated) would
+                        // throw and KILL the generation chain — observed as a wedged pre-build.
+                        // Defer the removal to START (RestoreLevelContext); the ship idles Static
+                        // through the held world and is excluded from every determinism digest.
+                        _deferredVanillaShip = vanillaShip;
+                        Plugin.Log.LogInfo("[Ships] coordinator pre-build — vanilla ship removal deferred to START");
+                    }
+                    else
+                    {
+                        Plugin.Log.LogInfo("[Ships] coordinator mode — removing the vanilla local ship (server plays nobody)");
+                        DestroyShipObject(vanillaShip, (byte)session.LocalSlot, "coordinator is shipless");
+                    }
                 }
                 else
                 {
@@ -155,6 +178,50 @@ namespace PunkMultiverse.Sync
         }
 
         // A player who joined mid-run wasn't in the level-load spawn pass — give them a puppet
+        // ---------------------------------------------------------------- pre-gen reuse support
+
+        // Pre-generated-world reuse never reloads the scene, so SpawnShipGameObjects cannot refire
+        // after BeginRun's Reset() nulls the level context it captured during the pre-build. With
+        // _shipManager null, EnsureLatePuppets can never spawn client puppet ships, the authority
+        // scan sees zero simulators, and nothing is ever proactively assigned. The session stashes
+        // the context before its resets and restores it in the reuse/adopt branches.
+        private static ShipManager _stashShipManager;
+        private static Level _stashLevel;
+        private static Ship _deferredVanillaShip; // pre-build coordinator ship, removed at START
+
+        internal static void StashLevelContext()
+        {
+            _stashShipManager = _shipManager;
+            _stashLevel = _level;
+        }
+
+        internal static void RestoreLevelContext()
+        {
+            if (_stashShipManager == null) return; // nothing captured yet — the live hook will fire
+            _shipManager = _stashShipManager;
+            _level = _stashLevel;
+            _stashShipManager = null;
+            _stashLevel = null;
+            Plugin.Log.LogInfo("[Ships] level context restored for pre-built world reuse");
+            var session = NetSession.Instance;
+            if (_deferredVanillaShip != null && session != null)
+            {
+                // The run is starting for real now — evict the ghost (see the pre-build branch in
+                // Spawn). Connected players' puppets spawn right after via EnsureLatePuppets, so
+                // AssignHuds has already run against a populated list and never re-runs.
+                Plugin.Log.LogInfo("[Ships] coordinator mode — removing the vanilla local ship (deferred from pre-build)");
+                DestroyShipObject(_deferredVanillaShip, (byte)session.LocalSlot, "coordinator is shipless");
+                _deferredVanillaShip = null;
+            }
+        }
+
+        internal static void ClearStashedLevelContext()
+        {
+            _stashShipManager = null;
+            _stashLevel = null;
+            _deferredVanillaShip = null; // world discarded — the next build gets a fresh one
+        }
+
         // as soon as they show up in the roster.
         private static void EnsureLatePuppets(NetSession session)
         {
@@ -440,6 +507,25 @@ namespace PunkMultiverse.Sync
         [HarmonyPatch(typeof(GameController), "AssignHuds")]
         internal static class NoPuppetHuds
         {
+            // Vanilla AssignHuds indexes Ships[0] unconditionally. A shipless coordinator only
+            // survives it when connected players' puppets pad the list; guard the empty case so a
+            // HUD nicety can never throw inside GameController.OnLevelGenerated and kill the
+            // whole generation chain (it is a fire-and-forget async — the failure is silent).
+            private static bool Prefix(GameController __instance)
+            {
+                try
+                {
+                    var sm = Traverse.Create(__instance).Field("shipManager").GetValue() as ShipManager;
+                    if (sm != null && sm.Ships.Count == 0)
+                    {
+                        Plugin.Log.LogInfo("[Ships] AssignHuds skipped — no ships exist (headless coordinator)");
+                        return false;
+                    }
+                }
+                catch { }
+                return true;
+            }
+
             private static void Postfix(GameController __instance) => EnforcePuppetHudGate(__instance);
         }
 

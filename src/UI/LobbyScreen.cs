@@ -1093,7 +1093,14 @@ namespace PunkMultiverse.UI
             if (_backLabel != null) _backLabel.text = inLobby ? "LEAVE" : "BACK";
             if (_padHintLabel != null) _padHintLabel.text = inLobby ? "LEAVE" : "BACK";
 
-            _statusText.text = session.LastError ?? (session.State == SessionState.Connecting ? "CONNECTING…" : "");
+            // Dedicated-server world status beats silence: between runs the server pre-builds
+            // the next world, and this line is what makes that wait read as progress.
+            string worldStatus = session.State == SessionState.Lobby && session.LastError == null
+                ? session.ServerWorldStatus == 1 ? "SERVER IS PREPARING THE NEXT WORLD…"
+                : session.ServerWorldStatus == 2 ? "WORLD READY — START WHEN EVERYONE IS" : ""
+                : "";
+            _statusText.text = session.LastError
+                ?? (session.State == SessionState.Connecting ? "CONNECTING…" : worldStatus);
             _statusText.color = session.LastError != null ? UiTheme.Bad : UiTheme.Accent;
 
             if (inLobby) RefreshLobby(session);

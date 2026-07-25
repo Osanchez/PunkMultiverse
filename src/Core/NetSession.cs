@@ -22,7 +22,8 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 15; // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder
+        public const int ProtocolVersion = 16; // 16 = LobbyStateMsg.WorldStatus + AdminCmd.EndRun
+                                               // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder
                                                 // date). 14 = main's 13 (EntityFireMsg.WeaponHash, fire
                                                 // fidelity) + this branch's sidecar/admin additions
                                                 // (RosterEntry.IsAdmin, LobbyMembers 88, AdminGrant 89,
@@ -572,6 +573,29 @@ namespace PunkMultiverse.Core
                 SendAdminCommand(AdminCmd.StartRun, 0);
         }
 
+        /// <summary>End the current run for the whole party and return everyone to the lobby.
+        /// Any host (including the coordinator via its console/devcmd) does it directly; a
+        /// session admin in-game sends the token-proven request. The lobby then works as
+        /// always — ready up, START, new world.</summary>
+        public void RequestEndRun()
+        {
+            if (IsHost) { EndRunNow("host command"); return; }
+            if (LocalPlayer?.IsAdmin == true && _localAdminToken != 0)
+                SendAdminCommand(AdminCmd.EndRun, 0);
+        }
+
+        /// <summary>Host: end the run — broadcast RunEnded (every client returns to the lobby,
+        /// the same hook party-wipe uses) and open our own lobby.</summary>
+        private void EndRunNow(string reason)
+        {
+            if (State != SessionState.InGame && State != SessionState.Loading) return;
+            Plugin.Log.LogInfo($"[Session] run ended by admin ({reason}) — returning everyone to the lobby");
+            _writer.Reset();
+            _writer.WriteMsgType(MsgType.RunEnded);
+            ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
+            EndRunToLobby();
+        }
+
         /// <summary>UI entry: kick a player. Player-host kicks locally; a coordinator's admin sends a
         /// token-proven request. The KICK buttons call this instead of KickPlayer directly.</summary>
         public void RequestKick(byte slot)
@@ -737,6 +761,11 @@ namespace PunkMultiverse.Core
         /// 0 = roll a random one at start. Visible to all in lobby.</summary>
         public int ChosenSeed { get; private set; }
 
+        /// <summary>Client view of the dedicated server's next-world pre-generation (from
+        /// LobbyState): 0 n/a, 1 building, 2 ready. Lobby UI surfaces it so the wait between
+        /// runs reads as progress instead of a hang.</summary>
+        public byte ServerWorldStatus { get; private set; }
+
         /// <summary>Host only: broadcast the seed and launch the synchronized run.</summary>
         public void StartRun()
         {
@@ -807,6 +836,10 @@ namespace PunkMultiverse.Core
 
         private void BeginRun(int seed)
         {
+            // A pre-built (or in-flight pre-building) world will skip the scene reload, so the
+            // level context ShipSync captured during the pre-build must survive the resets below
+            // — stash it now, restore it in the reuse/adopt branches at the tail.
+            if (_preGenDone || _preGenInProgress) Sync.ShipSync.StashLevelContext();
             CurrentRunSeed = seed;
             _levelChecksums.Clear();
             _levelFingerprints.Clear();
@@ -864,6 +897,7 @@ namespace PunkMultiverse.Core
                 _preGenInProgress = false;
                 _preGenSeed = 0;
                 _autoPicked = preGenPicked;
+                Sync.ShipSync.RestoreLevelContext(); // no-op if the spawn hook hasn't fired yet
                 Plugin.Log.LogInfo($"[PreGen] START during pre-generation of seed {seed} — adopting the in-flight build");
                 return;
             }
@@ -878,6 +912,7 @@ namespace PunkMultiverse.Core
                 ResumeWorldClock();
                 Sync.WorldSync.RestoreBaseline(_preGenBaseline);
                 NetIds.RestoreLocalFingerprints(_preGenFps);
+                Sync.ShipSync.RestoreLevelContext();
                 _localLevelChecksum = _preGenChecksum;
                 _localLevelReady = _preGenReady;
                 _levelReadyVisualPending = true;  // TryFinalizeLevelReadyVisual publishes next Update
@@ -925,6 +960,8 @@ namespace PunkMultiverse.Core
         private System.Collections.Generic.Dictionary<ulong, int> _preGenFps;
         private bool _worldClockFrozen;
         private float _preGenNextAttemptAt;
+        private float _preGenStartedAt;
+        private const float PreGenBuildTimeout = 180f; // Wine builds measured ~26s; 180 = surely dead
 
         /// <summary>True while the coordinator is running the launch flow for a pre-build (session
         /// still in Lobby). RunStarter's seed-injection patches key on this — without it they
@@ -965,6 +1002,7 @@ namespace PunkMultiverse.Core
             if (!_preGenDone && !_preGenInProgress) return;
             Plugin.Log.LogInfo($"[PreGen] discarding pre-built world for seed {_preGenSeed} — {why}");
             ResumeWorldClock();
+            Sync.ShipSync.ClearStashedLevelContext();
             _preGenDone = false;
             _preGenInProgress = false;
             _preGenLevel = null;
@@ -979,6 +1017,14 @@ namespace PunkMultiverse.Core
             if (!NetConfig.IsCoordinator || !NetConfig.PreGenerateWorld.Value) return;
             if (_worldClockFrozen && Time.timeScale != 0f) Time.timeScale = 0f; // TimeManager fights back
             if (State != SessionState.Lobby) return;
+            // A build that dies mid-generation (an exception in the game's own chain) would
+            // otherwise wedge pre-generation forever: in-progress never completes, never retries.
+            if (_preGenInProgress && Time.unscaledTime - _preGenStartedAt > PreGenBuildTimeout)
+            {
+                Plugin.Log.LogError($"[PreGen] build for seed {_preGenSeed} produced no world in " +
+                    $"{PreGenBuildTimeout:0}s — assuming it died; discarding and retrying");
+                InvalidatePreGen("build timed out");
+            }
             if (_preGenDone || _preGenInProgress) return;
             if (Time.unscaledTime < _preGenNextAttemptAt) return;
             _preGenNextAttemptAt = Time.unscaledTime + 60f; // retry window if a build dies outright
@@ -989,10 +1035,12 @@ namespace PunkMultiverse.Core
             ChosenSeed = seed;
             _preGenSeed = seed;
             _preGenInProgress = true;
+            _preGenStartedAt = Time.unscaledTime;
             _autoPicked = false;
             _autoPickAt = Time.unscaledTime + 2f; // the loadout selector still needs clicking past
             Plugin.Log.LogInfo($"[PreGen] building the next world (seed {seed}) while the lobby is idle");
             RunStarter.LaunchRun(seed);
+            BroadcastLobbyState(); // lobby screens show "PREPARING THE NEXT WORLD…"
         }
 
         /// <summary>The pre-build finished generating: save everything a run start would have
@@ -1019,6 +1067,7 @@ namespace PunkMultiverse.Core
             _preGenDone = true;
             _preGenInProgress = false;
             FreezeWorldClock();
+            BroadcastLobbyState(); // lobby screens flip to "WORLD READY"
             Plugin.Log.LogInfo($"[PreGen] world ready (seed {_preGenSeed}, checksum {checksum:X16}, " +
                 $"entities {audit.EntityCount}/{audit.EntityDigest:X16}, plants {audit.PlantCount}/{audit.PlantDigest:X16}) " +
                 "— frozen; START will reuse it");
@@ -2171,9 +2220,17 @@ namespace PunkMultiverse.Core
                 if (dropped) BroadcastLobbyState();
             }
             if (announce)
-                UI.Toast.Show(IsHost
-                    ? "RUN OVER — PRESS RETRY FOR A NEW RUN"
-                    : "RUN OVER — WAITING FOR THE HOST TO RETRY", 6f);
+            {
+                // On a dedicated server "waiting for the host" is wrong and reads like a hang —
+                // the server opens a fresh lobby immediately and starts pre-building the next
+                // world; the admin (or ready-up flow) starts the next run whenever.
+                bool dedicated = _players[HostSlot]?.IsCoordinator == true;
+                UI.Toast.Show(dedicated
+                    ? "RUN OVER — SERVER LOBBY OPEN, PREPARING THE NEXT WORLD"
+                    : IsHost
+                        ? "RUN OVER — PRESS RETRY FOR A NEW RUN"
+                        : "RUN OVER — WAITING FOR THE HOST TO RETRY", 6f);
+            }
             _quietLobbyOnce = true; // stay on the game-over screen, not the lobby overlay
             SetState(SessionState.Lobby);
             RosterChanged?.Invoke();
@@ -2837,6 +2894,9 @@ namespace PunkMultiverse.Core
                             break;
                         case AdminCmd.Kick:
                             if (cmd.Arg != _adminSlot) KickPlayer(cmd.Arg); // an admin can't kick itself
+                            break;
+                        case AdminCmd.EndRun:
+                            EndRunNow($"admin P{_adminSlot + 1}");
                             break;
                     }
                     break;
@@ -3549,7 +3609,13 @@ namespace PunkMultiverse.Core
         private void BroadcastLobbyState()
         {
             _writer.Reset();
-            new LobbyStateMsg { Roster = BuildRoster(), HostSeed = ChosenSeed, FriendlyFire = FriendlyFire }.Write(_writer);
+            new LobbyStateMsg
+            {
+                Roster = BuildRoster(),
+                HostSeed = ChosenSeed,
+                FriendlyFire = FriendlyFire,
+                WorldStatus = (byte)(!NetConfig.IsCoordinator ? 0 : _preGenDone ? 2 : _preGenInProgress ? 1 : 0),
+            }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
         }
 
@@ -3600,6 +3666,7 @@ namespace PunkMultiverse.Core
         {
             var lobby = LobbyStateMsg.Read(_reader);
             ChosenSeed = lobby.HostSeed;
+            ServerWorldStatus = lobby.WorldStatus;
             FriendlyFire = lobby.FriendlyFire;
             ApplyRoster(lobby.Roster);
             if (LocalSlot >= 0 && _players[LocalSlot] != null) _players[LocalSlot].IsLocal = true;
