@@ -63,16 +63,28 @@ namespace PunkMultiverse.Core
         }
 
         /// <summary>DEV: pick the first loadout programmatically (for clickless two-instance tests).</summary>
+        private static float _nextAutoPickDiagAt;
+
+        /// <summary>Why the retry loop is still retrying (throttled) — a silent forever-retry here
+        /// leaves the coordinator parked in the loadout selector with no clue in the log.</summary>
+        private static void AutoPickDiag(string why)
+        {
+            if (Time.unscaledTime < _nextAutoPickDiagAt) return;
+            _nextAutoPickDiagAt = Time.unscaledTime + 5f;
+            Plugin.Log.LogWarning($"[Run] auto-pick waiting: {why} " +
+                $"(active scene '{UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}')");
+        }
+
         public static bool TryAutoPickLoadout()
         {
             var screen = Object.FindFirstObjectByType<RunSetupScreen>();
-            if (screen == null) return false;
+            if (screen == null) { AutoPickDiag("no RunSetupScreen in the loaded scene"); return false; }
             var pool = Resources.FindObjectsOfTypeAll<LoadoutPool>().FirstOrDefault();
             var loadouts = pool != null
                 ? Traverse.Create(pool).Field("loadouts").GetValue() as System.Collections.Generic.List<LoadoutTemplate>
                 : null;
             var pick = loadouts?.FirstOrDefault() ?? Resources.FindObjectsOfTypeAll<LoadoutTemplate>().OrderBy(t => t.name).FirstOrDefault();
-            if (pick == null) return false;
+            if (pick == null) { AutoPickDiag("RunSetupScreen present but no LoadoutTemplate loaded yet"); return false; }
             var m = AccessTools.Method(typeof(RunSetupScreen), "OnLoadoutSelected");
             if (m == null)
             {
