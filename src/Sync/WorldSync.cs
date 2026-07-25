@@ -103,6 +103,20 @@ namespace PunkMultiverse.Sync
             catch (Exception e) { Plugin.Log.LogWarning($"[World] baseline capture failed: {e.Message}"); }
         }
 
+        /// <summary>World pre-generation support: the terrain baseline must be the BUILD-time cell
+        /// snapshot (identical to what every client captures at its own generation), not a
+        /// re-capture of the held world — some cell simulation keeps running while a pre-built
+        /// world waits, and diffing against an evolved baseline would desync terrain sync's
+        /// reference point across machines. BeginRun's Reset() wipes the baseline, so the session
+        /// exports it at build and restores it at START.</summary>
+        internal static byte[] ExportBaseline() => _baseline;
+
+        internal static void RestoreBaseline(byte[] baseline)
+        {
+            _baseline = baseline;
+            Plugin.Log.LogInfo($"[World] terrain baseline restored from pre-generation ({baseline?.Length ?? 0} cells)");
+        }
+
         private static bool ParamsMatch(MethodInfo m, params Type[] types)
         {
             var ps = m.GetParameters();

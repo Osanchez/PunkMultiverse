@@ -38,7 +38,13 @@ namespace PunkMultiverse.Core
             private static bool Prefix(RunSetupScreen __instance)
             {
                 var session = NetSession.Instance;
-                if (session == null || !NetSession.Active || session.State != SessionState.Loading) return true;
+                // PreGenLoading: a coordinator building the next world during lobby idle is a run
+                // launch in every way except session state — the bypass and seed injection must
+                // fire for it too. (Gating on Loading alone silently generated pre-built worlds
+                // with a VANILLA seed: right world shape, wrong world — every reuse then tripped
+                // the determinism barrier and looked like "drift".)
+                if (session == null || !NetSession.Active
+                    || (session.State != SessionState.Loading && !session.PreGenLoading)) return true;
                 var args = (RunArguments)ArgsF.GetValue(__instance);
                 Plugin.Log.LogInfo("[Run] bypassing run-setup interceptors (net run) — going to game scene");
                 GameScene.GoToGameScene(args); // InjectSeed below stamps the synced seed
@@ -53,7 +59,8 @@ namespace PunkMultiverse.Core
             private static void Prefix(ref RunArguments __0)
             {
                 var session = NetSession.Instance;
-                if (session == null || !NetSession.Active || session.State != SessionState.Loading) return;
+                if (session == null || !NetSession.Active
+                    || (session.State != SessionState.Loading && !session.PreGenLoading)) return; // PreGenLoading: see BypassStartInterceptors
                 __0.seed = PendingSeed;
                 __0.isCoop = false;
                 __0.isContinue = false;

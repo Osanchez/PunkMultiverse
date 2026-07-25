@@ -850,15 +850,185 @@ namespace PunkMultiverse.Core
             ClockSync.Reset();
             EconomyStash.Reset();
             Sync.HookSync.Reset();
+            bool preGenPicked = _autoPicked; // a pre-build may already be past the selector
             _autoPicked = false;
             _autoPickAt = Time.unscaledTime + 2f;
             SetState(SessionState.Loading);
+
+            // START during an in-flight pre-build of this very seed: the scene is already loading
+            // and the generator already running — adopt it as this run's generation instead of
+            // launching a second one. (_preGenInProgress cleared => OnLevelGenerated takes the
+            // normal Loading path and publishes live, exactly like a non-pre-gen start.)
+            if (_preGenInProgress && _preGenSeed == seed)
+            {
+                _preGenInProgress = false;
+                _preGenSeed = 0;
+                _autoPicked = preGenPicked;
+                Plugin.Log.LogInfo($"[PreGen] START during pre-generation of seed {seed} — adopting the in-flight build");
+                return;
+            }
+
+            // Standing pre-built world for exactly this seed: skip generation entirely and publish
+            // the SAVED build-time captures — checksum, fingerprint, baseline, identities — the
+            // same lifecycle point every client hashes its fresh world at. The resets above wiped
+            // WorldSync/NetIds, so restore rather than recapture (the held world has settled since
+            // build; recaptured values would not match any client's generation-time snapshot).
+            if (_preGenDone && _preGenSeed == seed && _preGenLevel != null)
+            {
+                ResumeWorldClock();
+                Sync.WorldSync.RestoreBaseline(_preGenBaseline);
+                NetIds.RestoreLocalFingerprints(_preGenFps);
+                _localLevelChecksum = _preGenChecksum;
+                _localLevelReady = _preGenReady;
+                _levelReadyVisualPending = true;  // TryFinalizeLevelReadyVisual publishes next Update
+                _levelReadyVisualStartedAt = Time.unscaledTime;
+                _autoPicked = true;               // no scene change => no selector to click past
+                Plugin.Log.LogInfo($"[PreGen] reusing the pre-built world for seed {seed} " +
+                    $"(build-time checksum {_preGenChecksum:X16}) — generation skipped");
+                _preGenDone = false;
+                _preGenLevel = null;
+                _preGenBaseline = null;
+                _preGenFps = null;
+                _preGenSeed = 0;
+                return;
+            }
+
+            if (_preGenDone || _preGenInProgress)
+                InvalidatePreGen($"run started with seed {seed}, not the pre-built {_preGenSeed}");
             RunStarter.LaunchRun(seed);
+        }
+
+        // ---------------------------------------------------------------- world pre-generation
+        //
+        // A dedicated coordinator generates the world ~4x slower than a player's PC (26s vs 6s,
+        // measured live on the Wine server), and the go-live barrier waits for the SLOWEST
+        // participant — so every START made players stare at a loading screen for ~25s. The
+        // expensive part is the GAME's generator; our bookkeeping is ~0.4s. So: while the lobby is
+        // idle, run the normal launch flow (selector -> seed injection -> game scene -> generate),
+        // then hold the world and SAVE everything captured at the level-generated moment — the
+        // checksum, determinism fingerprint, terrain baseline, and identity fingerprints. At START
+        // those saved values are published verbatim: that is the exact lifecycle point every
+        // client hashes its own fresh world at, so the barrier compares like with like. The held
+        // world evolving afterwards (fog conversions run even at timeScale 0) is the same evolution
+        // a normal run has between generation and go-live, and is synced the same way.
+        //
+        // Legal because a dedicated server owns the seed: DIRECT CONNECT clients never send one
+        // (PartyLeaderSettings is only produced by the host-via-sidecar path). If a leader DOES
+        // supply a different seed, the pre-built world is discarded and START generates as before.
+        private int _preGenSeed;               // seed the standing world was built with (0 = none)
+        private bool _preGenInProgress;
+        private bool _preGenDone;
+        private Level _preGenLevel;
+        private ulong _preGenChecksum;                                  // saved build-time values —
+        private LevelReadyMsg _preGenReady;                             // published verbatim at START
+        private byte[] _preGenBaseline;                                 // (see block comment)
+        private System.Collections.Generic.Dictionary<ulong, int> _preGenFps;
+        private bool _worldClockFrozen;
+        private float _preGenNextAttemptAt;
+
+        /// <summary>True while the coordinator is running the launch flow for a pre-build (session
+        /// still in Lobby). RunStarter's seed-injection patches key on this — without it they
+        /// no-op outside Loading and the world silently generates with a vanilla seed.</summary>
+        internal bool PreGenLoading => _preGenInProgress;
+
+        /// <summary>Seed the DeterministicGeneration RNG scopes key on: the live run's seed, or —
+        /// during lobby-time pre-generation, when no run exists yet — the pre-build's seed. The
+        /// scopes originally keyed on CurrentRunSeed alone, which is 0 until BeginRun, so during
+        /// pre-generation every scope silently DEACTIVATED: terrain still matched (it flows from
+        /// the injected RunArguments seed) but plant structure and prop rotation generated from
+        /// the unseeded process-global RNG and never matched any client. Found by digest autopsy:
+        /// counts and terrain equal, entity/plant digests different.</summary>
+        internal int GenerationSeed => _preGenInProgress ? _preGenSeed : CurrentRunSeed;
+
+        /// <summary>Hold the built world as close to as-generated as possible: stops physics and
+        /// AI. (Some cell simulation is not timeScale-driven and keeps running — harmless, because
+        /// START publishes the saved build-time fingerprint, not a re-hash.) The game's own
+        /// TimeManager reasserts timeScale, so TickPreGenerate re-applies the freeze every frame.
+        /// Session networking is unaffected: all cadences run on unscaled time.</summary>
+        private void FreezeWorldClock()
+        {
+            if (_worldClockFrozen) return;
+            _worldClockFrozen = true;
+            Time.timeScale = 0f;
+        }
+
+        private void ResumeWorldClock()
+        {
+            if (!_worldClockFrozen) return;
+            _worldClockFrozen = false;
+            Time.timeScale = 1f;
+        }
+
+        /// <summary>Discard a pre-built world (seed overridden, run ended, session stopped).</summary>
+        private void InvalidatePreGen(string why)
+        {
+            if (!_preGenDone && !_preGenInProgress) return;
+            Plugin.Log.LogInfo($"[PreGen] discarding pre-built world for seed {_preGenSeed} — {why}");
+            ResumeWorldClock();
+            _preGenDone = false;
+            _preGenInProgress = false;
+            _preGenLevel = null;
+            _preGenBaseline = null;
+            _preGenFps = null;
+            _preGenSeed = 0;
+        }
+
+        /// <summary>Coordinator, idle lobby: start building the next run's world now.</summary>
+        private void TickPreGenerate()
+        {
+            if (!NetConfig.IsCoordinator || !NetConfig.PreGenerateWorld.Value) return;
+            if (_worldClockFrozen && Time.timeScale != 0f) Time.timeScale = 0f; // TimeManager fights back
+            if (State != SessionState.Lobby) return;
+            if (_preGenDone || _preGenInProgress) return;
+            if (Time.unscaledTime < _preGenNextAttemptAt) return;
+            _preGenNextAttemptAt = Time.unscaledTime + 60f; // retry window if a build dies outright
+
+            // Adopt an admin-preset seed if one exists; otherwise pick (and KEEP, via ChosenSeed)
+            // our own — StartRun launches with ChosenSeed, so START asks for the world we built.
+            int seed = ChosenSeed != 0 ? ChosenSeed : UnityEngine.Random.Range(1, int.MaxValue);
+            ChosenSeed = seed;
+            _preGenSeed = seed;
+            _preGenInProgress = true;
+            _autoPicked = false;
+            _autoPickAt = Time.unscaledTime + 2f; // the loadout selector still needs clicking past
+            Plugin.Log.LogInfo($"[PreGen] building the next world (seed {seed}) while the lobby is idle");
+            RunStarter.LaunchRun(seed);
+        }
+
+        /// <summary>The pre-build finished generating: save everything a run start would have
+        /// captured at this moment, freeze, and stand by. Nothing is published — the session is
+        /// still in Lobby, and the saved values go out at START.</summary>
+        private void OnPreGenLevelGenerated(Level level)
+        {
+            Sync.WorldSync.CaptureBaseline(level);
+            ulong checksum = RunStarter.ChecksumLevel(level);
+            var audit = DeterminismAudit.Capture();
+            NetIds.PrepareLocal();
+            _preGenLevel = level;
+            _preGenChecksum = checksum;
+            _preGenReady = new LevelReadyMsg
+            {
+                Checksum = checksum,
+                EntityCount = audit.EntityCount,
+                EntityDigest = audit.EntityDigest,
+                PlantCount = audit.PlantCount,
+                PlantDigest = audit.PlantDigest,
+            };
+            _preGenBaseline = Sync.WorldSync.ExportBaseline();
+            _preGenFps = NetIds.ExportLocalFingerprints();
+            _preGenDone = true;
+            _preGenInProgress = false;
+            FreezeWorldClock();
+            Plugin.Log.LogInfo($"[PreGen] world ready (seed {_preGenSeed}, checksum {checksum:X16}, " +
+                $"entities {audit.EntityCount}/{audit.EntityDigest:X16}, plants {audit.PlantCount}/{audit.PlantDigest:X16}) " +
+                "— frozen; START will reuse it");
         }
 
         private void OnLevelGenerated(Level level)
         {
-            if (!Active || State != SessionState.Loading) return;
+            if (!Active) return;
+            if (_preGenInProgress && State == SessionState.Lobby) { OnPreGenLevelGenerated(level); return; }
+            if (State != SessionState.Loading) return;
             Sync.WorldSync.CaptureBaseline(level);
             ulong checksum = RunStarter.ChecksumLevel(level);
             var audit = DeterminismAudit.Capture();
@@ -1381,6 +1551,7 @@ namespace PunkMultiverse.Core
             bool wasInRun = State == SessionState.Loading || State == SessionState.InGame;
             _sidecarSession = false; // future sessions choose their transport from config again
             _haveLeaderSettings = false; _leaderSettingsSent = false;
+            InvalidatePreGen("session stopped");
             _lobbyServerTransport = null; _directTransport = null; _directConnectCode = null; _serverLobbyRequested = false; _allowlistDirty = false;
             _allowedPeers = null;
             _adminSlot = -1; _adminToken = 0; _localAdminToken = 0;
@@ -1666,12 +1837,17 @@ namespace PunkMultiverse.Core
                 // Clickless loadout pick while loading: DEV autostart (AutoReady), OR a headless
                 // coordinator which has no UI to click — without this its loadout selector sits
                 // open forever, its level never generates, and the whole party hangs in Loading.
-                if (State == SessionState.Loading && !_autoPicked && Time.unscaledTime >= _autoPickAt
+                // (_preGenInProgress: a pre-build runs the same selector while still in Lobby.)
+                if ((State == SessionState.Loading || _preGenInProgress) && !_autoPicked
+                    && Time.unscaledTime >= _autoPickAt
                     && (NetConfig.AutoReady.Value || NetConfig.IsCoordinator))
                 {
                     if (RunStarter.TryAutoPickLoadout()) _autoPicked = true;
                     else _autoPickAt = Time.unscaledTime + 1f;
                 }
+
+                // Coordinator: build the next world during lobby idle (see TickPreGenerate).
+                TickPreGenerate();
 
                 // LEVEL_READY is also the client's run-barrier retry. If the final GO_LIVE was
                 // lost (notably on the dev UDP transport), the now-InGame host answers with one
@@ -1944,6 +2120,13 @@ namespace PunkMultiverse.Core
         /// A wiped run's save is deleted — defeat isn't resumable.</summary>
         private void EndRunToLobby(bool announce = true)
         {
+            // The world this run used is dirty (terrain destroyed, entities dead) and its scene is
+            // torn down — drop any standing pre-build and let the idle lobby make a fresh one with
+            // a new seed. (Must live HERE, not in BeginRun: invalidating at run START destroys the
+            // very world START is about to reuse — found the hard way.)
+            InvalidatePreGen("run ended");
+            _preGenNextAttemptAt = Time.unscaledTime + 5f; // let the teardown settle first
+            ChosenSeed = 0;                                // the next world rolls a new seed
             _allDeadSince = -1f;
             _levelChecksums.Clear();
             _levelFingerprints.Clear();
@@ -2601,7 +2784,9 @@ namespace PunkMultiverse.Core
                     if (!NetConfig.IsCoordinator || State != SessionState.Lobby) break;
                     var leader = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
                     if (leader == null) break;
-                    ChosenSeed = settings.Seed;
+                    if (settings.Seed != 0 && settings.Seed != _preGenSeed)
+                        InvalidatePreGen("the party leader chose a different seed");
+                    if (settings.Seed != 0) ChosenSeed = settings.Seed;
                     FriendlyFire = settings.FriendlyFire;
                     HpScaling = settings.HpScaling;
                     Plugin.Log.LogInfo($"[Coordinator] adopted {leader}'s world: seed={settings.Seed} ff={settings.FriendlyFire} hp={settings.HpScaling}");

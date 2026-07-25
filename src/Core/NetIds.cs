@@ -129,6 +129,18 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo($"[Ids] local fingerprints: {_localFps.Count} entities");
         }
 
+        /// <summary>World pre-generation support: the coordinator captures fingerprints when the
+        /// held world is BUILT (the lifecycle point every client captures at), and BeginRun's
+        /// Reset() wipes them — so the session exports the build-time set and restores it at
+        /// START instead of recapturing from a world that has since settled.</summary>
+        internal static Dictionary<ulong, int> ExportLocalFingerprints() => _localFps;
+
+        internal static void RestoreLocalFingerprints(Dictionary<ulong, int> fps)
+        {
+            _localFps = fps;
+            Plugin.Log.LogInfo($"[Ids] local fingerprints restored from pre-generation ({fps?.Count ?? 0} entities)");
+        }
+
         /// <summary>The manifest the host handed out — replayed to rejoining players.</summary>
         public static List<ulong> LastManifest { get; private set; } = new List<ulong>();
 

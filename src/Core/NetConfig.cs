@@ -61,6 +61,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> CoordinatorMode;
         public static ConfigEntry<float> EmptyServerResetSeconds;
         public static ConfigEntry<int> ServerFrameRateCap;
+        public static ConfigEntry<bool> PreGenerateWorld;
         public static ConfigEntry<int> FpsLimit;
         public static ConfigEntry<bool> ResizableWindow;
         public static ConfigEntry<bool> HostViaSidecar;
@@ -254,6 +255,14 @@ namespace PunkMultiverse
                 "until the direct-UDP transport lands, so remote friends cannot join a sidecar " +
                 "session yet. Your pre-lobby seed/settings choices do not reach the sidecar yet " +
                 "(coordinator uses defaults).");
+            PreGenerateWorld = cfg.Bind("Session", "PreGenerateWorld", true,
+                "Dedicated coordinator only: build the next run's world while the lobby is idle " +
+                "instead of when someone presses START. A Wine server generates in ~26s versus a " +
+                "player's ~6s, and START waits for the slowest participant — pre-building moves " +
+                "the server's cost to when nobody is waiting, so START only costs the players' " +
+                "own ~6s. Legal because a dedicated server owns the seed (DIRECT CONNECT clients " +
+                "never send one); if a party leader supplies a different seed, the pre-built " +
+                "world is discarded and generation runs at START as before.");
             ServerFrameRateCap = cfg.Bind("Session", "ServerFrameRateCap", 120,
                 "Dedicated coordinator only: cap the server's frame rate. Headless Unity runs " +
                 "UNCAPPED otherwise (1000+ fps idling in the lobby, pure wasted CPU). 120 keeps " +

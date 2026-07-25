@@ -60,7 +60,37 @@ namespace PunkMultiverse.Core
             }
             Plugin.Log.LogInfo($"[Determinism] entities={snapshot.EntityCount}/{snapshot.EntityDigest:X16} " +
                 $"plants={snapshot.PlantCount}/{snapshot.PlantDigest:X16}");
+            if (NetConfig.VerboseLogs) DumpEntities(entities, snapshot);
             return snapshot;
+        }
+
+        /// <summary>Verbose-only: write one line per entity (and plant structure) to
+        /// BepInEx/audit-dump.txt so a digest mismatch between two machines can be diffed down to
+        /// the exact entities and fields that diverged, instead of guessing from one hash.</summary>
+        private static void DumpEntities(List<EntityData> entities, Snapshot snapshot)
+        {
+            try
+            {
+                var path = System.IO.Path.Combine(BepInEx.Paths.BepInExRootPath, "audit-dump.txt");
+                using (var w = new System.IO.StreamWriter(path, append: false))
+                {
+                    w.WriteLine($"# digest entities={snapshot.EntityCount}/{snapshot.EntityDigest:X16} plants={snapshot.PlantCount}/{snapshot.PlantDigest:X16}");
+                    foreach (var e in entities)
+                    {
+                        w.Write($"{e.instanceId}|{e.entityId}|{e.position.x:R},{e.position.y:R}|{e.rotation:R}");
+                        if (e.TryGetComponent<EntityPlant.Data>(out var plant) && plant != null)
+                        {
+                            ulong pd = Offset;
+                            AddBranch(ref pd, plant.rootBranch);
+                            var fruits = plant.fruits ?? new List<EntityPlant.Data.Fruit>();
+                            w.Write($"|plant:{(plant.plantData != null ? plant.plantData.id : 0)} branch:{pd:X16} fruits:{fruits.Count}");
+                        }
+                        w.WriteLine();
+                    }
+                }
+                Plugin.Log.LogInfo($"[Determinism] entity dump written: {path}");
+            }
+            catch (System.Exception e) { Plugin.Log.LogWarning($"[Determinism] dump failed: {e.Message}"); }
         }
 
         /// <summary>Hashes the actual byte variants consumed by every TilemapUpdater when it

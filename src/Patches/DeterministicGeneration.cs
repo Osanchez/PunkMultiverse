@@ -47,7 +47,7 @@ namespace PunkMultiverse.Patches
         {
             var session = NetSession.Instance;
             var state = new Scope();
-            if (!NetSession.Active || session == null || session.CurrentRunSeed == 0) return state;
+            if (!NetSession.Active || session == null || session.GenerationSeed == 0) return state;
 
             state.Active = true;
             state.UnityState = UnityEngine.Random.state;
@@ -105,7 +105,7 @@ namespace PunkMultiverse.Patches
             private static MethodBase TargetMethod() => AccessTools.Method(typeof(EntityPlant.Data), "Generate");
             private static void Prefix(EntityData __1, EntityPlantData __2, out Scope __state)
             {
-                int runSeed = NetSession.Instance?.CurrentRunSeed ?? 0;
+                int runSeed = NetSession.Instance?.GenerationSeed ?? 0;
                 int plantId = __2 != null ? __2.id : 0;
                 __state = Begin(Mix(runSeed, __1?.instanceId ?? 0, plantId, 0x504C414E), typeof(IntDistribution));
             }
@@ -118,7 +118,7 @@ namespace PunkMultiverse.Patches
             private static MethodBase TargetMethod() => AccessTools.Method(AccessTools.TypeByName("RandomObjectGenerator"), "Generate");
             private static void Prefix(out Scope __state)
             {
-                int runSeed = NetSession.Instance?.CurrentRunSeed ?? 0;
+                int runSeed = NetSession.Instance?.GenerationSeed ?? 0;
                 __state = Begin(Mix(runSeed, 0x524F424A));
             }
             private static void Postfix(Scope __state) => End(__state);
@@ -130,7 +130,7 @@ namespace PunkMultiverse.Patches
             private static MethodBase TargetMethod() => AccessTools.Method(AccessTools.TypeByName("MergedCellsGenerator"), "Generate");
             private static void Prefix(out Scope __state)
             {
-                int runSeed = NetSession.Instance?.CurrentRunSeed ?? 0;
+                int runSeed = NetSession.Instance?.GenerationSeed ?? 0;
                 var dist = AccessTools.TypeByName("MergedCellsGenerator+MergedCellDistribution");
                 __state = Begin(Mix(runSeed, 0x4D43454C), dist);
             }
@@ -143,7 +143,7 @@ namespace PunkMultiverse.Patches
             private static MethodBase TargetMethod() => AccessTools.Method(typeof(StationConnection), "SetPositions");
             private static void Prefix(Station.Data __0, Station.Data __1, out Scope __state)
             {
-                int runSeed = NetSession.Instance?.CurrentRunSeed ?? 0;
+                int runSeed = NetSession.Instance?.GenerationSeed ?? 0;
                 int a = __0?.entity?.instanceId ?? 0;
                 int b = __1?.entity?.instanceId ?? 0;
                 if (a > b) { int swap = a; a = b; b = swap; }
@@ -158,7 +158,7 @@ namespace PunkMultiverse.Patches
             private static MethodBase TargetMethod() => AccessTools.Method(AccessTools.TypeByName("AutoPopper"), "RegisterToPopIfNeeded");
             private static void Prefix(Vector2Int __0, int __2, out Scope __state)
             {
-                int runSeed = NetSession.Instance?.CurrentRunSeed ?? 0;
+                int runSeed = NetSession.Instance?.GenerationSeed ?? 0;
                 __state = Begin(Mix(runSeed, __0.x, __0.y, __2 ^ 0x41504F50));
             }
             private static void Postfix(Scope __state) => End(__state);
@@ -170,7 +170,7 @@ namespace PunkMultiverse.Patches
             private static MethodBase TargetMethod() => AccessTools.Method(AccessTools.TypeByName("CellRegrower"), "OnCellChanged");
             private static void Prefix(Level.CellChange __0, out Scope __state)
             {
-                int runSeed = NetSession.Instance?.CurrentRunSeed ?? 0;
+                int runSeed = NetSession.Instance?.GenerationSeed ?? 0;
                 __state = Begin(Mix(runSeed, __0.position.x, __0.position.y,
                     __0.changeSource ^ 0x52454752));
             }
@@ -183,7 +183,7 @@ namespace PunkMultiverse.Patches
             private static MethodBase TargetMethod() => AccessTools.Method(AccessTools.TypeByName("UnityTilemapRenderer"), "OnLevelGenerated");
             private static void Prefix(out Scope __state)
             {
-                int runSeed = NetSession.Instance?.CurrentRunSeed ?? 0;
+                int runSeed = NetSession.Instance?.GenerationSeed ?? 0;
                 __state = Begin(Mix(runSeed, 0x54494C45));
             }
             private static void Postfix(Scope __state) => End(__state);
