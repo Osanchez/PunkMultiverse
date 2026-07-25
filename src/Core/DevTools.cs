@@ -350,6 +350,12 @@ namespace PunkMultiverse.Core
                     Out($"start: admin={session.IsSessionAdmin} allReady={session.AllReady} state={session.State}");
                     session.RequestStart();
                     return;
+                case "mainmenu":
+                    // Leave to the main menu via the same code path the buttons use — exercises
+                    // the disconnect-on-menu patch headless, and doubles as an escape hatch.
+                    Out("mainmenu: loading menu scene (disconnects from any live session)");
+                    MainMenuScene.Load();
+                    return;
                 case "endrun":
                     // End the run for the whole party and return everyone to the lobby (admin
                     // in-game, host, or the server console). The dedicated server immediately

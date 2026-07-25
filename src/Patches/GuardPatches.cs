@@ -56,6 +56,29 @@ namespace PunkMultiverse.Patches
             }
         }
 
+        // Returning to the main menu means LEAVING: every vanilla route there (game-over MAIN
+        // MENU, pause EXIT, anything else that calls MainMenuScene.Load) now disconnects from the
+        // session cleanly — the server frees the roster slot immediately instead of keeping a
+        // menu-idling ghost that (being un-ready) would block the lobby's next START. The one
+        // deliberate exception is the game-over BACK TO LOBBY button, which opts out for a single
+        // load because staying connected is its entire point. No-ops when no session is live, so
+        // boot-time and single-player menu loads are untouched.
+        [HarmonyPatch(typeof(MainMenuScene), nameof(MainMenuScene.Load))]
+        internal static class MenuLoadLeavesSession
+        {
+            /// <summary>One-shot opt-out (BACK TO LOBBY): keep the session across this load.</summary>
+            internal static bool KeepSessionOnce;
+
+            private static void Prefix()
+            {
+                if (KeepSessionOnce) { KeepSessionOnce = false; return; }
+                var session = NetSession.Instance;
+                if (session == null || !NetSession.Active) return;
+                Plugin.Log.LogInfo("[Session] main menu loaded — leaving the session");
+                session.StopSession("returned to the main menu");
+            }
+        }
+
         // Restart is a synchronized full-party retry — it only makes sense after everyone has
         // died, so it lives on the GAME-OVER screen, and even there only the host's does anything.
         // Hidden for clients on game-over; removed for EVERYONE on the in-run pause menu. Hiding a
@@ -86,6 +109,7 @@ namespace PunkMultiverse.Patches
                             try { Traverse.Create(__instance).Field("screen").GetValue<UIScreen>()?.Close(); }
                             catch { }
                             UI.LobbyScreen.ShowOnNextMenuScene = true;
+                            MenuLoadLeavesSession.KeepSessionOnce = true; // staying connected is the point
                             MainMenuScene.Load();
                         });
                         break;
