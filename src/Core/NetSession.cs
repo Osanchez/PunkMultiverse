@@ -823,6 +823,7 @@ namespace PunkMultiverse.Core
             _goLiveDeadline = 0f; // re-armed when this machine's LEVEL_READY goes out
             _levelReadyVisualPending = false;
             _levelReadyVisualStartedAt = 0f;
+            Patches.StartSequenceWatchdog.Reset(); // re-armed at the next go-live
             Sync.ShipSync.ResetStartGate();
             Sync.ShipSync.Reset();
             Sync.ProjectileSync.Reset();
@@ -1093,6 +1094,7 @@ namespace PunkMultiverse.Core
         {
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             DiagWatch.NotifyRunStarted(); // skip warmup in the growth watchdog
+            Patches.StartSequenceWatchdog.Arm(); // recover if the opening cinematic never gives control back
             SetState(SessionState.InGame);
             // Same value on every machine (seed + host identity are already shared): the run id
             // groups all players' `uploadlogs` under one S3 folder and names bug reports.
@@ -1642,6 +1644,7 @@ namespace PunkMultiverse.Core
                     EconomyStash.Tick(this);                    NetProfiler.Mark("Economy");
                     RuntimeInstrumentation.SetPhase(PerfPhase.Diagnostics);
                     NetDiag.TickPeriodic();                     NetProfiler.Mark("Diag");
+                    Patches.StartSequenceWatchdog.Tick();
                     if (IsHost)
                     {
                         RuntimeInstrumentation.SetPhase(PerfPhase.Authority);
