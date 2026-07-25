@@ -186,13 +186,19 @@ namespace PunkMultiverse.Patches
                         // override), scattered like a vanilla drop so the pile reads as loot.
                         int coins = UnityEngine.Mathf.Clamp(
                             UnityEngine.Mathf.RoundToInt(entry.Count / UnityEngine.Mathf.Max(1f, coinPrefab.amount)), 1, 6);
-                        float per = (float)entry.Count / coins;
+                        // WHOLE-NUMBER coins: an even `total / coins` split produced fractional
+                        // values (25 over 6 coins = 4.1666667 each), and collecting those put
+                        // decimals in the player's wallet — field-reported as "money can become
+                        // floating point" (2026-07-24). Integer base + remainder spread over the
+                        // first coins still sums to EXACTLY the rolled value.
+                        int baseAmount = entry.Count / coins;
+                        int remainder = entry.Count - (baseAmount * coins);
                         for (int i = 0; i < coins; i++)
                         {
                             var jitter = UnityEngine.Random.insideUnitCircle * 0.6f;
                             var coin = UnityEngine.Object.Instantiate(coinPrefab,
                                 deathPos + jitter, UnityEngine.Quaternion.identity);
-                            coin.amount = per;
+                            coin.amount = baseAmount + (i < remainder ? 1 : 0);
                             var rb = coin.GetComponent<UnityEngine.Rigidbody2D>();
                             if (rb != null)
                                 rb.AddForce(UnityEngine.Quaternion.AngleAxis(

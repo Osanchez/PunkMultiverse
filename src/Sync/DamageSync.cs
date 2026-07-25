@@ -496,8 +496,22 @@ namespace PunkMultiverse.Sync
                     InstrumentationCounters.StaleLifetimeDropped();
                     return;
                 }
-                // OwnerOf defaults unassigned entities to the current host's slot, so this
-                // single check covers both assigned and host-fallback ownership.
+                // DORMANT TARGET — nobody owns it, so no machine would apply this hit and the
+                // entity reads as INVULNERABLE to everyone (field-reported 2026-07-24: a lava
+                // emitter that would not die). This check used to be covered by OwnerOf falling
+                // back to the host's slot; that fallback was removed (it fabricated authority
+                // the host could not exercise), which left every dormant hit returning here —
+                // BEFORE the dormant-claim machinery below that exists precisely for this.
+                // The host is the only machine that can grant, so it queues the claim, which
+                // drives the segment lease to the attacker (who has the entity live and whose
+                // shot just landed on it). Never apply the damage locally: we don't own it.
+                if (Core.AuthorityManager.OwnerOf(msg.TargetNetId) == Core.AuthorityManager.DormantOwner)
+                {
+                    if (!session.IsHost) return;
+                    if (pendingReplay) { Core.InstrumentationCounters.DormantClaimDropped(); return; }
+                    QueueDormantClaim(msg);
+                    return;
+                }
                 if (!EnemySync.IsLocallyOwned(msg.TargetNetId)) return;
                 LastDamager[msg.TargetNetId] = msg.AttackerSlot; // credit the teammate who fired
                 bool spawnedHere = false;

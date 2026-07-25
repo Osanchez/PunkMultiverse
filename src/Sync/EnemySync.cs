@@ -4031,6 +4031,9 @@ namespace PunkMultiverse.Sync
                 byte killer = KillerOf(netId, session);
                 NetStats.AddKill(killer);
 
+                var loot = PunkMultiverse.Patches.LootDiag.ConsumeCapturedLoot(netId);
+                Vector2 deathPos = __instance.transform.position;
+
                 Writer.Reset();
                 new EntityKilledMsg
                 {
@@ -4039,10 +4042,21 @@ namespace PunkMultiverse.Sync
                     MutationRevision = NextMutationRevision(netId),
                     KillerSlot = killer,
                     HasPosition = true,
-                    Position = __instance.transform.position,
-                    Loot = PunkMultiverse.Patches.LootDiag.ConsumeCapturedLoot(netId),
+                    Position = deathPos,
+                    Loot = loot,
                 }.Write(Writer);
                 session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
+
+                // The ANNOUNCER owes itself the same per-player copy every receiver gets.
+                // We simulated this death, but if the killer was someone else and the site is
+                // far from our ship, DropLootGuard suppressed our local pickup (deliberately,
+                // without taking the de-dup latch) — and the grant path only ran on RECEIVERS
+                // (ApplyEntityKilled), so this machine got nothing. Field-reported as "drops
+                // appeared for everyone but the host" (2026-07-24): a sticky owner simulating
+                // kills in segments other players are fighting in loses every one of those
+                // drops. GrantRemoteLoot self-gates on the latch, so this is a no-op whenever
+                // we did drop locally — exactly one of {pickup, vault grant} per machine.
+                PunkMultiverse.Patches.LootDiag.GrantRemoteLoot(netId, loot, deathPos, hasPos: true);
             }
         }
 
