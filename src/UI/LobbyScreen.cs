@@ -159,6 +159,12 @@ namespace PunkMultiverse.UI
             if (_canvasGo == null) Build();
         }
 
+        /// <summary>Set by the game-over BACK TO LOBBY button before it loads the menu scene:
+        /// the session survives the scene change, and MainMenuInjection consumes this on the
+        /// menu's sceneLoaded to open the lobby window automatically — the player lands straight
+        /// on the roster/ready screen instead of having to find PLAY ONLINE.</summary>
+        public static bool ShowOnNextMenuScene;
+
         public void Show()
         {
             EnsureBuilt();

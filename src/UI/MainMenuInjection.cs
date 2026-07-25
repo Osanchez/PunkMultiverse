@@ -94,6 +94,15 @@ namespace PunkMultiverse.UI
             // vanilla template — a mid-game Show() (host quit) then reuses the themed canvas.
             GetComponent<LobbyScreen>()?.EnsureBuilt();
 
+            // BACK TO LOBBY (game-over screen) landed us here with the session still live —
+            // open the lobby window immediately so the flow reads lobby-to-lobby, not
+            // lobby-to-hunt-for-the-button.
+            if (LobbyScreen.ShowOnNextMenuScene)
+            {
+                LobbyScreen.ShowOnNextMenuScene = false;
+                if (Core.NetSession.Active) GetComponent<LobbyScreen>()?.Show();
+            }
+
             Plugin.Log.LogInfo("[UI] PLAY ONLINE button injected into main menu");
         }
 

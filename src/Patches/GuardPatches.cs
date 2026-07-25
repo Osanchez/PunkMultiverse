@@ -69,7 +69,27 @@ namespace PunkMultiverse.Patches
                 try
                 {
                     if (!NetSession.Active || NetSession.Instance.IsHost) return; // host/solo: default screen
-                    LayoutMenuColumn(__instance, hideRestart: true); // clients: no retry, no gap
+                    // Clients can't retry (that's the host's synchronized call) — but hiding the
+                    // button left a lone MAIN MENU (field report 2026-07-25). Give the slot a
+                    // useful role instead: BACK TO LOBBY returns to the still-live session's
+                    // lobby (the session survives the menu-scene load; the wipe already put its
+                    // state in Lobby) with the lobby window auto-opened, ready for the next run.
+                    foreach (var button in __instance.GetComponentsInChildren<UnityEngine.UI.Button>(true))
+                    {
+                        if (!button.gameObject.activeInHierarchy) continue;
+                        var (handler, _) = MenuHandlerAndTarget(button);
+                        if (handler != "OnRestartButtonClicked") continue;
+                        SetLabel(button, "BACK TO LOBBY");
+                        Plugin.Log.LogInfo("[GameOver] client retry slot relabeled BACK TO LOBBY (session lobby survives)");
+                        RewireClick(button, () =>
+                        {
+                            try { Traverse.Create(__instance).Field("screen").GetValue<UIScreen>()?.Close(); }
+                            catch { }
+                            UI.LobbyScreen.ShowOnNextMenuScene = true;
+                            MainMenuScene.Load();
+                        });
+                        break;
+                    }
                 }
                 catch { }
             }
