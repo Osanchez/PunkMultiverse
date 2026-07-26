@@ -311,6 +311,145 @@
                 "string",
                 "max:256"
             ]
+        },
+        {
+            "sort": 21,
+            "name": "Enable Game Modes",
+            "description": "Master switch for alternate game modes. 0 = every run is the normal co-op game and the Game Mode setting below is ignored. Set to 1 to allow Battle Royale.",
+            "env_variable": "ENABLE_GAME_MODES",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "boolean"
+            ]
+        },
+        {
+            "sort": 22,
+            "name": "Game Mode",
+            "description": "Ruleset for runs this server hosts (requires Enable Game Modes = 1). BattleRoyale = last ship standing: scattered spawns at pre-opened stations, PvP with reduced damage, a lava ring closing over the match, supply drops, and placement screens.",
+            "env_variable": "GAME_MODE",
+            "default_value": "Standard",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "string",
+                "in:Standard,BattleRoyale"
+            ]
+        },
+        {
+            "sort": 23,
+            "name": "BR: Match Minutes",
+            "description": "Battle Royale only. Total match length; the lava ring finishes closing exactly at this mark, so this is also the match timer.",
+            "env_variable": "BR_MATCH_MINUTES",
+            "default_value": "45",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:2,240"
+            ]
+        },
+        {
+            "sort": 24,
+            "name": "BR: Ring Start Minutes",
+            "description": "Battle Royale only. Minutes of grace before the ring's first closure.",
+            "env_variable": "BR_RING_START_MINUTES",
+            "default_value": "5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,60"
+            ]
+        },
+        {
+            "sort": 25,
+            "name": "BR: Ring Stages",
+            "description": "Battle Royale only. How many closures the ring makes. The zone holds still between them.",
+            "env_variable": "BR_RING_STAGES",
+            "default_value": "8",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,20"
+            ]
+        },
+        {
+            "sort": 26,
+            "name": "BR: Ring Close Seconds",
+            "description": "Battle Royale only. How long a single closure takes. Shortened automatically if a stage is too brief to fit it.",
+            "env_variable": "BR_RING_CLOSE_SECONDS",
+            "default_value": "120",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:5,600"
+            ]
+        },
+        {
+            "sort": 27,
+            "name": "BR: Care Package Minutes",
+            "description": "Battle Royale only. Minutes between supply drops (0 = none). Only the player who destroys a drop gets its loot.",
+            "env_variable": "BR_CARE_PACKAGE_MINUTES",
+            "default_value": "10",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:0,60"
+            ]
+        },
+        {
+            "sort": 28,
+            "name": "BR: PvP Damage Scale",
+            "description": "Battle Royale only. Multiplier on player-vs-player damage, so late-game weapons cannot one-shot other players. Damage to enemies is unaffected.",
+            "env_variable": "BR_PVP_DAMAGE_SCALE",
+            "default_value": "0.25",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:0.01,1"
+            ]
+        },
+        {
+            "sort": 29,
+            "name": "BR: Enemy HP Scale",
+            "description": "Battle Royale only. Enemy health multiplier. 0.5 means players effectively deal double damage to enemies, so kills and gold come twice as fast.",
+            "env_variable": "BR_ENEMY_HP_SCALE",
+            "default_value": "0.5",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "numeric",
+                "between:0.05,10"
+            ]
+        },
+        {
+            "sort": 30,
+            "name": "BR: Minimum Players",
+            "description": "Battle Royale only. Players required to START a match. 1 is allowed for testing.",
+            "env_variable": "BR_MIN_PLAYERS",
+            "default_value": "2",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": [
+                "required",
+                "integer",
+                "between:1,4"
+            ]
         }
     ]
 }

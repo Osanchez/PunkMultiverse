@@ -32,6 +32,20 @@ COIN_DESPAWN_SECONDS="${COIN_DESPAWN_SECONDS:-45}"
 EMPTY_SERVER_RESET_SECONDS="${EMPTY_SERVER_RESET_SECONDS:-120}"  # all players gone -> fresh lobby after this grace (0 = never)
 SERVER_FRAME_RATE_CAP="${SERVER_FRAME_RATE_CAP:-120}"            # headless frame cap (0 = uncapped; uncapped wastes CPU)
 
+# Game mode. OFF by default: every run is the normal co-op game and the rest of this block is
+# ignored. Set ENABLE_GAME_MODES=1 and GAME_MODE=BattleRoyale to run last-ship-standing matches
+# (docs/BATTLE_ROYALE.md). The BR_* knobs only matter once that is on.
+ENABLE_GAME_MODES="${ENABLE_GAME_MODES:-0}"           # 1 = allow modes other than Standard
+GAME_MODE="${GAME_MODE:-Standard}"                    # Standard | BattleRoyale
+BR_MATCH_MINUTES="${BR_MATCH_MINUTES:-45}"            # total match length; the ring closes fully at this mark
+BR_RING_START_MINUTES="${BR_RING_START_MINUTES:-5}"   # grace before the first closure
+BR_RING_STAGES="${BR_RING_STAGES:-8}"                 # how many closures the match has
+BR_RING_CLOSE_SECONDS="${BR_RING_CLOSE_SECONDS:-120}" # how long one closure takes (it holds still between)
+BR_CARE_PACKAGE_MINUTES="${BR_CARE_PACKAGE_MINUTES:-10}" # supply-drop interval (0 = none)
+BR_PVP_DAMAGE_SCALE="${BR_PVP_DAMAGE_SCALE:-0.25}"    # player-vs-player damage multiplier
+BR_ENEMY_HP_SCALE="${BR_ENEMY_HP_SCALE:-0.5}"         # enemy health multiplier (0.5 ~ double damage to enemies)
+BR_MIN_PLAYERS="${BR_MIN_PLAYERS:-2}"                 # players needed to START a match
+
 # Self-provisioning.
 INSTALL_BEPINEX="${INSTALL_BEPINEX:-1}"               # 1 = overlay the image's baked BepInEx loader each boot
 MOD_AUTO_UPDATE="${MOD_AUTO_UPDATE:-1}"               # 1 = check GitHub for a newer mod release on boot
@@ -212,6 +226,19 @@ set_cfg "Session"   "EnemyHealthScalePerPlayer" "${HP_SCALING_PER_PLAYER}" "${CF
 set_cfg "Session"   "CoinDespawnSeconds" "${COIN_DESPAWN_SECONDS}" "${CFG}"
 set_cfg "Session"   "EmptyServerResetSeconds" "${EMPTY_SERVER_RESET_SECONDS}" "${CFG}"
 set_cfg "Session"   "ServerFrameRateCap" "${SERVER_FRAME_RATE_CAP}" "${CFG}"
+# Game mode (see the ENABLE_GAME_MODES block above). Written unconditionally so flipping the
+# variable back to 0 actually reverts the server to Standard on the next boot.
+if [ "${ENABLE_GAME_MODES}" = "1" ]; then GAME_MODES_CFG="true"; else GAME_MODES_CFG="false"; fi
+set_cfg "Session"   "EnableGameModes" "${GAME_MODES_CFG}" "${CFG}"
+set_cfg "Session"   "GameMode" "${GAME_MODE}" "${CFG}"
+set_cfg "Session"   "BrMatchMinutes" "${BR_MATCH_MINUTES}" "${CFG}"
+set_cfg "Session"   "BrRingStartMinutes" "${BR_RING_START_MINUTES}" "${CFG}"
+set_cfg "Session"   "BrRingStages" "${BR_RING_STAGES}" "${CFG}"
+set_cfg "Session"   "BrRingCloseSeconds" "${BR_RING_CLOSE_SECONDS}" "${CFG}"
+set_cfg "Session"   "BrCarePackageMinutes" "${BR_CARE_PACKAGE_MINUTES}" "${CFG}"
+set_cfg "Session"   "PvPDamageScale" "${BR_PVP_DAMAGE_SCALE}" "${CFG}"
+set_cfg "Session"   "BrEnemyHpScale" "${BR_ENEMY_HP_SCALE}" "${CFG}"
+set_cfg "Session"   "BrMinPlayers" "${BR_MIN_PLAYERS}" "${CFG}"
 # Debug/automation knobs the coordinator honors.
 set_cfg "Debug"     "AutoLaunchRun"    "$(bool "${AUTO_START_RUN}")" "${CFG}"
 # NOTE: these two live in the mod's [Diag] section, not [Debug] — a section mismatch is
@@ -229,6 +256,11 @@ else
 fi
 
 log "config.cfg written (Transport=Udp UdpPort=${SERVER_PORT} coordinator=1 autoLaunch=$(bool "${AUTO_START_RUN}"))"
+if [ "${ENABLE_GAME_MODES}" = "1" ]; then
+    log "game mode: ${GAME_MODE} (match ${BR_MATCH_MINUTES}m, ring starts ${BR_RING_START_MINUTES}m, ${BR_RING_STAGES} stages of ${BR_RING_CLOSE_SECONDS}s, drops every ${BR_CARE_PACKAGE_MINUTES}m)"
+else
+    log "game mode: Standard (alternate modes disabled - set ENABLE_GAME_MODES=1 to allow Battle Royale)"
+fi
 
 # Keep the base game from bouncing through the Steam client on launch.
 echo "${STEAM_APPID}" > "${GAME_DIR}/steam_appid.txt"
