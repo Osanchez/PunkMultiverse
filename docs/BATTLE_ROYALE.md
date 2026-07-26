@@ -83,14 +83,23 @@ A second game mode, `BattleRoyale`, alongside the existing (implicit) `Standard`
    including the shop-stock parity call each machine already makes on unlock.
    The start-sequence cinematic still targets the generation-time start station (it
    already has FuelDispenser installed at generation) — unchanged, no softlock risk.
-2. **Scatter the players.** No wire needed: station positions are seed-deterministic,
-   so every machine computes the identical `slot → station` assignment by
-   farthest-point sampling over the station list (seeded by run seed; maximizes
-   minimum pairwise spawn distance by construction). Ships spawn normally through the
-   vanilla flow (start cinematic untouched); when control is restored
-   (`ShipSync.ReleaseStartGate` + cinematic end), each client teleports its OWN ship
-   to its assigned station via the existing `ShipSync.TeleportLocalShip(stationNetId)`
-   (`src/Sync/ShipSync.cs:765`); puppets follow through normal ship sync.
+2. **Scatter the players — one station each, never shared.** No wire needed: station
+   positions are seed-deterministic, so every machine computes the identical
+   `slot → station` assignment by farthest-point sampling over the station list
+   (seeded by run seed): the first player takes a station, and each subsequent player
+   takes the station whose nearest already-assigned station is farthest away. This
+   maximizes the minimum pairwise spawn distance **and guarantees distinct stations by
+   construction** — a station is removed from the candidate pool once assigned, so two
+   players can never start at the same shop. If a map somehow generates fewer stations
+   than players (not observed; maps carry dozens), the surplus players fall back to the
+   farthest open cells from every assigned station, logged as a warning. Ships spawn
+   normally through the vanilla flow (start cinematic untouched); when control is
+   restored (`ShipSync.ReleaseStartGate` + cinematic end), each client teleports its
+   OWN ship to its assigned station via the existing
+   `ShipSync.TeleportLocalShip(stationNetId)` (`src/Sync/ShipSync.cs:765`); puppets
+   follow through normal ship sync. The assignment is logged host-side
+   (`[BR] spawn slot N -> station #id at (x,y), nearest peer M units`) so the harness
+   can assert both distinctness and separation.
    (Polish, deferred: skip the cinematic in BR and spawn scattered directly.)
 3. **Coins**: vanilla already starts every run at 0 (shared `ResourceTank.Value`
    defaults to 0; nothing grants starting money — confirmed by decompile of
@@ -227,6 +236,54 @@ Every **10 minutes** (t=10/20/30/40), host-driven:
    `ShopUpgradeData` distributions).
 4. A package still standing when the ring front reaches it is destroyed by the host
    with no credit (no reward spawns).
+
+## 6b. Ship status bars (health + fuel above every other ship)
+
+Players need to read another ship's condition on sight — is that one nearly dead, is it
+about to be stranded? Enemies already advertise their health this way; player ships do
+not.
+
+**What**: a small two-bar widget floating just above every **remote** player ship
+(allies in Standard, opponents in BR — the local player already has the full HUD).
+Stacked, health on top:
+
+```
+   ▂▂▂▂▂▂▂▂▂▂   red   = health
+   ▂▂▂▂▂▂▂▂▂▂   blue  = fuel
+```
+
+**Fixed size, normalized fill.** This is the one place we deliberately do NOT reuse the
+vanilla widget: `HealthbarOwner`/`HealthbarWidget` build **segmented** bars through
+`ResourceBar` rows at a constant 20 px per resource unit, so a ship that has upgraded
+its health draws a physically longer (and eventually wrapped, multi-row) bar. Instead
+the mod draws its own fixed-width bar and fills it by **fraction** (`tank.Value /
+tank.Capacity`), so a fully-upgraded ship and a starter ship show the same size widget —
+only the fill differs. Width/height are tuned to match a grunt's bar so it reads as part
+of the game's visual language, and the widget is scale-stable regardless of upgrades.
+
+**Data**: both values come from the ship's `Unit` tanks — health from
+`DamagableResource.Tank`, fuel from the tank whose `Resource` is the fuel resource
+(resolved the way vanilla does it, by name match through `ResourceRegistry`, cached
+once). For a remote ship these tanks are already kept current by ship-state sync, so the
+bars need no new network traffic.
+
+**Visibility rules**:
+- Drawn only for ships currently on screen and alive — it is a world-space widget, so it
+  reveals nothing a player cannot already see. **This is why it does not conflict with
+  BR's hidden locations** (§3.7): trackers and arrows that point at off-screen players
+  stay disabled; once a ship is in view, its status is fair information.
+- Hidden for the local player's own ship, dead ships, and the coordinator (which has no
+  ship).
+- Suppressed while spectating? No — a dead spectator sees them normally.
+
+**Scope**: both game modes. It is useful in co-op ("my teammate is at 20%") and
+essential in BR. Config gate `ShipStatusBars` (default on) alongside the existing
+tracker toggles in `NetConfig`.
+
+**Implementation home**: `src/UI/ShipStatusBars.cs`, driven from the same
+LateUpdate-over-remote-ships loop shape `PlayerTracker` already uses
+(`src/UI/PlayerTracker.cs:35`), reusing `ShipSync.ShipsBySlot` for the ship set and
+`UiTheme` for sprites/colors.
 
 ## 7. Elimination, placement, win
 
