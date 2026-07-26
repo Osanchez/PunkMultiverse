@@ -328,7 +328,8 @@ separate path.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `GameMode` | `Standard` | `Standard` \| `BattleRoyale` (dedicated server; restart-applied. Self-host uses the GAME SETTINGS row) |
+| `EnableGameModes` | `false` | **Master feature flag.** Off = every run is Standard, the GAME MODE row is hidden, and a server ignores `GameMode`. Joining someone else's BR server still works — the host owns its runs' ruleset. |
+| `GameMode` | `Standard` | `Standard` \| `BattleRoyale` (dedicated server; restart-applied; requires `EnableGameModes`. Self-host uses the GAME SETTINGS row) |
 | `BrMatchMinutes` | `45` | total match length; ring reaches 0 at this time |
 | `BrRingStartMinutes` | `5` | first-shrink announcement time |
 | `BrRingStages` | `8` | discrete shrink stages |

@@ -1602,7 +1602,10 @@ namespace PunkMultiverse.Core
             HpScaling = _pendingHpScaling;
             // A dedicated server has no pre-lobby screen — its ruleset comes from config and
             // holds for every run it hosts (restart to change). A player-host uses their pick.
-            LobbyMode = NetConfig.IsCoordinator ? NetConfig.ConfiguredMode : _pendingMode;
+            // Feature-flagged: with game modes off, nothing this machine hosts is anything but
+            // Standard, whatever the config or a stale menu selection says.
+            LobbyMode = !NetConfig.GameModesEnabled ? Protocol.GameMode.Standard
+                : NetConfig.IsCoordinator ? NetConfig.ConfiguredMode : _pendingMode;
             if (LobbyMode == Protocol.GameMode.BattleRoyale)
                 Plugin.Log.LogInfo("[BR] lobby mode = BATTLE ROYALE (docs/BATTLE_ROYALE.md)");
             _pendingHostSeed = 0;
