@@ -126,8 +126,14 @@ namespace PunkMultiverse.Modes
                         if (ct == null || ct.id == 0) continue;
                         if (ct.name != null && ct.name.IndexOf("fog", System.StringComparison.OrdinalIgnoreCase) >= 0)
                             continue; // fog is a simulated gas, not a wall
+                        // contactDamage is a Damage STRUCT, not a float — read its amount.
                         float dmg = 0f;
-                        try { dmg = Traverse.Create(ct).Field("contactDamage").GetValue<float>(); } catch { }
+                        try
+                        {
+                            var contact = Traverse.Create(ct).Field("contactDamage").GetValue();
+                            if (contact != null) dmg = Traverse.Create(contact).Field("amount").GetValue<float>();
+                        }
+                        catch { }
                         if (dmg <= bestDamage) continue;
                         bestDamage = dmg;
                         best = ct;
