@@ -63,7 +63,10 @@ namespace PunkMultiverse.Sync
             {
                 var session = NetSession.Instance;
                 float mult = session != null ? session.EnemyHpMult : 1f;
-                if (mult <= 1.0001f) return;
+                // Battle Royale scales enemy health DOWN (0.5 = players effectively deal double
+                // damage), so this can no longer be a scale-up-only guard — only exactly 1x is a
+                // no-op.
+                if (Mathf.Abs(mult - 1f) <= 0.0001f) return;
                 if (EnemySync.FixedOwners.Contains(netId)) return; // player minions aren't enemies
                 var unit = root != null ? root.GetComponentInParent<Unit>() : null;
                 if (unit == null || unit.GetComponent<Ship>() != null) return;
@@ -89,7 +92,7 @@ namespace PunkMultiverse.Sync
                 if (!HpScaledInstances.Remove(instanceId)) return; // never scaled — nothing to undo
                 var session = NetSession.Instance;
                 float mult = session != null ? session.EnemyHpMult : 1f;
-                if (mult <= 1.0001f) return;
+                if (Mathf.Abs(mult - 1f) <= 0.0001f) return; // see ApplyEnemyHpScale: BR scales down
                 var unit = root != null ? root.GetComponentInParent<Unit>() : null;
                 var dr = unit != null ? unit.GetComponent<DamagableResource>() : null;
                 var tank = dr != null ? dr.Tank : null;

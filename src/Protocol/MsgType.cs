@@ -112,6 +112,18 @@
                                      // The server performs it only if the token matches the grant, so a
                                      // modded client that force-enables the buttons is still refused
 
+        // ---- Channel 0 (control): Battle Royale (docs/BATTLE_ROYALE.md) ----
+        Announce = 91,       // host -> all: show this text as a toast. The mod had no way for a
+                             // server to speak to every client; BR needs it for ring warnings and
+                             // elimination callouts, and it generalizes (MOTD, admin notices)
+        RingState = 92,      // host -> all: lava-ring center/radius/stage + next-shrink time. Drives
+                             // the ring HUD and each client's own out-of-zone burn damage (ship HP
+                             // is owner-authoritative, so the victim applies it locally)
+        Placement = 93,      // host -> all: a player's final placement on elimination, plus how many
+                             // remain — elimination toasts and the "YOU PLACED #N" screen
+        CarePackage = 94,    // host -> all: a supply drop spawned at x,y with this netId — arrow
+                             // target for everyone; whoever destroys it gets the loot
+
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match
         IdResolveReply = 58,   // host -> client: their entity type + position, for

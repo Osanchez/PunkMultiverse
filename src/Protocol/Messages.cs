@@ -133,6 +133,7 @@ namespace PunkMultiverse.Protocol
         public bool FriendlyFire;  // host's game-settings choice; every client enforces it
         public byte WorldStatus;   // dedicated server only: 0 = n/a, 1 = building the next world,
                                    // 2 = world pre-built and ready (START skips generation)
+        public GameMode Mode;      // ruleset the next run will use — shown on every lobby screen
 
         public void Write(NetWriter w)
         {
@@ -140,6 +141,7 @@ namespace PunkMultiverse.Protocol
             w.WriteInt(HostSeed);
             w.WriteBool(FriendlyFire);
             w.WriteByte(WorldStatus);
+            w.WriteByte((byte)Mode);
             w.WriteByte((byte)(Roster?.Count ?? 0));
             if (Roster != null) foreach (var e in Roster) e.Write(w);
         }
@@ -151,6 +153,7 @@ namespace PunkMultiverse.Protocol
                 HostSeed = r.ReadInt(),
                 FriendlyFire = r.ReadBool(),
                 WorldStatus = r.ReadByte(),
+                Mode = (GameMode)r.ReadByte(),
                 Roster = new List<RosterEntry>(),
             };
             int n = r.ReadByte();
@@ -191,9 +194,16 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    /// <summary>Which ruleset a run uses. Standard is the co-op game the mod has always
+    /// played; BattleRoyale is a last-player-standing match (see docs/BATTLE_ROYALE.md).
+    /// Chosen per-run by the host: config on a dedicated server, GAME SETTINGS when
+    /// self-hosting, and replicated so every machine applies the same rules.</summary>
+    public enum GameMode : byte { Standard = 0, BattleRoyale = 1 }
+
     public struct StartRunMsg
     {
         public int Seed;
+        public GameMode Mode;          // ruleset for this run
         public bool IsRejoin;          // reconnecting into a run in progress
         public bool IsResume;          // whole-party resume of a saved run (terrain from local save)
         public int SpawnStationNetId;  // rejoin/late-join spawn checkpoint; 0 = run start
@@ -212,6 +222,7 @@ namespace PunkMultiverse.Protocol
             w.WriteVarUInt((uint)SpawnStationNetId);
             w.WriteHalf(EnemyHpMult);
             w.WriteVarUInt((uint)RunDateUtc);
+            w.WriteByte((byte)Mode);
         }
 
         public static StartRunMsg Read(NetReader r) => new StartRunMsg
@@ -222,6 +233,125 @@ namespace PunkMultiverse.Protocol
             SpawnStationNetId = (int)r.ReadVarUInt(),
             EnemyHpMult = r.ReadHalf(),
             RunDateUtc = (int)r.ReadVarUInt(),
+            Mode = (GameMode)r.ReadByte(),
+        };
+    }
+
+    // ------------------------------------------------------------------ Battle Royale
+    // (docs/BATTLE_ROYALE.md). All four are host -> all clients, reliable on Control.
+
+    /// <summary>Show text as a toast on every client. The mod had no server-to-everyone
+    /// message before this; BR needs one for ring warnings and elimination callouts.</summary>
+    public struct AnnounceMsg
+    {
+        public string Text;
+        public float Seconds;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.Announce);
+            w.WriteString(Text ?? string.Empty);
+            w.WriteHalf(Seconds);
+        }
+
+        public static AnnounceMsg Read(NetReader r) => new AnnounceMsg
+        {
+            Text = r.ReadString(),
+            Seconds = r.ReadHalf(),
+        };
+    }
+
+    /// <summary>The lava ring's authoritative state. Clients never recompute it — they render the
+    /// HUD from this and apply their OWN out-of-zone burn damage from it (ship HP belongs to its
+    /// owner). Re-sent at every stage boundary and periodically for late/rejoining HUDs.</summary>
+    public struct RingStateMsg
+    {
+        public float CenterX, CenterY;
+        public float SafeRadius;
+        public byte Stage;            // 0 = not started, 1..N = shrink stage in progress
+        public byte TotalStages;
+        public float NextShrinkIn;    // seconds until the next stage boundary (0 = final)
+        public float MatchRemaining;  // seconds until the ring is fully closed
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.RingState);
+            w.WriteFloat(CenterX);
+            w.WriteFloat(CenterY);
+            w.WriteFloat(SafeRadius);
+            w.WriteByte(Stage);
+            w.WriteByte(TotalStages);
+            w.WriteHalf(NextShrinkIn);
+            w.WriteHalf(MatchRemaining);
+        }
+
+        public static RingStateMsg Read(NetReader r) => new RingStateMsg
+        {
+            CenterX = r.ReadFloat(),
+            CenterY = r.ReadFloat(),
+            SafeRadius = r.ReadFloat(),
+            Stage = r.ReadByte(),
+            TotalStages = r.ReadByte(),
+            NextShrinkIn = r.ReadHalf(),
+            MatchRemaining = r.ReadHalf(),
+        };
+    }
+
+    /// <summary>A player's final placement, broadcast the moment they are eliminated (death OR
+    /// disconnect — a BR match is sealed, so leaving is dying). Placement counts up from the
+    /// bottom: the first out of 7 gets 7. The winner receives Placement 1.</summary>
+    public struct PlacementMsg
+    {
+        public byte Slot;
+        public byte Placement;
+        public byte AliveRemaining;
+        public byte TotalPlayers;
+        public bool IsWinner;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.Placement);
+            w.WriteByte(Slot);
+            w.WriteByte(Placement);
+            w.WriteByte(AliveRemaining);
+            w.WriteByte(TotalPlayers);
+            w.WriteBool(IsWinner);
+        }
+
+        public static PlacementMsg Read(NetReader r) => new PlacementMsg
+        {
+            Slot = r.ReadByte(),
+            Placement = r.ReadByte(),
+            AliveRemaining = r.ReadByte(),
+            TotalPlayers = r.ReadByte(),
+            IsWinner = r.ReadBool(),
+        };
+    }
+
+    /// <summary>A supply drop spawned inside the safe zone. Every alive player gets an arrow to it
+    /// (the only tracker arrow BR allows); whoever destroys it gets the loot, through the normal
+    /// kill-credit + killer-drops-locally path. Despawned = sent with NetId and Gone set.</summary>
+    public struct CarePackageMsg
+    {
+        public int NetId;
+        public float X, Y;
+        public bool Gone;   // true = destroyed/expired, clear the arrow
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.CarePackage);
+            w.WriteVarUInt((uint)NetId);
+            w.WriteFloat(X);
+            w.WriteFloat(Y);
+            w.WriteBool(Gone);
+        }
+
+        public static CarePackageMsg Read(NetReader r) => new CarePackageMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+            X = r.ReadFloat(),
+            Y = r.ReadFloat(),
+            Gone = r.ReadBool(),
         };
     }
 
@@ -1633,6 +1763,7 @@ namespace PunkMultiverse.Protocol
         public int Seed;
         public bool FriendlyFire;
         public bool HpScaling;
+        public GameMode Mode;
 
         public void Write(NetWriter w)
         {
@@ -1640,6 +1771,7 @@ namespace PunkMultiverse.Protocol
             w.WriteInt(Seed);
             w.WriteBool(FriendlyFire);
             w.WriteBool(HpScaling);
+            w.WriteByte((byte)Mode);
         }
 
         public static PartyLeaderSettingsMsg Read(NetReader r) => new PartyLeaderSettingsMsg
@@ -1647,6 +1779,7 @@ namespace PunkMultiverse.Protocol
             Seed = r.ReadInt(),
             FriendlyFire = r.ReadBool(),
             HpScaling = r.ReadBool(),
+            Mode = (GameMode)r.ReadByte(),
         };
     }
 

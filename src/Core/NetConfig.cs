@@ -62,6 +62,23 @@ namespace PunkMultiverse
         public static ConfigEntry<float> EmptyServerResetSeconds;
         public static ConfigEntry<int> ServerFrameRateCap;
         public static ConfigEntry<bool> PreGenerateWorld;
+        public static ConfigEntry<string> GameMode;
+        public static ConfigEntry<int> BrMatchMinutes;
+        public static ConfigEntry<int> BrRingStartMinutes;
+        public static ConfigEntry<int> BrRingStages;
+        public static ConfigEntry<int> BrCarePackageMinutes;
+        public static ConfigEntry<float> PvPDamageScale;
+        public static ConfigEntry<float> BrEnemyHpScale;
+        public static ConfigEntry<int> BrMinPlayers;
+
+        /// <summary>Dedicated-server ruleset for every run it hosts (restart to change). A
+        /// self-hosting player picks the mode on the GAME SETTINGS screen instead; this value is
+        /// only the server's default. See docs/BATTLE_ROYALE.md.</summary>
+        public static Protocol.GameMode ConfiguredMode =>
+            GameMode != null && GameMode.Value != null
+            && GameMode.Value.Replace("_", "").Equals("BattleRoyale", StringComparison.OrdinalIgnoreCase)
+                ? Protocol.GameMode.BattleRoyale
+                : Protocol.GameMode.Standard;
         public static ConfigEntry<int> FpsLimit;
         public static ConfigEntry<bool> ResizableWindow;
         public static ConfigEntry<bool> HostViaSidecar;
@@ -263,6 +280,34 @@ namespace PunkMultiverse
                 "own ~6s. Legal because a dedicated server owns the seed (DIRECT CONNECT clients " +
                 "never send one); if a party leader supplies a different seed, the pre-built " +
                 "world is discarded and generation runs at START as before.");
+            GameMode = cfg.Bind("Session", "GameMode", "Standard",
+                new ConfigDescription(
+                    "Ruleset for runs this DEDICATED SERVER hosts (takes effect on restart). " +
+                    "Standard = the normal co-op game. BattleRoyale = last player standing: " +
+                    "scattered spawns at pre-opened stations, PvP on with reduced damage, a lava " +
+                    "ring closing over the match, care packages, and placement screens (see " +
+                    "docs/BATTLE_ROYALE.md). Players hosting their own game choose the mode on the " +
+                    "GAME SETTINGS screen instead — this setting does not affect them.",
+                    new AcceptableValueList<string>("Standard", "BattleRoyale")));
+            BrMatchMinutes = cfg.Bind("Session", "BrMatchMinutes", 45,
+                "Battle Royale: total match length in minutes. The lava ring finishes closing " +
+                "exactly at this mark, so this IS the match timer.");
+            BrRingStartMinutes = cfg.Bind("Session", "BrRingStartMinutes", 5,
+                "Battle Royale: minutes of grace before the ring starts closing (the first warning).");
+            BrRingStages = cfg.Bind("Session", "BrRingStages", 8,
+                "Battle Royale: how many announced stages the ring closes in.");
+            BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 10,
+                "Battle Royale: minutes between care-package drops (0 disables them). Each package " +
+                "is destructible; only the player who destroys it gets the loot.");
+            PvPDamageScale = cfg.Bind("Session", "PvPDamageScale", 0.25f,
+                "Battle Royale: multiplier on player-vs-player damage. Late-game weapons would " +
+                "otherwise one-shot other players; damage to ENEMIES is unaffected.");
+            BrEnemyHpScale = cfg.Bind("Session", "BrEnemyHpScale", 0.5f,
+                "Battle Royale: enemy max-health multiplier. 0.5 makes players effectively deal " +
+                "double damage to enemies, so kills and gold come twice as fast.");
+            BrMinPlayers = cfg.Bind("Session", "BrMinPlayers", 2,
+                "Battle Royale: players required to START a match. 1 is allowed for testing " +
+                "(logged as a warning) — a solo match ends as soon as it begins.");
             ServerFrameRateCap = cfg.Bind("Session", "ServerFrameRateCap", 120,
                 "Dedicated coordinator only: cap the server's frame rate. Headless Unity runs " +
                 "UNCAPPED otherwise (1000+ fps idling in the lobby, pure wasted CPU). 120 keeps " +

@@ -22,7 +22,9 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 16; // 16 = LobbyStateMsg.WorldStatus + AdminCmd.EndRun
+        public const int ProtocolVersion = 17; // 17 = GameMode byte (StartRun/LobbyState/LeaderSettings)
+                                               //      + BR messages (Announce/RingState/Placement/CarePackage)
+                                               // 16 = LobbyStateMsg.WorldStatus + AdminCmd.EndRun
                                                // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder
                                                 // date). 14 = main's 13 (EntityFireMsg.WeaponHash, fire
                                                 // fidelity) + this branch's sidecar/admin additions
@@ -240,6 +242,8 @@ namespace PunkMultiverse.Core
         public bool FriendlyFire { get; private set; }
 
         private bool _pendingHpScaling;
+        private Protocol.GameMode _pendingMode;
+        private Protocol.GameMode _leaderMode;
         /// <summary>Host's game-settings choice: scale enemy health by player count.</summary>
         public bool HpScaling { get; private set; }
         /// <summary>Enemy max-health multiplier for the current run, fixed at START GAME:
@@ -297,7 +301,8 @@ namespace PunkMultiverse.Core
         /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
         /// directly. <paramref name="chosenSeed"/> (0 = random) becomes the lobby's world seed
         /// once the session is up.</summary>
-        public void HostOnline(int chosenSeed = 0, bool friendlyFire = false, bool enemyHpScaling = true)
+        public void HostOnline(int chosenSeed = 0, bool friendlyFire = false, bool enemyHpScaling = true,
+            Protocol.GameMode mode = Protocol.GameMode.Standard)
         {
             // Server sidecar (local/LAN only): hosting spawns a dedicated coordinator process and
             // this game joins it as a regular player. Falls back to classic in-process hosting if
@@ -310,6 +315,7 @@ namespace PunkMultiverse.Core
                     // Carry the host player's world choice to the coordinator (#1). Sent when we
                     // reach its lobby (see Update); the coordinator adopts it before StartRun.
                     _leaderSeed = chosenSeed;
+                    _leaderMode = mode;
                     _leaderFriendlyFire = friendlyFire;
                     _leaderHpScaling = enemyHpScaling;
                     _haveLeaderSettings = true;
@@ -325,6 +331,7 @@ namespace PunkMultiverse.Core
             {
                 LastError = null;
                 _pendingHostSeed = chosenSeed;
+                _pendingMode = mode;
                 _pendingFriendlyFire = friendlyFire;
                 _pendingHpScaling = enemyHpScaling;
                 if (!UsingSteam) { HostSession(); return; }
@@ -761,6 +768,19 @@ namespace PunkMultiverse.Core
         /// 0 = roll a random one at start. Visible to all in lobby.</summary>
         public int ChosenSeed { get; private set; }
 
+        /// <summary>Ruleset the NEXT run will use (lobby choice). Dedicated servers take it from
+        /// config; a self-hosting player picks it on GAME SETTINGS. Replicated in LobbyState so
+        /// every lobby screen agrees before START.</summary>
+        public Protocol.GameMode LobbyMode { get; private set; }
+
+        /// <summary>Ruleset the run IN PROGRESS is using — stamped from StartRunMsg, so it is
+        /// identical on every machine and cannot drift mid-run. Everything mode-specific keys off
+        /// this, never off config (a client's config has no say in the host's rules).</summary>
+        public Protocol.GameMode CurrentMode { get; private set; }
+
+        /// <summary>True while a Battle Royale run is live (docs/BATTLE_ROYALE.md).</summary>
+        public bool IsBattleRoyale => CurrentMode == Protocol.GameMode.BattleRoyale;
+
         /// <summary>Client view of the dedicated server's next-world pre-generation (from
         /// LobbyState): 0 n/a, 1 building, 2 ready. Lobby UI surfaces it so the wait between
         /// runs reads as progress instead of a hang.</summary>
@@ -777,9 +797,15 @@ namespace PunkMultiverse.Core
             // Scaled by EXTRA players beyond the first — a solo player is the vanilla baseline
             // (the old "* playerCount" gave one player a +25% buffed world).
             int playerCount = _players.Count(p => p != null && p.Connected && !p.IsCoordinator);
-            EnemyHpMult = HpScaling
-                ? 1f + Mathf.Max(0f, NetConfig.EnemyHealthScalePerPlayer.Value) * Mathf.Max(0, playerCount - 1)
-                : 1f;
+            CurrentMode = LobbyMode;
+            // BR replaces co-op HP scaling outright: halving enemy health is how "players deal
+            // double damage to enemies" is delivered (one already-replicated multiplier applied
+            // once per enemy, instead of hooking both damage paths per hit).
+            EnemyHpMult = CurrentMode == Protocol.GameMode.BattleRoyale
+                ? Mathf.Clamp(NetConfig.BrEnemyHpScale.Value, 0.05f, 10f)
+                : HpScaling
+                    ? 1f + Mathf.Max(0f, NetConfig.EnemyHealthScalePerPlayer.Value) * Mathf.Max(0, playerCount - 1)
+                    : 1f;
             if (EnemyHpMult > 1f)
                 Plugin.Log.LogInfo($"[Run] enemy HP x{EnemyHpMult:F2} ({playerCount} players)");
 
@@ -798,6 +824,7 @@ namespace PunkMultiverse.Core
                 SpawnStationNetId = 0,
                 EnemyHpMult = EnemyHpMult,
                 RunDateUtc = CurrentRunDateUtc,
+                Mode = CurrentMode,
             }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
             _isRejoin = false;
@@ -812,6 +839,8 @@ namespace PunkMultiverse.Core
                                       // terrain always streams from the host either way
             _spawnStationNetId = msg.SpawnStationNetId;
             EnemyHpMult = msg.EnemyHpMult > 0f ? msg.EnemyHpMult : 1f;
+            CurrentMode = msg.Mode; // the host's ruleset is authoritative; our config has no say
+            LobbyMode = msg.Mode;
             CurrentRunDateUtc = msg.RunDateUtc; // host's date — shared S3 folder (see StartRun)
             BeginRun(msg.Seed);
         }
@@ -1561,7 +1590,13 @@ namespace PunkMultiverse.Core
             ChosenSeed = _pendingHostSeed; // settings picked on the pre-lobby screen
             FriendlyFire = _pendingFriendlyFire;
             HpScaling = _pendingHpScaling;
+            // A dedicated server has no pre-lobby screen — its ruleset comes from config and
+            // holds for every run it hosts (restart to change). A player-host uses their pick.
+            LobbyMode = NetConfig.IsCoordinator ? NetConfig.ConfiguredMode : _pendingMode;
+            if (LobbyMode == Protocol.GameMode.BattleRoyale)
+                Plugin.Log.LogInfo("[BR] lobby mode = BATTLE ROYALE (docs/BATTLE_ROYALE.md)");
             _pendingHostSeed = 0;
+            _pendingMode = Protocol.GameMode.Standard;
             _pendingFriendlyFire = false;
             _pendingHpScaling = false;
             SetState(SessionState.Lobby);
@@ -1942,6 +1977,7 @@ namespace PunkMultiverse.Core
                     new PartyLeaderSettingsMsg
                     {
                         Seed = _leaderSeed, FriendlyFire = _leaderFriendlyFire, HpScaling = _leaderHpScaling,
+                        Mode = _leaderMode,
                     }.Write(_writer);
                     SendReliable(_players[HostSlot].PeerId, NetChannel.Control, _writer.ToSegment());
                     Plugin.Log.LogInfo($"[Sidecar] sent world choice to coordinator (seed={_leaderSeed}, ff={_leaderFriendlyFire}, hp={_leaderHpScaling})");
@@ -2631,6 +2667,20 @@ namespace PunkMultiverse.Core
                     Fail("You were kicked by the host.");
                     break;
                 case MsgType.RunEnded when !IsHost: EndRunToLobby(); break;
+
+                // ---- Battle Royale (docs/BATTLE_ROYALE.md): host -> all, never client -> host ----
+                case MsgType.Announce when !IsHost:
+                    Modes.BattleRoyale.ApplyAnnounce(AnnounceMsg.Read(_reader));
+                    break;
+                case MsgType.RingState when !IsHost:
+                    Modes.BattleRoyale.ApplyRingState(RingStateMsg.Read(_reader));
+                    break;
+                case MsgType.Placement when !IsHost:
+                    Modes.BattleRoyale.ApplyPlacement(PlacementMsg.Read(_reader), this);
+                    break;
+                case MsgType.CarePackage when !IsHost:
+                    Modes.BattleRoyale.ApplyCarePackage(CarePackageMsg.Read(_reader));
+                    break;
                 case MsgType.AuthRelease when IsHost:
                 {
                     var release = AuthReleaseMsg.Read(_reader);
@@ -2844,6 +2894,7 @@ namespace PunkMultiverse.Core
                     if (settings.Seed != 0 && settings.Seed != _preGenSeed)
                         InvalidatePreGen("the party leader chose a different seed");
                     if (settings.Seed != 0) ChosenSeed = settings.Seed;
+                    LobbyMode = settings.Mode;
                     FriendlyFire = settings.FriendlyFire;
                     HpScaling = settings.HpScaling;
                     Plugin.Log.LogInfo($"[Coordinator] adopted {leader}'s world: seed={settings.Seed} ff={settings.FriendlyFire} hp={settings.HpScaling}");
@@ -3615,6 +3666,7 @@ namespace PunkMultiverse.Core
                 HostSeed = ChosenSeed,
                 FriendlyFire = FriendlyFire,
                 WorldStatus = (byte)(!NetConfig.IsCoordinator ? 0 : _preGenDone ? 2 : _preGenInProgress ? 1 : 0),
+                Mode = LobbyMode,
             }.Write(_writer);
             ForEachRemotePeer(peer => _transport.Send(peer, NetChannel.Control, _writer.ToSegment(), reliable: true));
         }
@@ -3667,6 +3719,7 @@ namespace PunkMultiverse.Core
             var lobby = LobbyStateMsg.Read(_reader);
             ChosenSeed = lobby.HostSeed;
             ServerWorldStatus = lobby.WorldStatus;
+            LobbyMode = lobby.Mode; // so every lobby screen shows the ruleset before START
             FriendlyFire = lobby.FriendlyFire;
             ApplyRoster(lobby.Roster);
             if (LocalSlot >= 0 && _players[LocalSlot] != null) _players[LocalSlot].IsLocal = true;

@@ -1302,7 +1302,8 @@ namespace PunkMultiverse.Sync
         private static bool FriendlyFireBlocked(Unit owner, Component victim)
         {
             var session = NetSession.Instance;
-            if (session == null || session.FriendlyFire) return false;
+            // Battle Royale is PvP by definition — the lobby's friendly-fire choice does not apply.
+            if (session == null || session.FriendlyFire || Modes.BattleRoyale.Active) return false;
             return owner != null
                    && owner.GetComponent<Ship>() != null
                    && owner.GetComponent<RemotePuppet>() == null
@@ -1316,7 +1317,7 @@ namespace PunkMultiverse.Sync
         public static bool FriendlyExplosionBlocked(Component victim)
         {
             var session = NetSession.Instance;
-            if (session == null || session.FriendlyFire) return false;
+            if (session == null || session.FriendlyFire || Modes.BattleRoyale.Active) return false; // BR: always PvP
             return _localShipExplosionDepth > 0 && victim != null && victim.GetComponent<RemotePuppet>() != null;
         }
 
