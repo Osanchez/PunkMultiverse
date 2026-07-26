@@ -26,7 +26,9 @@ namespace PunkMultiverse.Modes
         /// covers everything beyond the wall, so running past it is not an escape.</summary>
         public static void LocalTick(NetSession session)
         {
-            if (!Active || !RingKnown) return;
+            if (!Active) return;
+            TryRevealWholeMap();
+            if (!RingKnown) return;
             var ship = ShipSync.LocalShip;
             if (ship == null || ship.IsDead) return;
             if (Time.unscaledTime < _nextBurnAt) return;
@@ -150,6 +152,8 @@ namespace PunkMultiverse.Modes
         /// baseline. Everything here is local state on each machine, so each applies its own.</summary>
         public static void ApplyLocalMatchRules()
         {
+            RevealWholeMap();
+
             try
             {
                 var runData = ServiceLocator.Get<RunData>();
@@ -174,6 +178,42 @@ namespace PunkMultiverse.Modes
                 Plugin.Log.LogInfo("[BR] starting currency zeroed");
             }
             catch { /* vanilla default is already zero */ }
+        }
+
+        /// <summary>No hidden ground in Battle Royale: the whole map is readable from the first
+        /// second so players can plan a route to the next ring instead of exploring blind. The
+        /// game already has this exact operation for its own scanners — DiscoverWholeMap — so BR
+        /// just calls it once per machine at match start rather than faking a reveal.</summary>
+        private static bool _mapRevealed;
+        private static float _nextRevealTryAt;
+
+        private static void RevealWholeMap()
+        {
+            _mapRevealed = false;
+            _nextRevealTryAt = 0f;
+            TryRevealWholeMap();
+        }
+
+        /// <summary>Retried until it lands: at go-live the map objects may not exist yet, and a
+        /// one-shot attempt that quietly missed would leave players exploring blind for the whole
+        /// match with nothing in the log to explain it.</summary>
+        private static void TryRevealWholeMap()
+        {
+            if (_mapRevealed || Time.unscaledTime < _nextRevealTryAt) return;
+            _nextRevealTryAt = Time.unscaledTime + 1f;
+            try
+            {
+                var drawer = Object.FindFirstObjectByType<MapDrawer>();
+                if (drawer == null) return; // not loaded yet — try again next second
+                drawer.DiscoverWholeMap();
+                _mapRevealed = true;
+                Plugin.Log.LogInfo("[BR] whole map revealed (no fog of war)");
+            }
+            catch (System.Exception e)
+            {
+                _mapRevealed = true; // don't spin on a real failure
+                Plugin.Log.LogWarning($"[BR] map reveal failed: {e.Message}");
+            }
         }
 
         // ---------------------------------------------------------------- HUD
