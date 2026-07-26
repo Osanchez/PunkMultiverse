@@ -336,8 +336,12 @@ separate path.
 | `PvPDamageScale` | `0.25` | ship→ship damage multiplier in BR |
 | `BrEnemyHpScale` | `0.5` | enemy HP multiplier in BR (0.5 ≈ double damage) |
 | `BrMinPlayers` | `2` | minimum connected players for START in BR (1 allowed with a logged warning, for testing) |
+| `ShipStatusBars` | `true` | draw health/fuel bars above other players' ships (BOTH modes; see 6b) |
 
 ## 9. Out of scope (candidate follow-ups)
+
+(Section 6b's ship status bars are NOT deferred and are not BR-only — they ship in both
+modes; they are documented here because BR motivated them.)
 
 Teams/duos; kill feed beyond the elimination toasts; BR-specific meta progression;
 cinematic skip with direct scattered spawns; ring-center drift between stages.
@@ -347,8 +351,9 @@ cinematic skip with direct scattered spawns; ring-center drift between stages.
 1. **Harness** (extend the `pregen-test.ps1` family): coordinator with
    `GameMode = BattleRoyale` (+ shortened timers: `BrMatchMinutes 6`,
    `BrRingStartMinutes 1`, `BrCarePackageMinutes 2`) + 3 bots → assert from logs:
-   all stations unlocked post-golive; scattered spawns (pairwise distance above
-   threshold); `[BR] ring material` resolved; ring center scored open; stage
+   all stations unlocked post-golive; scattered spawns at **distinct** stations (assert
+   no station id repeats across slots) with pairwise distance above threshold;
+   `[BR] ring material` resolved; ring center scored open; stage
    announcements on schedule; terrain diffs flowing (`cells/s` counter) with digest
    clean; kill-zone damage ticking on a bot parked outside the radius; care package
    spawned + reward granted only to the killing bot; placements broadcast in
@@ -357,6 +362,10 @@ cinematic skip with direct scattered spawns; ring-center drift between stages.
 2. **Determinism**: the standard two-round pregen harness in BR mode — zero
    `GENERATION MISMATCH`; terrain digest stays clean while the ring paints
    (host-authored diffs verify by construction).
-3. **Live**: a human match on the dedicated server — feel checks: spawn separation,
+3. **Status bars** (6b): verified visually — they are a world-space widget, invisible to
+   headless bots. Confirm identical widget size between a starter ship and a
+   health/fuel-upgraded one (only the fill fraction differs), correct red/blue mapping,
+   and that they never appear for off-screen or dead ships.
+4. **Live**: a human match on the dedicated server — feel checks: spawn separation,
    ring pressure pacing, PvP time-to-kill at `PvPDamageScale 0.25`, care-package
    contest moments, placement/spectate flow, and the lobby → next-match loop.
