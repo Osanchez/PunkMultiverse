@@ -67,6 +67,7 @@ namespace PunkMultiverse
         public static ConfigEntry<int> BrMatchMinutes;
         public static ConfigEntry<int> BrRingStartMinutes;
         public static ConfigEntry<int> BrRingStages;
+        public static ConfigEntry<float> BrRingCloseSeconds;
         public static ConfigEntry<int> BrCarePackageMinutes;
         public static ConfigEntry<float> PvPDamageScale;
         public static ConfigEntry<float> BrEnemyHpScale;
@@ -301,6 +302,11 @@ namespace PunkMultiverse
                 "Battle Royale: minutes of grace before the ring starts closing (the first warning).");
             BrRingStages = cfg.Bind("Session", "BrRingStages", 8,
                 "Battle Royale: how many announced stages the ring closes in.");
+            BrRingCloseSeconds = cfg.Bind("Session", "BrRingCloseSeconds", 120f,
+                "Battle Royale: how long ONE ring closure takes. The zone holds still between " +
+                "closures and then draws in over this many seconds, evenly, so the pace is " +
+                "predictable and the terrain painting stays light. Automatically shortened if a " +
+                "stage is too brief to fit it (short test matches).");
             BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 10,
                 "Battle Royale: minutes between care-package drops (0 disables them). Each package " +
                 "is destructible; only the player who destroys it gets the loot.");

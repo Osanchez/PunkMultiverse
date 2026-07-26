@@ -268,6 +268,9 @@ namespace PunkMultiverse.Protocol
     {
         public float CenterX, CenterY;
         public float SafeRadius;
+        public float TargetRadius;    // where this closure ends — drawn on the map so players can
+                                      // see the ground they need to reach
+        public bool Closing;          // true while the ring is actually moving
         public byte Stage;            // 0 = not started, 1..N = shrink stage in progress
         public byte TotalStages;
         public float NextShrinkIn;    // seconds until the next stage boundary (0 = final)
@@ -279,6 +282,8 @@ namespace PunkMultiverse.Protocol
             w.WriteFloat(CenterX);
             w.WriteFloat(CenterY);
             w.WriteFloat(SafeRadius);
+            w.WriteFloat(TargetRadius);
+            w.WriteBool(Closing);
             w.WriteByte(Stage);
             w.WriteByte(TotalStages);
             w.WriteHalf(NextShrinkIn);
@@ -290,6 +295,8 @@ namespace PunkMultiverse.Protocol
             CenterX = r.ReadFloat(),
             CenterY = r.ReadFloat(),
             SafeRadius = r.ReadFloat(),
+            TargetRadius = r.ReadFloat(),
+            Closing = r.ReadBool(),
             Stage = r.ReadByte(),
             TotalStages = r.ReadByte(),
             NextShrinkIn = r.ReadHalf(),

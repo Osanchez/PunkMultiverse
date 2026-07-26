@@ -37,6 +37,7 @@ namespace PunkMultiverse.Modes
                 Plugin.Log.LogWarning($"[BR] starting with only {MatchPlayers.Count} player(s) — " +
                     "a match this small ends immediately (testing only)");
 
+            ComputeSchedule();
             PickRingCenter();
             OpenAllStations();
             ClearHazardCells();
@@ -203,22 +204,85 @@ namespace PunkMultiverse.Modes
             _paintedRadius = far;
         }
 
-        /// <summary>Safe radius at a given elapsed time: full until the grace ends, then shrinking
-        /// steadily to zero exactly when the match does.</summary>
+        // The ring alternates HOLD and CLOSE, the way a battle royale is supposed to feel: the zone
+        // sits still long enough to fight over, then draws in over a couple of minutes to the next
+        // ring. Radius steps are equal, so each closure travels the same distance and the pace
+        // never surprises you. A slow, even creep is also what keeps terrain painting cheap — the
+        // front only advances a fraction of a cell per second.
+        private static float _stageSpan;    // hold + close for one stage
+        private static float _closeSeconds; // how long a single closure takes
+
+        private static void ComputeSchedule()
+        {
+            float span = Mathf.Max(1f, _matchSeconds - _ringStartSeconds);
+            _stageSpan = span / Mathf.Max(1, _stages);
+            // Honour the configured closing time, but never let it swallow the whole stage — a
+            // compressed test match has short stages and still needs a visible hold phase.
+            _closeSeconds = Mathf.Min(Mathf.Max(5f, NetConfig.BrRingCloseSeconds.Value), _stageSpan * 0.6f);
+        }
+
+        /// <summary>Radius of the ring that a completed stage leaves behind. Even steps: stage k of
+        /// N lands on startRadius * (1 - k/N), so the last one lands exactly on zero.</summary>
+        private static float RadiusAfterStage(int stage) =>
+            Mathf.Max(0f, _startRadius * (1f - Mathf.Clamp01(stage / (float)Mathf.Max(1, _stages))));
+
+        /// <summary>Where the ring is right now, and where it is heading.</summary>
+        private static void RingAt(float elapsed, out float radius, out int stage,
+            out bool closing, out float nextTarget, out float phaseRemaining)
+        {
+            if (elapsed <= _ringStartSeconds)
+            {
+                radius = _startRadius;
+                stage = 0;
+                closing = false;
+                nextTarget = RadiusAfterStage(1);
+                phaseRemaining = _ringStartSeconds - elapsed;
+                return;
+            }
+            float t = elapsed - _ringStartSeconds;
+            int done = Mathf.FloorToInt(t / _stageSpan);     // fully completed stages
+            if (done >= _stages)
+            {
+                radius = 0f;
+                stage = _stages;
+                closing = false;
+                nextTarget = 0f;
+                phaseRemaining = 0f;
+                return;
+            }
+            float within = t - done * _stageSpan;
+            float from = RadiusAfterStage(done);
+            float to = RadiusAfterStage(done + 1);
+            float hold = Mathf.Max(0f, _stageSpan - _closeSeconds);
+            if (within < hold)
+            {
+                radius = from;
+                stage = done;
+                closing = false;
+                nextTarget = to;
+                phaseRemaining = hold - within;
+            }
+            else
+            {
+                float f = Mathf.Clamp01((within - hold) / Mathf.Max(0.001f, _closeSeconds));
+                radius = Mathf.Lerp(from, to, f);
+                stage = done + 1;
+                closing = true;
+                nextTarget = to;
+                phaseRemaining = _closeSeconds * (1f - f);
+            }
+        }
+
         private static float RadiusAt(float elapsed)
         {
-            if (elapsed <= _ringStartSeconds) return _startRadius;
-            float span = Mathf.Max(1f, _matchSeconds - _ringStartSeconds);
-            float t = Mathf.Clamp01((elapsed - _ringStartSeconds) / span);
-            return Mathf.Max(0f, _startRadius * (1f - t));
+            RingAt(elapsed, out float r, out _, out _, out _, out _);
+            return r;
         }
 
         private static int StageAt(float elapsed)
         {
-            if (elapsed <= _ringStartSeconds) return 0;
-            float span = Mathf.Max(1f, _matchSeconds - _ringStartSeconds);
-            float t = Mathf.Clamp01((elapsed - _ringStartSeconds) / span);
-            return Mathf.Clamp(Mathf.FloorToInt(t * _stages) + 1, 1, _stages);
+            RingAt(elapsed, out _, out int stage, out _, out _, out _);
+            return stage;
         }
 
         // ---------------------------------------------------------------- host tick
@@ -235,15 +299,16 @@ namespace PunkMultiverse.Modes
             if (session.State != SessionState.InGame) return;
 
             float elapsed = Time.unscaledTime - _matchStart;
-            float radius = RadiusAt(elapsed);
-            int stage = StageAt(elapsed);
+            RingAt(elapsed, out float radius, out int stage, out bool closing,
+                out float nextTarget, out float phaseRemaining);
 
-            if (stage != _lastAnnouncedStage)
+            // Announce when a closure STARTS, so the warning means "move now" rather than marking
+            // an invisible boundary. The zone it is closing to is on the map from this moment.
+            if (closing && stage != _lastAnnouncedStage)
             {
                 _lastAnnouncedStage = stage;
-                if (stage == 1) Announce(session, "THE LAVA RING IS CLOSING", 7f);
-                else if (stage >= _stages) Announce(session, "FINAL RING — NOWHERE LEFT TO RUN", 8f);
-                else Announce(session, $"THE RING IS CLOSING — SAFE ZONE SHRINKING ({stage}/{_stages})", 6f);
+                if (stage >= _stages) Announce(session, "FINAL RING — NOWHERE LEFT TO RUN", 8f);
+                else Announce(session, $"THE LAVA RING IS CLOSING ({stage}/{_stages}) — CHECK YOUR MAP", 7f);
                 BroadcastRing(session);
             }
 
@@ -262,7 +327,9 @@ namespace PunkMultiverse.Modes
             if (elapsed >= _nextCarePackageAt)
             {
                 _nextCarePackageAt = elapsed + Mathf.Max(60f, NetConfig.BrCarePackageMinutes.Value * 60f);
-                DropCarePackage(session, radius);
+                // Drop into ground that stays safe through the NEXT closure, so a package is never
+                // swallowed by lava before anyone can reach it.
+                DropCarePackage(session, Mathf.Max(20f, nextTarget));
             }
 
             CheckLastAlive(session);
@@ -271,19 +338,18 @@ namespace PunkMultiverse.Modes
         private static void BroadcastRing(NetSession session)
         {
             float elapsed = Time.unscaledTime - _matchStart;
-            float span = Mathf.Max(1f, _matchSeconds - _ringStartSeconds);
-            int stage = StageAt(elapsed);
-            float stageEnd = stage <= 0
-                ? _ringStartSeconds
-                : _ringStartSeconds + span * stage / _stages;
+            RingAt(elapsed, out float radius, out int stage, out bool closing,
+                out float nextTarget, out float phaseRemaining);
             var msg = new RingStateMsg
             {
                 CenterX = _center.x,
                 CenterY = _center.y,
-                SafeRadius = RadiusAt(elapsed),
+                SafeRadius = radius,
+                TargetRadius = nextTarget,   // what the map draws players a path toward
+                Closing = closing,
                 Stage = (byte)Mathf.Clamp(stage, 0, 255),
                 TotalStages = (byte)Mathf.Clamp(_stages, 0, 255),
-                NextShrinkIn = Mathf.Max(0f, stageEnd - elapsed),
+                NextShrinkIn = Mathf.Max(0f, phaseRemaining),
                 MatchRemaining = Mathf.Max(0f, _matchSeconds - elapsed),
             };
             ApplyRingState(msg); // the host runs the same HUD/damage path as everyone else
@@ -368,7 +434,7 @@ namespace PunkMultiverse.Modes
                 var w2 = new NetWriter(32);
                 new CarePackageMsg { NetId = netId, X = spot.x, Y = spot.y }.Write(w2);
                 session.SendToAll(Transport.NetChannel.Control, w2.ToSegment(), reliable: true);
-                Announce(session, "SUPPLY DROP INBOUND — DESTROY IT TO CLAIM IT", 6f);
+                Announce(session, "SUPPLY DROP INBOUND — CHECK YOUR MAP. DESTROY IT TO CLAIM IT", 7f);
             }
             catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] care package drop failed: {e.Message}"); }
         }
