@@ -442,6 +442,16 @@ namespace PunkMultiverse.Sync
                 return;
             }
             if (amount <= 0) return;
+            // Battle Royale: scale player-vs-player damage down. This is THE ship-vs-ship
+            // chokepoint — a ship's health lives on its owner's machine, so every hit on another
+            // player is routed through here exactly once (direct fire and AoE alike), and the
+            // victim applies the scaled amount through the normal vanilla pipeline. Damage to
+            // ENEMIES is untouched: BR speeds that up via the enemy-HP multiplier instead.
+            if (!isEntity && Modes.BattleRoyale.Active)
+            {
+                amount *= Mathf.Clamp(NetConfig.PvPDamageScale.Value, 0.01f, 1f);
+                if (amount <= 0f) return;
+            }
             // Host shooting a client-simulated entity never re-enters Dispatch — mark here.
             if (isEntity && session.IsHost) Core.AuthorityManager.NoteCombat(targetNetId);
             bool hasTrace = ProjectileSync.TryGetCurrentDamageTrace(out var trace);

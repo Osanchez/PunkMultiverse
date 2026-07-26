@@ -71,6 +71,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<MainMenuInjection>();
             _runtime.AddComponent<PlayerTracker>();
             _runtime.AddComponent<Scoreboard>();
+            _runtime.AddComponent<ShipStatusBars>();
             _runtime.AddComponent<SpectatorCam>();
             _runtime.AddComponent<Toast>();
 

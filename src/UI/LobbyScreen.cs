@@ -699,6 +699,19 @@ namespace PunkMultiverse.UI
             _randomLabel = UiTheme.MakeButton(seedRow, "Btn_Random", "RANDOM",
                 new Vector2(455, 0), new Vector2(150, 54), () => { if (_seedInput != null) _seedInput.text = ""; }, 16);
 
+            // GAME MODE row ------------------------------------------------------------
+            // Feature-flagged: with EnableGameModes off the row is not built at all, so the panel
+            // looks exactly as it did before the mode existed.
+            if (NetConfig.GameModesEnabled)
+            {
+                var modeRow = MakeSettingsRow(_seedPanel.transform, "GAME MODE",
+                    "BATTLE ROYALE: LAST SHIP ALIVE WINS", 168);
+                _modeStandard = UiTheme.MakeButton(modeRow, "Btn_ModeStd", "STANDARD",
+                    new Vector2(235, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.Standard), 22);
+                _modeBr = UiTheme.MakeButton(modeRow, "Btn_ModeBR", "ROYALE",
+                    new Vector2(440, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.BattleRoyale), 22);
+            }
+
             // FRIENDLY FIRE row --------------------------------------------------------
             var ffRow = MakeSettingsRow(_seedPanel.transform, "FRIENDLY FIRE",
                 "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS", 42);
@@ -720,6 +733,7 @@ namespace PunkMultiverse.UI
 
             SetFriendlyFire(false, silent: true);
             SetHpScaling(true, silent: true);
+            SetMode(Protocol.GameMode.Standard, silent: true);
         }
 
         /// <summary>Options-screen style row: label + faint sub-note on the left, controls
@@ -753,6 +767,23 @@ namespace PunkMultiverse.UI
 
             _settingsRows.Add(new SettingsRow { Root = rt, Label = text });
             return go.transform;
+        }
+
+        private TMP_Text _modeStandard, _modeBr;
+        private Protocol.GameMode _mode = Protocol.GameMode.Standard;
+
+        /// <summary>GAME SETTINGS: which ruleset the run uses. Battle Royale is a last-one-alive
+        /// match — see docs/BATTLE_ROYALE.md. It is always PvP, so selecting it also flips the
+        /// friendly-fire row ON to show what will actually happen (BR forces it at the damage
+        /// gates regardless of what the toggle says).</summary>
+        private void SetMode(Protocol.GameMode mode, bool silent = false)
+        {
+            if (!NetConfig.GameModesEnabled) mode = Protocol.GameMode.Standard;
+            _mode = mode;
+            bool br = mode == Protocol.GameMode.BattleRoyale;
+            UiTheme.SetToggled(_modeStandard, !br);
+            UiTheme.SetToggled(_modeBr, br);
+            if (br) SetFriendlyFire(true, silent: true);
         }
 
         private void SetFriendlyFire(bool on, bool silent = false)
@@ -795,7 +826,7 @@ namespace PunkMultiverse.UI
                 if (digits.Length > 0) int.TryParse(digits, out seed);
             }
             _seedSetupOpen = false;
-            NetSession.Instance.HostOnline(seed, _friendlyFire, _hpScaling);
+            NetSession.Instance.HostOnline(seed, _friendlyFire, _hpScaling, _mode);
             Refresh();
         }
 

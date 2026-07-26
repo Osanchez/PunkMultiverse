@@ -40,6 +40,13 @@ namespace PunkMultiverse.UI
                 if (_visuals.Count > 0) Clear();
                 return;
             }
+            // Battle Royale hides where everyone is — finding people is the game. (Ship status
+            // bars still draw on ships you can actually SEE; see UI/ShipStatusBars.cs.)
+            if (Modes.BattleRoyale.Active)
+            {
+                if (_visuals.Count > 0) Clear();
+                return;
+            }
 
             foreach (var p in session.Players)
             {
