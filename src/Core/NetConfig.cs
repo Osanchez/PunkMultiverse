@@ -36,6 +36,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> TrackerArrows;
         public static ConfigEntry<bool> ShareMapExploration;
         public static ConfigEntry<bool> Scoreboard;
+        public static ConfigEntry<bool> ShipStatusBars;
 
         public static ConfigEntry<float> StateHz;
         public static ConfigEntry<float> CombatStateHz;
@@ -208,6 +209,10 @@ namespace PunkMultiverse
                 "Screen-edge arrows in the player's color with name+distance while they're offscreen; hidden when visible.");
             Scoreboard = cfg.Bind("Tracker", "Scoreboard", true,
                 "Hold Tab during a net run for the party scoreboard (HP, kills, deaths, distance).");
+            ShipStatusBars = cfg.Bind("UI", "ShipStatusBars", true,
+                "Show a small health (red) and fuel (blue) bar above other players' ships, so you " +
+                "can read their condition in a fight. Fixed size — upgrades change how full the " +
+                "bars are, not how big. Only drawn for ships on screen.");
             ShareMapExploration = cfg.Bind("Tracker", "ShareMapExploration", true,
                 "Merge explored map regions between players (fog-of-war sync).");
 

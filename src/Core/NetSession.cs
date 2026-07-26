@@ -591,6 +591,10 @@ namespace PunkMultiverse.Core
                 SendAdminCommand(AdminCmd.EndRun, 0);
         }
 
+        /// <summary>A game mode ended the run on its own terms (BR: someone won). Same path as any
+        /// other run end, so the lobby/pre-generation flow is identical.</summary>
+        public void EndRunForMode(string reason) => EndRunNow(reason);
+
         /// <summary>Host: end the run — broadcast RunEnded (every client returns to the lobby,
         /// the same hook party-wipe uses) and open our own lobby.</summary>
         private void EndRunNow(string reason)
@@ -1342,7 +1346,13 @@ namespace PunkMultiverse.Core
         {
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             DiagWatch.NotifyRunStarted(); // skip warmup in the growth watchdog
-            Patches.StartSequenceWatchdog.Arm(); // recover if the opening cinematic never gives control back
+            Patches.StartSequenceWatchdog.Arm();
+            if (IsBattleRoyale)
+            {
+                Modes.BattleRoyale.BeginMatch(this);   // host only; no-op elsewhere
+                Modes.BattleRoyale.ApplyLocalMatchRules();
+                Modes.BattleRoyale.ArmScatter();
+            } // recover if the opening cinematic never gives control back
             SetState(SessionState.InGame);
             // Same value on every machine (seed + host identity are already shared): the run id
             // groups all players' `uploadlogs` under one S3 folder and names bug reports.
@@ -1900,12 +1910,24 @@ namespace PunkMultiverse.Core
                     RuntimeInstrumentation.SetPhase(PerfPhase.Diagnostics);
                     NetDiag.TickPeriodic();                     NetProfiler.Mark("Diag");
                     Patches.StartSequenceWatchdog.Tick();
+                    if (IsBattleRoyale)
+                    {
+                        Modes.BattleRoyale.TickScatter(this);
+                        Modes.BattleRoyale.LocalTick(this);
+                        if (IsHost)
+                        {
+                            Modes.BattleRoyale.HostTick(this);
+                            Modes.BattleRoyale.TickMatchEnd(this);
+                        }
+                    }
                     if (IsHost)
                     {
                         RuntimeInstrumentation.SetPhase(PerfPhase.Authority);
                         AuthorityManager.Tick(this);            NetProfiler.Mark("Authority");
                         RuntimeInstrumentation.SetPhase(PerfPhase.PartyWipe);
-                        CheckPartyWipe();                       NetProfiler.Mark("PartyWipe");
+                        // BR ends at LAST ALIVE, not all-dead — BattleRoyale.HostTick owns it.
+                        if (!IsBattleRoyale) CheckPartyWipe();
+                        NetProfiler.Mark("PartyWipe");
                     }
                 }
 
@@ -2209,6 +2231,7 @@ namespace PunkMultiverse.Core
             // torn down — drop any standing pre-build and let the idle lobby make a fresh one with
             // a new seed. (Must live HERE, not in BeginRun: invalidating at run START destroys the
             // very world START is about to reuse — found the hard way.)
+            Modes.BattleRoyale.Reset();
             InvalidatePreGen("run ended");
             _preGenNextAttemptAt = Time.unscaledTime + 5f; // let the teardown settle first
             ChosenSeed = 0;                                // the next world rolls a new seed

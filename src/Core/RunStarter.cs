@@ -64,6 +64,22 @@ namespace PunkMultiverse.Core
                 __0.seed = PendingSeed;
                 __0.isCoop = false;
                 __0.isContinue = false;
+                // Battle Royale starts everyone on the same standard weapon — what you build from
+                // there is earned in the match, not chosen at the menu. Runs on every machine, so
+                // no agreement has to be negotiated.
+                if (session.LobbyMode == Protocol.GameMode.BattleRoyale)
+                {
+                    var standard = Object.FindFirstObjectByType<LoadoutPool>()
+                        ?? Resources.FindObjectsOfTypeAll<LoadoutPool>().FirstOrDefault();
+                    var loadouts = standard != null
+                        ? Traverse.Create(standard).Field("loadouts").GetValue() as System.Collections.Generic.List<LoadoutTemplate>
+                        : null;
+                    if (loadouts != null && loadouts.Count > 0)
+                    {
+                        __0.startingLoadout = loadouts[0];
+                        Plugin.Log.LogInfo($"[BR] forced standard loadout '{loadouts[0].name}'");
+                    }
+                }
                 CurrentLoadout = __0.startingLoadout;
                 Plugin.Log.LogInfo($"[Run] seed {PendingSeed} injected, loadout={CurrentLoadout?.name ?? "null"}");
             }

@@ -40,7 +40,10 @@ namespace PunkMultiverse.UI
         private void Update()
         {
             var session = NetSession.Instance;
+            // In BR the scoreboard would leak positions (distance column) and health, so the
+            // panel stands down entirely — placements are the only standings that matter there.
             bool show = session != null && session.State == SessionState.InGame
+                        && !Modes.BattleRoyale.Active
                         && NetConfig.Scoreboard.Value
                         && Keyboard.current != null && Keyboard.current[Key.Tab].isPressed;
             if (show && _canvasGo == null) Build();

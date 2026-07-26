@@ -22,7 +22,7 @@ namespace PunkMultiverse.Modes
     /// <see cref="RingStateMsg"/> and apply their OWN out-of-zone damage from it, because a ship's
     /// health belongs to the machine that owns the ship.
     /// </summary>
-    internal static class BattleRoyale
+    internal static partial class BattleRoyale
     {
         // ---------------------------------------------------------------- match state (host)
 
