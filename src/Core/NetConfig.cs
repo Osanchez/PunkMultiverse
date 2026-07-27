@@ -73,6 +73,7 @@ namespace PunkMultiverse
         public static ConfigEntry<float> PvPDamageScale;
         public static ConfigEntry<float> BrEnemyHpScale;
         public static ConfigEntry<int> BrMinPlayers;
+        public static ConfigEntry<string> InstallId;
 
         /// <summary>Master switch for alternate game modes. While it is off, nothing can select
         /// anything but Standard: the GAME MODE row does not appear when self-hosting and a
@@ -175,6 +176,13 @@ namespace PunkMultiverse
                 "if nobody collects them — the base game has no such timer, so uncollected coins " +
                 "would pile up forever. Only shared-currency ResourcePickups are affected; module/" +
                 "ingredient/consumable pickups are left to persist. 0 disables (coins never despawn).");
+
+            InstallId = cfg.Bind("Session", "InstallId", "",
+                "Auto-generated once and then left alone: a random id that tells a server which " +
+                "copy of the game you are, so a rejoin finds your old slot. Only used by the " +
+                "non-Steam transports (Udp/Loopback), which carry no account identity. Blank = " +
+                "generate on the next connect. Clear it if you copied a whole game folder to " +
+                "another machine and the two now collide.");
 
             JitterFloorUnitsPerSec = cfg.Bind("Diag", "JitterFloorUnitsPerSec", 10f,
                 "Enemy-jitter detector threshold: a remote enemy whose interpolation racks up this " +
