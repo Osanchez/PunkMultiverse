@@ -99,6 +99,10 @@ try {
     # Prove the endgame too: drop god on one bot and let the ring finish it.
     Cmd (Join-Path $BotDirs[0] "BepInEx\plugins\PunkMultiverse") "god off"
     WaitFor $CoordLog "\[BR\] WINNER" 240 "winner" | Out-Null
+    # The winner's self-destruct is on a countdown (BrWinnerSelfDestructSeconds, default 10s) and
+    # the host holds the run open for it. Assert AFTER it has had time to fire, or the check races
+    # the countdown and reports MISSING on a perfectly good run.
+    Start-Sleep 18
 
     Write-Host ""
     Write-Host "=============== BATTLE ROYALE RESULTS ==============="
@@ -132,6 +136,26 @@ try {
         "distinct stations", $bySlot.Count, ($stationIds | Select-Object -Unique).Count, $dupes.Count, $disagree)
     if ($dupes.Count -gt 0) { $ok = $false; Write-Host "  FAIL: two players shared a station" }
     if ($disagree -gt 0) { $ok = $false; Write-Host "  FAIL: machines disagreed on the assignment" }
+
+    # The host opening 44 stations means nothing if the unlocks never REACH the clients. The first
+    # live match had "opened 44 stations" in the coordinator log and zero broadcasts, because
+    # BeginMatch ran one line before SetState(InGame) and ProgressionSync's capture ignores
+    # installs outside InGame - every client sat at a locked shop. Assert BOTH halves.
+    $broadcast = CountIn $CoordLog "\[Progress\] station upgrade .* broadcast"
+    $applied = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "applied remote station upgrade" -AllMatches -EA SilentlyContinue }).Count
+    Write-Host ("  {0,-22} {1} broadcast by host, {2} applied on bots" -f "station unlocks", $broadcast, $applied)
+    if ($broadcast -lt 1 -or $applied -lt 1) { $ok = $false; Write-Host "  FAIL: station unlocks did not replicate" }
+
+    # Spawn areas cleared of enemies. Derived identically on every machine and sent over no wire,
+    # so every bot must report its own clear.
+    $cleared = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] spawn clear: removed" -EA SilentlyContinue }).Count
+    Write-Host ("  {0,-22} {1}/{2} bots cleared their spawn areas" -f "spawn clear", $cleared, $BotDirs.Count)
+    if ($cleared -lt $BotDirs.Count) { $ok = $false; Write-Host "  FAIL: spawn clear did not run on every machine" }
+
+    # A won match must not leave the winner alone in the world.
+    $selfDestruct = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] winner self-destructed" -EA SilentlyContinue }).Count
+    Write-Host ("  {0,-22} {1}" -f "winner self-destruct", $(if ($selfDestruct -ge 1) { "fired" } else { "MISSING" }))
+    if ($selfDestruct -lt 1) { $ok = $false }
 
     $stages = CountIn $CoordLog "\[BR\] announce: (THE RING IS CLOSING|FINAL RING|THE LAVA RING)"
     $drops  = CountIn $CoordLog "\[BR\] care package"
