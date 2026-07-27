@@ -23,7 +23,7 @@ A second game mode, `BattleRoyale`, alongside the existing (implicit) `Standard`
 | Stations | unlock by paying | **all open from the start** |
 | Coins | normal (vanilla starts at 0) | 0 (defensively enforced) |
 | Shop stock | grows per station unlock | **fully stocked from the start**, normal prices |
-| Loadout | player's choice | **forced standard loadout** |
+| Loadout | player's choice, chosen on the selector screen | **everyone is the Gunner; no selection screen** |
 | PvP | FriendlyFire toggle | **always on, damage scaled down (0.25x)** |
 | Player damage to enemies | 1x | **effectively 2x** (enemy HP halved) |
 | Environment | as generated | hazard cells cleared; **closing lava ring** |
@@ -110,12 +110,26 @@ A second game mode, `BattleRoyale`, alongside the existing (implicit) `Standard`
    **NOT** `RunData.AllShopItemsAreFree` — prices stay normal; players buy with gold
    they earn. Price parity across machines already replicates
    (`ProgressionSync.cs:204`).
-5. **Forced standard loadout**: `RunStarter.InjectSeed.Prefix`
-   (`src/Core/RunStarter.cs:59-69`) overrides `RunArguments.startingLoadout =
-   LoadoutPool.loadouts[0]` when the mode is BR — one line, runs identically on every
-   machine, skips nothing else in the flow. (`loadouts[0]` is the canonical standard
-   loadout — the same one dev auto-pick selects; loadout assets have no stable name in
-   the DLL, so the index, not a name string, is authoritative.)
+5. **Everyone flies the Gunner, and there is no class-selection screen.**
+   - *Which ship*: `RunStarter.FindBattleRoyaleLoadout()` matches on identity —
+     `displayName == "GUNNER"`, else asset name `Starter_Popper`, else the
+     alphabetically first template so every machine still agrees. **Never by list
+     index**: `LoadoutPool.loadouts` is a hand-ordered serialized list (real order
+     `4,2,1,5,3,6`), so `loadouts[0]` being the Gunner today is luck, not a contract.
+   - *No selector*: `RunStarter.LaunchRun` skips the `LoadoutSelector` scene in BR and
+     calls `GameScene.GoToGameScene(RunArguments.NewRun(false))` directly — the game's
+     own Continue/QuickLoad flows do the same thing, and the selector is only a producer
+     of `RunArguments`.
+   - *Where the ship is actually stamped in*: a postfix on `GameController.Awake`
+     (`RunStarter.ForceBattleRoyaleLoadout`), **not** at launch time. The loadout assets
+     live in the selector scene's bundle and are provably not resident while the lobby is
+     open — the first implementation resolved at launch and every machine logged
+     "assets are not loaded yet". `GameController.Awake` is the earliest point the pool
+     is loaded (the Game scene references it via `LoadoutUnlocker`) and it runs before
+     `BuildLevel` reads `startingLoadout`. Hooking there also covers a selector run and
+     the game's own `Restart()`, so no launch route can put another ship in a BR match.
+     The log line states the count it chose from: `chosen from 6 loadouts` means the
+     whole pool was visible; a `1` there would mean only the fallback default had loaded.
 6. **Clear pre-existing hazard cells** (host). The game has **no literal lava**; the
    damaging terrain on today's maps is biome `CellType`s with `contactDamage > 0`. At
    match start the host scans `Level.cellTypes` and converts any cell whose registered
