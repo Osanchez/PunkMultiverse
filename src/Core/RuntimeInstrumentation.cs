@@ -213,6 +213,19 @@ namespace PunkMultiverse.Core
             MainThreadWatchdog.Phase(_currentPhase);
         }
 
+        // Per-message-type allocation, indexed by MsgType byte. Narrows "TransportPoll allocates
+        // 16MiB/s" down to the specific handler responsible.
+        private static readonly long[] HandlerAlloc = new long[256];
+        private static readonly long[] HandlerCalls = new long[256];
+
+        internal static void NoteHandlerAllocation(MsgType type, long before)
+        {
+            long delta = GC.GetTotalMemory(false) - before;
+            int i = (int)type & 0xFF;
+            if (delta > 0) HandlerAlloc[i] += delta;
+            HandlerCalls[i]++;
+        }
+
         private static void ReportAllocation(double elapsed)
         {
             if (!AllocProfiling) return;
@@ -235,6 +248,20 @@ namespace PunkMultiverse.Core
                     "[Alloc]   {0,-24} {1,8:0.00}MiB ({2,6:0.00}MiB/s)",
                     (PerfPhase)best, PhaseAlloc[best] / 1048576.0, PhaseAlloc[best] / elapsed / 1048576.0));
             }
+            for (int rank = 0; rank < 6; rank++)
+            {
+                int best = -1;
+                for (int i = 0; i < HandlerAlloc.Length; i++)
+                    if (HandlerAlloc[i] > 0 && (best < 0 || HandlerAlloc[i] > HandlerAlloc[best])) best = i;
+                if (best < 0) break;
+                Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                    "[Alloc]   msg {0,-22} {1,8:0.00}MiB ({2,6:0.00}MiB/s) over {3} calls = {4:0}B each",
+                    (MsgType)best, HandlerAlloc[best] / 1048576.0, HandlerAlloc[best] / elapsed / 1048576.0,
+                    HandlerCalls[best], HandlerCalls[best] > 0 ? HandlerAlloc[best] / (double)HandlerCalls[best] : 0));
+                HandlerAlloc[best] = 0;
+            }
+            System.Array.Clear(HandlerAlloc, 0, HandlerAlloc.Length);
+            System.Array.Clear(HandlerCalls, 0, HandlerCalls.Length);
             System.Array.Clear(PhaseAlloc, 0, PhaseAlloc.Length);
             _allocAttributed = 0;
             _allocWindowStartHeap = heapNow;

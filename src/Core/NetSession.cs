@@ -2704,6 +2704,7 @@ namespace PunkMultiverse.Core
                 _loadingRecv.TryGetValue(type, out int seen);
                 _loadingRecv[type] = seen + 1;
             }
+            long allocBefore = RuntimeInstrumentation.AllocProfiling ? GC.GetTotalMemory(false) : 0L;
             try
             {
                 Dispatch(peer, channel, type);
@@ -2712,6 +2713,10 @@ namespace PunkMultiverse.Core
             {
                 Plugin.Log.LogError($"[Session] error handling {type} from {peer}: {e}");
             }
+            // Per-message allocation attribution. TransportPoll was measured allocating ~16MiB/s on
+            // the live server while every other phase was rounding error; "the transport allocates"
+            // is not actionable, "this message type allocates" is.
+            if (allocBefore != 0L) RuntimeInstrumentation.NoteHandlerAllocation(type, allocBefore);
         }
 
         private void Dispatch(ulong peer, NetChannel channel, MsgType type)
