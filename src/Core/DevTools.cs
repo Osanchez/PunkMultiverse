@@ -537,6 +537,13 @@ namespace PunkMultiverse.Core
                     Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
                     return;
                 }
+                case "htrim":
+                {
+                    string arg = parts.Length >= 2 ? string.Join(",", parts, 1, parts.Length - 1) : null;
+                    if (arg == null) { Out($"htrim: valid names = {string.Join(",", Patches.HeadlessTrim.All)} (also 'all' / 'off')"); return; }
+                    Out($"htrim: now {Patches.HeadlessTrim.Configure(arg)}");
+                    return;
+                }
                 case "simprof":
                 {
                     float spSecs = 20f;
