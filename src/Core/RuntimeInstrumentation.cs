@@ -166,10 +166,78 @@ namespace PunkMultiverse.Core
             MainThreadWatchdog.Beat(_currentPhase);
         }
 
+        // ---------------------------------------------------------------- allocation attribution
+        //
+        // WHY NOT GC.GetAllocatedBytesForCurrentThread: it exists here (reflection finds it, and
+        // [GC] duly prints alloc=supported) but Unity's MonoBleedingEdge returns 0 from it, which
+        // is why mainAlloc has been reporting 0.0MiB/s the whole time while the heap visibly climbs
+        // 1.5-2.5MiB/s. The reading was never evidence of "no main-thread allocation" — it was a
+        // stub. GC.GetTotalMemory(false) is a cheap read of the live heap counter and does work.
+        //
+        // Method: sample the heap on every phase transition and charge the growth to the phase we
+        // are leaving. Negative deltas mean a collection landed inside that phase, so they are
+        // dropped rather than netted off — this measures allocation, not net retention. It is
+        // process-wide, so allocation on the transport's logic thread lands in whichever phase
+        // happened to be current; that shows up as a spread rather than a spike, and the
+        // unattributed remainder is reported so the blind spot is visible instead of assumed away.
+        private static readonly long[] PhaseAlloc = new long[(int)PerfPhase.HarmonyBase + 1];
+        private static long _allocSample, _allocWindowStartHeap, _allocAttributed;
+        internal static bool AllocProfiling { get; private set; }
+
+        internal static string ToggleAllocProfiling(string arg)
+        {
+            bool on = string.Equals(arg, "on", System.StringComparison.OrdinalIgnoreCase);
+            bool off = string.Equals(arg, "off", System.StringComparison.OrdinalIgnoreCase);
+            if (!on && !off) return AllocProfiling ? "on (unchanged; use on|off)" : "off (unchanged; use on|off)";
+            AllocProfiling = on;
+            System.Array.Clear(PhaseAlloc, 0, PhaseAlloc.Length);
+            _allocAttributed = 0;
+            _allocSample = _allocWindowStartHeap = GC.GetTotalMemory(false);
+            return on ? "on — charging heap growth to the phase that caused it" : "off";
+        }
+
         internal static void SetPhase(PerfPhase phase)
         {
+            if (AllocProfiling)
+            {
+                long now = GC.GetTotalMemory(false);
+                long delta = now - _allocSample;
+                if (delta > 0 && _currentPhase >= 0 && _currentPhase < PhaseAlloc.Length)
+                {
+                    PhaseAlloc[_currentPhase] += delta;
+                    _allocAttributed += delta;
+                }
+                _allocSample = now;
+            }
             _currentPhase = (int)phase;
             MainThreadWatchdog.Phase(_currentPhase);
+        }
+
+        private static void ReportAllocation(double elapsed)
+        {
+            if (!AllocProfiling) return;
+            long heapNow = GC.GetTotalMemory(false);
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[Alloc] attributed={0:0.0}MiB/s over {1:0.0}s (heap {2:0.0}->{3:0.0}MiB)",
+                _allocAttributed / elapsed / 1048576.0, elapsed,
+                _allocWindowStartHeap / 1048576.0, heapNow / 1048576.0));
+            // Top 10 by selection, so this file needs no generic collections (a `using
+            // System.Collections.Generic` here collides with the game's MyBox types).
+            var taken = new bool[PhaseAlloc.Length];
+            for (int rank = 0; rank < 10; rank++)
+            {
+                int best = -1;
+                for (int i = 0; i < PhaseAlloc.Length; i++)
+                    if (!taken[i] && PhaseAlloc[i] > 0 && (best < 0 || PhaseAlloc[i] > PhaseAlloc[best])) best = i;
+                if (best < 0) break;
+                taken[best] = true;
+                Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                    "[Alloc]   {0,-24} {1,8:0.00}MiB ({2,6:0.00}MiB/s)",
+                    (PerfPhase)best, PhaseAlloc[best] / 1048576.0, PhaseAlloc[best] / elapsed / 1048576.0));
+            }
+            System.Array.Clear(PhaseAlloc, 0, PhaseAlloc.Length);
+            _allocAttributed = 0;
+            _allocWindowStartHeap = heapNow;
         }
 
         // Names the message handler the dispatch loop is entering. Published to the watchdog so a
@@ -279,6 +347,8 @@ namespace PunkMultiverse.Core
                 catch (Exception e) { WarnOnce("state-flow", e); }
                 try { ReportShipLatency(mono, elapsed); }
                 catch (Exception e) { WarnOnce("ship-latency", e); }
+                try { ReportAllocation(elapsed); }
+                catch (Exception e) { WarnOnce("alloc", e); }
                 try { ReportPopulation(mono, elapsed); }
                 catch (Exception e) { WarnOnce("population", e); }
             }

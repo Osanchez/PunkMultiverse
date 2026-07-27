@@ -537,6 +537,12 @@ namespace PunkMultiverse.Core
                     Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
                     return;
                 }
+                case "allocprof":
+                {
+                    string arg = parts.Length >= 2 ? parts[1] : "report";
+                    Out($"allocprof: {RuntimeInstrumentation.ToggleAllocProfiling(arg)}");
+                    return;
+                }
                 case "nostream":
                 {
                     string arg = parts.Length >= 2 ? parts[1] : "off";
