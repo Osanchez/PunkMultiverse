@@ -182,7 +182,6 @@ namespace PunkMultiverse.Core
         private void Awake()
         {
             Instance = this;
-            _localIdentityId = ComputeLoopbackIdentity();
             GameController.LevelGenerated += OnLevelGenerated;
         }
 
@@ -1815,20 +1814,41 @@ namespace PunkMultiverse.Core
 
         private ulong LocalIdentityId()
         {
-            // Steam's transport address is already a durable account identity. Loopback peer IDs
-            // are reassigned by every new host, so use a stable hash of this game installation;
-            // the host and OD test copy have distinct paths and retain their slots after restart.
+            // Steam's transport address is already a durable account identity. Loopback/Udp peer
+            // IDs are reassigned by every new host, so fall back to a per-installation id.
             if (UsingSteam && _transport != null && _transport.LocalPeerId != 0)
                 return _transport.LocalPeerId;
+            // Lazily, not in Awake: this reads (and on first run WRITES) config, which must be
+            // bound first, and a player who never goes online never needs an id at all.
+            if (_localIdentityId == 0) _localIdentityId = ComputeLoopbackIdentity();
             return _localIdentityId;
         }
 
+        /// <summary>Stable per-installation identity for the transports that carry no account id.
+        ///
+        /// This was a hash of the install PATH alone — which is the SAME string on any two machines
+        /// with a default Steam library. Two real players joining one Udp server therefore presented
+        /// the SAME identity, and the host's "one identity never holds two slots" rule silently
+        /// evicted whoever was already seated: each client then sat in a lobby containing only
+        /// itself, each shown as admin, with no error on either side. The dev harness never saw it
+        /// because its bots live in separate install folders — only real players collide.
+        ///
+        /// Now a random id, generated once and persisted in config, mixed WITH the path so that a
+        /// whole game folder copied to a second machine (config.cfg and all) still separates.</summary>
         private static ulong ComputeLoopbackIdentity()
         {
+            string installId = NetConfig.InstallId?.Value;
+            if (string.IsNullOrWhiteSpace(installId))
+            {
+                installId = Guid.NewGuid().ToString("N");
+                // BepInEx writes the file on assignment, so this survives the next launch.
+                if (NetConfig.InstallId != null) NetConfig.InstallId.Value = installId;
+                Plugin.Log.LogInfo($"[Session] generated install id {installId} — identifies this copy to servers");
+            }
             const ulong offset = 14695981039346656037UL;
             const ulong prime = 1099511628211UL;
             ulong hash = offset;
-            string key = (Application.dataPath ?? Environment.CurrentDirectory).ToLowerInvariant();
+            string key = installId + "|" + (Application.dataPath ?? Environment.CurrentDirectory).ToLowerInvariant();
             foreach (char c in key)
             {
                 hash ^= (byte)c;
@@ -3282,6 +3302,25 @@ namespace PunkMultiverse.Core
 
         // ---------------------------------------------------------------- handshake (host)
 
+        /// <summary>Tell a peer we just took its seat away. Normally the old route is already dead
+        /// (a genuine reconnect) and this goes nowhere — but when two DIFFERENT players report the
+        /// same identity, the displaced one is very much alive, and without this it keeps rendering
+        /// the lobby it was in when it was alone: no error, no roster updates (broadcasts only reach
+        /// seated players), still showing itself as admin. Better a clear rejection than a session
+        /// that looks fine and is not.</summary>
+        private void DisplacePeer(ulong peer, string name)
+        {
+            _writer.Reset();
+            new RejectMsg
+            {
+                Reason = $"Another connection claimed {name}'s seat with the same install id. " +
+                         "If that was not you reconnecting, clear InstallId in config.cfg on one " +
+                         "of the two machines and rejoin."
+            }.Write(_writer);
+            SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+            Plugin.Log.LogWarning($"[Session] displaced peer {peer} ({name}) — same identity seated twice");
+        }
+
         private void HandleHello(ulong peer)
         {
             var hello = HelloMsg.Read(_reader);
@@ -3344,6 +3383,7 @@ namespace PunkMultiverse.Core
                         ClearOutboxFor(reserved.PeerId);
                         _peersAwaitingRejoinState.Remove(reserved.PeerId);
                         _nextGoLiveRecoveryAt.Remove(reserved.PeerId);
+                        DisplacePeer(reserved.PeerId, reserved.Name);
                     }
                     reserved.ModsMismatch = modsMismatch;
                     if (hello.Resuming) HandleResume(peer, hello, reserved);
@@ -3366,6 +3406,7 @@ namespace PunkMultiverse.Core
                     {
                         Sync.WorldSync.CancelStream(p.PeerId);
                         ClearOutboxFor(p.PeerId);
+                        DisplacePeer(p.PeerId, p.Name);
                     }
                     _players[i] = null;
                 }
