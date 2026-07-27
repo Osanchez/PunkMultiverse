@@ -217,7 +217,11 @@ namespace PunkMultiverse.Sync
                     // Each machine draws from its OWN RunData (shopUnlockRnd, modulesPickedUp,
                     // modulesAddedToShop), so inventories stay per-player — the shared thing is the
                     // unlock EVENT, not the stock.
-                    if (wasLocked)
+                    // Battle Royale opens all 44 stations at once at match start and separately
+                    // stocks every upgrade (BattleRoyale.ApplyLocalMatchRules -> AddAllItemsToShop),
+                    // so the incremental roll has nothing left to add — it would just churn each
+                    // machine's shop RNG 44 times and log 44 lines per match for no visible effect.
+                    if (wasLocked && !Modes.BattleRoyale.Active)
                     {
                         try
                         {
