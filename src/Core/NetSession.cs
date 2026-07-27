@@ -1979,6 +1979,7 @@ namespace PunkMultiverse.Core
                     RuntimeInstrumentation.SetPhase(PerfPhase.Diagnostics);
                     NetDiag.TickPeriodic();                     NetProfiler.Mark("Diag");
                     Patches.StartSequenceWatchdog.Tick();
+                    Patches.SimProfiler.Tick();
                     if (IsBattleRoyale)
                     {
                         Modes.BattleRoyale.TickScatter(this);

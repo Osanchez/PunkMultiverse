@@ -537,6 +537,14 @@ namespace PunkMultiverse.Core
                     Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
                     return;
                 }
+                case "simprof":
+                {
+                    float spSecs = 20f;
+                    if (parts.Length >= 2) float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out spSecs);
+                    Patches.SimProfiler.Start(spSecs);
+                    Out($"simprof: profiling vanilla per-frame methods for {spSecs:0}s (results -> [SimProf] in the log)");
+                    return;
+                }
                 case "orbit":
                 {
                     // Full-throttle circle. autofly holds ONE heading, which an interpolator
