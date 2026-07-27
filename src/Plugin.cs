@@ -98,9 +98,15 @@ namespace PunkMultiverse
                 // null-gfx Unity idles at 1000+ fps of pure CPU waste.
                 int cap = NetConfig.ServerFrameRateCap.Value;
                 if (cap > 0) UnityEngine.Application.targetFrameRate = cap;
+                // The mode belongs in the boot banner: this is the mod's OWN reading of the config,
+                // so it stays true even when the egg's env-var banner and the injected config.cfg
+                // disagree — which is exactly the failure that silently hosts the wrong ruleset.
                 Log.LogInfo($"{Name} v{Version} — dedicated coordinator (transport: {NetConfig.Transport.Value}, " +
-                    $"frame cap {(cap > 0 ? cap + " fps" : "none")}). Admin via devcmd.txt / panel console; " +
+                    $"game mode: {NetConfig.ConfiguredMode}, frame cap {(cap > 0 ? cap + " fps" : "none")}). " +
+                    "Admin via devcmd.txt / panel console; " +
                     "`uploadlogs` sends this server's log for the current run id.");
+                string modeWarning = NetConfig.ModeWarning();
+                if (modeWarning != null) Log.LogWarning($"[Session] {modeWarning}");
             }
             else
             {

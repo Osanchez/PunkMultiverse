@@ -89,9 +89,24 @@ namespace PunkMultiverse
         public static Protocol.GameMode ConfiguredMode =>
             GameModesEnabled
             && GameMode != null && GameMode.Value != null
-            && GameMode.Value.Replace("_", "").Equals("BattleRoyale", StringComparison.OrdinalIgnoreCase)
+            && GameMode.Value.Trim().Replace("_", "").Equals("BattleRoyale", StringComparison.OrdinalIgnoreCase)
                 ? Protocol.GameMode.BattleRoyale
                 : Protocol.GameMode.Standard;
+
+        /// <summary>Non-null when a mode was configured but the master switch will quietly veto it —
+        /// the one way a dedicated server hosts the wrong ruleset for a whole session with nothing
+        /// in the log to explain it. (An unrecognized mode NAME cannot be detected here: GameMode
+        /// binds with an AcceptableValueList, so BepInEx rewrites a typo to the default before this
+        /// ever reads it. That check lives in pelican_egg/start-server.sh, which sees the raw
+        /// panel value.)</summary>
+        public static string ModeWarning()
+        {
+            string raw = (GameMode?.Value ?? "").Trim();
+            if (raw.Length == 0 || raw.Equals("Standard", StringComparison.OrdinalIgnoreCase)) return null;
+            return GameModesEnabled ? null
+                : $"GameMode is '{raw}' but EnableGameModes is false — hosting Standard. " +
+                  "Set EnableGameModes=1 (panel: Enable Game Modes) and restart to allow it.";
+        }
         public static ConfigEntry<int> FpsLimit;
         public static ConfigEntry<bool> ResizableWindow;
         public static ConfigEntry<bool> HostViaSidecar;
