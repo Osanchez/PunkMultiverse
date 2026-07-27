@@ -277,6 +277,8 @@ namespace PunkMultiverse.Core
                 catch (Exception e) { WarnOnce("counts", e); }
                 try { ReportStateFlow(mono, elapsed); }
                 catch (Exception e) { WarnOnce("state-flow", e); }
+                try { ReportShipLatency(mono, elapsed); }
+                catch (Exception e) { WarnOnce("ship-latency", e); }
                 try { ReportPopulation(mono, elapsed); }
                 catch (Exception e) { WarnOnce("population", e); }
             }
@@ -467,6 +469,46 @@ namespace PunkMultiverse.Core
                 InstrumentationCounters.RuntimeBaselineEntitiesMissing,
                 InstrumentationCounters.RuntimeBaselineIncompleteCount,
                 InstrumentationCounters.VisualGenerationMismatches));
+        }
+
+        private static long _lastShipTimingSamples;
+        private static long _lastShipUnderruns;
+        private static long _lastShipSaturated;
+        private static double _lastShipDelayMicrosTotal;
+        private static double _lastShipJitterMicrosTotal;
+
+        /// <summary>How stale the OTHER PLAYERS' ships are on this screen — the number PvP lives or
+        /// dies on, and the one thing [SnapshotLatency] could never tell you (it pools ships in with
+        /// hundreds of entity puppets that run a completely different delay ceiling: 250ms for
+        /// entities, 120ms for ships).
+        ///
+        /// Read it like this: <c>delayAvg</c> is how far in the past a remote ship is DRAWN, so it
+        /// is roughly how far you must lead a shot on top of the network trip. <c>saturated</c> is
+        /// the alarming one — the fraction of samples where the delay was pinned at its 120ms
+        /// ceiling, meaning the playout formula wanted MORE headroom than a ship is allowed. Pinned
+        /// plus underruns is the exact signature of "position skips": the buffer keeps running dry
+        /// and the puppet has to stall or extrapolate. Per-window, not lifetime.</summary>
+        private static void ReportShipLatency(double mono, double elapsed)
+        {
+            long samples = Delta(InstrumentationCounters.ShipTimingSamples, ref _lastShipTimingSamples);
+            if (samples <= 0) return; // no remote ships being drawn — nothing to say
+
+            double delayTotal = InstrumentationCounters.ShipDelayAverageMs * InstrumentationCounters.ShipTimingSamples;
+            double jitterTotal = InstrumentationCounters.ShipJitterAverageMs * InstrumentationCounters.ShipTimingSamples;
+            double delayAvg = (delayTotal - _lastShipDelayMicrosTotal) / samples;
+            double jitterAvg = (jitterTotal - _lastShipJitterMicrosTotal) / samples;
+            _lastShipDelayMicrosTotal = delayTotal;
+            _lastShipJitterMicrosTotal = jitterTotal;
+
+            long underruns = Delta(InstrumentationCounters.ShipUnderruns, ref _lastShipUnderruns);
+            long saturated = Delta(InstrumentationCounters.ShipDelaySaturatedSamples, ref _lastShipSaturated);
+
+            Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                "[ShipLatency] mono={0:0.000}s ships={1} snapshots={2:0.#}/s delayAvg={3:0.0}ms " +
+                "delayMax={4:0.0}ms jitterAvg={5:0.0}ms saturated={6:0.#}% underruns={7} ({8:0.##}/s)",
+                mono, InstrumentationCounters.RemoteShips, samples / elapsed, delayAvg,
+                InstrumentationCounters.ShipDelayMaxMs, jitterAvg,
+                samples > 0 ? saturated * 100.0 / samples : 0.0, underruns, underruns / elapsed));
         }
 
         private static void ReportStateFlow(double mono, double elapsed)
@@ -799,6 +841,24 @@ namespace PunkMultiverse.Core
         internal static long DirectSnapshotsReceived => Interlocked.Read(ref _directSnapshotsReceived);
         internal static long DirectRelayBypassedEntries => Interlocked.Read(ref _directRelayBypassedEntries);
         internal static long InterpolationUnderruns => Interlocked.Read(ref _interpolationUnderruns);
+        // Ship-only mirrors of the adaptive-timing accumulators — see AdaptiveTimingSample(bool).
+        private static long _shipTimingSamples;
+        private static long _shipDelayMicros;
+        private static long _shipJitterMicros;
+        private static long _shipDelayMaxMicros;
+        private static long _shipUnderruns;
+        internal static long ShipTimingSamples => Interlocked.Read(ref _shipTimingSamples);
+        internal static long ShipUnderruns => Interlocked.Read(ref _shipUnderruns);
+        internal static double ShipDelayAverageMs => Interlocked.Read(ref _shipTimingSamples) > 0
+            ? Interlocked.Read(ref _shipDelayMicros) / 1000.0 / Interlocked.Read(ref _shipTimingSamples)
+            : 0.0;
+        internal static double ShipJitterAverageMs => Interlocked.Read(ref _shipTimingSamples) > 0
+            ? Interlocked.Read(ref _shipJitterMicros) / 1000.0 / Interlocked.Read(ref _shipTimingSamples)
+            : 0.0;
+        internal static double ShipDelayMaxMs => Interlocked.Read(ref _shipDelayMaxMicros) / 1000.0;
+        private static long _shipDelaySaturated;
+        internal static long ShipDelaySaturatedSamples => Interlocked.Read(ref _shipDelaySaturated);
+        internal static void ShipDelaySaturated() => Interlocked.Increment(ref _shipDelaySaturated);
         // Raw adaptive-timing accumulators, exposed so the jitterstats window report can compute
         // per-window averages (the AdaptiveDelayAverageMs property is a lifetime average).
         internal static long AdaptiveSamples => Interlocked.Read(ref _adaptiveSamples);
@@ -947,12 +1007,32 @@ namespace PunkMultiverse.Core
         internal static void DirectSnapshotReceived(int entries) => Interlocked.Add(ref _directSnapshotsReceived, Math.Max(0, entries));
         internal static void DirectRelayBypassed(int entries) => Interlocked.Add(ref _directRelayBypassedEntries, Math.Max(0, entries));
         internal static void AdaptiveTimingSample(float delaySeconds, float jitterSeconds)
+            => AdaptiveTimingSample(delaySeconds, jitterSeconds, isShip: false);
+
+        /// <summary>The adaptive-timing accumulators are POOLED across every puppet kind — entity,
+        /// prop and ship all land in the same average, and entity puppets outnumber ships by
+        /// hundreds to one. That makes the [SnapshotLatency] figures useless for the one question
+        /// PvP actually asks: how stale is the other player's ship on my screen? Ship samples are
+        /// therefore tallied a second time on their own, and reported as [ShipLatency].</summary>
+        internal static void AdaptiveTimingSample(float delaySeconds, float jitterSeconds, bool isShip)
         {
+            long delayMicros = (long)(Math.Max(0f, delaySeconds) * 1000000f);
+            long jitterMicros = (long)(Math.Max(0f, jitterSeconds) * 1000000f);
             Interlocked.Increment(ref _adaptiveSamples);
-            Interlocked.Add(ref _adaptiveDelayMicros, (long)(Math.Max(0f, delaySeconds) * 1000000f));
-            Interlocked.Add(ref _adaptiveJitterMicros, (long)(Math.Max(0f, jitterSeconds) * 1000000f));
+            Interlocked.Add(ref _adaptiveDelayMicros, delayMicros);
+            Interlocked.Add(ref _adaptiveJitterMicros, jitterMicros);
+            if (!isShip) return;
+            Interlocked.Increment(ref _shipTimingSamples);
+            Interlocked.Add(ref _shipDelayMicros, delayMicros);
+            Interlocked.Add(ref _shipJitterMicros, jitterMicros);
+            UpdateMax(ref _shipDelayMaxMicros, delayMicros);
         }
-        internal static void InterpolationUnderrun() => Interlocked.Increment(ref _interpolationUnderruns);
+        internal static void InterpolationUnderrun() => InterpolationUnderrun(isShip: false);
+        internal static void InterpolationUnderrun(bool isShip)
+        {
+            Interlocked.Increment(ref _interpolationUnderruns);
+            if (isShip) Interlocked.Increment(ref _shipUnderruns);
+        }
         internal static void HostRelayCompleted(float milliseconds, int bytes)
         {
             long micros = (long)(Math.Max(0f, milliseconds) * 1000f);

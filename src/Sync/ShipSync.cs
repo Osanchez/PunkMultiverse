@@ -147,10 +147,17 @@ namespace PunkMultiverse.Sync
             var spawnM = AccessTools.Method(smT, "Spawn", new[] { typeof(EntityData), typeof(Ship), typeof(InputDevice), typeof(bool) });
             var shipsConfig = AccessTools.Field(smT, "shipsConfig").GetValue(sm) as ShipsConfig;
             var prefab = shipsConfig != null ? shipsConfig.AutoSwichShipPrefab : null;
-            var loadout = RunStarter.CurrentLoadout;
+            // Resolve late: on a coordinator that pre-built its world, the captured loadout is null
+            // and nothing re-runs to fix it (see RunStarter.ResolveLoadout). Say WHICH one is
+            // missing — "missing prefab/loadout" repeated thousands of times without naming the
+            // culprit is what let this sit through several live matches.
+            var loadout = RunStarter.ResolveLoadout();
             if (prefab == null || loadout == null)
             {
-                Plugin.Log.LogError("[Ships] missing prefab/loadout for puppet spawn");
+                Plugin.Log.LogError($"[Ships] cannot spawn puppet for slot {slot} — " +
+                    $"{(prefab == null ? "AutoSwichShipPrefab is null" : "")}" +
+                    $"{(prefab == null && loadout == null ? " and " : "")}" +
+                    $"{(loadout == null ? "no loadout could be resolved" : "")}");
                 return false;
             }
 

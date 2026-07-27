@@ -135,6 +135,35 @@ namespace PunkMultiverse.Core
             }
         }
 
+        /// <summary>The loadout a puppet ship should be built from, resolved LATE and on demand.
+        ///
+        /// <see cref="CurrentLoadout"/> is captured at seed injection — which on a dedicated
+        /// coordinator happens during the PRE-GENERATION scene load, before the loadout bundle is
+        /// resident, so it captures null ("[Run] seed N injected, loadout=null"). The pre-built
+        /// world is then REUSED at START with no scene reload, so neither the injection postfix nor
+        /// GameController.Awake ever fires again to correct it: CurrentLoadout stayed null for the
+        /// whole run, every SpawnPuppet bailed with "missing prefab/loadout", and the coordinator
+        /// ran the entire match with ZERO ship puppets (remoteShips=0). That one null is why a
+        /// dedicated Battle Royale could only be won by disconnect (no puppet -> ApplyShipState and
+        /// ApplyLifeEvent both early-return -> DeadBySlot never written -> IsSlotDead always false)
+        /// and why enemies never got an owner assigned (authority scan saw no simulators).
+        ///
+        /// By go-live the assets ARE resident, so resolving here succeeds where the early capture
+        /// could not. Only consulted when the captured value is missing, so a normal run — where
+        /// injection ran against a real scene — keeps using exactly what the player launched with.
+        /// </summary>
+        internal static LoadoutTemplate ResolveLoadout()
+        {
+            if (CurrentLoadout != null) return CurrentLoadout;
+            var found = FindBattleRoyaleLoadout(); // Gunner-preferred, else deterministic first
+            if (found == null) return null;
+            CurrentLoadout = found;
+            Plugin.Log.LogInfo($"[Run] loadout resolved late: '{found.name}' ({found.displayName}) " +
+                $"from {LastCandidateCount} candidates — the injection pass ran during " +
+                "pre-generation, before the loadout bundle was resident");
+            return found;
+        }
+
         /// <summary>Stamp the Gunner into the run the moment the Game scene exists.
         ///
         /// This is the only place the forcing can be GUARANTEED to work: GameController.Awake is

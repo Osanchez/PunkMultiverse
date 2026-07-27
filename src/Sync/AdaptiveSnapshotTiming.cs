@@ -32,12 +32,27 @@ namespace PunkMultiverse.Sync
         private float _jitter; // retained for instrumentation continuity ([SnapshotLatency] jitterAvg)
         private float _pressure;
 
-        internal AdaptiveSnapshotTiming(float minimum, float maximum, float initialInterval)
+        // Ship puppets report their samples separately as well as into the pooled average: a
+        // player's ship is the only puppet whose staleness a human is aiming at, and it is
+        // drowned out by the hundreds of entity puppets sharing the pooled counters.
+        private readonly bool _isShip;
+
+        internal AdaptiveSnapshotTiming(float minimum, float maximum, float initialInterval,
+            bool isShip = false)
         {
             _minimum = minimum;
             _maximum = maximum;
             _interval = initialInterval;
+            _isShip = isShip;
         }
+
+        /// <summary>Current interpolation delay in ms — how far in the past this puppet is drawn.</summary>
+        internal float DelayMs => Delay * 1000f;
+
+        /// <summary>True when the delay is pinned at its ceiling, i.e. the formula wants MORE
+        /// headroom than the puppet kind allows. Sustained saturation means visible skipping,
+        /// because the buffer is being asked to cover more lateness than it is permitted to.</summary>
+        internal bool Saturated => Delay >= _maximum - 0.0005f;
 
         // The delay must clear the WORST recent sender gap, not the mean: the priority
         // accumulator legitimately alternates an entity's cadence (e.g. 33/66ms for a mid
@@ -86,13 +101,14 @@ namespace PunkMultiverse.Sync
             }
             _lastSenderTime = senderTime;
             _lastArrivalTime = arrival;
-            InstrumentationCounters.AdaptiveTimingSample(Delay, _jitter);
+            InstrumentationCounters.AdaptiveTimingSample(Delay, _jitter, _isShip);
+            if (_isShip && Saturated) InstrumentationCounters.ShipDelaySaturated();
         }
 
         internal void NoteUnderrun()
         {
             _pressure = Mathf.Min(_maximum * 0.4f, _pressure + 0.004f);
-            InstrumentationCounters.InterpolationUnderrun();
+            InstrumentationCounters.InterpolationUnderrun(_isShip);
         }
     }
 }

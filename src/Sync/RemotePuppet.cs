@@ -34,7 +34,8 @@ namespace PunkMultiverse.Sync
         }
 
         private readonly List<Snap> _buffer = new List<Snap>(32);
-        private readonly AdaptiveSnapshotTiming _timing = new AdaptiveSnapshotTiming(0.025f, 0.12f, 0.025f);
+        private readonly AdaptiveSnapshotTiming _timing =
+            new AdaptiveSnapshotTiming(0.025f, 0.12f, 0.025f, isShip: true);
         private Rigidbody2D _rb;
         private ShipMovement _movement;
         private Aimer[] _aimers;
