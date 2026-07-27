@@ -3899,6 +3899,7 @@ namespace PunkMultiverse.Sync
                 // SavableEntity.Update, so the spatial grid stays correctly bucketed either way.
                 // MoveTo stays essential for NON-live entities (dormant/far stream-in positions).
                 bool liveHere = LiveEntities.TryGetValue(e.NetId, out var liveSe) && liveSe != null;
+                long entryMark = Core.RuntimeInstrumentation.SubMark();
                 if (!liveHere)
                 {
                     try
@@ -3911,12 +3912,15 @@ namespace PunkMultiverse.Sync
                     }
                     catch { }
                 }
+                Core.RuntimeInstrumentation.NoteSubAlloc(liveHere ? "entry.liveSkip" : "entry.MoveTo", entryMark);
+                entryMark = Core.RuntimeInstrumentation.SubMark();
 
                 // Ownership is derived only after the authoritative position has been installed.
                 // This breaks the old circular failure where a stale local position selected the
                 // wrong epoch, causing the position update itself to be rejected forever.
                 if (session != null && msg.Slot == session.LocalSlot) continue; // relayed echo
                 if (egm != null) try { ApplyOwnership(e.NetId, instanceId); } catch { }
+                Core.RuntimeInstrumentation.NoteSubAlloc("entry.Ownership", entryMark);
 
                 if (LiveEntities.TryGetValue(e.NetId, out var se) && se != null)
                 {
