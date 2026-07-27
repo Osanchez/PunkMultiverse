@@ -537,6 +537,12 @@ namespace PunkMultiverse.Core
                     Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
                     return;
                 }
+                case "livedemand":
+                {
+                    string arg = parts.Length >= 2 ? parts[1] : "report";
+                    Out($"livedemand: {Patches.LiveObjectDemand.Toggle(arg)}");
+                    return;
+                }
                 case "htrim":
                 {
                     string arg = parts.Length >= 2 ? string.Join(",", parts, 1, parts.Length - 1) : null;
