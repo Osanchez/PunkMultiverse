@@ -407,6 +407,16 @@ namespace PunkMultiverse.Core
                 catch (Exception e) { WarnOnce("ship-latency", e); }
                 try { ReportAllocation(elapsed); }
                 catch (Exception e) { WarnOnce("alloc", e); }
+                try
+                {
+                    // Both halves of the send-vs-receive test. Only one side reports per machine:
+                    // the host relays (SendCadence), a client receives (RecvCadence).
+                    string send = Transport.SendCadence.DrainReport();
+                    if (send != null) Plugin.Log.LogInfo(send);
+                    string recv = Transport.RecvCadence.DrainReport();
+                    if (recv != null) Plugin.Log.LogInfo(recv);
+                }
+                catch (Exception e) { WarnOnce("cadence", e); }
                 try { ReportPopulation(mono, elapsed); }
                 catch (Exception e) { WarnOnce("population", e); }
             }

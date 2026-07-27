@@ -221,8 +221,13 @@ namespace PunkMultiverse.Transport
                             || t.ConnectionState != ConnectionState.Connected) continue;
                         // Payload only (source framing stripped) — each target link gets its own
                         // FEC sequence/parity stream.
+                        long sendStart = SendCadence.Mark();
                         try { SendStateWithFec(t, item.Data, item.Offset, item.Count); sentAny = true; }
                         catch { /* peer mid-teardown — the next snapshot rebuild drops it */ }
+                        // Ship state only: it is the traffic whose arrival spacing the client's
+                        // playout buffer reacts to, and the one PvP is judged on.
+                        if (item.Count > 0 && (MsgType)item.Data[item.Offset] == MsgType.ShipState)
+                            SendCadence.NoteSend(sendStart);
                     }
                 }
                 // Send() only enqueues; the logic loop transmits. Kick it NOW so relayed state
@@ -535,6 +540,11 @@ namespace PunkMultiverse.Transport
             if (channel == NetChannel.State)
             {
                 if (size < 3) return;
+                // Arrival spacing measured HERE, on the socket thread, before the event queue and
+                // before the game loop touches it. Measuring after the drain would fold the
+                // client's own frame pacing into the number and could not distinguish "arrived
+                // late" from "processed late".
+                if (!IsHost && size > 3 && (MsgType)data[2] == MsgType.ShipState) RecvCadence.NoteArrival();
                 StoreFecFrame(GetFecRx(peer), data);
                 MaybeRelayState(peer, data);
             }
