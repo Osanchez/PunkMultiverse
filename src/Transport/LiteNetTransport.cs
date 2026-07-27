@@ -648,10 +648,6 @@ namespace PunkMultiverse.Transport
 
         // ---- main-thread drain (called from Poll) ----
 
-        // How many State frames from one peer may still be queued behind the one we are about to
-        // dispatch before we treat it as superseded. 0 would shed on the slightest interleaving;
-        // 2 sheds only under real backlog, so healthy traffic is never touched.
-        private const int StateBacklogKeep = 2;
         // Ceiling on how long one Poll may spend dispatching. Frames were spiking to 550ms because
         // the drain was an unbounded `while (TryDequeue)`: whatever had piled up got swallowed in a
         // single frame, which stalled the server, which piled up more — a catch-up spiral. Anything
@@ -679,17 +675,18 @@ namespace PunkMultiverse.Transport
             {
                 if (e.Kind == EvtKind.Data && e.Channel == NetChannel.State)
                 {
-                    // "Process this now, or just get the next one." State is periodic and
-                    // self-superseding: a newer frame from this peer makes the older one worthless,
-                    // so under backlog we drop it rather than pay to apply a position that is about
-                    // to be overwritten. Reliable/Control traffic is never shed — only this channel,
-                    // which is already unreliable by design.
-                    int remaining = System.Threading.Interlocked.Decrement(ref PendingSlot(e.From)[0]);
-                    if (remaining > StateBacklogKeep)
-                    {
-                        Core.InstrumentationCounters.StateFrameShed();
-                        continue;
-                    }
+                    // NO transport-level shedding. It was tried and measured harmful: on a CLIENT
+                    // every state frame arrives from the same peer (the host relays everyone), so a
+                    // per-peer "is a newer frame queued?" test conflates unrelated streams — entity
+                    // bundles made ship snapshots look superseded and got them dropped. Clients shed
+                    // 7.7-14.6 frames/s and the ship snapshot rate fell 20/s -> 12-14/s: the exact
+                    // data the change was meant to protect.
+                    //
+                    // Superseding belongs where identity is known, and it is ALREADY there:
+                    // ShipSync.ApplyShipState drops any snapshot older than the last applied one
+                    // for that slot (wrap-safe sender-clock compare). Cheap, and correct per-ship.
+                    // The counter is still maintained so the depth is observable.
+                    System.Threading.Interlocked.Decrement(ref PendingSlot(e.From)[0]);
                     if (budget.Elapsed.TotalMilliseconds > DrainBudgetMs)
                     {
                         _deferred = e;
