@@ -62,12 +62,29 @@ namespace PunkMultiverse.Patches
             Hits[key] = n + 1;
         }
 
-        /// <summary>Immediate caller of the patched method. Frame 0 is the prefix, 1 is the patched
-        /// method's stub, so 2 is the real caller.</summary>
+        /// <summary>First frame outside the patched type. A fixed frame index was wrong: it lands on
+        /// the real caller for TryGetSavableEntity but on Harmony's own DMD stub for
+        /// SpawnObjectForEntity, which is why the first spawn measurement came back attributed to
+        /// `EntityGameObjectManager.DMD&lt;SpawnObjectForEntity&gt;` — itself. Walking until the
+        /// declaring type changes is stub-count independent.</summary>
         private static MethodBase Caller()
         {
-            try { return new StackTrace(2, false).GetFrame(0)?.GetMethod(); }
-            catch { return null; }
+            try
+            {
+                var trace = new StackTrace(2, false);
+                for (int i = 0; i < trace.FrameCount && i < 8; i++)
+                {
+                    var m = trace.GetFrame(i)?.GetMethod();
+                    var t = m?.DeclaringType;
+                    if (m == null) continue;
+                    if (t == typeof(EntityGameObjectManager) || t == typeof(LiveObjectDemand)) continue;
+                    // Harmony's generated stubs report a null or dynamic declaring type.
+                    if (t == null || m.Name.StartsWith("DMD<", StringComparison.Ordinal)) continue;
+                    return m;
+                }
+            }
+            catch { }
+            return null;
         }
 
         [HarmonyPatch(typeof(EntityGameObjectManager), "TryGetSavableEntity")]

@@ -32,9 +32,15 @@ namespace PunkMultiverse.Patches
     {
         internal static bool Enabled { get; private set; }
 
+        /// <summary>Only an explicit on/off changes state. It used to treat ANYTHING that was not
+        /// "on" as off, so `nostream report` silently disabled the experiment mid-measurement.</summary>
         internal static string Toggle(string arg)
         {
-            Enabled = string.Equals(arg, "on", System.StringComparison.OrdinalIgnoreCase);
+            bool on = string.Equals(arg, "on", System.StringComparison.OrdinalIgnoreCase);
+            bool off = string.Equals(arg, "off", System.StringComparison.OrdinalIgnoreCase);
+            if (!on && !off)
+                return $"{(Enabled ? "ON" : "off")} (unchanged; use on|off) — segments skipped: {Blocked}";
+            Enabled = on;
             Blocked = 0;
             return Enabled
                 ? "ON — coordinator will not instantiate streamed segment entities"
