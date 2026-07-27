@@ -52,15 +52,28 @@ namespace PunkMultiverse.Sync
         /// <summary>True when the delay is pinned at its ceiling, i.e. the formula wants MORE
         /// headroom than the puppet kind allows. Sustained saturation means visible skipping,
         /// because the buffer is being asked to cover more lateness than it is permitted to.</summary>
-        internal bool Saturated => Delay >= _maximum - 0.0005f;
+        internal bool Saturated => Delay >= Ceiling - 0.0005f;
 
         // The delay must clear the WORST recent sender gap, not the mean: the priority
         // accumulator legitimately alternates an entity's cadence (e.g. 33/66ms for a mid
         // weight). gapPeak covers sender-side cadence; the p98 lateness term covers the
         // network's actual delivery distribution.
+        /// <summary>A/B knob for the SHIP ceiling only (`shipdelay <ms|auto>` devcmd), so the cap can
+        /// be retuned against a live server without a rebuild-release-restart cycle. 0 = use the
+        /// compiled ceiling. Ships only: entity/prop puppets have their own `interpdelay` knob and
+        /// very different budgets (entities 250ms, props 220ms, ships 120ms).</summary>
+        internal static float ShipCeilingOverride;
+
+        private float Ceiling => _isShip && ShipCeilingOverride > 0f ? ShipCeilingOverride : _maximum;
+
         internal float Delay => Mathf.Clamp(
             Mathf.Max(_interval * 1.35f, _gapPeak * 1.2f) + _latenessP98 * 1.15f + _pressure,
-            _minimum, _maximum);
+            _minimum, Ceiling);
+
+        /// <summary>What the playout formula ASKED for before clamping — the number that tells you
+        /// how far short the ceiling is falling.</summary>
+        internal float DesiredDelay =>
+            Mathf.Max(_interval * 1.35f, _gapPeak * 1.2f) + _latenessP98 * 1.15f + _pressure;
 
         internal void Reset()
         {
@@ -102,7 +115,15 @@ namespace PunkMultiverse.Sync
             _lastSenderTime = senderTime;
             _lastArrivalTime = arrival;
             InstrumentationCounters.AdaptiveTimingSample(Delay, _jitter, _isShip);
-            if (_isShip && Saturated) InstrumentationCounters.ShipDelaySaturated();
+            if (_isShip)
+            {
+                InstrumentationCounters.ShipDesiredSample(DesiredDelay);
+                // Decompose the demand: which TERM is asking for half a second? Averaging the
+                // total alone cannot tell cadence (interval/gapPeak) from delivery spread
+                // (latenessP98) from underrun back-pressure, and they have opposite fixes.
+                InstrumentationCounters.ShipDelayComponents(_interval, _gapPeak, _latenessP98, _pressure);
+                if (Saturated) InstrumentationCounters.ShipDelaySaturated();
+            }
         }
 
         internal void NoteUnderrun()

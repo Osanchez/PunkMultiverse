@@ -476,6 +476,17 @@ namespace PunkMultiverse.Core
         private static long _lastShipSaturated;
         private static double _lastShipDelayMicrosTotal;
         private static double _lastShipJitterMicrosTotal;
+        private static double _lastShipDesiredTotal;
+        private static double _lastShipInterval, _lastShipGapPeak, _lastShipLateness, _lastShipPressure;
+        private static long _lastStateFramesShed, _lastDrainDeferrals;
+
+        /// <summary>Per-window mean in ms of a lifetime microsecond accumulator.</summary>
+        private static double Win(double totalMicros, ref double previous, long samples)
+        {
+            double ms = (totalMicros - previous) / 1000.0 / Math.Max(1, samples);
+            previous = totalMicros;
+            return ms;
+        }
 
         /// <summary>How stale the OTHER PLAYERS' ships are on this screen — the number PvP lives or
         /// dies on, and the one thing [SnapshotLatency] could never tell you (it pools ships in with
@@ -502,13 +513,22 @@ namespace PunkMultiverse.Core
 
             long underruns = Delta(InstrumentationCounters.ShipUnderruns, ref _lastShipUnderruns);
             long saturated = Delta(InstrumentationCounters.ShipDelaySaturatedSamples, ref _lastShipSaturated);
+            double desiredTotal = InstrumentationCounters.ShipDesiredTotalMicros / 1000.0;
+            double wantedAvg = (desiredTotal - _lastShipDesiredTotal) / samples;
+            _lastShipDesiredTotal = desiredTotal;
 
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
                 "[ShipLatency] mono={0:0.000}s ships={1} snapshots={2:0.#}/s delayAvg={3:0.0}ms " +
-                "delayMax={4:0.0}ms jitterAvg={5:0.0}ms saturated={6:0.#}% underruns={7} ({8:0.##}/s)",
+                "wantedAvg={9:0.0}ms delayMax={4:0.0}ms jitterAvg={5:0.0}ms saturated={6:0.#}% " +
+                "underruns={7} ({8:0.##}/s) | terms int={10:0.0} gap={11:0.0} p98={12:0.0} pres={13:0.0}",
                 mono, InstrumentationCounters.RemoteShips, samples / elapsed, delayAvg,
                 InstrumentationCounters.ShipDelayMaxMs, jitterAvg,
-                samples > 0 ? saturated * 100.0 / samples : 0.0, underruns, underruns / elapsed));
+                samples > 0 ? saturated * 100.0 / samples : 0.0, underruns, underruns / elapsed,
+                wantedAvg,
+                Win(InstrumentationCounters.ShipIntervalTotalMicros, ref _lastShipInterval, samples),
+                Win(InstrumentationCounters.ShipGapPeakTotalMicros, ref _lastShipGapPeak, samples),
+                Win(InstrumentationCounters.ShipLatenessTotalMicros, ref _lastShipLateness, samples),
+                Win(InstrumentationCounters.ShipPressureTotalMicros, ref _lastShipPressure, samples)));
         }
 
         private static void ReportStateFlow(double mono, double elapsed)
@@ -523,12 +543,14 @@ namespace PunkMultiverse.Core
             long filteredGroups = Delta(InstrumentationCounters.StateGroupsFiltered, ref _lastStateGroupsFiltered);
             long filteredEntries = Delta(InstrumentationCounters.StateEntriesFiltered, ref _lastStateEntriesFiltered);
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
-                "[StateFlow] mono={0:0.000}s txBundles={1:0.#}/s txGroups={2:0.#}/s txEntries={3:0.#}/s avgGroups={4:0.0} avgEntries={5:0.0} tx={6:0.0}KB/s rxBundles={7:0.#}/s rxGroups={8:0.#}/s rxEntries={9:0.#}/s filteredGroups={10:0.#}/s filteredEntries={11:0.#}/s",
+                "[StateFlow] mono={0:0.000}s txBundles={1:0.#}/s txGroups={2:0.#}/s txEntries={3:0.#}/s avgGroups={4:0.0} avgEntries={5:0.0} tx={6:0.0}KB/s rxBundles={7:0.#}/s rxGroups={8:0.#}/s rxEntries={9:0.#}/s filteredGroups={10:0.#}/s filteredEntries={11:0.#}/s shed={12:0.#}/s drainDefer={13:0.#}/s",
                 mono, txBundles / elapsed, txGroups / elapsed, txEntries / elapsed,
                 txBundles > 0 ? txGroups / (double)txBundles : 0,
                 txBundles > 0 ? txEntries / (double)txBundles : 0,
                 txBytes / elapsed / 1024.0, rxBundles / elapsed, rxGroups / elapsed,
-                rxEntries / elapsed, filteredGroups / elapsed, filteredEntries / elapsed));
+                rxEntries / elapsed, filteredGroups / elapsed, filteredEntries / elapsed,
+                Delta(InstrumentationCounters.StateFramesShed, ref _lastStateFramesShed) / elapsed,
+                Delta(InstrumentationCounters.DrainDeferrals, ref _lastDrainDeferrals) / elapsed));
 
             // Byte-plane split of ALL outbound traffic (not just state bundles): correctness plane
             // (reliable Control/Events/Combat — must arrive) vs presentation plane (droppable State
@@ -859,6 +881,24 @@ namespace PunkMultiverse.Core
         private static long _shipDelaySaturated;
         internal static long ShipDelaySaturatedSamples => Interlocked.Read(ref _shipDelaySaturated);
         internal static void ShipDelaySaturated() => Interlocked.Increment(ref _shipDelaySaturated);
+        // What the playout formula wanted before the ceiling clamped it — "wanted" minus "delay"
+        // is exactly how far short the cap is falling, which is the number that decides the fix.
+        private static long _shipDesiredMicros;
+        internal static double ShipDesiredTotalMicros => Interlocked.Read(ref _shipDesiredMicros);
+        internal static void ShipDesiredSample(float desiredSeconds)
+            => Interlocked.Add(ref _shipDesiredMicros, (long)(Math.Max(0f, desiredSeconds) * 1000000f));
+        private static long _shipIntervalMicros, _shipGapPeakMicros, _shipLatenessMicros, _shipPressureMicros;
+        internal static double ShipIntervalTotalMicros => Interlocked.Read(ref _shipIntervalMicros);
+        internal static double ShipGapPeakTotalMicros => Interlocked.Read(ref _shipGapPeakMicros);
+        internal static double ShipLatenessTotalMicros => Interlocked.Read(ref _shipLatenessMicros);
+        internal static double ShipPressureTotalMicros => Interlocked.Read(ref _shipPressureMicros);
+        internal static void ShipDelayComponents(float interval, float gapPeak, float lateness, float pressure)
+        {
+            Interlocked.Add(ref _shipIntervalMicros, (long)(Math.Max(0f, interval) * 1000000f));
+            Interlocked.Add(ref _shipGapPeakMicros, (long)(Math.Max(0f, gapPeak) * 1000000f));
+            Interlocked.Add(ref _shipLatenessMicros, (long)(Math.Max(0f, lateness) * 1000000f));
+            Interlocked.Add(ref _shipPressureMicros, (long)(Math.Max(0f, pressure) * 1000000f));
+        }
         // Raw adaptive-timing accumulators, exposed so the jitterstats window report can compute
         // per-window averages (the AdaptiveDelayAverageMs property is a lifetime average).
         internal static long AdaptiveSamples => Interlocked.Read(ref _adaptiveSamples);
@@ -1027,6 +1067,16 @@ namespace PunkMultiverse.Core
             Interlocked.Add(ref _shipJitterMicros, jitterMicros);
             UpdateMax(ref _shipDelayMaxMicros, delayMicros);
         }
+        // Inbound-queue shedding (LiteNetTransport.DrainEvents). `shed` = a State frame dropped
+        // because a newer one from the same peer was already queued behind it; `deferred` = a drain
+        // that hit its per-frame time budget and parked the rest for the next frame. Both should be
+        // ~0 on a healthy server: sustained non-zero means inbound state is outrunning the tick.
+        private static long _stateFramesShed, _drainDeferrals;
+        internal static long StateFramesShed => Interlocked.Read(ref _stateFramesShed);
+        internal static long DrainDeferrals => Interlocked.Read(ref _drainDeferrals);
+        internal static void StateFrameShed() => Interlocked.Increment(ref _stateFramesShed);
+        internal static void DrainDeferred() => Interlocked.Increment(ref _drainDeferrals);
+
         internal static void InterpolationUnderrun() => InterpolationUnderrun(isShip: false);
         internal static void InterpolationUnderrun(bool isShip)
         {

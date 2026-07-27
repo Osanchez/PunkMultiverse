@@ -240,8 +240,10 @@ namespace PunkMultiverse.Core
                 100f * over240 / n, 100f * over144 / n, 100f * over120 / n, 100f * over90 / n));
         }
 
-        private static System.Collections.IEnumerator RenderSmooth(int netId, Transform t, float secs)
+        private static System.Collections.IEnumerator RenderSmooth(int netId, Transform t, float secs,
+            string label = null)
         {
+            label = label ?? $"#{netId}";
             int frames = 0, stallFrames = 0, movingFrames = 0;
             float speedSum = 0f, speedSqSum = 0f, speedMax = 0f;
             float rotPath = 0f, rotMaxStep = 0f, prevAngle = t.eulerAngles.z, startAngle = prevAngle;
@@ -251,7 +253,7 @@ namespace PunkMultiverse.Core
             while (Time.unscaledTime - t0 < secs)
             {
                 yield return null; // end of Update — transform holds the interpolated DRAWN pose
-                if (t == null) { Out($"rendersmooth #{netId}: entity died mid-sample"); yield break; }
+                if (t == null) { Out($"rendersmooth {label}: target died mid-sample"); yield break; }
                 float now = Time.unscaledTime;
                 float dt = Mathf.Max(0.0001f, now - prevTime);
                 prevTime = now;
@@ -281,9 +283,9 @@ namespace PunkMultiverse.Core
             float cv = mean > 0.01f ? Mathf.Sqrt(variance) / mean : 0f;
             float netRot = Mathf.Abs(Mathf.DeltaAngle(startAngle, prevAngle));
             Out(string.Format(CultureInfo.InvariantCulture,
-                "rendersmooth #{0}: {1:0.0}s {2} frames ({3:0}fps) | drawn speed mean={4:0.0} max={5:0.0} u/s " +
+                "rendersmooth {0}: {1:0.0}s {2} frames ({3:0}fps) | drawn speed mean={4:0.0} max={5:0.0} u/s " +
                 "CV={6:0.00} | stall%={7:0.0} | rotWasted={8:0.0}deg/s maxStep={9:0.0}deg",
-                netId, dur, frames, frames / Mathf.Max(0.1f, dur), mean, speedMax, cv,
+                label, dur, frames, frames / Mathf.Max(0.1f, dur), mean, speedMax, cv,
                 movingFrames > 0 ? 100f * stallFrames / movingFrames : 0f,
                 (rotPath - netRot) / Mathf.Max(0.1f, dur), rotMaxStep));
         }
@@ -511,6 +513,68 @@ namespace PunkMultiverse.Core
                     }
                     ship.transform.position = dst;
                     Out($"tpnearest: -> #{bestId} at {best.x:0.0},{best.y:0.0} (dist was {Mathf.Sqrt(bestSq):0.0})");
+                    return;
+                }
+                case "tpplayer":
+                {
+                    // Put the two ships in each other's faces. Position staleness is only
+                    // observable against a target you are actually tracking, so every ship-sync
+                    // test starts by collapsing the distance BR's spawn scatter deliberately
+                    // creates (slots land ~1600 units apart).
+                    if (parts.Length < 2 || !byte.TryParse(parts[1], out byte tpSlot))
+                    { Out("tpplayer <slot> [offset]"); return; }
+                    var myShip = ShipSync.LocalShip;
+                    if (myShip == null) { Out("tpplayer: no local ship"); return; }
+                    if (!ShipSync.ShipsBySlot.TryGetValue(tpSlot, out var target) || target == null)
+                    { Out($"tpplayer: no ship known for slot {tpSlot}"); return; }
+                    float off = 12f;
+                    if (parts.Length >= 3) float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out off);
+                    Vector2 dest = (Vector2)target.transform.position + new Vector2(off, 0f);
+                    myShip.Unit.ComponentData.entity.MoveTo(dest);
+                    var myRb = myShip.GetComponent<Rigidbody2D>();
+                    if (myRb != null) { RemoteEntityPuppet.TeleportWithChildren(myRb, dest); myRb.linearVelocity = Vector2.zero; }
+                    myShip.transform.position = dest;
+                    Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
+                    return;
+                }
+                case "orbit":
+                {
+                    // Full-throttle circle. autofly holds ONE heading, which an interpolator
+                    // extrapolates perfectly — it hides the very defect we are measuring.
+                    float obSecs = 30f, obPeriod = 4f;
+                    if (parts.Length >= 2) float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out obSecs);
+                    if (parts.Length >= 3) float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out obPeriod);
+                    session.ArmOrbit(obSecs, obPeriod);
+                    Out($"orbit: {obSecs:0}s at full throttle, one lap per {obPeriod:0.0}s");
+                    return;
+                }
+                case "shipdelay":
+                {
+                    // Live A/B on the SHIP playout ceiling (compiled default 120ms). The measured
+                    // defect is saturation at that cap, so this is the knob that tests the fix
+                    // without a rebuild-release-restart cycle. "shipdelay auto" restores default.
+                    if (parts.Length >= 2 && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float sdMs) && sdMs > 0f)
+                        Sync.AdaptiveSnapshotTiming.ShipCeilingOverride = Mathf.Clamp(sdMs, 30f, 600f) / 1000f;
+                    else Sync.AdaptiveSnapshotTiming.ShipCeilingOverride = 0f;
+                    Out(Sync.AdaptiveSnapshotTiming.ShipCeilingOverride > 0f
+                        ? $"shipdelay: ship playout ceiling = {Sync.AdaptiveSnapshotTiming.ShipCeilingOverride * 1000f:0}ms"
+                        : "shipdelay: auto (compiled 120ms ceiling)");
+                    return;
+                }
+                case "shipsmooth":
+                {
+                    // rendersmooth, but for another PLAYER's ship: samples the DRAWN pose every
+                    // render frame. This is the one that answers "how does my movement look on
+                    // your screen" - CV and stall% are the shape of the streamed motion, which
+                    // buffer counters alone cannot show.
+                    if (parts.Length < 2 || !byte.TryParse(parts[1], out byte ssSlot))
+                    { Out("shipsmooth <slot> [secs]"); return; }
+                    if (!ShipSync.ShipsBySlot.TryGetValue(ssSlot, out var ssShip) || ssShip == null)
+                    { Out($"shipsmooth: no ship known for slot {ssSlot}"); return; }
+                    float ssSecs = 10f;
+                    if (parts.Length >= 3) float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out ssSecs);
+                    Out($"shipsmooth: sampling slot {ssSlot} for {ssSecs:0.0}s...");
+                    session.StartCoroutine(RenderSmooth(ssSlot, ssShip.transform, Mathf.Clamp(ssSecs, 2f, 120f), $"slot {ssSlot}"));
                     return;
                 }
                 case "rendersmooth":

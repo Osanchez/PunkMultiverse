@@ -539,10 +539,15 @@ namespace PunkMultiverse.Transport
                 MaybeRelayState(peer, data);
             }
 
+            ulong from = IsHost ? (ulong)(peer.Id + 2) : HostPeerId;
+            // Counted BEFORE the enqueue so the drain can never see a frame it thinks is the
+            // newest when a fresher one is already in flight behind it.
+            if (channel == NetChannel.State)
+                System.Threading.Interlocked.Increment(ref PendingSlot(from)[0]);
             _events.Enqueue(new Evt
             {
                 Kind = EvtKind.Data,
-                From = IsHost ? (ulong)(peer.Id + 2) : HostPeerId,
+                From = from,
                 Channel = channel,
                 Data = data,
             });
@@ -643,9 +648,62 @@ namespace PunkMultiverse.Transport
 
         // ---- main-thread drain (called from Poll) ----
 
+        // How many State frames from one peer may still be queued behind the one we are about to
+        // dispatch before we treat it as superseded. 0 would shed on the slightest interleaving;
+        // 2 sheds only under real backlog, so healthy traffic is never touched.
+        private const int StateBacklogKeep = 2;
+        // Ceiling on how long one Poll may spend dispatching. Frames were spiking to 550ms because
+        // the drain was an unbounded `while (TryDequeue)`: whatever had piled up got swallowed in a
+        // single frame, which stalled the server, which piled up more — a catch-up spiral. Anything
+        // still queued now waits for the next frame instead.
+        private const double DrainBudgetMs = 6.0;
+        private Evt _deferred;
+        private bool _hasDeferred;
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<ulong, int[]> _pendingState
+            = new System.Collections.Concurrent.ConcurrentDictionary<ulong, int[]>();
+
+        private int[] PendingSlot(ulong from) => _pendingState.GetOrAdd(from, _ => new int[1]);
+
         private void DrainEvents()
         {
+            var budget = System.Diagnostics.Stopwatch.StartNew();
+            // A frame that ran out of budget last time parked one event here to keep FIFO order.
+            if (_hasDeferred)
+            {
+                _hasDeferred = false;
+                DispatchEvent(_deferred);
+                _deferred = default;
+            }
             while (_events.TryDequeue(out var e))
+            {
+                if (e.Kind == EvtKind.Data && e.Channel == NetChannel.State)
+                {
+                    // "Process this now, or just get the next one." State is periodic and
+                    // self-superseding: a newer frame from this peer makes the older one worthless,
+                    // so under backlog we drop it rather than pay to apply a position that is about
+                    // to be overwritten. Reliable/Control traffic is never shed — only this channel,
+                    // which is already unreliable by design.
+                    int remaining = System.Threading.Interlocked.Decrement(ref PendingSlot(e.From)[0]);
+                    if (remaining > StateBacklogKeep)
+                    {
+                        Core.InstrumentationCounters.StateFrameShed();
+                        continue;
+                    }
+                    if (budget.Elapsed.TotalMilliseconds > DrainBudgetMs)
+                    {
+                        _deferred = e;
+                        _hasDeferred = true;
+                        Core.InstrumentationCounters.DrainDeferred();
+                        return;
+                    }
+                }
+                DispatchEvent(e);
+            }
+        }
+
+        private void DispatchEvent(Evt e)
+        {
             {
                 switch (e.Kind)
                 {

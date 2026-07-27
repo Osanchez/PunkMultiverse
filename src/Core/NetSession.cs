@@ -1343,6 +1343,17 @@ namespace PunkMultiverse.Core
             $"visuals={value.VisualVariantCount}/{value.VisualVariantDigest:X16}";
 
         private float _autoFlyUntil;
+        private float _orbitUntil, _orbitStart, _orbitPeriod;
+
+        /// <summary>Harness: fly a full-throttle circle for `seconds`, one lap every `period`
+        /// seconds. Unlike autofly's fixed heading, this changes direction every frame, which is
+        /// what actually exercises a remote puppet's playout buffer.</summary>
+        public void ArmOrbit(float seconds, float period)
+        {
+            _orbitUntil = seconds > 0f ? Time.unscaledTime + seconds : 0f;
+            _orbitStart = Time.unscaledTime;
+            _orbitPeriod = Mathf.Max(0.5f, period);
+        }
 
         private void DoGoLive()
         {
@@ -1408,6 +1419,26 @@ namespace PunkMultiverse.Core
         // legs, and physics behave exactly as for a real player.
         private void TickAutoFly()
         {
+            // Orbit takes precedence: a CONSTANT-heading autofly is the easy case for an
+            // interpolator (a straight line extrapolates perfectly, so it hides exactly the
+            // defect we are hunting). Orbiting holds full throttle while sweeping the heading
+            // continuously, so every snapshot interval contains a real direction change — the
+            // worst case for buffered playout and the one that makes streamed movement legible.
+            if (_orbitUntil > 0f)
+            {
+                var orbitShip = Sync.ShipSync.LocalShip;
+                var orbitMove = orbitShip != null ? orbitShip.GetComponent<ShipMovement>() : null;
+                if (orbitMove == null || Time.unscaledTime > _orbitUntil) { _orbitUntil = 0f; return; }
+                float phase = (Time.unscaledTime - _orbitStart) / Mathf.Max(0.5f, _orbitPeriod) * Mathf.PI * 2f;
+                try
+                {
+                    // Unit magnitude = full thrust; only the heading rotates.
+                    HarmonyLib.Traverse.Create(orbitMove).Field("flyDirection")
+                        .SetValue(new Vector2(Mathf.Cos(phase), Mathf.Sin(phase)));
+                }
+                catch { _orbitUntil = 0f; }
+                return;
+            }
             if (_autoFlyUntil <= 0f || Sync.ShipSync.LocalShip == null) return;
             var movement = Sync.ShipSync.LocalShip.GetComponent<ShipMovement>();
             if (movement == null) return;
