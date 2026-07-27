@@ -1912,6 +1912,10 @@ namespace PunkMultiverse.Core
         private void Update()
         {
             RuntimeInstrumentation.UpdateStart(State);
+            // Outside the InGame branch on purpose: when this sat inside it, a run ending mid-window
+            // meant the profiler never closed — no report, and its ~170 patches stayed applied,
+            // quietly slowing the server until the next restart.
+            Patches.SimProfiler.Tick();
             bool profiling = false;
             try
             {
@@ -1979,7 +1983,6 @@ namespace PunkMultiverse.Core
                     RuntimeInstrumentation.SetPhase(PerfPhase.Diagnostics);
                     NetDiag.TickPeriodic();                     NetProfiler.Mark("Diag");
                     Patches.StartSequenceWatchdog.Tick();
-                    Patches.SimProfiler.Tick();
                     if (IsBattleRoyale)
                     {
                         Modes.BattleRoyale.TickScatter(this);

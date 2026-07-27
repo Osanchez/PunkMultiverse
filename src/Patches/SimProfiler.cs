@@ -53,11 +53,16 @@ namespace PunkMultiverse.Patches
             var prefix = new HarmonyMethod(AccessTools.Method(typeof(SimProfiler), nameof(Pre)));
             var postfix = new HarmonyMethod(AccessTools.Method(typeof(SimProfiler), nameof(Post)));
 
-            Assembly gameAsm;
-            try { gameAsm = typeof(Ship).Assembly; }
-            catch (Exception e) { Plugin.Log.LogWarning($"[SimProf] cannot reach the game assembly: {e.Message}"); return; }
+            // BOTH assemblies. Profiling only the game's types left a blind spot exactly where the
+            // residual stalls live: the mod's own MonoBehaviours (RemoteEntityPuppet, PropPuppet,
+            // RemotePuppet, the HUD/diagnostic components) tick in Unity's loop, outside every
+            // SetPhase bracket — so they are invisible to the phase profiler AND were invisible
+            // here, while the hitch watchdog reported them only as "Unity.BetweenUpdates".
+            Assembly[] assemblies;
+            try { assemblies = new[] { typeof(Ship).Assembly, typeof(Plugin).Assembly }; }
+            catch (Exception e) { Plugin.Log.LogWarning($"[SimProf] cannot reach the assemblies: {e.Message}"); return; }
 
-            foreach (var type in SafeTypes(gameAsm))
+            foreach (var type in SafeTypesOf(assemblies))
             {
                 if (type == null || type.IsAbstract || type.IsGenericTypeDefinition) continue;
                 if (!typeof(MonoBehaviour).IsAssignableFrom(type)) continue;
@@ -68,10 +73,15 @@ namespace PunkMultiverse.Patches
                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly,
                         null, Type.EmptyTypes, null);
                     if (m == null || m.IsAbstract || m.ContainsGenericParameters) continue;
+                    // Never patch the profiler's own plumbing.
+                    if (type == typeof(SimProfiler)) continue;
                     try
                     {
                         _harmony.Patch(m, prefix, postfix);
-                        Accs[m] = new Acc { Name = $"{type.Name}.{name}" };
+                        // Mark mod-side components so the report shows at a glance whether the
+                        // time is the game's or ours.
+                        bool mine = type.Assembly == typeof(Plugin).Assembly;
+                        Accs[m] = new Acc { Name = (mine ? "*" : "") + type.Name + "." + name };
                         _patched++;
                     }
                     catch { /* a method Harmony cannot wrap is not worth failing the run over */ }
@@ -84,11 +94,16 @@ namespace PunkMultiverse.Patches
                 $"{Mathf.Clamp(seconds, 3f, 120f):0}s");
         }
 
-        private static IEnumerable<Type> SafeTypes(Assembly a)
+        private static IEnumerable<Type> SafeTypesOf(Assembly[] assemblies)
         {
-            try { return a.GetTypes(); }
-            catch (ReflectionTypeLoadException e) { return e.Types.Where(t => t != null); }
-            catch { return Array.Empty<Type>(); }
+            var all = new List<Type>();
+            foreach (var a in assemblies)
+            {
+                try { all.AddRange(a.GetTypes()); }
+                catch (ReflectionTypeLoadException e) { all.AddRange(e.Types.Where(t => t != null)); }
+                catch { }
+            }
+            return all;
         }
 
         private static void Pre(out long __state) => __state = Stopwatch.GetTimestamp();
