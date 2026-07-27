@@ -85,6 +85,7 @@ namespace PunkMultiverse.Modes
             LocalPlacement = 0;
             LocalTotalPlayers = 0;
             LocalIsWinner = false;
+            ResetSelfDestruct();
         }
 
         // ---------------------------------------------------------------- announcements

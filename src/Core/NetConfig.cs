@@ -73,6 +73,8 @@ namespace PunkMultiverse
         public static ConfigEntry<float> PvPDamageScale;
         public static ConfigEntry<float> BrEnemyHpScale;
         public static ConfigEntry<int> BrMinPlayers;
+        public static ConfigEntry<float> BrSpawnClearRadius;
+        public static ConfigEntry<float> BrWinnerSelfDestructSeconds;
         public static ConfigEntry<string> InstallId;
 
         /// <summary>Master switch for alternate game modes. While it is off, nothing can select
@@ -355,6 +357,14 @@ namespace PunkMultiverse
             BrEnemyHpScale = cfg.Bind("Session", "BrEnemyHpScale", 0.5f,
                 "Battle Royale: enemy max-health multiplier. 0.5 makes players effectively deal " +
                 "double damage to enemies, so kills and gold come twice as fast.");
+            BrSpawnClearRadius = cfg.Bind("Session", "BrSpawnClearRadius", 60f,
+                "Battle Royale: world units of clear ground around every player's spawn station. " +
+                "Enemies inside that circle are removed at match start so nobody opens the match " +
+                "already being shot at. 0 disables the clear.");
+            BrWinnerSelfDestructSeconds = cfg.Bind("Session", "BrWinnerSelfDestructSeconds", 10f,
+                "Battle Royale: seconds the winner gets to enjoy the victory before their ship " +
+                "self-destructs and the run ends. Stops a won match from becoming a private " +
+                "sandbox nobody else can leave. 0 = no self-destruct (the run still ends).");
             BrMinPlayers = cfg.Bind("Session", "BrMinPlayers", 2,
                 "Battle Royale: players required to START a match. 1 is allowed for testing " +
                 "(logged as a warning) — a solo match ends as soon as it begins.");
