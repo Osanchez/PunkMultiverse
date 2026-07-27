@@ -49,8 +49,51 @@ namespace PunkMultiverse.Core
         /// host's manifest). Orphans must not run live AI — see EnemySync.MuteOrphan.</summary>
         public static bool IsOrphanInstance(int instanceId) => OrphanInstances.Contains(instanceId);
 
+        // instanceId -> EntityData. EntityManager.GetEntity is:
+        //     GetAllEntities().FirstOrDefault(e => e.instanceId == instanceId)
+        // where GetAllEntities() is spatialGrid.AllEntities, i.e.
+        //     entityDictionary.Values.SelectMany(v => v)
+        // — a LINQ scan across EVERY entity in the world (6600+ here) that allocates a fresh
+        // iterator chain and predicate closure on every call. Measured on the live server it cost
+        // **64KB per call** and was invoked once per received state entry (~390/s), which alone
+        // accounted for ~23MiB/s of the server's allocation: the whole GC problem, and with it the
+        // 300-550ms collection pauses that were clumping ship state into ~400ms bursts.
+        //
+        // Cached here because identity is already this class's job. Validated on read (a reused
+        // instanceId cannot alias, since the generator is a deterministic counter within a run) and
+        // evicted from the entity's own Destroyed event, so a destroyed entity can never be handed
+        // back. Cleared on Reset with the rest of the identity state.
+        private static readonly Dictionary<int, EntityData> DataByInstance = new Dictionary<int, EntityData>();
+
+        /// <summary>Entity data for an instanceId, without the world-wide LINQ scan.</summary>
+        public static EntityData GetEntityData(int instanceId)
+        {
+            if (DataByInstance.TryGetValue(instanceId, out var cached))
+            {
+                if (cached != null && cached.instanceId == instanceId) return cached;
+                DataByInstance.Remove(instanceId);
+            }
+            EntityData data = null;
+            try { data = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId); }
+            catch { return null; }
+            if (data == null) return null;
+            DataByInstance[instanceId] = data;
+            data.Destroyed += OnCachedDataDestroyed;
+            return data;
+        }
+
+        private static void OnCachedDataDestroyed(EntityData data)
+        {
+            if (data == null) return;
+            data.Destroyed -= OnCachedDataDestroyed;
+            DataByInstance.Remove(data.instanceId);
+        }
+
         public static void Reset()
         {
+            foreach (var kv in DataByInstance)
+                if (kv.Value != null) kv.Value.Destroyed -= OnCachedDataDestroyed;
+            DataByInstance.Clear();
             NetToInstance.Clear();
             InstanceToNet.Clear();
             Lifetimes.Clear();

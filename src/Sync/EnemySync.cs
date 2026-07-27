@@ -1160,7 +1160,7 @@ namespace PunkMultiverse.Sync
                 if (!NetIds.TryGetInstanceId(entry.NetId, out int instanceId)) continue;
                 try
                 {
-                    var data = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId);
+                    var data = NetIds.GetEntityData(instanceId);
                     if (data != null) data.MoveTo(new Vector3(entry.Pos.x, entry.Pos.y, data.position.z));
                 }
                 catch { }
@@ -1323,7 +1323,7 @@ namespace PunkMultiverse.Sync
                 if (KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
                 if (!NetIds.TryGetInstanceId(netId, out int instanceId)) continue;
                 EntityData data = null;
-                try { data = em.GetEntity(instanceId); } catch { }
+                data = NetIds.GetEntityData(instanceId);
                 if (data == null) continue;
                 // Mirror the roster rule: bespoke-system entities only count while concrete.
                 if (!data.isUnloadable && !LiveEntities.ContainsKey(netId)) continue;
@@ -1407,7 +1407,7 @@ namespace PunkMultiverse.Sync
             // divergence the summary must surface.
             if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return;
             bool hasData = false;
-            try { hasData = em.GetEntity(instanceId) != null; } catch { }
+            hasData = NetIds.GetEntityData(instanceId) != null;
             if (!hasData) return;
             unchecked
             {
@@ -1592,7 +1592,7 @@ namespace PunkMultiverse.Sync
                 if (KilledNetIds.Contains(netId)) continue;
                 bool hasData = false;
                 if (NetIds.TryGetInstanceId(netId, out int instanceId))
-                    try { hasData = em?.GetEntity(instanceId) != null; } catch { }
+                    hasData = NetIds.GetEntityData(instanceId) != null;
                 if (hasData) continue;
                 InstrumentationCounters.DivergenceDetected();
                 var entry = new EntityStateEntry { NetId = netId, Lifetime = lifetime, Pos = pos };
@@ -2414,7 +2414,7 @@ namespace PunkMultiverse.Sync
                 bool isProp = false;
                 if (NetIds.TryGetInstanceId(state.NetId, out int instanceId))
                 {
-                    entityType = em?.GetEntity(instanceId)?.entityId ?? string.Empty;
+                    entityType = NetIds.GetEntityData(instanceId)?.entityId ?? string.Empty;
                     var prefab = MinionSync.FindPrefab(entityType);
                     isProp = prefab != null && prefab.GetComponent<Unit>() == null;
                 }
@@ -2959,7 +2959,7 @@ namespace PunkMultiverse.Sync
             if (!NetIds.TryGetInstanceId(entry.NetId, out int instanceId)) return;
             try
             {
-                var data = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId);
+                var data = NetIds.GetEntityData(instanceId);
                 if (data != null) data.MoveTo(new Vector3(entry.Pos.x, entry.Pos.y, data.position.z));
             }
             catch { }
@@ -3904,7 +3904,7 @@ namespace PunkMultiverse.Sync
                 {
                     try
                     {
-                        var data = em?.GetEntity(instanceId);
+                        var data = NetIds.GetEntityData(instanceId);
                         // MoveTo is not cosmetic: it updates SpatialGrid bucket membership. Directly
                         // assigning position left the entity indexed in its old segment, so every
                         // rebuild of that segment instantiated the same netId again on clients.
@@ -4169,7 +4169,7 @@ namespace PunkMultiverse.Sync
             try
             {
                 var em = ServiceLocator.Get<EntityManager>();
-                var data = em?.GetEntity(instanceId);
+                var data = NetIds.GetEntityData(instanceId);
                 if (data != null) data.MoveTo(new Vector3(position.x, position.y, data.position.z));
                 var egm = TryGetEgm();
                 if (egm == null || !egm.TryGetSavableEntity(instanceId, out var se) || se == null) return;
@@ -4297,7 +4297,7 @@ namespace PunkMultiverse.Sync
             try
             {
                 var em = ServiceLocator.Get<EntityManager>();
-                var data = em?.GetEntity(instanceId);
+                var data = NetIds.GetEntityData(instanceId);
                 if (data == null) return;
                 var destroy = AccessTools.Method(data.GetType(), "Destroy");
                 if (destroy != null && destroy.GetParameters().Length == 0) destroy.Invoke(data, null);

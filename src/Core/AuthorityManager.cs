@@ -187,7 +187,7 @@ namespace PunkMultiverse.Core
             {
                 try
                 {
-                    var data = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId);
+                    var data = NetIds.GetEntityData(instanceId);
                     if (data != null)
                     {
                         key = SegmentOf(data.position);

@@ -104,7 +104,7 @@ namespace PunkMultiverse.Core
                 if (NetIds.TryGetInstanceId(netId, out int instanceId))
                 {
                     var em = ServiceLocator.Get<EntityManager>();
-                    var data = em?.GetEntity(instanceId);
+                    var data = NetIds.GetEntityData(instanceId);
                     if (data != null && !string.IsNullOrEmpty(data.entityId))
                         return $"#{netId} {data.entityId}";
                 }
