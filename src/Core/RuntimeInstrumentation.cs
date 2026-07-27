@@ -218,6 +218,28 @@ namespace PunkMultiverse.Core
         private static readonly long[] HandlerAlloc = new long[256];
         private static readonly long[] HandlerCalls = new long[256];
 
+        // Ad-hoc sub-step probes, for narrowing a hot handler without inventing a PerfPhase per
+        // experiment. Fixed-size and label-keyed so it allocates nothing itself.
+        private static readonly string[] SubLabels = new string[16];
+        private static readonly long[] SubAlloc = new long[16];
+        private static readonly long[] SubCalls = new long[16];
+
+        internal static long SubMark() => AllocProfiling ? GC.GetTotalMemory(false) : 0L;
+
+        internal static void NoteSubAlloc(string label, long before)
+        {
+            if (before == 0L) return;
+            long delta = GC.GetTotalMemory(false) - before;
+            for (int i = 0; i < SubLabels.Length; i++)
+            {
+                if (SubLabels[i] == null) SubLabels[i] = label;
+                else if (!ReferenceEquals(SubLabels[i], label) && SubLabels[i] != label) continue;
+                if (delta > 0) SubAlloc[i] += delta;
+                SubCalls[i]++;
+                return;
+            }
+        }
+
         internal static void NoteHandlerAllocation(MsgType type, long before)
         {
             long delta = GC.GetTotalMemory(false) - before;
@@ -259,6 +281,15 @@ namespace PunkMultiverse.Core
                     (MsgType)best, HandlerAlloc[best] / 1048576.0, HandlerAlloc[best] / elapsed / 1048576.0,
                     HandlerCalls[best], HandlerCalls[best] > 0 ? HandlerAlloc[best] / (double)HandlerCalls[best] : 0));
                 HandlerAlloc[best] = 0;
+            }
+            for (int i = 0; i < SubLabels.Length; i++)
+            {
+                if (SubLabels[i] == null || SubCalls[i] == 0) continue;
+                Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                    "[Alloc]   sub {0,-22} {1,8:0.00}MiB ({2,6:0.00}MiB/s) over {3} calls = {4:0}B each",
+                    SubLabels[i], SubAlloc[i] / 1048576.0, SubAlloc[i] / elapsed / 1048576.0,
+                    SubCalls[i], SubAlloc[i] / (double)SubCalls[i]));
+                SubAlloc[i] = 0; SubCalls[i] = 0;
             }
             System.Array.Clear(HandlerAlloc, 0, HandlerAlloc.Length);
             System.Array.Clear(HandlerCalls, 0, HandlerCalls.Length);

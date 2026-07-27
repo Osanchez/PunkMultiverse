@@ -3142,7 +3142,12 @@ namespace PunkMultiverse.Core
                 }
                 case MsgType.EntityStateBundle:
                 {
+                    // Sub-step probes: this handler measured ~600KB of allocation per call for a
+                    // ~342-byte message. Reading the code found nothing that big, so bracket the
+                    // three steps and let the numbers pick.
+                    long subMark = RuntimeInstrumentation.SubMark();
                     var bundle = EntityStateBundleMsg.Read(_reader);
+                    RuntimeInstrumentation.NoteSubAlloc("bundle.Read", subMark);
                     var sender = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
                     if (IsHost)
                     {
@@ -3165,7 +3170,9 @@ namespace PunkMultiverse.Core
                         InstrumentationCounters.HostRelayCompleted((Time.realtimeSinceStartup - relayStarted) * 1000f,
                             _lastPayload.Count);
                     }
+                    subMark = RuntimeInstrumentation.SubMark();
                     Sync.EnemySync.ApplyEntityStateBundle(bundle);
+                    RuntimeInstrumentation.NoteSubAlloc("bundle.Apply", subMark);
                     break;
                 }
                 case MsgType.EntityFire:
