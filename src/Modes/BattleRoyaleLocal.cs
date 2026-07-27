@@ -28,6 +28,7 @@ namespace PunkMultiverse.Modes
         {
             if (!Active) return;
             TryRevealWholeMap();
+            TickSelfDestruct(session);
             if (!RingKnown) return;
             var ship = ShipSync.LocalShip;
             if (ship == null || ship.IsDead) return;
@@ -145,14 +146,155 @@ namespace PunkMultiverse.Modes
             Plugin.Log.LogInfo($"[BR] scattered to station #{stationNetId}");
         }
 
+        // ---------------------------------------------------------------- spawn-area clear
+
+        /// <summary>Hostile families in this game's entity ids: every enemy is either
+        /// <c>Enemy_*</c> (Enemy_Raven, Enemy_Fish, Enemy_Turret_Laser, ...) or <c>Unit_*</c>
+        /// (Unit_Grunt, Unit_Floater_Soldier, Unit_Swimmer_Maggot, ...). Everything else generated
+        /// into the world is scenery, plants, crates or the stations themselves.</summary>
+        private static bool IsHostileEntityId(string entityId) =>
+            !string.IsNullOrEmpty(entityId)
+            && (entityId.StartsWith("Enemy", System.StringComparison.Ordinal)
+                || entityId.StartsWith("Unit_", System.StringComparison.Ordinal));
+
+        /// <summary>Give every player clear ground to open the match on: remove the enemies sitting
+        /// on top of the spawn stations. Landing inside a fight you did not choose is not a battle
+        /// royale, it is an ambush by the map.
+        ///
+        /// This runs on EVERY machine and sends nothing, which is the whole point: the station
+        /// assignment is already computed identically everywhere (seed-deterministic layout,
+        /// farthest-point sampling) and the world is identical by construction, so every machine
+        /// derives the SAME set of entities and removes it locally. A removal every machine agrees
+        /// on needs no wire traffic and cannot desync. Removal is silent — no loot, no death VFX,
+        /// no kill credit — because these enemies are being ruled out of the match, not killed;
+        /// dropping 40 enemies' worth of gold at spawn would also undo the zeroed starting economy.
+        ///
+        /// Why not during world PRE-GENERATION (the obvious place): the pre-built world is hashed
+        /// and compared against every client's freshly generated one at the go-live barrier. An
+        /// entity the server deleted pre-gen is an entity count + digest the clients don't have —
+        /// an instant GENERATION MISMATCH. Go-live is the earliest moment the world can be changed
+        /// at all, and it is still before the scatter teleport puts anyone on a station.</summary>
+        private static void ClearSpawnAreas(NetSession session)
+        {
+            float radius = NetConfig.BrSpawnClearRadius.Value;
+            if (radius <= 0f) return;
+            try
+            {
+                var em = ServiceLocator.Get<EntityManager>();
+                if (em == null) return;
+
+                var centers = new List<Vector2>();
+                foreach (var kv in AssignSpawnStations(session))
+                {
+                    if (!NetIds.TryGetInstanceId(kv.Value, out int stationInstance)) continue;
+                    var stationData = em.GetEntity(stationInstance);
+                    if (stationData != null) centers.Add(stationData.position);
+                }
+                if (centers.Count == 0) return;
+
+                // Ships are savable entities too; never let a prefix match delete a player.
+                var shipInstances = new HashSet<int>();
+                try
+                {
+                    foreach (var ship in ServiceLocator.Get<ShipManager>().Ships)
+                    {
+                        var se = ship != null ? ship.GetComponentInChildren<SavableEntity>() : null;
+                        if (se != null && se.EntityData != null) shipInstances.Add(se.EntityData.instanceId);
+                    }
+                }
+                catch { }
+
+                // Collect first, remove second: removal destroys entity data, and mutating the
+                // manager's collection while enumerating it would throw halfway through.
+                float radiusSq = radius * radius;
+                var doomed = new List<int>();
+                foreach (var data in em.GetAllEntities())
+                {
+                    if (data == null || shipInstances.Contains(data.instanceId)) continue;
+                    if (!IsHostileEntityId(data.entityId)) continue;
+                    Vector2 pos = data.position;
+                    bool nearSpawn = false;
+                    for (int i = 0; i < centers.Count; i++)
+                        if ((pos - centers[i]).sqrMagnitude <= radiusSq) { nearSpawn = true; break; }
+                    if (!nearSpawn) continue;
+                    if (NetIds.TryGetNetId(data.instanceId, out int netId)) doomed.Add(netId);
+                }
+
+                foreach (int netId in doomed) Sync.EnemySync.RemoveSilently(netId);
+                Plugin.Log.LogInfo($"[BR] spawn clear: removed {doomed.Count} enemies within " +
+                    $"{radius:0} units of {centers.Count} spawn station(s)");
+            }
+            catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] spawn clear failed: {e.Message}"); }
+        }
+
+        // ---------------------------------------------------------------- winner self-destruct
+
+        private static float _selfDestructAt = -1f;
+        private static int _lastSelfDestructCount = -1;
+        private static bool _selfDestructFired;
+
+        internal static void ResetSelfDestruct()
+        {
+            _selfDestructAt = -1f;
+            _lastSelfDestructCount = -1;
+            _selfDestructFired = false;
+        }
+
+        /// <summary>The winner does not get to keep the map. Once the victory callout has had its
+        /// moment their ship scuttles itself, so a won match ends the same way every other player's
+        /// did — dead — instead of leaving one person alone in a world the run is waiting on.
+        /// Applied by the winner's OWN machine: a ship's health belongs to the machine that owns
+        /// it, the same rule the out-of-zone burn follows.</summary>
+        private static void TickSelfDestruct(NetSession session)
+        {
+            if (!LocalIsWinner || _selfDestructFired) return;
+            float seconds = NetConfig.BrWinnerSelfDestructSeconds.Value;
+            if (seconds <= 0f) return;
+
+            if (_selfDestructAt < 0f)
+            {
+                _selfDestructAt = Time.unscaledTime + seconds;
+                UI.Toast.Show("SELF-DESTRUCT SEQUENCE ENGAGED", 4f);
+                Plugin.Log.LogInfo($"[BR] winner self-destruct armed — {seconds:0}s");
+            }
+
+            float remaining = _selfDestructAt - Time.unscaledTime;
+            int count = Mathf.CeilToInt(remaining);
+            if (count != _lastSelfDestructCount && count > 0 && count <= 5)
+            {
+                _lastSelfDestructCount = count;
+                UI.Toast.Show($"SELF-DESTRUCT IN {count}", 1.1f);
+            }
+            if (remaining > 0f) return;
+
+            _selfDestructFired = true;
+            var ship = ShipSync.LocalShip;
+            if (ship == null || ship.IsDead) return;
+            try
+            {
+                // Same untyped chokepoint the ring burn uses — our own ship, applied locally, and
+                // the death replicates through the normal ShipDied path.
+                var unit = ship.GetComponentInParent<Unit>() ?? ship.GetComponent<Unit>();
+                var dr = unit != null ? unit.GetComponent<DamagableResource>() : ship.GetComponent<DamagableResource>();
+                var tank = dr != null ? dr.Tank : null;
+                if (dr == null) return;
+                float amount = tank != null && tank.Capacity > 0f ? tank.Capacity * 10f : 100000f;
+                dr.Damage(amount);
+                Plugin.Log.LogInfo("[BR] winner self-destructed");
+            }
+            catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] self-destruct failed: {e.Message}"); }
+        }
+
         // ---------------------------------------------------------------- match rules (local)
 
         /// <summary>Apply the per-machine parts of the ruleset once the run is live: a fully
-        /// stocked shop, no starting money, and (defensively) the standard loadout's economy
-        /// baseline. Everything here is local state on each machine, so each applies its own.</summary>
-        public static void ApplyLocalMatchRules()
+        /// stocked shop, no starting money, clear ground around the spawns, and (defensively) the
+        /// standard loadout's economy baseline. Everything here is local state on each machine, so
+        /// each applies its own.</summary>
+        public static void ApplyLocalMatchRules(NetSession session)
         {
             RevealWholeMap();
+            ClearSpawnAreas(session);
 
             try
             {

@@ -536,7 +536,11 @@ namespace PunkMultiverse.Modes
                 TotalPlayers = (byte)MatchPlayers.Count,
                 IsWinner = true,
             });
-            EndMatch(session, delaySeconds: 8f);
+            // Hold the run open long enough for the victory callout AND the winner's self-destruct
+            // (armed on their machine the moment this broadcast lands) — otherwise the lobby kick
+            // would beat the countdown and the winner would never actually scuttle.
+            EndMatch(session, delaySeconds: Mathf.Max(8f,
+                NetConfig.BrWinnerSelfDestructSeconds.Value + 4f));
         }
 
         private static float _endMatchAt = -1f;

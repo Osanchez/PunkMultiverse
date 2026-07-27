@@ -33,7 +33,10 @@ namespace PunkMultiverse.UI
         {
             private static void Postfix(Minimap __instance)
             {
-                if (!Modes.BattleRoyale.Active || !Modes.BattleRoyale.RingKnown) return;
+                // Note: NOT gated on RingKnown. Hiding the other players has to hold from the very
+                // first refresh — before the first ring broadcast arrives is exactly when everyone
+                // is looking at the map deciding where to go.
+                if (!Modes.BattleRoyale.Active) return;
                 try { Paint(__instance); }
                 catch { /* the minimap must never be the thing that breaks a match */ }
             }
@@ -60,6 +63,10 @@ namespace PunkMultiverse.UI
             Vector2Int bottomLeft = Vector2Int.RoundToInt(center - (Vector2)resolution * 0.5f);
 
             var pixels = texture.GetRawTextureData<Color32>();
+
+            HideOtherPlayers(map, shipManager, pixels, resolution, bottomLeft, center);
+
+            if (!Modes.BattleRoyale.RingKnown) { texture.Apply(); return; }
             var ring = Modes.BattleRoyale.Ring;
             var ringCenter = new Vector2(ring.CenterX, ring.CenterY);
 
@@ -76,6 +83,51 @@ namespace PunkMultiverse.UI
                 StampDiamond(pixels, resolution, bottomLeft, kv.Value, DropMarker);
 
             texture.Apply();
+        }
+
+        /// <summary>Battle Royale hides where everyone is — the screen-edge trackers already stand
+        /// down (UI/PlayerTracker.cs), but the game's own minimap was still handing out everyone's
+        /// position for free: <c>Minimap.Refresh</c> stamps a ship-coloured pixel for every entry in
+        /// <c>ShipManager.Ships</c>, and in a net run that list holds the remote players' puppets
+        /// too. Single-player never had a second ship in it, so vanilla never had to ask.
+        ///
+        /// Rather than fight the vanilla loop, undo it: the minimap is one pixel per world cell and
+        /// <c>Minimap.GetColor</c> is the public function that says what a cell should look like, so
+        /// repainting each remote ship's pixel with its own terrain colour restores exactly what was
+        /// underneath. The local ship is re-stamped afterwards in case a remote was standing on the
+        /// same pixel — you must never lose track of yourself.</summary>
+        private static void HideOtherPlayers(Minimap map, ShipManager shipManager,
+            Unity.Collections.NativeArray<Color32> pixels, Vector2Int res, Vector2Int bottomLeft,
+            Vector2 windowCenter)
+        {
+            if (shipManager == null) return;
+            var local = Core.NetSession.Instance != null ? Sync.ShipSync.LocalShip : null;
+            bool erasedUnderLocal = false;
+
+            foreach (var ship in shipManager.Ships)
+            {
+                if (ship == null || ship == local) continue;
+                Vector2 p = ship.transform.position;
+                // Same window test the vanilla loop used, or we would "erase" a pixel it never drew.
+                if (Mathf.Abs(p.x - windowCenter.x) > res.x / 2f) continue;
+                if (Mathf.Abs(p.y - windowCenter.y) > res.y / 2f) continue;
+                int wx = Mathf.RoundToInt(p.x), wy = Mathf.RoundToInt(p.y);
+                Vector2Int px = new Vector2Int(wx, wy) - bottomLeft;
+                Plot(pixels, res, px.x, px.y, map.GetColor(wx, wy));
+                if (local != null
+                    && Vector2Int.RoundToInt(local.transform.position) == new Vector2Int(wx, wy))
+                    erasedUnderLocal = true;
+            }
+
+            if (!erasedUnderLocal || local == null) return;
+            try
+            {
+                var shipColor = Traverse.Create(map).Field("shipColor").GetValue<Color>();
+                Vector2 lp = local.transform.position;
+                Vector2Int lpx = Vector2Int.RoundToInt(lp) - bottomLeft;
+                Plot(pixels, res, lpx.x, lpx.y, shipColor);
+            }
+            catch { }
         }
 
         /// <summary>Walk the circle by arc length so spacing is even at any radius, and skip pixels

@@ -1349,13 +1349,19 @@ namespace PunkMultiverse.Core
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             DiagWatch.NotifyRunStarted(); // skip warmup in the growth watchdog
             Patches.StartSequenceWatchdog.Arm();
+            SetState(SessionState.InGame);
+            // AFTER the state flip, never before. BeginMatch unlocks every station by installing an
+            // upgrade, and ProgressionSync's capture — the thing that replicates a station unlock —
+            // ignores installs while State != InGame. Run one line earlier, all 44 unlocks happened
+            // on the host and NONE were broadcast: every client sat at a shop that was still locked,
+            // with the enemies that keep it locked still on top of it. Same class of bug as the
+            // pre-gen Loading gates: a lifecycle guard silently no-opping a whole feature.
             if (IsBattleRoyale)
             {
                 Modes.BattleRoyale.BeginMatch(this);   // host only; no-op elsewhere
-                Modes.BattleRoyale.ApplyLocalMatchRules();
+                Modes.BattleRoyale.ApplyLocalMatchRules(this);
                 Modes.BattleRoyale.ArmScatter();
             } // recover if the opening cinematic never gives control back
-            SetState(SessionState.InGame);
             // Same value on every machine (seed + host identity are already shared): the run id
             // groups all players' `uploadlogs` under one S3 folder and names bug reports.
             LogUpload.SetRun(CurrentRunSeed, _players[HostSlot]?.IdentityId ?? LocalIdentityId(), CurrentRunDateUtc);

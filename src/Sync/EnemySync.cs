@@ -4270,6 +4270,23 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        /// <summary>Remove an entity with no death ceremony — no loot, no VFX, no kill credit —
+        /// and tombstone it so a later stream-in can't resurrect it. Same removal RemoveGhostEntity
+        /// performs, exposed for callers that clear entities as a RULE rather than as a kill (Battle
+        /// Royale's spawn-area clear). The caller is responsible for making sure every machine
+        /// removes the same set: this sends nothing, because a removal every machine derives
+        /// identically needs no wire traffic.</summary>
+        public static void RemoveSilently(int netId)
+        {
+            if (!KilledNetIds.Add(netId)) return; // already gone here
+            ReceivedSegments.Remove(netId);
+            if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return;
+            var egm = TryGetEgm();
+            if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
+                UnityEngine.Object.Destroy(se.gameObject);
+            DestroyData(instanceId);
+        }
+
         /// <summary>Destroy an entity's data so a later stream-in can't resurrect it.</summary>
         private static void DestroyData(int instanceId)
         {
