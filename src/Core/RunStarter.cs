@@ -1,4 +1,5 @@
-﻿using System.Linq;
+﻿using System;
+using System.Linq;
 using HarmonyLib;
 using UnityEngine;
 
@@ -19,11 +20,61 @@ namespace PunkMultiverse.Core
         /// (their real builds arrive via module-grid sync).</summary>
         public static LoadoutTemplate CurrentLoadout { get; private set; }
 
+        /// <summary>Battle Royale skipped the selector, so there is nothing to auto-pick past.</summary>
+        public static bool SelectorSkipped { get; private set; }
+
         public static void LaunchRun(int seed)
         {
             PendingSeed = seed;
+            SelectorSkipped = false;
+
+            // Battle Royale has no class selection: everyone flies the Gunner, so the selector
+            // would be a screen with one legal answer. Skip straight to the game scene — the
+            // selector is only a producer of RunArguments, and GameScene.GoToGameScene takes them
+            // directly (the game's own Continue/QuickLoad flows do exactly this).
+            var session = NetSession.Instance;
+            if (session != null && session.LobbyMode == Protocol.GameMode.BattleRoyale)
+            {
+                // startingLoadout is deliberately left null here. The loadout assets live in the
+                // LoadoutSelector scene's bundle and are NOT resident while we sit in the lobby —
+                // measured, not assumed: every machine in the harness logged "assets are not loaded
+                // yet". ForceBattleRoyaleLoadout below stamps the Gunner in once the Game scene is
+                // up and that bundle has loaded with it.
+                SelectorSkipped = true;
+                Plugin.Log.LogInfo($"[Run] net run starting: seed={seed} — BR, no class selection");
+                GameScene.GoToGameScene(RunArguments.NewRun(false)); // InjectSeed stamps the synced seed
+                return;
+            }
+
             Plugin.Log.LogInfo($"[Run] net run starting: seed={seed} — opening loadout selector");
             RunSetupScene.GoToLoadoutSelector(false, false);
+        }
+
+        /// <summary>The Battle Royale ship for everyone: the Gunner.
+        ///
+        /// Matched by identity, never by list position — LoadoutPool.loadouts is a hand-ordered
+        /// serialized list (its real order is 4,2,1,5,3,6), so `loadouts[0]` happening to be the
+        /// Gunner today is luck, not a contract. displayName is the game's player-facing label
+        /// ("GUNNER"); the asset name is what the game's own unlock system keys on, so both are
+        /// checked before settling for anything else.</summary>
+        internal static int LastCandidateCount;
+
+        internal static LoadoutTemplate FindBattleRoyaleLoadout()
+        {
+            var pool = Resources.FindObjectsOfTypeAll<LoadoutPool>().FirstOrDefault();
+            var loadouts = pool != null
+                ? Traverse.Create(pool).Field("loadouts").GetValue() as System.Collections.Generic.List<LoadoutTemplate>
+                : null;
+            var candidates = (loadouts != null && loadouts.Count > 0)
+                ? loadouts.Where(l => l != null)
+                : Resources.FindObjectsOfTypeAll<LoadoutTemplate>().Where(l => l != null);
+            var all = candidates.ToList();
+            LastCandidateCount = all.Count; // logged: seeing 1 of 6 means the bundle is only half up
+            if (all.Count == 0) return null;
+
+            return all.FirstOrDefault(l => string.Equals(l.displayName, "GUNNER", StringComparison.OrdinalIgnoreCase))
+                ?? all.FirstOrDefault(l => string.Equals(l.name, "Starter_Popper", StringComparison.OrdinalIgnoreCase))
+                ?? all.OrderBy(l => l.name, StringComparer.Ordinal).First(); // deterministic on every machine
         }
 
         // During a net run the seed screen of PunkSeedPicker (or any other StartGame interceptor)
@@ -64,24 +115,55 @@ namespace PunkMultiverse.Core
                 __0.seed = PendingSeed;
                 __0.isCoop = false;
                 __0.isContinue = false;
-                // Battle Royale starts everyone on the same standard weapon — what you build from
-                // there is earned in the match, not chosen at the menu. Runs on every machine, so
-                // no agreement has to be negotiated.
+                // Battle Royale starts everyone on the Gunner — what you build from there is earned
+                // in the match, not chosen at the menu. Runs on every machine, so no agreement has
+                // to be negotiated. This also covers the selector fallback path and the game's own
+                // Restart(), both of which re-enter here with whatever the player last picked.
                 if (session.LobbyMode == Protocol.GameMode.BattleRoyale)
                 {
-                    var standard = Object.FindFirstObjectByType<LoadoutPool>()
-                        ?? Resources.FindObjectsOfTypeAll<LoadoutPool>().FirstOrDefault();
-                    var loadouts = standard != null
-                        ? Traverse.Create(standard).Field("loadouts").GetValue() as System.Collections.Generic.List<LoadoutTemplate>
-                        : null;
-                    if (loadouts != null && loadouts.Count > 0)
+                    var gunner = FindBattleRoyaleLoadout();
+                    if (gunner != null)
                     {
-                        __0.startingLoadout = loadouts[0];
-                        Plugin.Log.LogInfo($"[BR] forced standard loadout '{loadouts[0].name}'");
+                        if (__0.startingLoadout != gunner)
+                            Plugin.Log.LogInfo($"[BR] forced loadout '{gunner.name}' ({gunner.displayName})");
+                        __0.startingLoadout = gunner;
                     }
+                    else Plugin.Log.LogWarning("[BR] no loadout assets found — the run keeps the game's default ship");
                 }
                 CurrentLoadout = __0.startingLoadout;
                 Plugin.Log.LogInfo($"[Run] seed {PendingSeed} injected, loadout={CurrentLoadout?.name ?? "null"}");
+            }
+        }
+
+        /// <summary>Stamp the Gunner into the run the moment the Game scene exists.
+        ///
+        /// This is the only place the forcing can be GUARANTEED to work: GameController.Awake is
+        /// the first point at which the loadout bundle is resident (the Game scene references the
+        /// pool through LoadoutUnlocker), and it runs before BuildLevel reads startingLoadout. It
+        /// also catches every entry path at once — skipped selector, a selector run, and the game's
+        /// own Restart() — so no launch route can sneak a different ship into a BR match.
+        /// </summary>
+        [HarmonyPatch(typeof(GameController), "Awake")]
+        internal static class ForceBattleRoyaleLoadout
+        {
+            private static void Postfix(GameController __instance)
+            {
+                var session = NetSession.Instance;
+                if (session == null || !NetSession.Active
+                    || session.CurrentMode != Protocol.GameMode.BattleRoyale) return;
+                try
+                {
+                    var gunner = FindBattleRoyaleLoadout();
+                    if (gunner == null) { Plugin.Log.LogWarning("[BR] no loadout assets in the game scene — keeping the default ship"); return; }
+                    var field = Traverse.Create(__instance).Field("runArguments");
+                    var args = field.GetValue<RunArguments>(); // struct: read, modify, write back
+                    args.startingLoadout = gunner;
+                    field.SetValue(args);
+                    CurrentLoadout = gunner;
+                    Plugin.Log.LogInfo($"[BR] every ship is the {gunner.displayName} ('{gunner.name}') " +
+                        $"— chosen from {LastCandidateCount} loadouts, no class selection");
+                }
+                catch (Exception e) { Plugin.Log.LogWarning($"[BR] could not force the loadout: {e.Message}"); }
             }
         }
 
@@ -100,7 +182,10 @@ namespace PunkMultiverse.Core
 
         public static bool TryAutoPickLoadout()
         {
-            var screen = Object.FindFirstObjectByType<RunSetupScreen>();
+            // BR never opened a selector; without this the harness/coordinator retry loop would
+            // warn "no RunSetupScreen" once a second for the whole run.
+            if (SelectorSkipped) return true;
+            var screen = UnityEngine.Object.FindFirstObjectByType<RunSetupScreen>();
             if (screen == null) { AutoPickDiag("no RunSetupScreen in the loaded scene"); return false; }
             var pool = Resources.FindObjectsOfTypeAll<LoadoutPool>().FirstOrDefault();
             var loadouts = pool != null
