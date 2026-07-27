@@ -537,6 +537,13 @@ namespace PunkMultiverse.Core
                     Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
                     return;
                 }
+                case "freezeprobe":
+                {
+                    float fpSecs = 40f;
+                    if (parts.Length >= 2) float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out fpSecs);
+                    Out($"freezeprobe: {FreezeProbe.Start(fpSecs)}");
+                    return;
+                }
                 case "hostinfo":
                 {
                     float hiSecs = 30f;
