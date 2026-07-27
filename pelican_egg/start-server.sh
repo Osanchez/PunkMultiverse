@@ -229,6 +229,16 @@ set_cfg "Session"   "ServerFrameRateCap" "${SERVER_FRAME_RATE_CAP}" "${CFG}"
 # Game mode (see the ENABLE_GAME_MODES block above). Written unconditionally so flipping the
 # variable back to 0 actually reverts the server to Standard on the next boot.
 if [ "${ENABLE_GAME_MODES}" = "1" ]; then GAME_MODES_CFG="true"; else GAME_MODES_CFG="false"; fi
+# Normalize GAME_MODE to the exact spelling the mod accepts. This has to happen HERE: the mod
+# binds GameMode with an AcceptableValueList, so BepInEx silently rewrites anything else to
+# Standard before the mod can see (or complain about) it. A panel typo would otherwise cost a
+# whole session of the wrong ruleset with nothing in the log to explain it.
+case "$(printf '%s' "${GAME_MODE}" | tr -d '_ ' | tr '[:upper:]' '[:lower:]')" in
+    battleroyale) GAME_MODE="BattleRoyale" ;;
+    standard|"")  GAME_MODE="Standard" ;;
+    *)  log "WARNING: GAME_MODE='${GAME_MODE}' is not a recognized mode - falling back to Standard (valid: Standard, BattleRoyale)"
+        GAME_MODE="Standard" ;;
+esac
 set_cfg "Session"   "EnableGameModes" "${GAME_MODES_CFG}" "${CFG}"
 set_cfg "Session"   "GameMode" "${GAME_MODE}" "${CFG}"
 set_cfg "Session"   "BrMatchMinutes" "${BR_MATCH_MINUTES}" "${CFG}"
@@ -258,9 +268,12 @@ fi
 log "config.cfg written (Transport=Udp UdpPort=${SERVER_PORT} coordinator=1 autoLaunch=$(bool "${AUTO_START_RUN}"))"
 if [ "${ENABLE_GAME_MODES}" = "1" ]; then
     log "game mode: ${GAME_MODE} (match ${BR_MATCH_MINUTES}m, ring starts ${BR_RING_START_MINUTES}m, ${BR_RING_STAGES} stages of ${BR_RING_CLOSE_SECONDS}s, drops every ${BR_CARE_PACKAGE_MINUTES}m)"
+elif [ "${GAME_MODE}" != "Standard" ]; then
+    log "WARNING: GAME_MODE=${GAME_MODE} but ENABLE_GAME_MODES is not 1 - hosting Standard. Set Enable Game Modes to 1 to allow it."
 else
     log "game mode: Standard (alternate modes disabled - set ENABLE_GAME_MODES=1 to allow Battle Royale)"
 fi
+log "the server's own banner reports the mode it actually resolved - trust that line over this one"
 
 # Keep the base game from bouncing through the Steam client on launch.
 echo "${STEAM_APPID}" > "${GAME_DIR}/steam_appid.txt"

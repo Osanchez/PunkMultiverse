@@ -872,6 +872,9 @@ namespace PunkMultiverse.Core
             // level context ShipSync captured during the pre-build must survive the resets below
             // — stash it now, restore it in the reuse/adopt branches at the tail.
             if (_preGenDone || _preGenInProgress) Sync.ShipSync.StashLevelContext();
+            // Every machine records the ruleset it is about to play, host and client alike — the
+            // host's mode is authoritative, so this is also the line that proves it arrived.
+            Plugin.Log.LogInfo($"[Run] starting seed {seed} in {CurrentMode.ToString().ToUpperInvariant()} mode");
             CurrentRunSeed = seed;
             _levelChecksums.Clear();
             _levelFingerprints.Clear();
@@ -1605,8 +1608,14 @@ namespace PunkMultiverse.Core
             // Standard, whatever the config or a stale menu selection says.
             LobbyMode = !NetConfig.GameModesEnabled ? Protocol.GameMode.Standard
                 : NetConfig.IsCoordinator ? NetConfig.ConfiguredMode : _pendingMode;
-            if (LobbyMode == Protocol.GameMode.BattleRoyale)
-                Plugin.Log.LogInfo("[BR] lobby mode = BATTLE ROYALE (docs/BATTLE_ROYALE.md)");
+            // Logged for EVERY mode, not just Battle Royale: a line that appears only when the
+            // alternate mode took effect means its absence proves nothing, and "we thought the
+            // server was in BR" is precisely the confusion this line exists to settle.
+            Plugin.Log.LogInfo($"[Session] lobby mode = {LobbyMode.ToString().ToUpperInvariant()}"
+                + (LobbyMode == Protocol.GameMode.BattleRoyale ? " (docs/BATTLE_ROYALE.md)" : "")
+                + (NetConfig.IsCoordinator ? " — from config, applies to every run until restart" : ""));
+            if (NetConfig.IsCoordinator && NetConfig.ModeWarning() is string modeWarning)
+                Plugin.Log.LogWarning($"[Session] {modeWarning}");
             _pendingHostSeed = 0;
             _pendingMode = Protocol.GameMode.Standard;
             _pendingFriendlyFire = false;
