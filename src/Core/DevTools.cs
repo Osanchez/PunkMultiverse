@@ -537,6 +537,13 @@ namespace PunkMultiverse.Core
                     Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
                     return;
                 }
+                case "nostream":
+                {
+                    string arg = parts.Length >= 2 ? parts[1] : "off";
+                    string state = Patches.NoStreamOnServer.Toggle(arg);
+                    Out($"nostream: {state} (segments skipped so far: {Patches.NoStreamOnServer.Blocked})");
+                    return;
+                }
                 case "livedemand":
                 {
                     string arg = parts.Length >= 2 ? parts[1] : "report";
