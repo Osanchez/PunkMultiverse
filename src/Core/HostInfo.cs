@@ -36,7 +36,7 @@ namespace PunkMultiverse.Core
         private static Thread _thread;
         private static volatile bool _running;
 
-        private static string _statPath, _psiCpuPath, _cgroupCpuPath, _loadPath;
+        private static string _statPath, _psiCpuPath, _cgroupCpuPath, _loadPath, _cgroupPressurePath;
 
         /// <summary>Locate the proc/cgroup files through whichever root works here.</summary>
         private static bool ResolvePaths(out string error)
@@ -54,6 +54,12 @@ namespace PunkMultiverse.Core
                     string sys = root == "/" ? "/sys" : root + "sys";
                     _psiCpuPath = p + sep + "pressure" + sep + "cpu";
                     _cgroupCpuPath = sys + sep + "fs" + sep + "cgroup" + sep + "cpu.stat";
+                    // OUR OWN cgroup's PSI. The critical property: cfs throttling imposed by an
+                    // ANCESTOR cgroup still accounts as CPU stall here, while a hypervisor pausing
+                    // the whole VM accounts as nothing (the guest kernel is frozen too). This is
+                    // the discriminator between "the node throttles us" and "the provider pauses
+                    // the VM".
+                    _cgroupPressurePath = sys + sep + "fs" + sep + "cgroup" + sep + "cpu.pressure";
                     _loadPath = p + sep + "loadavg";
                     return true;
                 }
@@ -61,6 +67,21 @@ namespace PunkMultiverse.Core
             }
             error = "no readable /proc (checked Z:\\proc\\stat and /proc/stat) — Wine Z: mapping absent?";
             return false;
+        }
+
+        /// <summary>Host CPU count = "cpuN" lines in /proc/stat. Needed for the jiffy-accounting
+        /// check: over W seconds a healthy host accounts ~nCPU*W*100 jiffies across all states.
+        /// A large deficit means the GUEST KERNEL itself lost time — a hypervisor pause.</summary>
+        private static int CountCpus()
+        {
+            int n = 0;
+            try
+            {
+                foreach (string line in File.ReadAllLines(_statPath))
+                    if (line.StartsWith("cpu", StringComparison.Ordinal) && line.Length > 3 && char.IsDigit(line[3])) n++;
+            }
+            catch { }
+            return n;
         }
 
         internal static string Start(float seconds)
@@ -139,6 +160,9 @@ namespace PunkMultiverse.Core
                 bool haveCpu = ReadCpu(out long pTotal, out long pSteal, out long pIdle, out long pIowait);
                 long pPsiSome = ReadPsiTotal(_psiCpuPath, "some");
                 long pPsiFull = ReadPsiTotal(_psiCpuPath, "full");
+                long pCgSome = ReadPsiTotal(_cgroupPressurePath, "some");
+                long pCgFull = ReadPsiTotal(_cgroupPressurePath, "full");
+                int nCpu = CountCpus();
                 ReadCgroup(out long pThr, out long pThrUs);
                 long t0 = Stopwatch.GetTimestamp(), prevT = t0;
 
@@ -186,11 +210,23 @@ namespace PunkMultiverse.Core
                 ReadCpu(out long eTotal, out long eSteal, out long eIdle, out long eIowait);
                 long ePsiSome = ReadPsiTotal(_psiCpuPath, "some");
                 long ePsiFull = ReadPsiTotal(_psiCpuPath, "full");
+                long eCgSome = ReadPsiTotal(_cgroupPressurePath, "some");
+                long eCgFull = ReadPsiTotal(_cgroupPressurePath, "full");
                 ReadCgroup(out long eThr, out long eThrUs);
                 string load = "?";
                 try { load = File.ReadAllText(_loadPath).Trim(); } catch { }
                 double wall = (Stopwatch.GetTimestamp() - t0) * toMs;
                 long dT = eTotal - sTotal0;
+                // The two-way verdict, printed as its own line so it cannot be missed:
+                //   accounted ~100% + cgroup pressure ~= frozen time  -> ancestor cgroup throttle
+                //   accounted <<100% + cgroup pressure ~= 0           -> hypervisor pauses the VM
+                double expected = nCpu > 0 ? nCpu * wall / 10.0 : 0; // jiffies expected at 100Hz
+                Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
+                    "[HostInfo] VERDICT-DATA nCpu={0} jiffies accounted={1} expected={2:0} ({3:0.0}%) | " +
+                    "ourCgroup cpu.pressure someDelta={4}us fullDelta={5}us over {6:0.0}s wall",
+                    nCpu, dT, expected, expected > 0 ? 100.0 * dT / expected : -1,
+                    eCgSome >= 0 && pCgSome >= 0 ? eCgSome - pCgSome : -1,
+                    eCgFull >= 0 && pCgFull >= 0 ? eCgFull - pCgFull : -1, wall / 1000.0));
                 Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
                     "[HostInfo] === {0:0.0}s, {1} samples, {2} stretched (worst {3:0}ms) === " +
                     "steal={4:0.00}% idle={5:0.0}% iowait={6:0.00}% | psiCpuSome={7}us psiCpuFull={8}us | " +
