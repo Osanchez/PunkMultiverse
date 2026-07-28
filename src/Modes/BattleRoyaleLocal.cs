@@ -311,11 +311,24 @@ namespace PunkMultiverse.Modes
                 if (em == null) return;
 
                 var centers = new List<Vector2>();
-                foreach (var kv in AssignSpawnStations(session))
+                if (NetConfig.BrChooseSpawn.Value)
                 {
-                    if (!NetIds.TryGetInstanceId(kv.Value, out int stationInstance)) continue;
-                    var stationData = em.GetEntity(stationInstance);
-                    if (stationData != null) centers.Add(stationData.position);
+                    // With the drop screen on, ANY station can be a spawn — the player picks after
+                    // the world is already running, so there is no "assigned" pad to clear ahead of
+                    // time. Sweep them all. Field-reported 2026-07-28: "the enemies around the
+                    // spawned selection were still there". Still derived identically on every
+                    // machine and still sends nothing, which is the property that makes this safe.
+                    foreach (var station in em.GetEntitiesWithComponent<Station.Data>())
+                        if (station?.entity != null) centers.Add(station.entity.position);
+                }
+                else
+                {
+                    foreach (var kv in AssignSpawnStations(session))
+                    {
+                        if (!NetIds.TryGetInstanceId(kv.Value, out int stationInstance)) continue;
+                        var stationData = em.GetEntity(stationInstance);
+                        if (stationData != null) centers.Add(stationData.position);
+                    }
                 }
                 if (centers.Count == 0) return;
 

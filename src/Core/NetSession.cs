@@ -1171,12 +1171,6 @@ namespace PunkMultiverse.Core
             _localLevelReady.VisualVariantDigest = visual.Digest;
             Plugin.Log.LogInfo($"[Determinism] visuals={visual.VariantCount}/{visual.Digest:X16} " +
                 $"renderers={visual.RendererCount}");
-            // The world is generated and verified here, which is the earliest this machine can know
-            // which biomes exist and where the stations are — so it is where the drop screen's
-            // option list gets built. A ship-flying host builds it too; only a coordinator sits out.
-            if (LobbyMode == Protocol.GameMode.BattleRoyale && !NetConfig.IsCoordinator)
-                Modes.BattleRoyaleSpawnSelect.BuildOptions();
-
             if (IsHost)
             {
                 _levelChecksums[HostSlot] = _localLevelChecksum;

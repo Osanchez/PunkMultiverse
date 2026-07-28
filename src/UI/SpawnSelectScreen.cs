@@ -6,9 +6,14 @@ namespace PunkMultiverse.UI
     /// <summary>
     /// The Battle Royale drop screen: pick a region before the match places you.
     ///
-    /// Drawn with IMGUI for the same reason the match HUD is (UI/Toast.cs calls both from OnGUI) —
-    /// it appears during LOADING, before the game scene's canvases are up, so there is no UI
-    /// hierarchy to attach to yet. IMGUI has no such dependency.
+    /// Drawn with IMGUI for the same reason the match HUD is (UI/Toast.cs calls both from OnGUI):
+    /// it comes up the instant the match goes live, before anything of ours has a canvas to attach
+    /// to, and IMGUI needs none.
+    ///
+    /// The backdrop is FULLY OPAQUE and the ship is parked out in the void behind it
+    /// (BattleRoyaleSpawnSelect.HoldInTheVoid), so the player is genuinely not in the game while
+    /// this is up — which is both the fiction and, after an instant game over caused by choosing
+    /// while standing on a pad full of enemies, the safety.
     ///
     /// The heat is deliberately a COLOUR, never a number. Omar asked for "not actual numbers but a
     /// heat map" and that is the better read: an exact count invites arithmetic ("two there, so I
@@ -18,7 +23,7 @@ namespace PunkMultiverse.UI
     /// </summary>
     internal static class SpawnSelectScreen
     {
-        private static GUIStyle _title, _sub, _button, _chosen;
+        private static GUIStyle _title, _sub, _button, _chosen, _clock, _clockUrgent;
 
         private static readonly Color Empty = new Color(0.35f, 0.85f, 0.40f);
         private static readonly Color Filling = new Color(0.95f, 0.80f, 0.25f);
@@ -33,34 +38,39 @@ namespace PunkMultiverse.UI
             int count = options.Count;
             if (count == 0) return;
 
-            // A dimmed backdrop: this is a modal decision, and the loading screen behind it is not
-            // information anyone needs right now.
+            // FULLY OPAQUE, not dimmed. The ship is parked out in the void while this is up
+            // (BattleRoyaleSpawnSelect.HoldInTheVoid) and the player is not in the game yet — a
+            // see-through backdrop would show them empty blackness anyway and, worse, imply they
+            // are somewhere. Solid black is the honest frame for "you have not dropped".
             var full = new Rect(0, 0, Screen.width, Screen.height);
             var prev = GUI.color;
-            GUI.color = new Color(0f, 0f, 0f, 0.72f);
+            GUI.color = Color.black;
             GUI.DrawTexture(full, Texture2D.whiteTexture);
             GUI.color = prev;
 
             float panelW = Mathf.Min(760f, Screen.width - 80f);
             float rowH = 46f, gap = 8f;
-            float panelH = 150f + count * (rowH + gap);
+            float panelH = 172f + count * (rowH + gap);
             var panel = new Rect((Screen.width - panelW) * 0.5f,
                 Mathf.Max(30f, (Screen.height - panelH) * 0.5f), panelW, panelH);
 
-            GUI.Label(new Rect(panel.x, panel.y, panel.width, 40f), "CHOOSE YOUR DROP", _title);
+            GUI.Label(new Rect(panel.x, panel.y, panel.width, 40f), "SELECT SPAWN", _title);
 
-            int left = Mathf.CeilToInt(Modes.BattleRoyaleSpawnSelect.SecondsLeft);
-            string sub = Modes.BattleRoyaleSpawnSelect.LocalHasChosen
-                ? $"WAITING FOR THE OTHERS — {left}s"
-                : $"PICK A REGION — {left}s, OR ONE IS PICKED FOR YOU";
-            GUI.Label(new Rect(panel.x, panel.y + 38f, panel.width, 26f), sub, _sub);
+            // The clock is the loudest thing after the title: it is the only pressure in the
+            // screen, and it counts real seconds down from BrChooseSpawnSeconds.
+            float secs = Modes.BattleRoyaleSpawnSelect.SecondsLeft;
+            int left = Mathf.CeilToInt(secs);
+            var clockStyle = secs <= 5f ? _clockUrgent : _clock;
+            GUI.Label(new Rect(panel.x, panel.y + 34f, panel.width, 44f), $"{left}", clockStyle);
+            GUI.Label(new Rect(panel.x, panel.y + 74f, panel.width, 24f),
+                "A REGION IS CHOSEN FOR YOU WHEN THIS REACHES ZERO", _sub);
 
             // Busiest region sets the scale, so the colours mean "relative to where everyone else
             // is going" rather than an arbitrary threshold that breaks at 2 players or at 16.
             int busiest = 0;
             for (int i = 0; i < count; i++) busiest = Mathf.Max(busiest, options[i].Picks);
 
-            float y = panel.y + 84f;
+            float y = panel.y + 106f;
             for (int i = 0; i < count; i++)
             {
                 var option = options[i];
@@ -129,6 +139,13 @@ namespace PunkMultiverse.UI
             _button.normal.textColor = Color.white;
             _chosen = new GUIStyle(_button);
             _chosen.normal.textColor = new Color(0.55f, 1f, 0.6f);
+            _clock = new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.UpperCenter, fontSize = 40, fontStyle = FontStyle.Bold,
+            };
+            _clock.normal.textColor = Color.white;
+            _clockUrgent = new GUIStyle(_clock);
+            _clockUrgent.normal.textColor = new Color(1f, 0.35f, 0.28f);
         }
     }
 }

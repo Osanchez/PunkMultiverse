@@ -43,7 +43,7 @@ namespace PunkMultiverse.Modes
             internal byte BiomeId;
             internal string Name;          // friendly, for the button
             internal Color Color;          // the biome's own map colour
-            internal readonly List<int> StationNetIds = new List<int>();
+            internal readonly List<Vector2> StationPositions = new List<Vector2>();
             internal int Picks;            // live tally from the host
         }
 
@@ -106,9 +106,8 @@ namespace PunkMultiverse.Modes
                 foreach (var station in em.GetEntitiesWithComponent<Station.Data>())
                 {
                     if (station?.entity == null) continue;
-                    if (!NetIds.TryGetNetId(station.entity.instanceId, out int netId)) continue;
-                    var pos = Vector2Int.RoundToInt((Vector2)station.entity.position);
-                    var biome = level.GetMainBiom(pos);
+                    var world = (Vector2)station.entity.position;
+                    var biome = level.GetMainBiom(Vector2Int.RoundToInt(world));
                     if (biome == null) continue;
                     if (!byBiome.TryGetValue(biome.id, out var option))
                     {
@@ -119,13 +118,13 @@ namespace PunkMultiverse.Modes
                             Color = biome.mapColor,
                         };
                     }
-                    option.StationNetIds.Add(netId);
+                    option.StationPositions.Add(world);
                 }
 
                 // Stable order so the buttons do not shuffle between machines or frames.
                 Options.AddRange(byBiome.Values.OrderBy(o => o.Name, System.StringComparer.Ordinal));
                 Plugin.Log.LogInfo($"[BRDrop] {Options.Count} drop regions: " +
-                    string.Join(", ", Options.Select(o => $"{o.Name}({o.StationNetIds.Count})")));
+                    string.Join(", ", Options.Select(o => $"{o.Name}({o.StationPositions.Count})")));
             }
             catch (System.Exception e)
             {
@@ -210,8 +209,46 @@ namespace PunkMultiverse.Modes
                 return;
             }
             _deadline = Time.unscaledTime + Mathf.Max(5f, NetConfig.BrChooseSpawnSeconds.Value);
+            HoldInTheVoid();
             Plugin.Log.LogInfo($"[BRDrop] drop window open — {NetConfig.BrChooseSpawnSeconds.Value:0}s, " +
                 $"{Options.Count} regions");
+        }
+
+        /// <summary>Park the ship OUTSIDE THE WORLD until it deploys.
+        ///
+        /// This is the fix for an instant game over (2026-07-28). While a player sat on the drop
+        /// screen their ship was still standing on the shared start pad, in the world, with live
+        /// enemies on it — so they were eaten mid-decision, and with two players that is one death
+        /// and an immediate "last one standing". A drop screen that kills you for reading it is
+        /// worse than no drop screen.
+        ///
+        /// The void beyond the playable disc is the natural holding pen: BorderGenerator stamps
+        /// everything past Width/2 from the grid centre as void, so there are no cells, no
+        /// collision and nothing living out there. The ship is also frozen STATIC with input off,
+        /// so it cannot drift, and the screen draws an opaque backdrop over it — between them the
+        /// player is simply not in the game yet, which is the intended fiction.</summary>
+        private static void HoldInTheVoid()
+        {
+            try
+            {
+                var level = ServiceLocator.Get<Level>();
+                if (level == null) return;
+                // Straight "up" from the grid centre, comfortably past the disc edge.
+                var holding = new Vector2(level.Width * 0.5f, level.Height * 0.5f + level.Width * 0.5f + 90f);
+                Sync.ShipSync.TeleportLocalShipTo(holding);
+
+                var ship = Sync.ShipSync.LocalShip;
+                if (ship == null) return;
+                if (ship.shipInput != null) ship.shipInput.enabled = false;
+                if (ship.Rigidbody != null) ship.Rigidbody.bodyType = RigidbodyType2D.Static;
+                if (ship.Crosshair != null) ship.Crosshair.Visible = false;
+                Plugin.Log.LogInfo($"[BRDrop] holding at ({holding.x:0},{holding.y:0}) in the void until deploy");
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[BRDrop] could not park the ship for selection: {e.Message} — " +
+                    "it stays where the run put it and may be attacked while choosing");
+            }
         }
 
         /// <summary>True once this player has actually dropped into the world.</summary>
@@ -276,9 +313,9 @@ namespace PunkMultiverse.Modes
             try
             {
                 var option = Options.FirstOrDefault(o => o.BiomeId == biomeId) ?? Options[0];
-                if (option.StationNetIds.Count == 0) return;
-                int netId = option.StationNetIds[UnityEngine.Random.Range(0, option.StationNetIds.Count)];
-                Sync.ShipSync.TeleportLocalShip(netId);
+                if (option.StationPositions.Count == 0) return;
+                var pad = option.StationPositions[UnityEngine.Random.Range(0, option.StationPositions.Count)];
+                Sync.ShipSync.TeleportLocalShipTo(pad + Vector2.up * 2f); // hover above the platform
 
                 var ship = Sync.ShipSync.LocalShip;
                 if (ship != null)
@@ -289,7 +326,7 @@ namespace PunkMultiverse.Modes
                     ship.UnlockCamera(0f);
                     ship.SetHeadlightsEnabled(true);
                 }
-                Plugin.Log.LogInfo($"[BRDrop] deployed to {option.Name} station #{netId} ({why})");
+                Plugin.Log.LogInfo($"[BRDrop] deployed to {option.Name} at ({pad.x:0},{pad.y:0}) ({why})");
                 UI.Toast.Show($"DROPPING INTO {option.Name.ToUpperInvariant()}", 4f);
             }
             catch (System.Exception e)

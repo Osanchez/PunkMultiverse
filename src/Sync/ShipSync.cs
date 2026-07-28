@@ -769,6 +769,33 @@ namespace PunkMultiverse.Sync
             catch { return false; }
         }
 
+        /// <summary>Move the local ship to a world position, entity data and camera included.
+        /// Position-based rather than netId-based because Battle Royale's drop screen has to place
+        /// ships before netIds are meaningful to it — and a position needs nothing resolved.</summary>
+        public static void TeleportLocalShipTo(Vector2 pos)
+        {
+            try
+            {
+                if (LocalShip == null) return;
+                var rb = LocalShip.GetComponent<Rigidbody2D>();
+                if (rb != null)
+                {
+                    RemoteEntityPuppet.TeleportWithChildren(rb, pos);
+                    rb.linearVelocity = Vector2.zero;
+                }
+                LocalShip.transform.position = pos;
+                var shipData = LocalShip.SavableEntity != null ? LocalShip.SavableEntity.EntityData : null;
+                if (shipData != null) shipData.MoveTo(new Vector3(pos.x, pos.y, shipData.position.z));
+                try
+                {
+                    var cam = Com.LuisPedroFonseca.ProCamera2D.ProCamera2D.Instance;
+                    if (cam != null) cam.MoveCameraInstantlyToPosition(pos);
+                }
+                catch { }
+            }
+            catch (System.Exception e) { Plugin.Log.LogWarning($"[Ships] teleport failed: {e.Message}"); }
+        }
+
         public static void TeleportLocalShip(int stationNetId)
         {
             try
