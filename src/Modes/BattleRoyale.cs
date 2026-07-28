@@ -36,7 +36,6 @@ namespace PunkMultiverse.Modes
 
         private static Vector2 _center;           // ring center (open-area pick)
         private static float _startRadius;        // covers the whole map from _center
-        private static float _paintedRadius;      // outer edge of what we have painted so far
 
         // Placement bookkeeping: the roster is snapshotted at go-live and the match is sealed, so
         // "how many players are in this match" never changes after it starts.
@@ -75,9 +74,6 @@ namespace PunkMultiverse.Modes
             _matchStart = 0f;
             _lastAnnouncedStage = 0;
             _nextRingBroadcastAt = 0f;
-            _paintedRadius = float.MaxValue;
-            _paintBehind = 0f;
-            ResetPaintCost();
             _lastAliveSince = -1f;
             MatchPlayers.Clear();
             Eliminated.Clear();

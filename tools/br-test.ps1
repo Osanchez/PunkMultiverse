@@ -213,7 +213,8 @@ try {
         $ok = (Show "match start"      "\[BR\] MATCH START") -and $ok
         $ok = (Show "ring center"      "\[BR\] ring center") -and $ok
         $ok = (Show "playable map"     "\[BR\] playable map") -and $ok
-        $ok = (Show "ring material"    "\[BR\] ring material") -and $ok
+        # (No "ring material" check: the zone is rendered, not made of terrain, so there is no
+        # cell type to resolve. Its absence is asserted positively in the ring phase instead.)
         $ok = (Show "stations opened"  "\[BR\] opened \d+ stations") -and $ok
         $ok = (Show "ring closing"     "RING IS CLOSING") -and $ok
         Show "care package"            "\[BR\] care package" | Out-Null
@@ -255,10 +256,20 @@ try {
         Line "spawn clear" ("{0}/{1} bots cleared their spawn areas" -f $cleared, $BotDirs.Count)
         if ($cleared -lt $BotDirs.Count) { $ok = $false; Write-Host "  FAIL: spawn clear did not run on every machine" }
 
-        # A won match must not leave the winner alone in the world.
+        # A won match must not leave the winner alone in the world. Either the winner scuttled, or
+        # they were already dead when the countdown finished - both satisfy the actual requirement,
+        # and demanding only the first made this assertion depend on whether the ring happened to
+        # finish the winner off first.
         $selfDestruct = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] winner self-destructed" -EA SilentlyContinue }).Count
+        $alreadyDead = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] winner self-destruct skipped" -EA SilentlyContinue }).Count
+        $armed = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] winner self-destruct armed" -EA SilentlyContinue }).Count
         if ($selfDestruct -ge 1) { Line "winner self-destruct" "fired" }
-        else { Line "winner self-destruct" "MISSING"; $ok = $false }
+        elseif ($alreadyDead -ge 1) { Line "winner self-destruct" "not needed - the winner was already dead" }
+        elseif ($armed -ge 1) {
+            Line "winner self-destruct" "ARMED BUT NEVER COMPLETED - the run ended mid-countdown"
+            $ok = $false
+        }
+        else { Line "winner self-destruct" "MISSING - never even armed"; $ok = $false }
 
         $stages = CountIn $CoordLog "\[BR\] announce: (THE RING IS CLOSING|FINAL RING|THE LAVA RING)"
         $drops  = CountIn $CoordLog "\[BR\] care package"
@@ -286,19 +297,26 @@ try {
         if ($rate.Count -ge 1) { Line "closure rate" ("{0} u/s" -f $rate[0].Matches[0].Groups[3].Value) }
         else { Line "closure rate" "MISSING"; $ok = $false }
 
-        # Paint cost. The wall is written through SetCell, so every cell is a replicated terrain
-        # diff - this is the one part of the ring that can plausibly stall the host's frame.
-        $paint = @(Lines $CoordLog "ring paint r=(\d+) passes=(\d+) cells=(\d+) totalMs=([0-9.]+) avgMs=([0-9.]+) worstMs=([0-9.]+)")
-        if ($paint.Count -ge 1) {
-            $worst = 0.0; $cells = 0
-            foreach ($p in $paint) {
-                $w = [double]$p.Matches[0].Groups[6].Value
-                if ($w -gt $worst) { $worst = $w }
-                $cells += [int]$p.Matches[0].Groups[3].Value
-            }
-            Line "ring paint" ("{0} reports, {1} cells painted, worst single pass {2:0.00}ms" -f $paint.Count, $cells, $worst)
-            if ($worst -gt 50.0) { $ok = $false; Write-Host "  FAIL: a ring paint pass blew past 50ms" }
-        } else { Line "ring paint" "MISSING (the ring never advanced?)"; $ok = $false }
+        # The zone is RENDERED, not built. It must not paint a single cell: that is the whole
+        # reason it stopped costing 9-second frames, and the regression it must never make quietly.
+        $paint = @(Lines $CoordLog "ring paint r=(\d+) ")
+        if ($paint.Count -eq 0) {
+            Line "zone is rendered" "0 terrain cells painted by the ring (correct)"
+        } else {
+            $ok = $false
+            Line "zone is rendered" ("{0} [BR] ring paint reports - THE RING IS PAINTING TERRAIN AGAIN" -f $paint.Count)
+            Write-Host "  FAIL: the zone is supposed to be a rendered surface plus a radius check."
+        }
+
+        # And it must still HURT. The damage is a radius check each client applies to its own ship,
+        # so the evidence is on the bots, not the host.
+        # NOTE the log line joins with an em dash; match loosely so an ASCII-only script never
+        # depends on the encoding surviving a round trip through the log file.
+        $burn = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] in the zone \((\d+) > (\d+)\).{0,4}stage (\d+), x([0-9.]+) damage, ~(\d+)s" -AllMatches -EA SilentlyContinue })
+        if ($burn.Count -ge 1) {
+            $g = $burn[-1].Matches[0].Groups
+            Line "zone damage" ("stage {0}, x{1} damage, ~{2}s to kill from full" -f $g[3].Value, $g[4].Value, $g[5].Value)
+        } else { Line "zone damage" "no bot was ever caught outside (not a failure)" }
 
         Line "host hitches" (CountIn $CoordLog "\[Hitch\]")
 

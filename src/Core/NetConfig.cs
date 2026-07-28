@@ -69,7 +69,9 @@ namespace PunkMultiverse
         public static ConfigEntry<int> BrRingStartMinutes;
         public static ConfigEntry<int> BrRingStages;
         public static ConfigEntry<float> BrRingCloseSeconds;
-        public static ConfigEntry<float> BrRingPaintMs;
+        public static ConfigEntry<bool> ShowZoneVisual;
+        public static ConfigEntry<float> BrZoneKillSeconds;
+        public static ConfigEntry<float> BrZoneDamageStageScale;
         public static ConfigEntry<bool> SegmentChangeRouting;
         public static ConfigEntry<bool> TrimTerrainPresentation;
         public static ConfigEntry<int> BrCarePackageMinutes;
@@ -366,15 +368,23 @@ namespace PunkMultiverse
                 "all frame time at 979ms per call while the ring closed. Behaviour is identical - " +
                 "the discarded changes failed the segment's own rect test anyway. Turn off only to " +
                 "prove a terrain bug is or is not this patch.");
-            BrRingPaintMs = cfg.Bind("Session", "BrRingPaintMs", 6f,
-                "Battle Royale: milliseconds per frame the host may spend painting the lava wall. " +
-                "The wall is written through the game's own SetCell, so every cell is a terrain " +
-                "diff replicated to every client; an uncapped band froze the host for 200ms+ at a " +
-                "time on a large ring. The band width is derived from the MEASURED cost per cell, " +
-                "so a fast host paints far more per frame than a slow one and neither stalls. If " +
-                "the front outruns the budget the wall trails and catches up during the next hold " +
-                "phase — watch 'behind=' in the [BR] ring paint line; a value that never returns " +
-                "to 0 means this host cannot paint a ring this large at this closure rate.");
+            ShowZoneVisual = cfg.Bind("UI", "ShowZoneVisual", true,
+                "Battle Royale: draw the closing zone as molten ground (UI/RingLavaVisual.cs). The " +
+                "zone is RENDERED, not built out of terrain — it has no collider and deals no " +
+                "contact damage, so you can always fly through it. Turning this off leaves the " +
+                "damage exactly as it is and simply makes the zone invisible; the ring outlines on " +
+                "the minimap and map screen are separate.");
+            BrZoneKillSeconds = cfg.Bind("Session", "BrZoneKillSeconds", 60f,
+                "Battle Royale: seconds to die from FULL health while caught in the zone during " +
+                "the FIRST ring. The zone is not solid — you can always fly through it, which is " +
+                "how a player avoids being walled in — so this is the price of a crossing, not a " +
+                "death sentence. Scaled by max health, so an upgraded hull buys proportionally " +
+                "more time. Raised by BrZoneDamageStageScale as the ring closes.");
+            BrZoneDamageStageScale = cfg.Bind("Session", "BrZoneDamageStageScale", 0.75f,
+                "Battle Royale: how much harder the zone bites per completed shrink stage. Damage " +
+                "is multiplied by (1 + stage * this), so at the default 0.75 the opening zone takes " +
+                "BrZoneKillSeconds to kill and the 8th ring takes about an eighth of that. The " +
+                "early zones are meant to be survivable and the late ones are not.");
             BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 4,
                 "Battle Royale: minutes between care-package drops (0 disables them). Each package " +
                 "is destructible; only the player who destroys it gets the loot.");

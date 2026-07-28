@@ -1061,9 +1061,9 @@ namespace PunkMultiverse.Core
         internal static void RemoteEntityAdded() => Interlocked.Increment(ref _remoteEntities);
         internal static void RemoteEntityRemoved() => Interlocked.Decrement(ref _remoteEntities);
         internal static void CellCaptured() => Interlocked.Increment(ref _cellChanges);
-        /// <summary>Battle Royale: terrain cells painted by the closing lava ring.</summary>
-        internal static long BrRingCells;
-        internal static void BrRingCellsPainted(int n) => Interlocked.Add(ref BrRingCells, n);
+        // (BrRingCells is gone: the Battle Royale zone is rendered, not painted, so there are no
+        // ring terrain cells left to count. tools/br-test.ps1 asserts that number stays zero by
+        // checking the paint log line never appears at all.)
         internal static void VisualProjectileSpawned() => Interlocked.Increment(ref _visualSpawns);
         internal static void LeaseCommitted() => Interlocked.Increment(ref _leaseCommits);
         internal static void LeaseAcked() => Interlocked.Increment(ref _leaseAcks);

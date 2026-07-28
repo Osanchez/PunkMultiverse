@@ -19,11 +19,26 @@ namespace PunkMultiverse.Modes
 
         private static float _nextBurnAt;
         private const float BurnInterval = 0.5f;
-        private const float BurnPercentPerTick = 0.04f; // of max health — ~12s from full outside
 
-        /// <summary>Every machine: burn the local ship while it is outside the safe zone. The wall
-        /// itself is real terrain and hurts on contact through the game's own contact damage; this
-        /// covers everything beyond the wall, so running past it is not an escape.</summary>
+        /// <summary>Every machine: burn the local ship while it is outside the safe zone.
+        ///
+        /// THE ZONE IS NOT SOLID and never damages by contact — this radius check IS the entire
+        /// enforcement (the lava is rendered, see UI/RingLavaVisual.cs). That is deliberate: a
+        /// player must always be able to fly THROUGH the zone rather than be walled in by it, so
+        /// getting caught outside is a cost you pay in health, not a death sentence. Omar,
+        /// 2026-07-28: "players can still go through the area... it's how players can prevent being
+        /// trapped."
+        ///
+        /// Applied by the victim's own machine because a ship's health belongs to whoever owns it —
+        /// the same rule the winner's self-destruct follows.
+        ///
+        /// PACING. <see cref="NetConfig.BrZoneKillSeconds"/> is the honest knob: seconds to die
+        /// from FULL health in the FIRST zone (default 60, i.e. a long crossing is survivable at
+        /// full health and nothing else). Every completed shrink stage then multiplies the rate by
+        /// <see cref="NetConfig.BrZoneDamageStageScale"/>, so the late zones close the escape hatch
+        /// the early ones deliberately leave open — by the final ring, being outside is fatal in
+        /// seconds. Damage scales with MAX health, so an upgraded hull buys proportionally more
+        /// time rather than trivialising the zone.</summary>
         public static void LocalTick(NetSession session)
         {
             if (!Active) return;
@@ -45,12 +60,28 @@ namespace PunkMultiverse.Modes
                 var dr = unit != null ? unit.GetComponent<DamagableResource>() : ship.GetComponent<DamagableResource>();
                 var tank = dr != null ? dr.Tank : null;
                 if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return;
-                float amount = Mathf.Max(1f, tank.Capacity * BurnPercentPerTick);
+
+                float killSeconds = Mathf.Max(1f, NetConfig.BrZoneKillSeconds.Value);
+                float fractionPerTick = BurnInterval / killSeconds;
+                float amount = Mathf.Max(0.5f, tank.Capacity * fractionPerTick * ZoneDamageMultiplier);
                 dr.Damage(amount); // untyped chokepoint — our own ship, applied locally
                 if (Time.frameCount % 120 == 0)
-                    Plugin.Log.LogInfo($"[BR] outside the ring ({dist:0} > {Ring.SafeRadius:0}) — burning");
+                    Plugin.Log.LogInfo($"[BR] in the zone ({dist:0} > {Ring.SafeRadius:0}) — " +
+                        $"stage {Ring.Stage}, x{ZoneDamageMultiplier:0.0} damage, " +
+                        $"~{killSeconds / ZoneDamageMultiplier:0}s from full");
             }
             catch { }
+        }
+
+        /// <summary>How much harder the zone bites now than it did at the opening ring. Stage 0 (the
+        /// grace period, before anything has closed) is always 1x.</summary>
+        public static float ZoneDamageMultiplier
+        {
+            get
+            {
+                float perStage = Mathf.Max(0f, NetConfig.BrZoneDamageStageScale.Value);
+                return 1f + Mathf.Max(0, Ring.Stage) * perStage;
+            }
         }
 
         // ---------------------------------------------------------------- spawn scatter
@@ -267,9 +298,18 @@ namespace PunkMultiverse.Modes
             }
             if (remaining > 0f) return;
 
-            _selfDestructFired = true;
             var ship = ShipSync.LocalShip;
-            if (ship == null || ship.IsDead) return;
+            // A winner who is ALREADY dead needs no scuttling — the ring or a last trade got there
+            // first, and the goal (nobody is left alone in a world the run is waiting on) is met.
+            // Setting the fired latch BEFORE this check used to consume it silently, so a winner
+            // that died during their own countdown produced no self-destruct AND no explanation.
+            if (ship == null || ship.IsDead)
+            {
+                _selfDestructFired = true;
+                Plugin.Log.LogInfo("[BR] winner self-destruct skipped — the winner was already dead");
+                return;
+            }
+            _selfDestructFired = true;
             try
             {
                 // Same untyped chokepoint the ring burn uses — our own ship, applied locally, and

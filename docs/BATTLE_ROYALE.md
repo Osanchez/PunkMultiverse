@@ -248,7 +248,42 @@ slow"* (2026-07-27): eight stages spread over 40 minutes, on a radius that was i
 45. Note these are **defaults** — a server that has already written its `config.cfg`
 keeps the old values until that file is edited.
 
-**Physical form — two layers:**
+### The zone is RENDERED, not built (2026-07-28, Omar's call)
+
+The ring used to be real painted terrain — the whole playable disc converted through
+`Level.SetCell`, ~2.9 million cells a match. It was fixed twice for performance and was
+still the most expensive thing in the mode, because every one of those cells is an event
+to eight subscribers plus a replicated terrain diff to every client. **Fortnite's storm
+and PUBG's blue zone are not level geometry either**: they are a rendered surface plus a
+distance check. This is now that.
+
+- **`UI/RingLavaVisual.cs`** draws it: a procedurally generated ANNULUS mesh — real
+  geometry with a transparent hole exactly on the safe radius, so the lava edge sits
+  precisely where the damage starts at any zoom (an alpha-cutout quad cannot keep the hole
+  aligned as the ring shrinks). The molten texture is generated at runtime from tiling
+  Perlin noise quantised into five hard bands — quantised because the game is 8-bit and a
+  smooth gradient would read as foreign — then scrolled and pulsed. It rides
+  `Sprites/Default`, because a mod cannot compile a shader (that is a build-time step).
+  The zone visibly **darkens and thickens as it gets deadlier**: the same damage
+  multiplier drives the colour.
+- **It has NO COLLIDER and deals NO contact damage.** Being caught in it hurts only
+  through the radius check in `BattleRoyale.LocalTick`. Omar, 2026-07-28: *"players can
+  still go through the area... it's how players can prevent being trapped."* A closing
+  ring must never wall someone in.
+- **Pacing**: `BrZoneKillSeconds` (60) is seconds to die from FULL health in the FIRST
+  zone — a long crossing is survivable at full health and nothing else — and
+  `BrZoneDamageStageScale` (0.75) multiplies the rate per completed shrink, so the 8th
+  ring kills in about an eighth of the time. Early zones are an escape route; late ones
+  are not. Damage scales with MAX health, so an upgraded hull buys proportionally more
+  time rather than trivialising the zone.
+- The map's own hazards are **no longer cleared** at go-live. They only needed clearing so
+  the painted ring could be the one lethal ground; wiping ~100k cells was itself a
+  terrain-diff burst at the worst possible moment.
+
+`tools/br-test.ps1 -Phases ring` asserts the ring paints **zero** cells, so the terrain
+version cannot come back by accident.
+
+**Historical — the terrain version, kept because the measurements are the argument:**
 
 1. **The lava wall** (visible, physical): a ~32-cell-thick annulus of a damaging
    `CellType` at the current boundary, painted by the host via `Level.SetCell(index,
@@ -492,6 +527,9 @@ separate path.
 | `BrRingStartMinutes` | `2` | first-shrink announcement time (was 5) |
 | `BrRingStages` | `8` | discrete shrink stages |
 | `BrRingCloseSeconds` | `45` | how long ONE closure takes; the zone holds still between them (was 120) |
+| `BrZoneKillSeconds` | `60` | seconds to die from FULL health in the FIRST zone. The zone is not solid — you can always fly through — so this is the price of a crossing |
+| `BrZoneDamageStageScale` | `0.75` | damage is multiplied by (1 + stage × this) per completed shrink, so late rings are lethal and early ones are an escape route |
+| `ShowZoneVisual` | `true` | draw the molten zone (UI). Off leaves the damage untouched and simply hides it |
 | `BrCarePackageMinutes` | `4` | care-package drop interval (0 = disabled; was 10, which fit one drop in a match) |
 | `PvPDamageScale` | `0.25` | ship→ship damage multiplier in BR |
 | `BrEnemyHpScale` | `0.5` | enemy HP multiplier in BR (0.5 ≈ double damage) |

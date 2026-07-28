@@ -72,6 +72,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<LobbyScreen>();
             _runtime.AddComponent<MainMenuInjection>();
             _runtime.AddComponent<PlayerTracker>();
+            _runtime.AddComponent<RingLavaVisual>();
             _runtime.AddComponent<RingWorldMapOverlay>();
             _runtime.AddComponent<Scoreboard>();
             _runtime.AddComponent<ShipStatusBars>();
