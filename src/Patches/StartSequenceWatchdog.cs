@@ -81,6 +81,16 @@ namespace PunkMultiverse.Patches
                 if (ship.Crosshair != null) ship.Crosshair.Visible = true;
                 ship.UnlockCamera(0.5f);
                 ship.SetHeadlightsEnabled(true);
+                // ProCamera2D is re-enabled on the cinematic's FINAL line, so a cinematic that
+                // never finished leaves the camera dead — the ship flies and the view does not
+                // follow. Restoring input without this produces a player who can move but cannot
+                // see where they are going, which is arguably worse than being frozen.
+                try
+                {
+                    var cam = Com.LuisPedroFonseca.ProCamera2D.ProCamera2D.Instance;
+                    if (cam != null && !cam.enabled) cam.enabled = true;
+                }
+                catch { }
                 Plugin.Log.LogInfo("[StartSequence] control restored (input, physics, camera, crosshair)");
                 UI.Toast.Show("RUN START RECOVERED - CONTROLS RESTORED", 6f);
             }

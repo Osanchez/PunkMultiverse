@@ -232,13 +232,23 @@ namespace PunkMultiverse.Modes
             try
             {
                 var level = ServiceLocator.Get<Level>();
-                if (level == null) return;
+                if (level == null)
+                {
+                    Plugin.Log.LogWarning("[BRDrop] no Level when opening the drop window — the ship " +
+                        "stays in the world while choosing and CAN be attacked");
+                    return;
+                }
                 // Straight "up" from the grid centre, comfortably past the disc edge.
                 var holding = new Vector2(level.Width * 0.5f, level.Height * 0.5f + level.Width * 0.5f + 90f);
                 Sync.ShipSync.TeleportLocalShipTo(holding);
 
                 var ship = Sync.ShipSync.LocalShip;
-                if (ship == null) return;
+                if (ship == null)
+                {
+                    Plugin.Log.LogWarning("[BRDrop] no local ship when opening the drop window — " +
+                        "nothing was parked; it will be placed wherever the run put it");
+                    return;
+                }
                 if (ship.shipInput != null) ship.shipInput.enabled = false;
                 if (ship.Rigidbody != null) ship.Rigidbody.bodyType = RigidbodyType2D.Static;
                 if (ship.Crosshair != null) ship.Crosshair.Visible = false;
@@ -326,6 +336,26 @@ namespace PunkMultiverse.Modes
                     ship.UnlockCamera(0f);
                     ship.SetHeadlightsEnabled(true);
                 }
+
+                // THE CAMERA MUST BE TOLD TO RUN AGAIN. ProCamera2D is disabled for the opening
+                // cinematic and re-enabled on that cinematic's FINAL line — which is unreachable
+                // here: the cinematic waits on the start station's GameObject, and parking the ship
+                // out in the void unloads exactly that station from streaming, so it spins forever.
+                // The result was a ship that had deployed correctly under a camera that never moved
+                // again (field-reported 2026-07-28). Deploy therefore owns the camera outright
+                // rather than inheriting whatever state a cinematic it no longer waits for left it
+                // in. Position first, then enable, so it does not sweep in from the void.
+                try
+                {
+                    var cam = Com.LuisPedroFonseca.ProCamera2D.ProCamera2D.Instance;
+                    if (cam != null && !cam.enabled)
+                    {
+                        cam.enabled = true;
+                        Plugin.Log.LogInfo("[BRDrop] re-enabled ProCamera2D — the start cinematic never got to");
+                    }
+                    if (cam != null) cam.MoveCameraInstantlyToPosition(pad + Vector2.up * 2f);
+                }
+                catch (System.Exception e) { Plugin.Log.LogWarning($"[BRDrop] camera handover failed: {e.Message}"); }
                 Plugin.Log.LogInfo($"[BRDrop] deployed to {option.Name} at ({pad.x:0},{pad.y:0}) ({why})");
                 UI.Toast.Show($"DROPPING INTO {option.Name.ToUpperInvariant()}", 4f);
             }

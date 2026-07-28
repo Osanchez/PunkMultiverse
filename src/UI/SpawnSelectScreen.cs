@@ -51,8 +51,11 @@ namespace PunkMultiverse.UI
             float panelW = Mathf.Min(760f, Screen.width - 80f);
             float rowH = 46f, gap = 8f;
             float panelH = 172f + count * (rowH + gap);
+            // Clear of the top edge: match announcements ("BATTLE ROYALE - 2 PLAYERS...") toast in
+            // at y=8 and were landing on the title.
+            const float topMargin = 96f;
             var panel = new Rect((Screen.width - panelW) * 0.5f,
-                Mathf.Max(30f, (Screen.height - panelH) * 0.5f), panelW, panelH);
+                Mathf.Max(topMargin, (Screen.height - panelH) * 0.5f), panelW, panelH);
 
             GUI.Label(new Rect(panel.x, panel.y, panel.width, 40f), "SELECT SPAWN", _title);
 
