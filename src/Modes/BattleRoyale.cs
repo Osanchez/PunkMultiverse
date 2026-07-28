@@ -61,6 +61,25 @@ namespace PunkMultiverse.Modes
         /// everything anyway.</summary>
         public static bool RingVisible => RingKnown && (Ring.Closing || Ring.Stage >= 1);
 
+        /// <summary>Whether the amber NEXT-ZONE circle should be drawn.
+        ///
+        /// Only in the run-up to a closure and during it — not for the whole hold. A circle that is
+        /// always on screen stops being a warning and becomes wallpaper; shown a minute out
+        /// (<see cref="NetConfig.BrNextRingWarningSeconds"/>) it means "move, now", which is the
+        /// only thing it is for. It goes away once the real zone has caught up to it, because at
+        /// that point it is describing where you already are (Omar, 2026-07-28).</summary>
+        public static bool NextRingVisible
+        {
+            get
+            {
+                if (!RingVisible) return false;
+                // Nothing to point at once the target and the boundary are the same circle.
+                if (Ring.TargetRadius >= Ring.SafeRadius - 0.5f) return false;
+                if (Ring.Closing) return true; // mid-closure: the target is where you must end up
+                return Ring.NextShrinkIn <= Mathf.Max(0f, NetConfig.BrNextRingWarningSeconds.Value);
+            }
+        }
+
         /// <summary>Whether the ring should still be DRAWN, including after the match has been
         /// decided. <see cref="Active"/> goes false the moment the win condition resolves, which
         /// used to make the rings and the zone vanish instantly — the map blanking out at the exact

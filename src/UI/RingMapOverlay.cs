@@ -77,8 +77,9 @@ namespace PunkMultiverse.UI
             if (ring.SafeRadius > 1f)
                 StampCircle(pixels, resolution, bottomLeft, ringCenter, ring.SafeRadius, CurrentRing, dash: 6);
 
-            // The ground you need to be standing on after this closure.
-            if (ring.TargetRadius > 1f && ring.TargetRadius < ring.SafeRadius - 0.5f)
+            // The ground you need to be standing on after this closure — same run-up-only rule the
+            // map screen uses, so the two surfaces never disagree about whether a warning is live.
+            if (ring.TargetRadius > 1f && Modes.BattleRoyale.NextRingVisible)
                 StampCircle(pixels, resolution, bottomLeft, ringCenter, ring.TargetRadius, IncomingRing, dash: 3);
 
             foreach (var kv in Modes.BattleRoyale.CarePackages)

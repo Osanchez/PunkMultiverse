@@ -69,6 +69,8 @@ namespace PunkMultiverse
         public static ConfigEntry<int> BrRingStartMinutes;
         public static ConfigEntry<int> BrRingStages;
         public static ConfigEntry<float> BrRingCloseSeconds;
+        public static ConfigEntry<float> BrRingHoldMinutes;
+        public static ConfigEntry<float> BrNextRingWarningSeconds;
         public static ConfigEntry<float> BrStationUnlockDelaySeconds;
         public static ConfigEntry<bool> BrSpawnAtStationDirectly;
         public static ConfigEntry<bool> BrChooseSpawn;
@@ -346,12 +348,30 @@ namespace PunkMultiverse
                     "GAME SETTINGS screen instead — this setting does not affect them.",
                     new AcceptableValueList<string>("Standard", "BattleRoyale")));
             BrMatchMinutes = cfg.Bind("Session", "BrMatchMinutes", 18,
-                "Battle Royale: total match length in minutes. The lava ring finishes closing " +
-                "exactly at this mark, so this IS the match timer.");
+                "DEPRECATED and no longer used for the ring schedule. Match length is now DERIVED " +
+                "from BrRingStartMinutes + BrRingStages x (BrRingHoldMinutes + BrRingCloseSeconds) " +
+                "and logged at match start — set the pacing you want and read the total, rather " +
+                "than setting a total and discovering the pacing.");
             BrRingStartMinutes = cfg.Bind("Session", "BrRingStartMinutes", 2,
                 "Battle Royale: minutes of grace before the ring starts closing (the first warning).");
-            BrRingStages = cfg.Bind("Session", "BrRingStages", 8,
-                "Battle Royale: how many announced stages the ring closes in.");
+            BrRingStages = cfg.Bind("Session", "BrRingStages", 6,
+                "Battle Royale: how many closures the ring makes. The ring HALVES rather than " +
+                "stepping evenly — from a start radius of 100 with 6 closures the ladder is " +
+                "100, 80, 40, 20, 10, 5, 0 — so the late game accelerates on its own. Equal radius " +
+                "steps feel slower and slower as the circle shrinks; halving keeps the pressure " +
+                "proportional to how much room is left.");
+            BrNextRingWarningSeconds = cfg.Bind("Session", "BrNextRingWarningSeconds", 60f,
+                "Battle Royale: how long before a closure the NEXT zone (the amber circle) appears " +
+                "on the map. It stays up through the closure and disappears once the real zone has " +
+                "caught up to it, so between closures the map shows only where you actually are — " +
+                "the amber circle means 'move', and it should not be permanent wallpaper that stops " +
+                "meaning anything.");
+            BrRingHoldMinutes = cfg.Bind("Session", "BrRingHoldMinutes", 5f,
+                "Battle Royale: minutes the ring sits still between closures. THIS is the pacing " +
+                "knob — total match length is derived from it (grace + closures x (hold + close)) " +
+                "and logged at match start, rather than being configured and leaving the hold to " +
+                "fall out of a division nobody can predict. BrMatchMinutes is no longer used for " +
+                "the schedule.");
             BrRingCloseSeconds = cfg.Bind("Session", "BrRingCloseSeconds", 45f,
                 "Battle Royale: how long ONE ring closure takes. The zone holds still between " +
                 "closures and then draws in over this many seconds, evenly, so the pace is " +

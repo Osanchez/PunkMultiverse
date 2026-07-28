@@ -474,6 +474,7 @@ namespace PunkMultiverse.Modes
         public static void ApplyLocalMatchRules(NetSession session)
         {
             RevealWholeMap();
+            ShowEveryStationOnMap();
             ClearSpawnAreas(session);
 
             try
@@ -500,6 +501,42 @@ namespace PunkMultiverse.Modes
                 Plugin.Log.LogInfo("[BR] starting currency zeroed");
             }
             catch { /* vanilla default is already zero */ }
+        }
+
+        /// <summary>Put EVERY shop on the map, not just the ones nearby.
+        ///
+        /// Revealing the map (DiscoverWholeMap) reveals the TERRAIN. Icons are a separate system:
+        /// vanilla creates one when an entity's GameObject spawns (EntityMapItem.Bind), so a station
+        /// on the far side of the world — never streamed in — simply has no icon to show. In a
+        /// normal run that is correct, because you have not found it yet. In Battle Royale, where
+        /// the whole map is readable and every shop is unlocked from the start, it reads as a broken
+        /// map: field-reported 2026-07-28, "the map is not displaying all of the shop locations".
+        ///
+        /// MapIconManager.SetIconToOverdrawn is the game's own answer — it creates the icon if
+        /// missing AND marks it always-visible, which is exactly what the instrument/scanner does
+        /// when it permanently reveals a point of interest. Local, and derived from world data every
+        /// machine already has, so nothing is sent.</summary>
+        private static void ShowEveryStationOnMap()
+        {
+            try
+            {
+                var em = ServiceLocator.Get<EntityManager>();
+                var icons = ServiceLocator.Get<MapIconManager>();
+                if (em == null || icons == null) return;
+                int shown = 0;
+                foreach (var station in em.GetEntitiesWithComponent<Station.Data>().ToList())
+                {
+                    if (station?.entity == null) continue;
+                    icons.SetIconToOverdrawn(station.entity);
+                    shown++;
+                }
+                Plugin.Log.LogInfo($"[BR] {shown} shops pinned to the map (all of them, always visible)");
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[BR] could not pin shops to the map: {e.Message} — " +
+                    "only shops you have streamed in will show");
+            }
         }
 
         /// <summary>No hidden ground in Battle Royale: the whole map is readable from the first

@@ -26,8 +26,10 @@ namespace PunkMultiverse.Modes
             Reset();
             _active = true;
             _matchStart = Time.unscaledTime;
+            // _matchSeconds is DERIVED in ComputeSchedule from the hold and the closure count; it is
+            // no longer an input. Seeded here only so the clamp below has something to work with.
             _matchSeconds = Mathf.Max(60f, NetConfig.BrMatchMinutes.Value * 60f);
-            _ringStartSeconds = Mathf.Clamp(NetConfig.BrRingStartMinutes.Value * 60f, 0f, _matchSeconds - 30f);
+            _ringStartSeconds = Mathf.Max(0f, NetConfig.BrRingStartMinutes.Value * 60f);
             _stages = Mathf.Max(1, NetConfig.BrRingStages.Value);
 
             MatchPlayers.Clear();
@@ -51,13 +53,18 @@ namespace PunkMultiverse.Modes
                 ? NetConfig.BrCarePackageMinutes.Value * 60f
                 : float.MaxValue;
 
-            // The closure RATE is the number that decides whether the ring reads as pressure or as
-            // scenery, so state it outright instead of leaving it to be derived from four configs.
-            float stepPerStage = _startRadius / Mathf.Max(1, _stages);
-            Plugin.Log.LogInfo($"[BR] MATCH START — {MatchPlayers.Count} players, {_matchSeconds / 60f:0} min, " +
-                $"ring center ({_center.x:0},{_center.y:0}) r={_startRadius:0}, {_stages} stages, " +
-                $"each closing {stepPerStage:0}u over {_closeSeconds:0}s = {stepPerStage / Mathf.Max(1f, _closeSeconds):0.0} u/s " +
-                $"(hold {Mathf.Max(0f, _stageSpan - _closeSeconds):0}s between)");
+            // Print the actual radius ladder rather than a single averaged rate: the ring halves, so
+            // "u/s" is different at every stage and a single number would describe none of them.
+            var ladder = new System.Text.StringBuilder();
+            for (int k = 0; k <= _stages; k++)
+            {
+                if (k > 0) ladder.Append(" -> ");
+                ladder.Append(RadiusAfterStage(k).ToString("0"));
+            }
+            Plugin.Log.LogInfo($"[BR] MATCH START — {MatchPlayers.Count} players, " +
+                $"ring center ({_center.x:0},{_center.y:0}) r={_startRadius:0}, {_stages} closures, " +
+                $"hold {Mathf.Max(0f, _stageSpan - _closeSeconds) / 60f:0.#}min + close {_closeSeconds:0}s each " +
+                $"= {_matchSeconds / 60f:0.#} min total | radii {ladder}");
             Announce(session, $"BATTLE ROYALE — {MatchPlayers.Count} PLAYERS. LAST ONE ALIVE WINS.", 8f);
             BroadcastRing(session);
         }
@@ -263,19 +270,43 @@ namespace PunkMultiverse.Modes
         private static float _stageSpan;    // hold + close for one stage
         private static float _closeSeconds; // how long a single closure takes
 
+        /// <summary>The schedule is built from the HOLD, not from a total match length.
+        ///
+        /// "I think there should be 5 minutes between each ring closure" (Omar, 2026-07-28) is a
+        /// statement about pacing, and pacing is what a player feels — total match length is the
+        /// consequence, not the input. So the hold and the closure are configured and the match
+        /// length is derived and logged, rather than the match length being configured and the hold
+        /// falling out of a division nobody can predict.</summary>
         private static void ComputeSchedule()
         {
-            float span = Mathf.Max(1f, _matchSeconds - _ringStartSeconds);
-            _stageSpan = span / Mathf.Max(1, _stages);
-            // Honour the configured closing time, but never let it swallow the whole stage — a
-            // compressed test match has short stages and still needs a visible hold phase.
-            _closeSeconds = Mathf.Min(Mathf.Max(5f, NetConfig.BrRingCloseSeconds.Value), _stageSpan * 0.6f);
+            _closeSeconds = Mathf.Max(5f, NetConfig.BrRingCloseSeconds.Value);
+            float hold = Mathf.Max(0f, NetConfig.BrRingHoldMinutes.Value * 60f);
+            _stageSpan = hold + _closeSeconds;
+            _matchSeconds = _ringStartSeconds + _stageSpan * Mathf.Max(1, _stages);
         }
 
-        /// <summary>Radius of the ring that a completed stage leaves behind. Even steps: stage k of
-        /// N lands on startRadius * (1 - k/N), so the last one lands exactly on zero.</summary>
-        private static float RadiusAfterStage(int stage) =>
-            Mathf.Max(0f, _startRadius * (1f - Mathf.Clamp01(stage / (float)Mathf.Max(1, _stages))));
+        // The ring HALVES. Omar, 2026-07-28, by worked example: from a start radius of 100 and six
+        // closures — 100, 80, 40, 20, 10, 5, 0.
+        //
+        // The first closure is a gentler trim (0.8x) because at full size the ring encloses the
+        // whole world and halving it immediately would throw away most of the map before anyone has
+        // flown anywhere. Every closure after that halves, which is what makes the late game
+        // accelerate: equal RADIUS steps feel slower and slower as the circle shrinks, because the
+        // same distance is a smaller and smaller share of where you can still be. Halving keeps the
+        // pressure proportional. The final stage lands exactly on zero rather than on a fraction.
+        private const float FirstCloseFactor = 0.8f;
+        private const float HalveFactor = 0.5f;
+
+        /// <summary>Radius the ring holds at once <paramref name="stage"/> closures are done.</summary>
+        private static float RadiusAfterStage(int stage)
+        {
+            int stages = Mathf.Max(1, _stages);
+            if (stage <= 0) return _startRadius;
+            if (stage >= stages) return 0f;               // the last one always closes fully
+            float r = _startRadius * FirstCloseFactor;    // stage 1
+            for (int i = 2; i <= stage; i++) r *= HalveFactor;
+            return Mathf.Max(0f, r);
+        }
 
         /// <summary>Where the ring is right now, and where it is heading.</summary>
         private static void RingAt(float elapsed, out float radius, out int stage,

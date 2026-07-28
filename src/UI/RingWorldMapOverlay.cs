@@ -77,8 +77,9 @@ namespace PunkMultiverse.UI
 
             // The CURRENT boundary: where the lava is now.
             Place(_current, _currentImage, ringCenter, ring.SafeRadius, zoom, CurrentRing, dashes: 64);
-            // Where you have to be standing after this closure — the whole reason to open the map.
-            bool hasTarget = ring.TargetRadius > 1f && ring.TargetRadius < ring.SafeRadius - 0.5f;
+            // Where you have to be standing after this closure — shown only in the run-up to it and
+            // during it (BattleRoyale.NextRingVisible), so the amber circle keeps meaning "move".
+            bool hasTarget = ring.TargetRadius > 1f && Modes.BattleRoyale.NextRingVisible;
             _target.gameObject.SetActive(hasTarget);
             if (hasTarget)
                 Place(_target, _targetImage, ringCenter, ring.TargetRadius, zoom, IncomingRing, dashes: 32);
