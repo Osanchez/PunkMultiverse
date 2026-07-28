@@ -1315,14 +1315,10 @@ namespace PunkMultiverse.Core
                 return;
             }
 
-            // Battle Royale: nobody is placed until everybody has said where they are dropping.
-            // This is the only moment the world exists and no ship does, which is what lets players
-            // spawn straight onto their chosen station instead of being teleported there later.
-            if (!Modes.BattleRoyaleSpawnSelect.HostReadyToGoLive(this, present))
-            {
-                CheckGoLiveDiag("waiting for battle royale drop choices");
-                return;
-            }
+            // Battle Royale drop selection does NOT gate this. Holding go-live until everyone had
+            // chosen meant one idle player could keep the whole lobby waiting (Omar, 2026-07-28:
+            // "don't let other players hold the server"). The match goes live on schedule and each
+            // player deploys the instant they pick — see Modes/BattleRoyaleSpawnSelect.cs.
 
             // Everyone verified: hand out entity netIds, then go live.
             // Chunk size keeps each message under the MINIMAL UDP MTU (~500B usable): LiteNetLib
@@ -1392,6 +1388,9 @@ namespace PunkMultiverse.Core
             {
                 Modes.BattleRoyale.BeginMatch(this);   // host only; no-op elsewhere
                 Modes.BattleRoyale.ApplyLocalMatchRules(this);
+                // The drop window is per-machine and does not hold anything: the match is live
+                // underneath it, and this player deploys when they pick.
+                Modes.BattleRoyaleSpawnSelect.OpenWindow();
                 Modes.BattleRoyale.ArmScatter();
             } // recover if the opening cinematic never gives control back
             // Same value on every machine (seed + host identity are already shared): the run id
@@ -2017,6 +2016,7 @@ namespace PunkMultiverse.Core
                     Patches.StartSequenceWatchdog.Tick();
                     if (IsBattleRoyale)
                     {
+                        Modes.BattleRoyaleSpawnSelect.Tick(); // deploys on timeout; no-op once dropped
                         Modes.BattleRoyale.TickScatter(this);
                         Modes.BattleRoyale.LocalTick(this);
                         if (IsHost)
@@ -2841,9 +2841,6 @@ namespace PunkMultiverse.Core
                 }
                 case MsgType.SpawnTally when !IsHost:
                     Modes.BattleRoyaleSpawnSelect.ApplyTally(SpawnTallyMsg.Read(_reader));
-                    break;
-                case MsgType.SpawnAssign when !IsHost:
-                    Modes.BattleRoyaleSpawnSelect.ApplyAssignment(SpawnAssignMsg.Read(_reader));
                     break;
                 case MsgType.AuthRelease when IsHost:
                 {

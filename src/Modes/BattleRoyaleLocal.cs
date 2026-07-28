@@ -249,6 +249,9 @@ namespace PunkMultiverse.Modes
         public static void TickScatter(NetSession session)
         {
             if (_scattered || !Active) return;
+            // The drop screen owns placement when it is on — the player puts themselves on a pad by
+            // choosing. Scattering underneath that would move a ship that has already deployed.
+            if (NetConfig.BrChooseSpawn.Value) { _scattered = true; return; }
             // Already standing on our own station — Patches/BattleRoyaleSpawn.cs put us there
             // before the cinematic even started, so there is nothing to teleport.
             if (Patches.BattleRoyaleSpawn.PlacedAtStation) { _scattered = true; return; }

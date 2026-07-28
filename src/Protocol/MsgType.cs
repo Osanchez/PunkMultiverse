@@ -134,9 +134,9 @@
         SpawnTally = 98,     // host -> all: how many players have picked each biome so far. Drives
                              // the heat colouring; deliberately a COUNT the UI turns into
                              // green/amber/red rather than a number shown to players
-        SpawnAssign = 99,    // host -> all: the final slot -> station assignment. Sent once the
-                             // choices close, immediately before GO LIVE, so every machine places
-                             // its ship on the chosen pad with no teleport
+        // (99 was SpawnAssign — retired. The host no longer assigns stations: players may share a
+        //  pad, so there is nothing to agree on, and a player deploys the instant they pick rather
+        //  than waiting for the host to answer.)
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

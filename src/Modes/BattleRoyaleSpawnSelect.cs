@@ -8,15 +8,19 @@ using UnityEngine;
 namespace PunkMultiverse.Modes
 {
     /// <summary>
-    /// Battle Royale drop selection: players choose which BIOME to drop into before anyone is
-    /// placed, and land on a station there.
+    /// Battle Royale drop selection: pick a BIOME and deploy onto a station there.
     ///
-    /// WHERE IT LIVES, and why it has to. The choice must resolve BEFORE ships are placed, or the
-    /// mode is back to spawning everyone on one pad and teleporting them apart — the thing
-    /// Patches/BattleRoyaleSpawn.cs exists to remove. The only moment where the world exists but no
-    /// ship does is the GO-LIVE BARRIER: clients have generated and verified the world, the host has
-    /// every checksum, and nothing has been spawned yet. So selection is a gate inside that barrier
-    /// — the host holds GO LIVE until every player has picked or the clock runs out.
+    /// NOTHING WAITS ON ANYONE. The window is entirely local — the match goes live on schedule and
+    /// each player drops the instant they choose (Omar, 2026-07-28: "spawn as soon as they select,
+    /// don't let other players hold the server"). An earlier version gated GO LIVE on everyone
+    /// having chosen, which let one idle player keep the whole lobby staring at a loading screen;
+    /// that is the opposite of what a drop screen is for. The 30s clock
+    /// (<c>BrChooseSpawnSeconds</c>) starts when the screen appears and ends in a random region,
+    /// because running out of time is a decision too, not a penalty and not a wait.
+    ///
+    /// The consequence is that a deploy IS a teleport — but a chosen one, which is the genre's own
+    /// shape: you are not in the world until you drop. That is a different thing from the
+    /// involuntary "spawn on a shared pad and get yanked away" this replaced.
     ///
     /// REGIONS ARE MAIN BIOMES. <c>Level.GetMainBiom</c>, not <c>GetBiom</c>: the latter includes
     /// sub-biomes and border noise, which would shatter the map into slivers nobody could point at.
@@ -24,12 +28,13 @@ namespace PunkMultiverse.Modes
     /// land cannot appear — Omar's "be careful not to display an option with no station" is
     /// structural here rather than a check that can be forgotten.
     ///
-    /// SHARING IS ALLOWED (Omar, 2026-07-28: "let them choose and if they fight so be it"). That
-    /// removes the only reason the assignment had to be derived identically everywhere, so the host
-    /// simply decides and broadcasts it.
+    /// SHARING IS ALLOWED ("let them choose and if they fight so be it"), which is what lets a
+    /// deploy be instant: with no distinctness to enforce there is nothing for machines to agree
+    /// on, so the station is picked locally and the host is told only so it can keep the heat map
+    /// honest.
     ///
-    /// A COORDINATOR NEVER PICKS. A dedicated server or sidecar has no ship; it arbitrates, holds
-    /// the clock, and is skipped entirely. Its clients still choose normally.
+    /// A COORDINATOR NEVER PICKS. A dedicated server or sidecar has no ship; it tallies for the
+    /// heat map and is otherwise skipped. Its clients choose normally.
     /// </summary>
     internal static class BattleRoyaleSpawnSelect
     {
@@ -44,7 +49,6 @@ namespace PunkMultiverse.Modes
 
         private static readonly List<BiomeOption> Options = new List<BiomeOption>();
         private static readonly Dictionary<byte, byte> Choices = new Dictionary<byte, byte>(); // slot -> biomeId
-        private static readonly Dictionary<byte, int> Assignment = new Dictionary<byte, int>(); // slot -> station netId
 
         private static float _deadline = -1f;
         private static bool _closed;
@@ -66,7 +70,7 @@ namespace PunkMultiverse.Modes
                 var s = NetSession.Instance;
                 return s != null && NetSession.Active
                        && s.LobbyMode == GameMode.BattleRoyale
-                       && s.State == SessionState.Loading
+                       && s.State == SessionState.InGame
                        && !NetConfig.IsCoordinator
                        && NetConfig.BrChooseSpawn.Value
                        && Options.Count > 0
@@ -78,7 +82,6 @@ namespace PunkMultiverse.Modes
         {
             Options.Clear();
             Choices.Clear();
-            Assignment.Clear();
             _deadline = -1f;
             _closed = false;
             LocalHasChosen = false;
@@ -188,19 +191,111 @@ namespace PunkMultiverse.Modes
             }
         }
 
-        // ---------------------------------------------------------------- client side
+        // ---------------------------------------------------------------- client side (deploying)
 
-        /// <summary>Local player picked a region. Sent to the host; the host owns the outcome.</summary>
+        /// <summary>Open the drop window on THIS machine. Called at go-live. The match is already
+        /// running — nobody is waiting on this player — so the window is purely local: a screen, a
+        /// clock, and a ship that has not deployed yet.</summary>
+        internal static void OpenWindow()
+        {
+            _closed = false;
+            LocalHasChosen = false;
+            Deployed = false;
+            if (NetConfig.IsCoordinator || !NetConfig.BrChooseSpawn.Value) { _closed = true; return; }
+            if (Options.Count == 0) BuildOptions();
+            if (Options.Count == 0)
+            {
+                _closed = true;
+                Plugin.Log.LogWarning("[BRDrop] no station-bearing biomes — dropping by the scatter instead");
+                return;
+            }
+            _deadline = Time.unscaledTime + Mathf.Max(5f, NetConfig.BrChooseSpawnSeconds.Value);
+            Plugin.Log.LogInfo($"[BRDrop] drop window open — {NetConfig.BrChooseSpawnSeconds.Value:0}s, " +
+                $"{Options.Count} regions");
+        }
+
+        /// <summary>True once this player has actually dropped into the world.</summary>
+        internal static bool Deployed { get; private set; }
+
+        /// <summary>Local player picked a region: deploy IMMEDIATELY. Omar, 2026-07-28: "spawn as
+        /// soon as they select — don't let other players hold the server." The host is told only so
+        /// it can keep the heat map honest; nothing waits on its reply.</summary>
         internal static void Choose(byte biomeId)
         {
-            var session = NetSession.Instance;
-            if (session == null || _closed) return;
+            if (_closed || Deployed) return;
             LocalHasChosen = true;
             LocalChoice = biomeId;
-            if (session.IsHost) { RecordChoice(session, (byte)session.LocalSlot, biomeId); return; }
-            var w = new NetWriter(8);
-            new SpawnChoiceMsg { BiomeId = biomeId }.Write(w);
-            session.SendToAll(NetChannel.Control, w.ToSegment(), reliable: true);
+
+            var session = NetSession.Instance;
+            if (session != null)
+            {
+                if (session.IsHost) { Choices[(byte)session.LocalSlot] = biomeId; BroadcastTally(session); }
+                else
+                {
+                    var w = new NetWriter(8);
+                    new SpawnChoiceMsg { BiomeId = biomeId }.Write(w);
+                    session.SendToAll(NetChannel.Control, w.ToSegment(), reliable: true);
+                }
+            }
+            Deploy(biomeId, "chosen");
+        }
+
+        /// <summary>Ticked while the window is open: nobody is held past the clock. Running out of
+        /// time is a decision too — a random region, not a penalty and not a wait.</summary>
+        internal static void Tick()
+        {
+            if (_closed || Deployed || _deadline < 0f) return;
+            if (Time.unscaledTime < _deadline) return;
+            byte biomeId = Options[UnityEngine.Random.Range(0, Options.Count)].BiomeId;
+            LocalHasChosen = true;
+            LocalChoice = biomeId;
+            var session = NetSession.Instance;
+            if (session != null && !session.IsHost)
+            {
+                var w = new NetWriter(8);
+                new SpawnChoiceMsg { BiomeId = biomeId }.Write(w);
+                session.SendToAll(NetChannel.Control, w.ToSegment(), reliable: true);
+            }
+            else if (session != null) { Choices[(byte)session.LocalSlot] = biomeId; BroadcastTally(session); }
+            Deploy(biomeId, "timed out");
+        }
+
+        /// <summary>Put the ship on a station in the chosen region and hand control back.
+        ///
+        /// The station is picked LOCALLY. Players are allowed to share a pad, so there is nothing
+        /// left for machines to agree on — which is what lets a deploy be instant instead of a round
+        /// trip to the host and back.
+        ///
+        /// Control is forced on here rather than left to the opening cinematic: a player who
+        /// deploys while it is still running would otherwise sit frozen on their new pad until it
+        /// finishes. If the cinematic does complete later it sets the same values again.</summary>
+        private static void Deploy(byte biomeId, string why)
+        {
+            _closed = true;
+            Deployed = true;
+            try
+            {
+                var option = Options.FirstOrDefault(o => o.BiomeId == biomeId) ?? Options[0];
+                if (option.StationNetIds.Count == 0) return;
+                int netId = option.StationNetIds[UnityEngine.Random.Range(0, option.StationNetIds.Count)];
+                Sync.ShipSync.TeleportLocalShip(netId);
+
+                var ship = Sync.ShipSync.LocalShip;
+                if (ship != null)
+                {
+                    if (ship.shipInput != null) ship.shipInput.enabled = true;
+                    if (ship.Rigidbody != null) ship.Rigidbody.bodyType = RigidbodyType2D.Dynamic;
+                    if (ship.Crosshair != null) ship.Crosshair.Visible = true;
+                    ship.UnlockCamera(0f);
+                    ship.SetHeadlightsEnabled(true);
+                }
+                Plugin.Log.LogInfo($"[BRDrop] deployed to {option.Name} station #{netId} ({why})");
+                UI.Toast.Show($"DROPPING INTO {option.Name.ToUpperInvariant()}", 4f);
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[BRDrop] deploy failed: {e.Message} — the scatter will place this ship");
+            }
         }
 
         public static void ApplyTally(SpawnTallyMsg msg)
@@ -213,33 +308,19 @@ namespace PunkMultiverse.Modes
                 if (option != null) option.Picks = msg.Counts[i];
             }
         }
-
-        public static void ApplyAssignment(SpawnAssignMsg msg)
-        {
-            Assignment.Clear();
-            if (msg.Slots == null) return;
-            for (int i = 0; i < msg.Slots.Length; i++) Assignment[msg.Slots[i]] = msg.StationNetIds[i];
-            _closed = true;
-            Plugin.Log.LogInfo($"[BRDrop] assignment received for {Assignment.Count} player(s)");
-        }
-
-        /// <summary>The station this slot drops on, or 0 if selection never ran (the caller then
-        /// falls back to the deterministic scatter).</summary>
-        internal static int StationFor(byte slot) => Assignment.TryGetValue(slot, out int id) ? id : 0;
-
-        // ---------------------------------------------------------------- host side
+        // ---------------------------------------------------------------- host side (tally only)
 
         public static void ApplyChoice(SpawnChoiceMsg msg, byte fromSlot, NetSession session)
-            => RecordChoice(session, fromSlot, msg.BiomeId);
-
-        private static void RecordChoice(NetSession session, byte slot, byte biomeId)
         {
-            if (session == null || !session.IsHost || _closed) return;
-            Choices[slot] = biomeId;
+            if (session == null || !session.IsHost) return;
+            Choices[fromSlot] = msg.BiomeId;
             BroadcastTally(session);
-            session.PokeGoLive(); // the last chooser should not wait on the timer
         }
 
+        /// <summary>The host's ONLY job here is the heat map. It does not assign stations and does
+        /// not gate anything: a player picks, and that player deploys. Holding the match until
+        /// everyone had chosen let one idle player keep the lobby waiting, which is the opposite of
+        /// what a drop screen is for.</summary>
         private static void BroadcastTally(NetSession session)
         {
             var counts = new Dictionary<byte, byte>();
@@ -257,74 +338,6 @@ namespace PunkMultiverse.Modes
             var w = new NetWriter(64);
             msg.Write(w);
             session.SendToAll(NetChannel.Control, w.ToSegment(), reliable: true);
-        }
-
-        /// <summary>Host: may GO LIVE proceed? Opens the window on first call, then holds until
-        /// every ship-flying player has chosen or the clock expires. Anything unexpected — no
-        /// options, the feature off — returns true immediately rather than wedging the barrier.</summary>
-        internal static bool HostReadyToGoLive(NetSession session, IEnumerable<NetPlayer> present)
-        {
-            if (session == null || !session.IsHost) return true;
-            if (session.LobbyMode != GameMode.BattleRoyale) return true;
-            if (!NetConfig.BrChooseSpawn.Value) return true;
-            if (_closed) return true;
-
-            if (Options.Count == 0) BuildOptions();
-            if (Options.Count == 0)
-            {
-                _closed = true; // nothing to choose between; the scatter handles placement
-                Plugin.Log.LogWarning("[BRDrop] no station-bearing biomes found — skipping drop selection");
-                return true;
-            }
-
-            if (_deadline < 0f)
-            {
-                _deadline = Time.unscaledTime + Mathf.Max(5f, NetConfig.BrChooseSpawnSeconds.Value);
-                Plugin.Log.LogInfo($"[BRDrop] drop selection open — {NetConfig.BrChooseSpawnSeconds.Value:0}s");
-                BroadcastTally(session); // clients get an empty heat map to start from
-            }
-
-            // Only players who actually fly need to choose; a coordinator never sees the screen.
-            var choosers = present.Where(p => p != null && p.Connected && !p.IsCoordinator).ToList();
-            bool everyone = choosers.All(p => Choices.ContainsKey(p.Slot));
-            if (!everyone && Time.unscaledTime < _deadline) return false;
-
-            CloseAndAssign(session, choosers, everyone);
-            return true;
-        }
-
-        /// <summary>Settle it: everyone gets a station in the biome they picked, and anyone who did
-        /// not pick gets a random region — the timer is a decision, not a punishment.</summary>
-        private static void CloseAndAssign(NetSession session, List<NetPlayer> choosers, bool everyoneChose)
-        {
-            _closed = true;
-            Assignment.Clear();
-            var rnd = new System.Random(session.CurrentRunSeed ^ 0x44524F50);
-
-            foreach (var p in choosers)
-            {
-                BiomeOption option = null;
-                if (Choices.TryGetValue(p.Slot, out byte biomeId))
-                    option = Options.FirstOrDefault(o => o.BiomeId == biomeId);
-                if (option == null || option.StationNetIds.Count == 0)
-                    option = Options[rnd.Next(Options.Count)];
-                // Sharing a pad is allowed, so this is a plain random pick with no de-duplication.
-                int netId = option.StationNetIds[rnd.Next(option.StationNetIds.Count)];
-                Assignment[p.Slot] = netId;
-                Plugin.Log.LogInfo($"[BRDrop] P{p.Slot + 1} -> {option.Name} station #{netId}" +
-                    (Choices.ContainsKey(p.Slot) ? "" : " (no choice made — random)"));
-            }
-
-            var msg = new SpawnAssignMsg
-            {
-                Slots = Assignment.Keys.ToArray(),
-                StationNetIds = Assignment.Values.ToArray(),
-            };
-            var w = new NetWriter(128);
-            msg.Write(w);
-            session.SendToAll(NetChannel.Control, w.ToSegment(), reliable: true);
-            Plugin.Log.LogInfo($"[BRDrop] selection closed ({(everyoneChose ? "everyone chose" : "timer expired")}) — " +
-                $"{Assignment.Count} assignment(s) sent");
         }
     }
 }

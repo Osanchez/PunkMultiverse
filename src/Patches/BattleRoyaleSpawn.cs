@@ -70,19 +70,18 @@ namespace PunkMultiverse.Patches
 
         private static void Place(NetSession session, ShipManager shipManager)
         {
-            // The player's own choice wins when the drop screen ran; otherwise fall back to the
-            // deterministic farthest-point scatter, which is still the right answer for a match
-            // with selection disabled or a world with no station-bearing biomes.
-            int stationNetId = Modes.BattleRoyaleSpawnSelect.StationFor((byte)session.LocalSlot);
-            if (stationNetId == 0)
+            // With the drop screen on, the player has not chosen yet and this must NOT pre-place
+            // them: they deploy themselves the moment they pick a region
+            // (Modes/BattleRoyaleSpawnSelect.Deploy). Placing here would put the ship on a station
+            // it is about to leave, and the redirected cinematic would open the wrong platform.
+            if (NetConfig.BrChooseSpawn.Value) return;
+
+            var assignment = Modes.BattleRoyale.AssignSpawnStations(session);
+            if (!assignment.TryGetValue((byte)session.LocalSlot, out int stationNetId))
             {
-                var assignment = Modes.BattleRoyale.AssignSpawnStations(session);
-                if (!assignment.TryGetValue((byte)session.LocalSlot, out stationNetId))
-                {
-                    Plugin.Log.LogWarning($"[BR] no spawn station assigned for slot {session.LocalSlot} " +
-                        "— using the scatter teleport");
-                    return;
-                }
+                Plugin.Log.LogWarning($"[BR] no spawn station assigned for slot {session.LocalSlot} " +
+                    "— using the scatter teleport");
+                return;
             }
             if (!NetIds.TryGetInstanceId(stationNetId, out int stationInstance)) return;
             var em = ServiceLocator.Get<EntityManager>();
