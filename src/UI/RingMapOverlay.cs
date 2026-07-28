@@ -66,7 +66,9 @@ namespace PunkMultiverse.UI
 
             HideOtherPlayers(map, shipManager, pixels, resolution, bottomLeft, center);
 
-            if (!Modes.BattleRoyale.RingKnown) { texture.Apply(); return; }
+            // Hiding other players still happens above and from the very first refresh; only the
+            // ring GEOMETRY waits for the first closure (see BattleRoyale.RingVisible).
+            if (!Modes.BattleRoyale.RingVisible) { texture.Apply(); return; }
             var ring = Modes.BattleRoyale.Ring;
             var ringCenter = new Vector2(ring.CenterX, ring.CenterY);
 

@@ -39,7 +39,10 @@ namespace PunkMultiverse.Modes
 
             ComputeSchedule();
             PickRingCenter();
-            OpenAllStations();
+            // Stations are opened LATER — see TickStationUnlock. Opening them here breaks the
+            // vanilla start cinematic on any machine that has not picked its start station yet.
+            _openStationsAt = Mathf.Max(0f, NetConfig.BrStationUnlockDelaySeconds.Value);
+            _stationsOpened = false;
             // The map's own hazards are left alone. They only ever needed clearing so the PAINTED
             // ring could be the one lethal ground; the ring is now a rendered zone, visually
             // unmistakable, and wiping ~100k cells at go-live was itself a terrain-diff burst
@@ -59,10 +62,38 @@ namespace PunkMultiverse.Modes
             BroadcastRing(session);
         }
 
-        /// <summary>Every station opens at match start: BR is about fighting over a map you can
-        /// already shop on, not about unlock progression. Uses the game's own unlock primitive
-        /// (installing an upgrade IS the unlock), which the existing progression sync captures and
-        /// replicates to every client for free.</summary>
+        private static float _openStationsAt;
+        private static bool _stationsOpened;
+
+        /// <summary>Open every station, but NOT at go-live.
+        ///
+        /// The vanilla opening cinematic finds the station to pan to with
+        /// <c>FirstOrDefault(s =&gt; s.installedUpgrades.Count &gt; 0)</c> — "the one station that
+        /// starts unlocked". Unlocking all 49 at go-live makes that lookup return an ARBITRARY
+        /// station, and both halves of the cinematic then go wrong (field-reported 2026-07-28):
+        ///
+        ///   - it calls <c>MoveCameraInstantlyToPosition</c> on that station, so the client snaps
+        ///     to a random corner of the map — sometimes another player's spawn — and then races
+        ///     back when the scatter teleport lands. That is the "pans to another player's spawn,
+        ///     then pans fast to its real spawn".
+        ///   - it then spins on <c>while (startStation == null) await NextFrame()</c> waiting for
+        ///     that station's GameObject, which on a client is very likely NOT streamed in. The
+        ///     sequence never reaches its final line, so <c>shipInput.enabled</c> is never restored:
+        ///     dead controls, until StartSequenceWatchdog rescues it 25 seconds later.
+        ///
+        /// Both disappear if the unlock simply waits until every machine's cinematic has already
+        /// chosen its station. The delay costs nothing — BR players are still flying to their
+        /// scattered spawns for the first few seconds — and the watchdog remains as the backstop.</summary>
+        private static void TickStationUnlock(NetSession session, float elapsed)
+        {
+            if (_stationsOpened || elapsed < _openStationsAt) return;
+            _stationsOpened = true;
+            OpenAllStations();
+        }
+
+        /// <summary>BR is about fighting over a map you can already shop on, not about unlock
+        /// progression. Uses the game's own unlock primitive (installing an upgrade IS the unlock),
+        /// which the existing progression sync captures and replicates to every client for free.</summary>
         private static void OpenAllStations()
         {
             int opened = 0;
@@ -328,6 +359,8 @@ namespace PunkMultiverse.Modes
                 else Announce(session, $"THE LAVA RING IS CLOSING ({stage}/{_stages}) — CHECK YOUR MAP", 7f);
                 BroadcastRing(session);
             }
+
+            TickStationUnlock(session, elapsed);
 
             // NOTHING IS PAINTED. The zone is rendered (UI/RingLavaVisual.cs) and enforced by a
             // radius check each client applies to its own ship — the model every large battle

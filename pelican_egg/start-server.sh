@@ -17,6 +17,33 @@ set -uo pipefail
 
 # --------------------------------------------------------------------- configuration (env)
 GAME_DIR="${GAME_DIR:-/home/container}"
+# ---------------------------------------------------------------------------------------------
+# WHICH KNOBS DID THE OPERATOR ACTUALLY SET?
+#
+# Captured HERE, before the "${VAR:-default}" lines below, because those assign the variable and
+# destroy the distinction between "the operator chose 45" and "nobody said anything so the script
+# invented 45". That distinction matters: this script rewrites config.cfg on EVERY boot, so a value
+# it invents silently overwrites whatever an operator edited into the persisted config — which is
+# exactly how a hand-tuned Battle Royale schedule kept reverting to the shipped defaults after every
+# restart (2026-07-28). Anything NOT listed as explicitly set is now left alone: the persisted
+# config.cfg wins, and failing that the mod's own defaults do.
+_EXPLICIT_VARS=""
+for _v in ENABLE_GAME_MODES GAME_MODE BR_MATCH_MINUTES BR_RING_START_MINUTES BR_RING_STAGES \
+          BR_RING_CLOSE_SECONDS BR_CARE_PACKAGE_MINUTES BR_PVP_DAMAGE_SCALE BR_ENEMY_HP_SCALE \
+          BR_MIN_PLAYERS; do
+    eval "_isset=\${${_v}+yes}"
+    [ "${_isset}" = "yes" ] && _EXPLICIT_VARS="${_EXPLICIT_VARS} ${_v}"
+done
+unset _v _isset
+
+# True when the named environment variable was provided by the operator.
+was_set() {
+    case " ${_EXPLICIT_VARS} " in
+        *" $1 "*) return 0 ;;
+        *)        return 1 ;;
+    esac
+}
+
 STARTUP_EXE="${STARTUP_EXE:-Punk.exe}"
 SERVER_PORT="${SERVER_PORT:-7778}"                    # Pelican's primary allocation
 SERVER_ADDRESS="${SERVER_ADDRESS:-0.0.0.0}"           # advertised join host (informational)
@@ -240,15 +267,47 @@ case "$(printf '%s' "${GAME_MODE}" | tr -d '_ ' | tr '[:upper:]' '[:lower:]')" i
         GAME_MODE="Standard" ;;
 esac
 set_cfg "Session"   "EnableGameModes" "${GAME_MODES_CFG}" "${CFG}"
-set_cfg "Session"   "GameMode" "${GAME_MODE}" "${CFG}"
-set_cfg "Session"   "BrMatchMinutes" "${BR_MATCH_MINUTES}" "${CFG}"
-set_cfg "Session"   "BrRingStartMinutes" "${BR_RING_START_MINUTES}" "${CFG}"
-set_cfg "Session"   "BrRingStages" "${BR_RING_STAGES}" "${CFG}"
-set_cfg "Session"   "BrRingCloseSeconds" "${BR_RING_CLOSE_SECONDS}" "${CFG}"
-set_cfg "Session"   "BrCarePackageMinutes" "${BR_CARE_PACKAGE_MINUTES}" "${CFG}"
-set_cfg "Session"   "PvPDamageScale" "${BR_PVP_DAMAGE_SCALE}" "${CFG}"
-set_cfg "Session"   "BrEnemyHpScale" "${BR_ENEMY_HP_SCALE}" "${CFG}"
-set_cfg "Session"   "BrMinPlayers" "${BR_MIN_PLAYERS}" "${CFG}"
+# Everything below is written ONLY if the operator actually set the variable. An unset knob leaves
+# whatever is already in config.cfg (see the was_set block at the top of this file): the panel stays
+# authoritative for anything it is told to control, and hand-edits survive a restart instead of
+# being silently reverted to this script's defaults.
+was_set GAME_MODE               && set_cfg "Session" "GameMode"             "${GAME_MODE}"             "${CFG}"
+was_set BR_MATCH_MINUTES        && set_cfg "Session" "BrMatchMinutes"       "${BR_MATCH_MINUTES}"      "${CFG}"
+was_set BR_RING_START_MINUTES   && set_cfg "Session" "BrRingStartMinutes"   "${BR_RING_START_MINUTES}" "${CFG}"
+was_set BR_RING_STAGES          && set_cfg "Session" "BrRingStages"         "${BR_RING_STAGES}"        "${CFG}"
+was_set BR_RING_CLOSE_SECONDS   && set_cfg "Session" "BrRingCloseSeconds"   "${BR_RING_CLOSE_SECONDS}" "${CFG}"
+was_set BR_CARE_PACKAGE_MINUTES && set_cfg "Session" "BrCarePackageMinutes" "${BR_CARE_PACKAGE_MINUTES}" "${CFG}"
+was_set BR_PVP_DAMAGE_SCALE     && set_cfg "Session" "PvPDamageScale"       "${BR_PVP_DAMAGE_SCALE}"   "${CFG}"
+was_set BR_ENEMY_HP_SCALE       && set_cfg "Session" "BrEnemyHpScale"       "${BR_ENEMY_HP_SCALE}"     "${CFG}"
+was_set BR_MIN_PLAYERS          && set_cfg "Session" "BrMinPlayers"         "${BR_MIN_PLAYERS}"        "${CFG}"
+
+# OPERATOR OVERRIDES FILE — the answer to "why isn't the container reading from a config file".
+# /home/container/server.cfg lives in the volume, survives restarts and image updates, and is
+# applied LAST so it beats both this script and the panel. One "Section.Key = Value" per line
+# (Section defaults to Session), '#' comments ignored. Anything the mod binds can be set here,
+# including keys this script has never heard of.
+OVERRIDES_FILE="${OVERRIDES_FILE:-/home/container/server.cfg}"
+if [ -f "${OVERRIDES_FILE}" ]; then
+    _applied=0
+    while IFS= read -r _line || [ -n "${_line}" ]; do
+        case "${_line}" in ''|'#'*|';'*) continue ;; esac
+        _k="${_line%%=*}"; _val="${_line#*=}"
+        # trim surrounding whitespace
+        _k="$(printf '%s' "${_k}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        _val="$(printf '%s' "${_val}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -z "${_k}" ] && continue
+        case "${_k}" in
+            *.*) _sec="${_k%%.*}"; _key="${_k#*.}" ;;
+            *)   _sec="Session";   _key="${_k}" ;;
+        esac
+        set_cfg "${_sec}" "${_key}" "${_val}" "${CFG}"
+        _applied=$((_applied + 1))
+    done < "${OVERRIDES_FILE}"
+    log "applied ${_applied} override(s) from ${OVERRIDES_FILE}"
+    unset _line _k _val _sec _key _applied
+else
+    log "no operator overrides at ${OVERRIDES_FILE} (create it to pin settings across restarts)"
+fi
 # Debug/automation knobs the coordinator honors.
 set_cfg "Debug"     "AutoLaunchRun"    "$(bool "${AUTO_START_RUN}")" "${CFG}"
 # NOTE: these two live in the mod's [Diag] section, not [Debug] — a section mismatch is

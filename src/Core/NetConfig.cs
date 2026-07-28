@@ -69,6 +69,7 @@ namespace PunkMultiverse
         public static ConfigEntry<int> BrRingStartMinutes;
         public static ConfigEntry<int> BrRingStages;
         public static ConfigEntry<float> BrRingCloseSeconds;
+        public static ConfigEntry<float> BrStationUnlockDelaySeconds;
         public static ConfigEntry<bool> ShowZoneVisual;
         public static ConfigEntry<float> BrZoneKillSeconds;
         public static ConfigEntry<float> BrZoneDamageStageScale;
@@ -368,6 +369,13 @@ namespace PunkMultiverse
                 "all frame time at 979ms per call while the ring closed. Behaviour is identical - " +
                 "the discarded changes failed the segment's own rect test anyway. Turn off only to " +
                 "prove a terrain bug is or is not this patch.");
+            BrStationUnlockDelaySeconds = cfg.Bind("Session", "BrStationUnlockDelaySeconds", 8f,
+                "Battle Royale: seconds after go-live before every station is unlocked. NOT " +
+                "cosmetic — the vanilla start cinematic identifies the station to pan to as 'the " +
+                "one with an installed upgrade', so unlocking them all at go-live sends a client's " +
+                "camera to a random station and then hangs the cinematic waiting for a GameObject " +
+                "that is not streamed in, leaving the ship with no controls. This waits until every " +
+                "machine has picked its start station. Lower it only if you enjoy that bug.");
             ShowZoneVisual = cfg.Bind("UI", "ShowZoneVisual", true,
                 "Battle Royale: draw the closing zone as molten ground (UI/RingLavaVisual.cs). The " +
                 "zone is RENDERED, not built out of terrain — it has no collider and deals no " +

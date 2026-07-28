@@ -49,7 +49,7 @@ namespace PunkMultiverse.UI
 
         private void LateUpdate()
         {
-            if (!Modes.BattleRoyale.Active || !Modes.BattleRoyale.RingKnown)
+            if (!Modes.BattleRoyale.Active || !Modes.BattleRoyale.RingVisible)
             {
                 if (_root != null) Destroy(_root);
                 _root = null;

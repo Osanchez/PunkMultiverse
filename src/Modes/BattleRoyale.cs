@@ -51,6 +51,16 @@ namespace PunkMultiverse.Modes
         public static RingStateMsg Ring { get; private set; }
         public static bool RingKnown { get; private set; }
 
+        /// <summary>Whether the ring circles should be DRAWN yet (minimap and map screen).
+        ///
+        /// During the opening grace the ring is wider than the map and has not moved, so drawing
+        /// "here is the boundary and here is where it is going" marks ground that is not yet in
+        /// play and reads as though the match has already started closing in. Omar, 2026-07-28:
+        /// don't show it "until the first ring starts". The zone DAMAGE and the rendered lava are
+        /// not gated by this — they follow the real radius, which during the grace encloses
+        /// everything anyway.</summary>
+        public static bool RingVisible => RingKnown && (Ring.Closing || Ring.Stage >= 1);
+
         /// <summary>This player's final placement once eliminated (0 = still alive/none).</summary>
         public static byte LocalPlacement { get; private set; }
         public static byte LocalTotalPlayers { get; private set; }

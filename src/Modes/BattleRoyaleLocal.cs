@@ -415,11 +415,17 @@ namespace PunkMultiverse.Modes
                     fontStyle = FontStyle.Bold,
                 };
 
-            int remain = Mathf.CeilToInt(Ring.MatchRemaining);
-            string clock = $"{remain / 60:00}:{remain % 60:00}";
-            string ring = Ring.Stage == 0
-                ? $"RING HOLDS — CLOSES IN {Mathf.CeilToInt(Ring.NextShrinkIn)}s"
-                : $"RING CLOSING {Ring.Stage}/{Ring.TotalStages} — SAFE RADIUS {Ring.SafeRadius:0}";
+            // Only the NEXT CLOSURE, never the match clock. A total-time-remaining readout tells a
+            // player nothing they can act on and quietly reframes the match as a countdown to an
+            // ending rather than a countdown to the next thing that will kill them (Omar,
+            // 2026-07-28). What matters is always "how long until the ground moves".
+            int shrinkIn = Mathf.CeilToInt(Mathf.Max(0f, Ring.NextShrinkIn));
+            string clock = $"{shrinkIn / 60:00}:{shrinkIn % 60:00}";
+            string ring = Ring.Closing
+                ? $"RING CLOSING {Ring.Stage}/{Ring.TotalStages}"
+                : Ring.Stage >= Ring.TotalStages
+                    ? "FINAL RING"
+                    : $"NEXT CLOSURE IN";
 
             var ship = ShipSync.LocalShip;
             bool outside = ship != null && !ship.IsDead
@@ -427,10 +433,10 @@ namespace PunkMultiverse.Modes
 
             _hudStyle.normal.textColor = outside ? new Color(1f, 0.35f, 0.25f) : Color.white;
             var rect = new Rect(Screen.width * 0.5f - 300f, 8f, 600f, 44f);
-            GUI.Label(rect, $"{clock}   {ring}", _hudStyle);
+            GUI.Label(rect, $"{ring}   {clock}", _hudStyle);
             if (outside)
                 GUI.Label(new Rect(rect.x, rect.y + 20f, rect.width, 24f),
-                    "OUTSIDE THE RING — GET BACK IN", _hudStyle);
+                    "IN THE ZONE — GET BACK INSIDE", _hudStyle);
         }
     }
 }
