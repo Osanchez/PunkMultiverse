@@ -80,6 +80,7 @@ namespace PunkMultiverse.Core
         private static Shooter _fireShooter;
         private static WeaponBase _fireWeapon;
         private static int _fireTargetNetId;   // aim: track this entity while firing
+        private static int _fireTargetSlot = -1; // aim: track this PLAYER's ship while firing
         private static Vector2 _fireDir;       // aim: fixed direction (zero = don't steer)
         private static BarrelTransform[] _fireBarrels;
 
@@ -93,7 +94,8 @@ namespace PunkMultiverse.Core
                     if (_fireShooter != null) _fireShooter.SetShooting(false);
                     if (_fireWeapon != null) _fireWeapon.IsTriggerPulled = false;
                     _fireShooter = null; _fireWeapon = null; _fireUntil = 0f;
-                    _fireTargetNetId = 0; _fireDir = Vector2.zero; _fireBarrels = null;
+                    _fireTargetNetId = 0; _fireTargetSlot = -1;
+                    _fireDir = Vector2.zero; _fireBarrels = null;
                     Out("fire: stopped");
                     return;
                 }
@@ -108,7 +110,16 @@ namespace PunkMultiverse.Core
                 // the window is unfocused so the crosshair isn't fighting us for it.
                 Vector2 dir = Vector2.zero;
                 var ship = ShipSync.LocalShip;
-                if (_fireTargetNetId != 0 && ship != null
+                // Track another PLAYER: a ship has no netId (ships are keyed by slot), so the
+                // entity-tracking branch below can never aim at one. Player-vs-player fire is the
+                // only way to test that PvP hits register at all, so it gets its own aim source.
+                if (_fireTargetSlot >= 0 && ship != null
+                    && ShipSync.ShipsBySlot.TryGetValue((byte)_fireTargetSlot, out var targetShip)
+                    && targetShip != null)
+                {
+                    dir = ((Vector2)targetShip.transform.position - (Vector2)ship.transform.position).normalized;
+                }
+                else if (_fireTargetNetId != 0 && ship != null
                     && NetIds.TryGetInstanceId(_fireTargetNetId, out int inst))
                 {
                     var egm = ServiceLocator.Get<EntityGameObjectManager>();
@@ -122,6 +133,44 @@ namespace PunkMultiverse.Core
             }
             catch { _fireShooter = null; _fireWeapon = null; _fireUntil = 0f; _fireBarrels = null; }
         }
+
+        /// <summary>Health and fuel exactly as UI/ShipStatusBars binds them: health from the unit's
+        /// DamagableResource tank, fuel from the tank whose Resource is named "Fuel". Capacities are
+        /// reported too — a bar can be wrong either by showing a stale VALUE or by binding a tank
+        /// whose capacity never followed an upgrade.</summary>
+        private static void ReadBarTanks(Ship ship, out float hp, out float hpMax,
+            out float fuel, out float fuelMax)
+        {
+            hp = hpMax = fuel = fuelMax = 0f;
+            try
+            {
+                var unit = ship.GetComponentInParent<Unit>() ?? ship.GetComponent<Unit>();
+                if (unit == null) return;
+                var dr = unit.GetComponent<DamagableResource>();
+                if (dr?.Tank != null) { hp = dr.Tank.Value; hpMax = dr.Tank.Capacity; }
+                if (_barFuelResource == null)
+                {
+                    var registry = ServiceLocator.Get<ResourceRegistry>();
+                    var all = registry != null
+                        ? HarmonyLib.Traverse.Create(registry).Property("AllItems").GetValue()
+                            as System.Collections.Generic.IEnumerable<Resource>
+                        : null;
+                    if (all != null)
+                        foreach (var r in all)
+                            if (r != null && r.name != null
+                                && r.name.IndexOf("Fuel", StringComparison.OrdinalIgnoreCase) >= 0)
+                            { _barFuelResource = r; break; }
+                }
+                if (_barFuelResource != null && unit.HasTank(_barFuelResource))
+                {
+                    var tank = unit.GetTank(_barFuelResource);
+                    if (tank != null) { fuel = tank.Value; fuelMax = tank.Capacity; }
+                }
+            }
+            catch { }
+        }
+
+        private static Resource _barFuelResource;
 
         public static void Tick(NetSession session)
         {
@@ -843,8 +892,11 @@ namespace PunkMultiverse.Core
                     int argAt = 2;
                     bool fireSec = parts.Length >= 3 && parts[2].Equals("sec", StringComparison.OrdinalIgnoreCase);
                     if (fireSec) argAt = 3;
-                    _fireTargetNetId = 0; _fireDir = Vector2.zero;
-                    if (parts.Length >= argAt + 2 && parts[argAt].Equals("at", StringComparison.OrdinalIgnoreCase))
+                    _fireTargetNetId = 0; _fireTargetSlot = -1; _fireDir = Vector2.zero;
+                    if (parts.Length >= argAt + 2 && parts[argAt].Equals("player", StringComparison.OrdinalIgnoreCase)
+                        && int.TryParse(parts[argAt + 1], out int aimSlot))
+                        _fireTargetSlot = aimSlot;
+                    else if (parts.Length >= argAt + 2 && parts[argAt].Equals("at", StringComparison.OrdinalIgnoreCase))
                         int.TryParse(parts[argAt + 1], out _fireTargetNetId);
                     else if (parts.Length >= argAt + 3 && parts[argAt].Equals("dir", StringComparison.OrdinalIgnoreCase)
                         && float.TryParse(parts[argAt + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out float dx)
@@ -856,7 +908,31 @@ namespace PunkMultiverse.Core
                     _fireBarrels = ship.GetComponentsInChildren<BarrelTransform>(true);
                     _fireUntil = Time.unscaledTime + fireSecs;
                     Out($"fire: {fireSecs:0.0}s{(fireSec ? " SECONDARY" : "")} via {(_fireShooter != null ? "Shooter" : "weapon trigger")}" +
-                        (_fireTargetNetId != 0 ? $" at #{_fireTargetNetId}" : _fireDir != Vector2.zero ? $" dir {_fireDir.x:0.00},{_fireDir.y:0.00}" : ""));
+                        (_fireTargetSlot >= 0 ? $" at P{_fireTargetSlot + 1}"
+                            : _fireTargetNetId != 0 ? $" at #{_fireTargetNetId}"
+                            : _fireDir != Vector2.zero ? $" dir {_fireDir.x:0.00},{_fireDir.y:0.00}" : ""));
+                    return;
+                }
+                case "shipbars":
+                {
+                    // What the health/fuel bars above other players' ships would READ, printed from
+                    // the same tanks they bind to. The bars themselves are UI and a harness bot runs
+                    // -nographics, so the only testable half is the data — and the data is also the
+                    // half that actually breaks (a puppet whose tanks stop being fed by ship sync
+                    // shows full bars on a ship that is nearly dead).
+                    var barSession = NetSession.Instance;
+                    if (barSession == null) { Out("shipbars: no session"); return; }
+                    foreach (var p in barSession.Players)
+                    {
+                        if (p == null || !p.Connected || p.IsCoordinator) continue;
+                        Ship barShip = p.IsLocal ? ShipSync.LocalShip
+                            : (ShipSync.ShipsBySlot.TryGetValue(p.Slot, out var s) ? s : null);
+                        if (barShip == null) { Out($"[Bars] P{p.Slot + 1} no ship"); continue; }
+                        ReadBarTanks(barShip, out float hp, out float hpMax, out float fuel, out float fuelMax);
+                        Out($"[Bars] P{p.Slot + 1}{(p.IsLocal ? " (local)" : "")} " +
+                            $"hp={hp:0.##}/{hpMax:0.##} fuel={fuel:0.##}/{fuelMax:0.##} " +
+                            $"dead={barShip.IsDead}");
+                    }
                     return;
                 }
                 case "owner":

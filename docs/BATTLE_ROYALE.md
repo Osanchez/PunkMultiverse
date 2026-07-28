@@ -462,6 +462,49 @@ cinematic skip with direct scattered spawns; ring-center drift between stages.
 
 ## 10. Verification plan
 
+### `tools/br-test.ps1` — the automated match
+
+```powershell
+tools\br-test.ps1                       # everything
+tools\br-test.ps1 -Phases pvp,bars      # just the probes you are iterating on
+```
+
+Runs a compressed match (6 min, 4 stages, ring at 1:00) against a local coordinator and
+two headless bots, then asserts from the logs. It has two halves.
+
+**Lifecycle** (`-Phases lifecycle`) — the timeline, from the coordinator's log: match
+start, ring material, station unlocks *broadcast and applied*, distinct spawn stations
+with no cross-machine disagreement, spawn clear on every machine, stage announcements,
+care packages, placements, winner, winner self-destruct.
+
+**Behaviour probes** — scripted immediately after go-live, because none of them are
+observable in a free-running match. BR scatters spawns ~1600 units apart on purpose, so
+the block opens by collapsing that distance with `tpplayer`; then:
+
+| `-Phases` | Drives | Asserts |
+|---|---|---|
+| `ring` | — | Start radius ≤ 1.2 × the playable disc radius (catches a regression back to array-corner sizing); the closure rate is stated; worst single paint pass < 50 ms; host hitch count |
+| `sync` | bot1 `orbit`, bot0 `shipsmooth` | Drawn-pose CV ≤ 1.5 and stall% ≤ 15 on the observed ship; `[ShipLatency]` saturation |
+| `pvp` | bot0 `fire … player <slot>` | ≥1 routed PvP hit **applied** on the victim, and its hp actually moved. This is the whole chain in one line — a projectile that collided, a hit routed to the owner, damage applied through the vanilla pipeline |
+| `bars` | `shipbars` before/after the burst | The observer's copy of the remote ship's health *changed* while it was being shot, and its capacity is non-zero — the bars bind these tanks, so a stale puppet tank is a full bar on a dying ship |
+| `loot` | both bots mining the same ground | No `(group, ordinal)` awarded to two different players; zero distant grants (`[Loot] materialized` must be 0 in BR) |
+
+Two devcmds exist for this harness and are useful by hand:
+
+- `fire <secs> player <slot>` — hold the trigger and track another PLAYER's ship. Ships
+  are keyed by slot and have no netId, so `fire … at <netId>` can never aim at one; this
+  is the only way to exercise PvP without a second human.
+- `shipbars` — print health/fuel for the local ship and every remote one, read through
+  the same tanks `UI/ShipStatusBars` binds. The bars themselves are UI and a bot runs
+  `-nographics`, so the data is the testable half — and the half that actually breaks.
+
+Note: god mode does **not** shield a ship from a routed damage request
+(`ApplyDamageRequest` runs with `_applyingRemote` set, which the god gate sits behind),
+which is what lets the probes keep both bots alive against the ring while PvP still
+lands. If that ever changes, the `pvp` probe has to ungod its victim first.
+
+### Remaining manual / follow-up coverage
+
 1. **Harness** (extend the `pregen-test.ps1` family): coordinator with
    `GameMode = BattleRoyale` (+ shortened timers: `BrMatchMinutes 6`,
    `BrRingStartMinutes 1`, `BrCarePackageMinutes 2`) + 3 bots → assert from logs:
@@ -476,10 +519,11 @@ cinematic skip with direct scattered spawns; ring-center drift between stages.
 2. **Determinism**: the standard two-round pregen harness in BR mode — zero
    `GENERATION MISMATCH`; terrain digest stays clean while the ring paints
    (host-authored diffs verify by construction).
-3. **Status bars** (6b): verified visually — they are a world-space widget, invisible to
-   headless bots. Confirm identical widget size between a starter ship and a
-   health/fuel-upgraded one (only the fill fraction differs), correct red/blue mapping,
-   and that they never appear for off-screen or dead ships.
+3. **Status bars** (6b): the DATA is covered by the `bars` probe above; the WIDGET still
+   needs eyes, because it is a world-space UI object invisible to a headless bot.
+   Confirm: it uses the vanilla segmented art, health over blue fuel, small enough not to
+   dominate the ship, and that it never appears for off-screen or dead ships **or over
+   the map screen**.
 4. **Live**: a human match on the dedicated server — feel checks: spawn separation,
    ring pressure pacing, PvP time-to-kill at `PvPDamageScale 0.25`, care-package
    contest moments, placement/spectate flow, and the lobby → next-match loop.

@@ -1,8 +1,19 @@
-# BATTLE ROYALE HARNESS: run a whole compressed match against local bots and assert the
-# lifecycle from the coordinator log. Shortened timers (6 min match, ring at 1 min, care
-# package every 2 min) so a full match fits in one test run.
+# BATTLE ROYALE HARNESS: run a whole compressed match against local bots and assert both the
+# LIFECYCLE (from the coordinator log) and the live BEHAVIOUR the mode depends on - ring paint
+# cost, player ship sync, player-to-player damage registration, health/fuel bar data, and
+# contested loot arbitration. Shortened timers so a full match fits in one run.
+#
+# The behaviour probes run as a scripted block right after go-live, BEFORE the timeline is left
+# to play out: every one of them needs the two ships in a known relationship (adjacent, one
+# shooting the other), which a free-running match will never hand you.
+#
 # DEV installs only (OD Test2 coordinator, OD Dev3/Dev4 bots). ASCII only. BOM-free configs.
-param([int]$Bots = 2, [int]$WatchSeconds = 420)
+param(
+    [int]$Bots = 2,
+    [int]$WatchSeconds = 420,
+    # lifecycle | ring | sync | pvp | bars | loot | all. Comma-separated.
+    [string]$Phases = "all"
+)
 $ErrorActionPreference = "Stop"
 $CoordDir = "C:\Program Files (x86)\Steam\steamapps\common\PUNK Playtest - OD Test2"
 $BotDirs  = @(@(
@@ -12,9 +23,13 @@ $BotDirs  = @(@(
 $CoordPlug = Join-Path $CoordDir "BepInEx\plugins\PunkMultiverse"
 $CoordLog  = Join-Path $CoordDir "BepInEx\LogOutput.log"
 
+$Want = @($Phases -split "," | ForEach-Object { $_.Trim().ToLower() })
+function Phase($name) { return ($Want -contains "all") -or ($Want -contains $name) }
+
 function CountIn($p,$pat){ if(-not(Test-Path $p)){return 0}; return @(Select-String -Path $p -Pattern $pat -AllMatches -EA SilentlyContinue).Count }
 function WaitFor($p,$pat,$to,$what,$min=1){ $d=(Get-Date).AddSeconds($to); while((Get-Date)-lt $d){ if((CountIn $p $pat)-ge $min){return $true}; Start-Sleep 3 }; Write-Host "TIMEOUT $what"; return $false }
 function Cmd($plug,$txt){ Add-Content -Path (Join-Path $plug "devcmd.txt") -Value $txt -Encoding Ascii }
+function Lines($p,$pat){ if(-not(Test-Path $p)){return @()}; return @(Select-String -Path $p -Pattern $pat -AllMatches -EA SilentlyContinue) }
 function SetCfg([string]$path, [hashtable]$kv, [string]$section = "Session") {
     # Replace the key if present; INSERT it under the section header if not. A plain replace
     # silently no-ops for a key the installed build has never written yet, and the game then
@@ -46,6 +61,7 @@ function Show($label, $pat) {
     Write-Host ("  {0,-22} {1}" -f $label, (($hits[0].Line -replace '.*Punk Multiverse\] ','')))
     return $true
 }
+function Line($label, $text) { Write-Host ("  {0,-22} {1}" -f $label, $text) }
 
 $devRoots = @($CoordDir) + $BotDirs
 if (Get-Process Punk -EA SilentlyContinue | Where-Object { $devRoots -contains (Split-Path $_.Path -Parent) }) {
@@ -58,7 +74,7 @@ try {
         "Transport"="Udp"; "UdpPort"="7787"; "CommandFile"="devcmd.txt"; "AutoLaunchRun"="false";
         "LogLevel"="Verbose"; "PreGenerateWorld"="true"; "EmptyServerResetSeconds"="600";
         "EnableGameModes"="true"; "GameMode"="BattleRoyale"; "BrMatchMinutes"="6"; "BrRingStartMinutes"="1";
-        "BrRingStages"="4"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1"
+        "BrRingStages"="4"; "BrRingCloseSeconds"="20"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1"
     }
     Remove-Item -Force -EA SilentlyContinue (Join-Path $CoordPlug "devcmd.txt"), $CoordLog
     foreach ($d in $BotDirs) {
@@ -67,7 +83,7 @@ try {
             "Transport"="Udp"; "UdpAddress"="127.0.0.1"; "UdpPort"="7787"; "AutoStart"="Join";
             "AutoReady"="true"; "CommandFile"="devcmd.txt"; "LogLevel"="Normal"; "AutoLaunchRun"="false"
         }
-        Remove-Item -Force -EA SilentlyContinue (Join-Path $plug "devcmd.txt"), (Join-Path $d "BepInEx\LogOutput.log")
+        Remove-Item -Force -EA SilentlyContinue (Join-Path $plug "devcmd.txt"), (Join-Path $d "BepInEx\LogOutput.log"), (Join-Path $plug "devout.txt")
     }
 
     $pids += StartGame $CoordDir $true
@@ -80,14 +96,78 @@ try {
     Write-Host "$($BotDirs.Count) bots joined"
     Start-Sleep 5
 
-    Cmd (Join-Path $BotDirs[0] "BepInEx\plugins\PunkMultiverse") "start"
+    $BotPlugs = @($BotDirs | ForEach-Object { Join-Path $_ "BepInEx\plugins\PunkMultiverse" })
+    $BotLogs  = @($BotDirs | ForEach-Object { Join-Path $_ "BepInEx\LogOutput.log" })
+
+    Cmd $BotPlugs[0] "start"
     if (-not (WaitFor $CoordLog "GO LIVE" 180 "go-live")) { throw "never went live" }
     # Bots fly blind into hazards and die in seconds, which ends the match before the ring or a
     # care package ever appears. God-mode keeps them alive so the whole timeline is observable;
     # the elimination path is proven separately by ungodding one at the end.
     Start-Sleep 5
-    foreach ($d in $BotDirs) { Cmd (Join-Path $d "BepInEx\plugins\PunkMultiverse") "god" }
-    Write-Host "MATCH LIVE (bots godded) - watching for ${WatchSeconds}s"
+    foreach ($p in $BotPlugs) { Cmd $p "god" }
+    Write-Host "MATCH LIVE (bots godded)"
+
+    # Each bot's SLOT, straight from its own welcome. Slots are not 0/1 in a dedicated run - the
+    # coordinator occupies one - and every probe below addresses a player by slot.
+    $BotSlots = @()
+    foreach ($lg in $BotLogs) {
+        $m = @(Lines $lg "welcomed as slot (\d+)")
+        if ($m.Count -eq 0) { throw "could not read a bot's slot from its log" }
+        $BotSlots += [int]$m[0].Matches[0].Groups[1].Value
+    }
+    Write-Host ("bot slots: " + ($BotSlots -join ", "))
+
+    # ============================ BEHAVIOUR PROBES ============================
+    # Every probe below needs the ships adjacent. BR scatters spawns ~1600 units apart on purpose,
+    # so none of this is observable until that distance is collapsed.
+    $probed = $false
+    if ($BotDirs.Count -ge 2 -and ((Phase "sync") -or (Phase "pvp") -or (Phase "bars") -or (Phase "loot"))) {
+        $probed = $true
+        Cmd $BotPlugs[0] ("tpplayer {0}" -f $BotSlots[1])
+        Start-Sleep 5
+    }
+
+    if ($probed -and (Phase "sync")) {
+        # Ship sync: bot1 flies a full-throttle circle (a held heading extrapolates perfectly and
+        # would hide the very defect we are measuring), bot0 samples the DRAWN pose of bot1's ship
+        # every render frame.
+        Write-Host "probe: ship sync (28s)"
+        Cmd $BotPlugs[1] "orbit 26 4"
+        Start-Sleep 2
+        Cmd $BotPlugs[0] ("shipsmooth {0} 20" -f $BotSlots[1])
+        Start-Sleep 28
+    }
+
+    if ($probed -and ((Phase "pvp") -or (Phase "bars"))) {
+        # Player-to-player damage. God mode does NOT shield a ship from a ROUTED damage request
+        # (ApplyDamageRequest runs with _applyingRemote set, which the god gate sits behind), so
+        # the bots stay alive against the ring while PvP still lands and can be measured.
+        Write-Host "probe: player-vs-player damage (22s)"
+        Cmd $BotPlugs[0] ("tpplayer {0} 8" -f $BotSlots[1])
+        Start-Sleep 2
+        Cmd $BotPlugs[0] "shipbars"
+        Cmd $BotPlugs[1] "shipbars"
+        Start-Sleep 2
+        Cmd $BotPlugs[0] ("fire 12 player {0}" -f $BotSlots[1])
+        Start-Sleep 15
+        Cmd $BotPlugs[0] "shipbars"
+        Cmd $BotPlugs[1] "shipbars"
+        Start-Sleep 3
+    }
+
+    if ($probed -and (Phase "loot")) {
+        # Contested loot: both ships in the same place, both mining. Terrain drops are keyed by
+        # cell, so the two machines roll the same pile and exactly one may claim each item.
+        Write-Host "probe: contested loot (27s)"
+        Cmd $BotPlugs[1] ("tpplayer {0} 3" -f $BotSlots[0])
+        Start-Sleep 2
+        Cmd $BotPlugs[0] "fire 20 dir 0 -1"
+        Cmd $BotPlugs[1] "fire 20 dir 0 -1"
+        Start-Sleep 27
+    }
+
+    if ($probed) { Write-Host "probes done - letting the match play out" }
 
     # Let the match run: ring stages, care packages, eliminations.
     $deadline = (Get-Date).AddSeconds($WatchSeconds)
@@ -97,7 +177,7 @@ try {
     }
 
     # Prove the endgame too: drop god on one bot and let the ring finish it.
-    Cmd (Join-Path $BotDirs[0] "BepInEx\plugins\PunkMultiverse") "god off"
+    Cmd $BotPlugs[0] "god off"
     WaitFor $CoordLog "\[BR\] WINNER" 240 "winner" | Out-Null
     # The winner's self-destruct is on a countdown (BrWinnerSelfDestructSeconds, default 10s) and
     # the host holds the run open for it. Assert AFTER it has had time to fire, or the check races
@@ -107,64 +187,203 @@ try {
     Write-Host ""
     Write-Host "=============== BATTLE ROYALE RESULTS ==============="
     $ok = $true
-    $ok = (Show "match start"      "\[BR\] MATCH START") -and $ok
-    $ok = (Show "ring center"      "\[BR\] ring center") -and $ok
-    $ok = (Show "ring material"    "\[BR\] ring material") -and $ok
-    $ok = (Show "stations opened"  "\[BR\] opened \d+ stations") -and $ok
-    $ok = (Show "ring closing"     "RING IS CLOSING") -and $ok
-    Show "care package"            "\[BR\] care package" | Out-Null
-    Show "elimination"             "\[BR\] P\d+ .*placed" | Out-Null
-    Show "winner"                  "\[BR\] WINNER" | Out-Null
 
-    # Distinct spawn stations - the guarantee, asserted. Logged by the BOTS: a coordinator is
-    # shipless, so it never computes a scatter for itself.
-    $BotLogs = @($BotDirs | ForEach-Object { Join-Path $_ "BepInEx\LogOutput.log" } | Where-Object { Test-Path $_ })
-    $scatterHits = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] scattered to station" -EA SilentlyContinue })
-    Write-Host ("  {0,-22} {1} bots teleported to their own station" -f "spawn scatter", $scatterHits.Count)
-    if ($scatterHits.Count -lt $BotDirs.Count) { $ok = $false }
-    $spawns = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] spawn slot (\d+) -> station #(\d+)" -AllMatches })
-    $bySlot = @{}
-    $disagree = 0
-    foreach ($m in $spawns) {
-        $slot = $m.Matches[0].Groups[1].Value; $st = $m.Matches[0].Groups[2].Value
-        if ($bySlot.ContainsKey($slot)) { if ($bySlot[$slot] -ne $st) { $disagree++ } }
-        else { $bySlot[$slot] = $st }
+    if (Phase "lifecycle") {
+        Write-Host "--- lifecycle ---"
+        $ok = (Show "match start"      "\[BR\] MATCH START") -and $ok
+        $ok = (Show "ring center"      "\[BR\] ring center") -and $ok
+        $ok = (Show "playable map"     "\[BR\] playable map") -and $ok
+        $ok = (Show "ring material"    "\[BR\] ring material") -and $ok
+        $ok = (Show "stations opened"  "\[BR\] opened \d+ stations") -and $ok
+        $ok = (Show "ring closing"     "RING IS CLOSING") -and $ok
+        Show "care package"            "\[BR\] care package" | Out-Null
+        Show "elimination"             "\[BR\] P\d+ .*placed" | Out-Null
+        Show "winner"                  "\[BR\] WINNER" | Out-Null
+
+        # Distinct spawn stations - the guarantee, asserted. Logged by the BOTS: a coordinator is
+        # shipless, so it never computes a scatter for itself.
+        $scatterHits = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] scattered to station" -EA SilentlyContinue })
+        Line "spawn scatter" ("{0} bots teleported to their own station" -f $scatterHits.Count)
+        if ($scatterHits.Count -lt $BotDirs.Count) { $ok = $false }
+        $spawns = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] spawn slot (\d+) -> station #(\d+)" -AllMatches -EA SilentlyContinue })
+        $bySlot = @{}
+        $disagree = 0
+        foreach ($m in $spawns) {
+            $slot = $m.Matches[0].Groups[1].Value; $st = $m.Matches[0].Groups[2].Value
+            if ($bySlot.ContainsKey($slot)) { if ($bySlot[$slot] -ne $st) { $disagree++ } }
+            else { $bySlot[$slot] = $st }
+        }
+        $stationIds = @($bySlot.Values)
+        $dupes = @($stationIds | Group-Object | Where-Object { $_.Count -gt 1 })
+        Line "distinct stations" ("{0} slots -> {1} stations, {2} shared, {3} cross-machine disagreements" -f `
+            $bySlot.Count, ($stationIds | Select-Object -Unique).Count, $dupes.Count, $disagree)
+        if ($dupes.Count -gt 0) { $ok = $false; Write-Host "  FAIL: two players shared a station" }
+        if ($disagree -gt 0) { $ok = $false; Write-Host "  FAIL: machines disagreed on the assignment" }
+
+        # The host opening 44 stations means nothing if the unlocks never REACH the clients. The
+        # first live match had "opened 44 stations" in the coordinator log and zero broadcasts,
+        # because BeginMatch ran one line before SetState(InGame) and ProgressionSync's capture
+        # ignores installs outside InGame - every client sat at a locked shop. Assert BOTH halves.
+        $broadcast = CountIn $CoordLog "\[Progress\] station upgrade .* broadcast"
+        $applied = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "applied remote station upgrade" -AllMatches -EA SilentlyContinue }).Count
+        Line "station unlocks" ("{0} broadcast by host, {1} applied on bots" -f $broadcast, $applied)
+        if ($broadcast -lt 1 -or $applied -lt 1) { $ok = $false; Write-Host "  FAIL: station unlocks did not replicate" }
+
+        # Spawn areas cleared of enemies. Derived identically on every machine and sent over no
+        # wire, so every bot must report its own clear.
+        $cleared = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] spawn clear: removed" -EA SilentlyContinue }).Count
+        Line "spawn clear" ("{0}/{1} bots cleared their spawn areas" -f $cleared, $BotDirs.Count)
+        if ($cleared -lt $BotDirs.Count) { $ok = $false; Write-Host "  FAIL: spawn clear did not run on every machine" }
+
+        # A won match must not leave the winner alone in the world.
+        $selfDestruct = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] winner self-destructed" -EA SilentlyContinue }).Count
+        if ($selfDestruct -ge 1) { Line "winner self-destruct" "fired" }
+        else { Line "winner self-destruct" "MISSING"; $ok = $false }
+
+        $stages = CountIn $CoordLog "\[BR\] announce: (THE RING IS CLOSING|FINAL RING|THE LAVA RING)"
+        $drops  = CountIn $CoordLog "\[BR\] care package"
+        Line "timeline" ("{0} ring announcements, {1} care packages" -f $stages, $drops)
+        if ($stages -lt 2) { $ok = $false }
     }
-    $stationIds = @($bySlot.Values)
-    $dupes = @($stationIds | Group-Object | Where-Object { $_.Count -gt 1 })
-    Write-Host ("  {0,-22} {1} slots -> {2} stations, {3} shared, {4} cross-machine disagreements" -f `
-        "distinct stations", $bySlot.Count, ($stationIds | Select-Object -Unique).Count, $dupes.Count, $disagree)
-    if ($dupes.Count -gt 0) { $ok = $false; Write-Host "  FAIL: two players shared a station" }
-    if ($disagree -gt 0) { $ok = $false; Write-Host "  FAIL: machines disagreed on the assignment" }
 
-    # The host opening 44 stations means nothing if the unlocks never REACH the clients. The first
-    # live match had "opened 44 stations" in the coordinator log and zero broadcasts, because
-    # BeginMatch ran one line before SetState(InGame) and ProgressionSync's capture ignores
-    # installs outside InGame - every client sat at a locked shop. Assert BOTH halves.
-    $broadcast = CountIn $CoordLog "\[Progress\] station upgrade .* broadcast"
-    $applied = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "applied remote station upgrade" -AllMatches -EA SilentlyContinue }).Count
-    Write-Host ("  {0,-22} {1} broadcast by host, {2} applied on bots" -f "station unlocks", $broadcast, $applied)
-    if ($broadcast -lt 1 -or $applied -lt 1) { $ok = $false; Write-Host "  FAIL: station unlocks did not replicate" }
+    if (Phase "ring") {
+        Write-Host "--- ring geometry + paint cost ---"
+        # The ring must be sized to the PLAYABLE DISC, not the cell array. A start radius wider
+        # than mapRadius * 1.2 means the corner-distance bug is back and a third of the schedule
+        # is spent closing through the void border.
+        $disc = @(Lines $CoordLog "playable map = disc centre \((\d+),(\d+)\) r=(\d+)")
+        $start = @(Lines $CoordLog "ring start radius (\d+) .*centre offset (\d+)")
+        if ($disc.Count -ge 1 -and $start.Count -ge 1) {
+            $mapR = [double]$disc[0].Matches[0].Groups[3].Value
+            $startR = [double]$start[0].Matches[0].Groups[1].Value
+            $offset = [double]$start[0].Matches[0].Groups[2].Value
+            $ratio = $startR / [Math]::Max(1.0, $mapR)
+            Line "ring fit" ("map r={0:0} start r={1:0} (offset {2:0}) ratio={3:0.00}" -f $mapR, $startR, $offset, $ratio)
+            if ($ratio -gt 1.2) { $ok = $false; Write-Host "  FAIL: ring starts well outside the playable map" }
+        } else { Line "ring fit" "MISSING (no playable-map / start-radius line)"; $ok = $false }
 
-    # Spawn areas cleared of enemies. Derived identically on every machine and sent over no wire,
-    # so every bot must report its own clear.
-    $cleared = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] spawn clear: removed" -EA SilentlyContinue }).Count
-    Write-Host ("  {0,-22} {1}/{2} bots cleared their spawn areas" -f "spawn clear", $cleared, $BotDirs.Count)
-    if ($cleared -lt $BotDirs.Count) { $ok = $false; Write-Host "  FAIL: spawn clear did not run on every machine" }
+        $rate = @(Lines $CoordLog "each closing (\d+)u over (\d+)s = ([0-9.]+) u/s")
+        if ($rate.Count -ge 1) { Line "closure rate" ("{0} u/s" -f $rate[0].Matches[0].Groups[3].Value) }
+        else { Line "closure rate" "MISSING"; $ok = $false }
 
-    # A won match must not leave the winner alone in the world.
-    $selfDestruct = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] winner self-destructed" -EA SilentlyContinue }).Count
-    Write-Host ("  {0,-22} {1}" -f "winner self-destruct", $(if ($selfDestruct -ge 1) { "fired" } else { "MISSING" }))
-    if ($selfDestruct -lt 1) { $ok = $false }
+        # Paint cost. The wall is written through SetCell, so every cell is a replicated terrain
+        # diff - this is the one part of the ring that can plausibly stall the host's frame.
+        $paint = @(Lines $CoordLog "ring paint r=(\d+) passes=(\d+) cells=(\d+) totalMs=([0-9.]+) avgMs=([0-9.]+) worstMs=([0-9.]+)")
+        if ($paint.Count -ge 1) {
+            $worst = 0.0; $cells = 0
+            foreach ($p in $paint) {
+                $w = [double]$p.Matches[0].Groups[6].Value
+                if ($w -gt $worst) { $worst = $w }
+                $cells += [int]$p.Matches[0].Groups[3].Value
+            }
+            Line "ring paint" ("{0} reports, {1} cells painted, worst single pass {2:0.00}ms" -f $paint.Count, $cells, $worst)
+            if ($worst -gt 50.0) { $ok = $false; Write-Host "  FAIL: a ring paint pass blew past 50ms" }
+        } else { Line "ring paint" "MISSING (the ring never advanced?)"; $ok = $false }
 
-    $stages = CountIn $CoordLog "\[BR\] announce: (THE RING IS CLOSING|FINAL RING|THE LAVA RING)"
-    $drops  = CountIn $CoordLog "\[BR\] care package"
-    Write-Host ("  {0,-22} {1} ring announcements, {2} care packages" -f "timeline", $stages, $drops)
-    if ($stages -lt 2) { $ok = $false }
+        Line "host hitches" (CountIn $CoordLog "\[Hitch\]")
+    }
+
+    if ($probed -and (Phase "sync")) {
+        Write-Host "--- player ship sync ---"
+        # rendersmooth reports the DRAWN pose of the observed ship: CV is the shape of the streamed
+        # motion, stall% is how often it froze between snapshots. Fixed-step metrics see neither -
+        # which is exactly what hid the MoveTo sawtooth for weeks.
+        $sm = @(Lines $BotLogs[0] "rendersmooth slot \d+: .*mean=([0-9.]+) max=([0-9.]+) u/s CV=([0-9.]+) \| stall%=([0-9.]+)")
+        if ($sm.Count -ge 1) {
+            $g = $sm[-1].Matches[0].Groups
+            $mean = [double]$g[1].Value; $cv = [double]$g[3].Value; $stall = [double]$g[4].Value
+            Line "puppet motion" ("mean={0} u/s max={1} CV={2} stall%={3}" -f $g[1].Value, $g[2].Value, $g[3].Value, $g[4].Value)
+            if ($mean -lt 1.0) { Line "  note" "target barely moved - orbit did not take; CV/stall are not meaningful" }
+            elseif ($cv -gt 1.5 -or $stall -gt 15.0) { $ok = $false; Write-Host "  FAIL: puppet motion is jittery (CV>1.5 or stall%>15)" }
+        } else { Line "puppet motion" "MISSING (shipsmooth produced no report)"; $ok = $false }
+
+        $lat = @(Lines $BotLogs[0] "\[ShipLatency\].*saturated=([0-9.]+)%.*underruns=(\d+) \(([0-9.]+)/s\)")
+        if ($lat.Count -ge 1) {
+            $g = $lat[-1].Matches[0].Groups
+            Line "ship latency" ("saturated={0}% underruns={1}/s" -f $g[1].Value, $g[3].Value)
+            if ([double]$g[1].Value -gt 50.0) { Write-Host "  WARN: playout buffer saturated - the sender is behind, not the netcode" }
+        } else { Line "ship latency" "no [ShipLatency] samples" }
+    }
+
+    if ($probed -and (Phase "pvp")) {
+        Write-Host "--- player-to-player damage ---"
+        # The victim logs every routed request it applies, with the hp it moved. That single line
+        # covers the whole PvP chain: the projectile actually collided (Patches/BattleRoyalePvP.cs),
+        # the local hit was routed to the owner (DamageSync.SendDamageRequest), and the owner
+        # applied it through the vanilla pipeline.
+        $hits = @(Lines $BotLogs[1] "\[CombatHit\] remote-request=\d+ attacker=P(\d+) .*applied=True hp=([0-9.]+)->([0-9.]+)")
+        Line "damage registered" ("{0} routed PvP hits applied on the victim" -f $hits.Count)
+        if ($hits.Count -lt 1) {
+            $ok = $false
+            Write-Host "  FAIL: not one shot landed on the other player."
+            Write-Host "        Check Patches/BattleRoyalePvP.cs - if IsFriendsWith is true for two"
+            Write-Host "        ships again, Projectile.FixedUpdate skips the collision entirely and"
+            Write-Host "        nothing downstream of it ever runs."
+        } else {
+            $first = [double]$hits[0].Matches[0].Groups[2].Value
+            $last  = [double]$hits[-1].Matches[0].Groups[3].Value
+            Line "victim hp" ("{0:0.#} -> {1:0.#} over the burst" -f $first, $last)
+            if ($last -ge $first) { $ok = $false; Write-Host "  FAIL: hits applied but hp never moved" }
+        }
+    }
+
+    if ($probed -and (Phase "bars")) {
+        Write-Host "--- health / fuel bar data ---"
+        # The bars are UI and a bot runs -nographics, so what is asserted is the DATA they bind to:
+        # the remote ship's tanks as read by the observer, through the same accessors
+        # UI/ShipStatusBars uses. A puppet whose tanks stop being fed shows a full bar on a ship
+        # that is nearly dead - which is the failure that actually happens.
+        $victim = "P{0}" -f ($BotSlots[1] + 1)
+        $obs = @(Lines $BotLogs[0] ("\[Bars\] {0} hp=([0-9.]+)/([0-9.]+) fuel=([0-9.]+)/([0-9.]+)" -f $victim))
+        if ($obs.Count -ge 2) {
+            $b = $obs[0].Matches[0].Groups; $a = $obs[-1].Matches[0].Groups
+            Line "observed remote" ("hp {0}/{1} -> {2}/{3}, fuel {4} -> {5}" -f `
+                $b[1].Value, $b[2].Value, $a[1].Value, $a[2].Value, $b[3].Value, $a[3].Value)
+            if ([double]$b[2].Value -le 0) { $ok = $false; Write-Host "  FAIL: remote health capacity is zero - the bar would bind an empty tank" }
+            if ([double]$a[1].Value -ge [double]$b[1].Value) {
+                $ok = $false
+                Write-Host "  FAIL: the observer's copy of the remote ship's health never moved while"
+                Write-Host "        it was being shot - the bars would show a full, healthy ship."
+            }
+        } else { Line "observed remote" ("only {0} sample(s) - need 2" -f $obs.Count); $ok = $false }
+
+        # Owner-side truth, to tell "the bar is stale" apart from "the ship never took damage".
+        $own = @(Lines $BotLogs[1] ("\[Bars\] {0} \(local\) hp=([0-9.]+)/([0-9.]+) fuel=([0-9.]+)/([0-9.]+)" -f $victim))
+        if ($own.Count -ge 2) {
+            $b = $own[0].Matches[0].Groups; $a = $own[-1].Matches[0].Groups
+            Line "victim's own view" ("hp {0} -> {1}, fuel {2} -> {3}" -f $b[1].Value, $a[1].Value, $b[3].Value, $a[3].Value)
+        } else { Line "victim's own view" ("only {0} sample(s)" -f $own.Count) }
+    }
+
+    if ($probed -and (Phase "loot")) {
+        Write-Host "--- contested loot ---"
+        # Every award is arbitrated by the host and broadcast once. Two machines claiming the same
+        # (group, ordinal) must resolve to ONE slot - that is the entire contract.
+        $awards = @(Lines $CoordLog "\[BRLoot\] loot #(-?\d+)\.(\d+) -> P(\d+)")
+        $keys = @{}
+        $conflicts = 0
+        foreach ($a in $awards) {
+            $k = "{0}.{1}" -f $a.Matches[0].Groups[1].Value, $a.Matches[0].Groups[2].Value
+            $w = $a.Matches[0].Groups[3].Value
+            if ($keys.ContainsKey($k)) { if ($keys[$k] -ne $w) { $conflicts++ } } else { $keys[$k] = $w }
+        }
+        Line "loot awards" ("{0} awards over {1} distinct drops, {2} awarded to two different players" -f `
+            $awards.Count, $keys.Count, $conflicts)
+        if ($conflicts -gt 0) { $ok = $false; Write-Host "  FAIL: the same drop went to two players" }
+        if ($awards.Count -lt 1) { Line "  note" "nothing was claimed - the bots may not have collected; not a failure" }
+
+        # And the loser really loses it: BR must never hand a distant player a private copy.
+        $granted = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[Loot\] materialized" -EA SilentlyContinue }).Count
+        Line "distant grants" ("{0} (must be 0 in BR - loot is contested at the site)" -f $granted)
+        if ($granted -gt 0) { $ok = $false; Write-Host "  FAIL: BR granted loot remotely" }
+    }
+
+    Write-Host "--- health ---"
     $mismatch = CountIn $CoordLog "GENERATION MISMATCH"
     $errors   = CountIn $CoordLog "\[BR\].*failed"
-    Write-Host ("  {0,-22} mismatches={1} br-errors={2}" -f "health", $mismatch, $errors)
-    if ($mismatch -gt 0 -or $errors -gt 0) { $ok = $false }
+    $lootErr  = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BRLoot\].*could not gate" -EA SilentlyContinue }).Count
+    Line "health" ("mismatches={0} br-errors={1} loot-patch-failures={2}" -f $mismatch, $errors, $lootErr)
+    if ($mismatch -gt 0 -or $errors -gt 0 -or $lootErr -gt 0) { $ok = $false }
     Write-Host "====================================================="
     Write-Host $(if ($ok) { "BR SMOKE: PASS" } else { "BR SMOKE: PROBLEMS ABOVE" })
 }

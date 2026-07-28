@@ -401,9 +401,16 @@ namespace PunkMultiverse.Modes
 
             if (radius < _paintedRadius - PaintStep)
             {
-                PaintRing(radius);
+                long before = System.Diagnostics.Stopwatch.GetTimestamp();
+                _paintCells += PaintRing(radius);
+                double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - before)
+                    * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                _paintMs += ms;
+                if (ms > _paintWorstMs) _paintWorstMs = ms;
+                _paintCount++;
                 _paintedRadius = radius;
             }
+            ReportPaintCost(radius, closing);
 
             if (Time.unscaledTime >= _nextRingBroadcastAt)
             {
@@ -420,6 +427,39 @@ namespace PunkMultiverse.Modes
             }
 
             CheckLastAlive(session);
+        }
+
+        // Ring-paint cost. The wall is written through the game's own SetCell, so every painted
+        // cell is a terrain diff the host captures, batches and replicates — the one part of the
+        // ring that scales with the map and can plausibly stall a frame. Measured rather than
+        // assumed, and reported in a form a test can assert on (tools/br-test.ps1).
+        private static double _paintMs;
+        private static int _paintCount;
+        private static int _paintCells;
+        private static double _paintWorstMs;
+        private static float _nextPaintReportAt;
+
+        internal static void ResetPaintCost()
+        {
+            _paintMs = 0.0;
+            _paintCount = 0;
+            _paintCells = 0;
+            _paintWorstMs = 0.0;
+            _nextPaintReportAt = 0f;
+        }
+
+        private static void ReportPaintCost(float radius, bool closing)
+        {
+            if (_paintCount == 0) return;
+            if (Time.unscaledTime < _nextPaintReportAt) return;
+            _nextPaintReportAt = Time.unscaledTime + 10f;
+            Plugin.Log.LogInfo($"[BR] ring paint r={radius:0} passes={_paintCount} cells={_paintCells} " +
+                $"totalMs={_paintMs:0.0} avgMs={_paintMs / Mathf.Max(1, _paintCount):0.00} " +
+                $"worstMs={_paintWorstMs:0.00}");
+            _paintMs = 0.0;
+            _paintCount = 0;
+            _paintCells = 0;
+            _paintWorstMs = 0.0;
         }
 
         private static void BroadcastRing(NetSession session)
@@ -448,16 +488,16 @@ namespace PunkMultiverse.Modes
         /// <summary>Paint the wall at the current boundary. Only the newly-crossed annulus is
         /// written, so the cost is proportional to how far the front moved, not to the burned
         /// area — which also keeps the terrain ledger bounded.</summary>
-        private static void PaintRing(float radius)
+        private static int PaintRing(float radius)
         {
             byte id = RingCellId;
-            if (id == 0) return; // kill zone still applies
+            if (id == 0) return 0; // kill zone still applies
             var level = LevelRef;
-            if (level == null) return;
+            if (level == null) return 0;
             int w = level.Width, h = level.Height;
             float outer = Mathf.Min(_paintedRadius, radius + WallThickness);
             float inner = radius;
-            if (outer <= inner) return;
+            if (outer <= inner) return 0;
 
             int minX = Mathf.Max(0, Mathf.FloorToInt(_center.x - outer));
             int maxX = Mathf.Min(w - 1, Mathf.CeilToInt(_center.x + outer));
@@ -482,6 +522,7 @@ namespace PunkMultiverse.Modes
                 }
             }
             if (painted > 0) InstrumentationCounters.BrRingCellsPainted(painted);
+            return painted;
         }
 
         // ---------------------------------------------------------------- care packages

@@ -76,6 +76,7 @@ namespace PunkMultiverse.Modes
             _lastAnnouncedStage = 0;
             _nextRingBroadcastAt = 0f;
             _paintedRadius = float.MaxValue;
+            ResetPaintCost();
             _lastAliveSince = -1f;
             MatchPlayers.Clear();
             Eliminated.Clear();
