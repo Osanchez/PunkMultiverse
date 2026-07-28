@@ -103,12 +103,18 @@ namespace PunkMultiverse.UI
                 prev = GUI.color;
                 GUI.color = new Color(1f, 1f, 1f, 0.15f);
                 GUI.DrawTexture(heat, Texture2D.whiteTexture);
-                float fill = busiest <= 0 ? 0f : Mathf.Clamp01(option.Picks / (float)busiest);
-                GUI.color = HeatColor(option.Picks, busiest);
-                // Always show a sliver so an empty region still reads as "green and open" rather
-                // than as a missing bar.
-                GUI.DrawTexture(new Rect(heat.x, heat.y, Mathf.Max(10f, heat.width * fill), heat.height),
-                    Texture2D.whiteTexture);
+                // EMPTY MEANS EMPTY — no minimum sliver. It used to always draw a small green mark
+                // so a quiet region still "read as green", and that was a lie the eye believes:
+                // every untouched region looked like it already had somebody in it (Omar,
+                // 2026-07-28: "sometimes reports players already there"). A bar with nothing in it
+                // is the clearest possible way to say nobody has picked this.
+                if (option.Picks > 0)
+                {
+                    float fill = busiest <= 0 ? 0f : Mathf.Clamp01(option.Picks / (float)busiest);
+                    GUI.color = HeatColor(option.Picks, busiest);
+                    GUI.DrawTexture(new Rect(heat.x, heat.y, Mathf.Max(14f, heat.width * fill), heat.height),
+                        Texture2D.whiteTexture);
+                }
                 GUI.color = prev;
             }
         }

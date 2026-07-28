@@ -86,6 +86,8 @@ namespace PunkMultiverse.Modes
             _closed = false;
             LocalHasChosen = false;
             LocalChoice = 0;
+            Deployed = false;
+            _protectedUntil = -1f;
         }
 
         // ---------------------------------------------------------------- the option list
@@ -227,7 +229,7 @@ namespace PunkMultiverse.Modes
         /// collision and nothing living out there. The ship is also frozen STATIC with input off,
         /// so it cannot drift, and the screen draws an opaque backdrop over it — between them the
         /// player is simply not in the game yet, which is the intended fiction.</summary>
-        private static void HoldInTheVoid()
+        private static void HoldInTheVoid(bool quiet = false)
         {
             try
             {
@@ -240,19 +242,26 @@ namespace PunkMultiverse.Modes
                 }
                 // Straight "up" from the grid centre, comfortably past the disc edge.
                 var holding = new Vector2(level.Width * 0.5f, level.Height * 0.5f + level.Width * 0.5f + 90f);
-                Sync.ShipSync.TeleportLocalShipTo(holding);
+                var current = Sync.ShipSync.LocalShip;
+                // Only move it if something has dragged it back out of the pen; re-teleporting every
+                // frame regardless would fight the camera and the physics for no reason.
+                if (current == null || ((Vector2)current.transform.position - holding).sqrMagnitude > 4f)
+                    Sync.ShipSync.TeleportLocalShipTo(holding);
 
                 var ship = Sync.ShipSync.LocalShip;
                 if (ship == null)
                 {
-                    Plugin.Log.LogWarning("[BRDrop] no local ship when opening the drop window — " +
-                        "nothing was parked; it will be placed wherever the run put it");
+                    // Not an error on the repeat pass: the ship simply has not spawned yet, and the
+                    // next tick will park it the moment it does.
+                    if (!quiet)
+                        Plugin.Log.LogInfo("[BRDrop] ship not spawned yet — it will be parked as soon as it is");
                     return;
                 }
                 if (ship.shipInput != null) ship.shipInput.enabled = false;
                 if (ship.Rigidbody != null) ship.Rigidbody.bodyType = RigidbodyType2D.Static;
                 if (ship.Crosshair != null) ship.Crosshair.Visible = false;
-                Plugin.Log.LogInfo($"[BRDrop] holding at ({holding.x:0},{holding.y:0}) in the void until deploy");
+                if (!quiet)
+                    Plugin.Log.LogInfo($"[BRDrop] holding at ({holding.x:0},{holding.y:0}) in the void until deploy");
             }
             catch (System.Exception e)
             {
@@ -263,6 +272,38 @@ namespace PunkMultiverse.Modes
 
         /// <summary>True once this player has actually dropped into the world.</summary>
         internal static bool Deployed { get; private set; }
+
+        private static float _protectedUntil = -1f;
+
+        /// <summary>No damage may touch this ship yet.
+        ///
+        /// Two windows, for two different reasons. WHILE CHOOSING, because a player reading a menu
+        /// cannot defend themselves and dying to something they never saw would be absurd — the
+        /// void pen makes that unlikely, but "unlikely" is not a guarantee and that pen has already
+        /// lost one race to the run scene. AFTER DEPLOYING, for a few seconds, because you arrive
+        /// somewhere you have never seen with no idea what is beside you (Omar, 2026-07-28:
+        /// "sometimes when players spawn into a world they spawn in danger — we need to give them
+        /// god mode until they spawn in").
+        ///
+        /// Read by DamageSync's existing god-mode gate, so it covers exactly what the `god` devcmd
+        /// covers — routed damage, world contact damage, and the direct chokepoints — instead of
+        /// being a second, subtly different notion of invulnerable that protects against some
+        /// damage sources and not others.</summary>
+        internal static bool SpawnProtected
+        {
+            get
+            {
+                var s = NetSession.Instance;
+                if (s == null || !NetSession.Active || s.CurrentMode != GameMode.BattleRoyale) return false;
+                if (!NetConfig.BrChooseSpawn.Value) return false;
+                // Gate on the window actually being OPEN (_deadline is set by OpenWindow), not on
+                // "not deployed yet" — the latter is also true before the window exists and after a
+                // reset, which would quietly make a ship invulnerable outside the moment this is
+                // meant to cover.
+                if (!Deployed && _deadline > 0f) return true;   // still choosing
+                return _protectedUntil > 0f && Time.unscaledTime < _protectedUntil;
+            }
+        }
 
         /// <summary>Local player picked a region: deploy IMMEDIATELY. Omar, 2026-07-28: "spawn as
         /// soon as they select — don't let other players hold the server." The host is told only so
@@ -292,6 +333,12 @@ namespace PunkMultiverse.Modes
         internal static void Tick()
         {
             if (_closed || Deployed || _deadline < 0f) return;
+            // KEEP it parked. A one-shot teleport at go-live loses a race it cannot win: the run
+            // scene places ships AFTER go-live, so whatever we moved gets put straight back on the
+            // start pad — which is why players kept spawning at a station before they had picked
+            // one (Omar, 2026-07-28), and why they were in danger while reading the screen. Holding
+            // every frame simply outlasts whoever else wants to place the ship.
+            HoldInTheVoid(quiet: true);
             if (Time.unscaledTime < _deadline) return;
             byte biomeId = Options[UnityEngine.Random.Range(0, Options.Count)].BiomeId;
             LocalHasChosen = true;
@@ -320,6 +367,7 @@ namespace PunkMultiverse.Modes
         {
             _closed = true;
             Deployed = true;
+            _protectedUntil = Time.unscaledTime + Mathf.Max(0f, NetConfig.BrSpawnProtectionSeconds.Value);
             try
             {
                 var option = Options.FirstOrDefault(o => o.BiomeId == biomeId) ?? Options[0];

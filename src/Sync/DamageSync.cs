@@ -395,7 +395,11 @@ namespace PunkMultiverse.Sync
         {
             var local = ShipSync.LocalShip;
             if (local == null || victim == null || victim.GetComponentInParent<Ship>() != local) return false;
-            return Core.DevTools.GodMode || LocalShopMenuOpen();
+            // Battle Royale spawn protection rides the SAME gate rather than inventing a second
+            // notion of invulnerable: a player choosing a drop region cannot defend themselves, and
+            // one who has just landed somewhere they have never seen deserves a moment to look.
+            return Core.DevTools.GodMode || LocalShopMenuOpen()
+                   || Modes.BattleRoyaleSpawnSelect.SpawnProtected;
         }
 
         private static System.Reflection.FieldInfo _shipMenuIsOpen;

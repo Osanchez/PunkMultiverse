@@ -75,6 +75,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> BrSpawnAtStationDirectly;
         public static ConfigEntry<bool> BrChooseSpawn;
         public static ConfigEntry<float> BrChooseSpawnSeconds;
+        public static ConfigEntry<float> BrSpawnProtectionSeconds;
         public static ConfigEntry<bool> ShowZoneVisual;
         public static ConfigEntry<float> BrZoneKillSeconds;
         public static ConfigEntry<float> BrZoneDamageStageScale;
@@ -404,6 +405,12 @@ namespace PunkMultiverse
                 "anyone who has not chosen is given a random region — the timer is a decision, not " +
                 "a punishment. The match cannot start until this resolves, so one idle player can " +
                 "hold the lobby for this long.");
+            BrSpawnProtectionSeconds = cfg.Bind("Session", "BrSpawnProtectionSeconds", 4f,
+                "Battle Royale: seconds of invulnerability AFTER dropping in. You are already " +
+                "untouchable for the whole time the drop screen is up — a player reading a menu " +
+                "cannot defend themselves — and this extends it past the landing, because you " +
+                "arrive somewhere you have never seen with no idea what is beside you. 0 disables " +
+                "the post-landing grace; the while-choosing protection is not optional.");
             BrSpawnAtStationDirectly = cfg.Bind("Session", "BrSpawnAtStationDirectly", true,
                 "Battle Royale: place each ship ON its own spawn station from the first frame, and " +
                 "point the opening cinematic at that station, instead of spawning everyone on the " +
