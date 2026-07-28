@@ -1393,7 +1393,18 @@ namespace PunkMultiverse.Core
                 // lobby, reads the server id from its metadata, and reconnects over SteamServer. The
                 // old `!UsingSteam` fallback would have stored the server id as a LOOPBACK address —
                 // unjoinable after a restart (config transport is Steam).
-                if (_lobby != null && _lobby.InLobby && (UsingSteam || _lobby.IsServerLobby))
+                // A BATTLE ROYALE match is SEALED — no join, no rejoin, and a disconnect IS an
+                // elimination. Remembering it would offer "REJOIN LAST SESSION" for a match the
+                // player can never re-enter and has already placed in (field-reported 2026-07-28).
+                // Clear rather than merely skip: the offer must not survive from an earlier
+                // Standard run either, because accepting it would drop them into a BR server that
+                // will refuse them.
+                if (CurrentMode == Protocol.GameMode.BattleRoyale)
+                {
+                    RejoinMemory.Clear();
+                    Plugin.Log.LogInfo("[Session] battle royale — rejoin memory cleared (a sealed match cannot be rejoined)");
+                }
+                else if (_lobby != null && _lobby.InLobby && (UsingSteam || _lobby.IsServerLobby))
                     RejoinMemory.Remember(steam: true, _lobby.CurrentLobby.m_SteamID, null);
                 else if (!UsingSteam)
                     RejoinMemory.Remember(steam: false, 0, IsHost

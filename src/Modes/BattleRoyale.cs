@@ -61,6 +61,23 @@ namespace PunkMultiverse.Modes
         /// everything anyway.</summary>
         public static bool RingVisible => RingKnown && (Ring.Closing || Ring.Stage >= 1);
 
+        /// <summary>Whether the ring should still be DRAWN, including after the match has been
+        /// decided. <see cref="Active"/> goes false the moment the win condition resolves, which
+        /// used to make the rings and the zone vanish instantly — the map blanking out at the exact
+        /// moment players are looking at where they died (Omar, 2026-07-28: "when the game is over
+        /// the rings are just gone; we should retain them on the client"). The ring is still true
+        /// until the run actually tears down, so it keeps being drawn while the session is InGame,
+        /// whether or not the match is still being contested.</summary>
+        public static bool RingPersists
+        {
+            get
+            {
+                var s = NetSession.Instance;
+                return s != null && NetSession.Active && s.IsBattleRoyale
+                       && s.State == SessionState.InGame && RingKnown;
+            }
+        }
+
         /// <summary>This player's final placement once eliminated (0 = still alive/none).</summary>
         public static byte LocalPlacement { get; private set; }
         public static byte LocalTotalPlayers { get; private set; }
@@ -94,6 +111,9 @@ namespace PunkMultiverse.Modes
             LocalTotalPlayers = 0;
             LocalIsWinner = false;
             ResetSelfDestruct();
+            // The saved burn settings belong to the PREVIOUS run's ship object; carrying them into
+            // the next run would restore another ship's numbers onto this one.
+            ResetZoneFire();
         }
 
         // ---------------------------------------------------------------- announcements

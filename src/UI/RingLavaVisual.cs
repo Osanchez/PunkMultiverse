@@ -48,8 +48,10 @@ namespace PunkMultiverse.UI
         private void LateUpdate()
         {
             if (_failed) return;
-            if (!Modes.BattleRoyale.Active || !Modes.BattleRoyale.RingKnown
-                || !NetConfig.ShowZoneVisual.Value)
+            // RingPersists, not Active: the zone stays on screen after the match is decided, right
+            // through the victory callout, instead of blinking out at the moment players are
+            // looking at where it caught them.
+            if (!Modes.BattleRoyale.RingPersists || !NetConfig.ShowZoneVisual.Value)
             {
                 if (_go != null) _go.SetActive(false);
                 return;

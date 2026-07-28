@@ -52,7 +52,7 @@ namespace PunkMultiverse.Modes
 
             Vector2 pos = ship.transform.position;
             float dist = Vector2.Distance(pos, new Vector2(Ring.CenterX, Ring.CenterY));
-            if (dist <= Ring.SafeRadius) return;
+            if (dist <= Ring.SafeRadius) { StopZoneFire(); return; }
 
             try
             {
@@ -61,17 +61,83 @@ namespace PunkMultiverse.Modes
                 var tank = dr != null ? dr.Tank : null;
                 if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return;
 
-                float killSeconds = Mathf.Max(1f, NetConfig.BrZoneKillSeconds.Value);
-                float fractionPerTick = BurnInterval / killSeconds;
-                float amount = Mathf.Max(0.5f, tank.Capacity * fractionPerTick * ZoneDamageMultiplier);
-                dr.Damage(amount); // untyped chokepoint — our own ship, applied locally
+                SetShipOnFire(unit, tank);
                 if (Time.frameCount % 120 == 0)
+                {
+                    float killSeconds = Mathf.Max(1f, NetConfig.BrZoneKillSeconds.Value);
                     Plugin.Log.LogInfo($"[BR] in the zone ({dist:0} > {Ring.SafeRadius:0}) — " +
-                        $"stage {Ring.Stage}, x{ZoneDamageMultiplier:0.0} damage, " +
+                        $"burning: stage {Ring.Stage}, x{ZoneDamageMultiplier:0.0} damage, " +
                         $"~{killSeconds / ZoneDamageMultiplier:0}s from full");
+                }
             }
             catch { }
         }
+
+        // The ship's own burn settings, saved the first time we set it alight so they can be put
+        // back when it leaves the zone. Fire is a normal part of this game — a rocket can set you
+        // alight — and the zone must not permanently reprogram how that feels.
+        private static Unit.Data.BurnProperties _originalBurn;
+        private static bool _burnSaved;
+        private static bool _burning;
+
+        /// <summary>Set the ship ALIGHT rather than deducting health from nowhere.
+        ///
+        /// Omar, 2026-07-28: "we should do damage to them by lighting them on fire, not just doing
+        /// damage blindly — that fire will do the damage we specified." So the zone stops calling
+        /// <c>Damage()</c> itself and instead drives the game's OWN fire: raise
+        /// <c>Unit.Data.BurnLevel</c> past <c>fireThreshold</c> and
+        /// <c>DamagableResource.Update</c> ticks <c>fireDmgPerTick</c> every <c>fireTickRate</c>
+        /// through the normal damage pipeline, while <c>StatusEffectForUnit</c> emits the flames —
+        /// no bespoke visual needed, and being in the zone now LOOKS like what it is.
+        ///
+        /// The configured pacing is preserved by rewriting this ship's fire RATE rather than
+        /// accepting the prefab's: fireDmgPerTick is set so one tick removes exactly the fraction
+        /// of MAX health that BrZoneKillSeconds (scaled by the stage multiplier) calls for. Vanilla
+        /// cools BurnLevel every frame by coolingSpeed, so it is topped back up each tick while the
+        /// ship is outside — which also means a player who escapes keeps burning briefly as the
+        /// fire dies down, instead of the damage stopping dead at an invisible line.</summary>
+        private static void SetShipOnFire(Unit unit, ResourceTank tank)
+        {
+            var data = unit != null ? unit.ComponentData : null;
+            if (data == null) return;
+            if (!_burnSaved) { _originalBurn = data.burnProperties; _burnSaved = true; }
+
+            float killSeconds = Mathf.Max(1f, NetConfig.BrZoneKillSeconds.Value);
+            var burn = data.burnProperties;
+            // Keep the prefab's tick cadence when it has one; it drives the flame animation's
+            // rhythm as much as the damage.
+            float tickRate = burn.fireTickRate > 0.01f ? burn.fireTickRate : BurnInterval;
+            burn.fireTickRate = tickRate;
+            burn.fireDmgPerTick = Mathf.Max(0.5f,
+                tank.Capacity * (tickRate / killSeconds) * ZoneDamageMultiplier);
+            // A threshold of 0 would mean "never actually on fire"; guarantee a usable band.
+            if (burn.maxBurnLevel <= burn.fireThreshold) burn.maxBurnLevel = burn.fireThreshold + 1f;
+            data.burnProperties = burn;
+
+            // Top up above the threshold every tick — vanilla is simultaneously cooling it.
+            if (data.BurnLevel <= burn.fireThreshold + 0.01f)
+                data.BurnLevel = burn.maxBurnLevel;
+            _burning = true;
+        }
+
+        /// <summary>Back inside: hand the ship's fire settings back to the game. The flames are NOT
+        /// snuffed out — vanilla's cooling puts them out over the next moment or two, which is the
+        /// right feel for having just run through a wall of fire.</summary>
+        private static void StopZoneFire()
+        {
+            if (!_burning || !_burnSaved) return;
+            _burning = false;
+            try
+            {
+                var ship = ShipSync.LocalShip;
+                var unit = ship != null
+                    ? (ship.GetComponentInParent<Unit>() ?? ship.GetComponent<Unit>()) : null;
+                if (unit?.ComponentData != null) unit.ComponentData.burnProperties = _originalBurn;
+            }
+            catch { }
+        }
+
+        internal static void ResetZoneFire() { _burning = false; _burnSaved = false; }
 
         /// <summary>How much harder the zone bites now than it did at the opening ring. Stage 0 (the
         /// grace period, before anything has closed) is always 1x.</summary>
@@ -161,15 +227,38 @@ namespace PunkMultiverse.Modes
         private static bool _scattered;
         private static float _scatterAt;
 
-        /// <summary>Arm the scatter: the vanilla start cinematic freezes ships and pans the camera,
-        /// so the teleport waits until control is back rather than fighting it.</summary>
-        public static void ArmScatter() { _scattered = false; _scatterAt = Time.unscaledTime + 3f; }
+        /// <summary>Arm the scatter. The teleport must land AFTER the vanilla start cinematic has
+        /// finished, not on a fixed timer.
+        ///
+        /// The cinematic's last act is <c>UnlockCamera(2f)</c> — a TWO-SECOND camera transition to
+        /// wherever the ship is. Teleporting before that meant the transition began from the shared
+        /// start station and swept the whole map to the scattered spawn: the "camera starts
+        /// somewhere else then pans over" (field-reported 2026-07-28, and still there after the
+        /// station-unlock fix because this is a different mechanism). Waiting for the cinematic to
+        /// hand back control means the camera is already settled on the ship, so
+        /// <c>TeleportLocalShip</c>'s instant camera move is a cut rather than a pan.</summary>
+        public static void ArmScatter()
+        {
+            _scattered = false;
+            _scatterAt = Time.unscaledTime + 3f;   // earliest; the real gate is control being back
+            _scatterDeadline = Time.unscaledTime + 30f; // never wait forever on a broken cinematic
+        }
+
+        private static float _scatterDeadline;
 
         public static void TickScatter(NetSession session)
         {
             if (_scattered || !Active || Time.unscaledTime < _scatterAt) return;
             var ship = ShipSync.LocalShip;
             if (ship == null) return;
+            // Control restored == the cinematic reached its final line (the same signal
+            // StartSequenceWatchdog waits on). Past the deadline, go anyway: a scattered spawn
+            // matters more than a tidy camera, and the watchdog will restore input separately.
+            bool cinematicDone = ship.shipInput != null && ship.shipInput.enabled;
+            if (!cinematicDone && Time.unscaledTime < _scatterDeadline) return;
+            if (!cinematicDone)
+                Plugin.Log.LogWarning("[BR] scattering before the start cinematic finished — " +
+                    "expect a camera sweep; the cinematic never gave control back in 30s");
             _scattered = true;
             var assignment = AssignSpawnStations(session);
             if (!assignment.TryGetValue((byte)session.LocalSlot, out int stationNetId)) return;
@@ -312,15 +401,46 @@ namespace PunkMultiverse.Modes
             _selfDestructFired = true;
             try
             {
-                // Same untyped chokepoint the ring burn uses — our own ship, applied locally, and
-                // the death replicates through the normal ShipDied path.
                 var unit = ship.GetComponentInParent<Unit>() ?? ship.GetComponent<Unit>();
                 var dr = unit != null ? unit.GetComponent<DamagableResource>() : ship.GetComponent<DamagableResource>();
-                var tank = dr != null ? dr.Tank : null;
-                if (dr == null) return;
-                float amount = tank != null && tank.Capacity > 0f ? tank.Capacity * 10f : 100000f;
-                dr.Damage(amount);
-                Plugin.Log.LogInfo("[BR] winner self-destructed");
+                if (dr == null) { Plugin.Log.LogWarning("[BR] self-destruct: no DamagableResource"); return; }
+                var tank = dr.Tank;
+
+                // Damage is the WRONG tool here and it failed in the field (2026-07-28: "the
+                // self-destruct failed because I probably had F1 unlimited resources selected").
+                // A self-destruct is not an injury to be survived — it is the run ending — but
+                // dr.Damage goes through every survival mechanism there is: the god-mode gate
+                // (Sync/DamageSync.IsGodShieldedLocalShip drops it outright), shields, and an
+                // INFINITE tank, which by definition can never be emptied. Any one of those turns
+                // the winner into a player standing alone in a world the run is waiting on.
+                //
+                // So: empty the tank directly and tell the game to notice. Ship.CheckIfDead is the
+                // game's own "re-evaluate whether this ship is dead" entry point (ShipManager
+                // .CheckShipsAlive calls it), and the resulting death replicates through the normal
+                // ShipDied path exactly as a real one does.
+                if (tank != null)
+                {
+                    if (tank.isInfinite)
+                    {
+                        tank.isInfinite = false; // the run is over; nothing outlives this
+                        Plugin.Log.LogInfo("[BR] self-destruct: cleared an infinite health tank " +
+                            "(debug menu) — the winner does not get to keep the map");
+                    }
+                    tank.Value = 0f;
+                }
+                ship.CheckIfDead();
+
+                if (!ship.IsDead)
+                {
+                    // Last resort: the tank route did not convince it. Damage at least still runs
+                    // the vanilla pipeline, and a failure here is worth seeing rather than silence.
+                    dr.Damage(tank != null && tank.Capacity > 0f ? tank.Capacity * 10f : 100000f);
+                    ship.CheckIfDead();
+                }
+                Plugin.Log.LogInfo($"[BR] winner self-destructed (dead={ship.IsDead})");
+                if (!ship.IsDead)
+                    Plugin.Log.LogWarning("[BR] self-destruct did NOT kill the winner — they are " +
+                        "still alive and the run will end around them");
             }
             catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] self-destruct failed: {e.Message}"); }
         }
