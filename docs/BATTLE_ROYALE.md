@@ -152,26 +152,55 @@ A second game mode, `BattleRoyale`, alongside the existing (implicit) `Standard`
 ## 4. The lava ring
 
 **Model.** Host-authoritative circle. **Center prefers open areas**: at match start the
-host samples 64 candidate centers (seeded RNG) within the middle 50% of the map and
-scores each by the fraction of `Empty (0)` cells in a sampling disc read directly from
-`Level.cellTypes` (cheap host-side array scan); the most open candidate wins. The host
-is authoritative — center + radius ride `RingStateMsg`, so clients never recompute.
-Radius starts large enough to cover the whole map from that center (distance to the
-farthest map corner) and reaches **0 at t=45:00**, collapsing on the chosen center.
+host samples 64 candidate centers (seeded RNG) and scores each by the fraction of
+`Empty (0)` cells in a sampling disc read directly from `Level.cellTypes` (cheap
+host-side array scan); the most open candidate wins. The host is authoritative — center
++ radius ride `RingStateMsg`, so clients never recompute.
+
+**The ring is sized to the PLAYABLE DISC, not the cell array.** `BorderGenerator` stamps
+every cell further than `Width/2` from the grid centre as the **void biome**, so the
+world is a disc inscribed in a square array. Sizing the start radius off the array's
+farthest CORNER (the original implementation) put ~29% of the ring's entire travel
+outside the world before it touched anything a player could stand on, and painted its
+lava wall into the void along the way — field-reported 2026-07-27 as *"the ring is
+starting from way out in the 3D world space"* (that match logged centre `(1282,955)`
+`r=1654` on a disc of radius ~1000). Now:
+
+- `MeasurePlayableArea` derives the disc empirically — the bounding box of every
+  non-void cell in `Level.bioms` — rather than assuming the generator's radius.
+- Candidate centres are drawn from within `CenterDriftFraction` (0.15) of the MAP's
+  centre, and void cells no longer count as "open" (they are empty, so the old scoring
+  rated the border as the most fightable ground on the map).
+- `startRadius = mapRadius + |center − mapCenter|` — the smallest circle around the
+  chosen centre that still contains the whole disc. Everyone starts inside (nobody
+  burns at t=0) and no part of the schedule is spent closing through nothing.
+- `PaintRing` skips void cells, so the wall exists only where the world does and those
+  cells are not replicated as terrain diffs.
+
+The match-start log states the resulting closure RATE outright (`each closing Nu over
+Ns = X u/s`), because that number — not the four configs behind it — is what decides
+whether the ring reads as pressure or as scenery.
 
 **Timeline** (t = time since go-live, host clock):
 
 | t | Event |
 |---|---|
-| 5:00 | `AnnounceMsg` "THE LAVA RING IS CLOSING" — stage 1 begins |
-| 10:00 → 40:00 (every 5:00) | announce "THE RING IS CLOSING — SAFE ZONE SHRINKING" — stages 2–7 |
-| 10/20/30/40:00 | care package drops (§6) |
-| 45:00 | stage 8 completes: radius 0, whole map lethal |
+| 2:00 | `AnnounceMsg` "THE LAVA RING IS CLOSING" — stage 1 begins |
+| 2:00 → 18:00 (every 2:15) | announce "THE LAVA RING IS CLOSING (n/8)" — stages 2–7 |
+| 4/8/12/16:00 | care package drops (§6) |
+| 18:00 | stage 8 completes: radius 0, whole map lethal |
 
-Each stage advances the boundary inward by ⅛ of the start radius across its 5 minutes —
-a smooth creep (~0.6 cells/s of front advance) rather than a teleporting wall, because
-painted terrain cannot un-burn; each 5-minute toast marks a stage. `RingStateMsg` is
-re-broadcast at each stage boundary and periodically (~10s) for late HUD refresh.
+A stage is one **hold** (75s, the zone sits still and is fought over) followed by one
+**closure** (`BrRingCloseSeconds`, 45s), advancing the boundary inward by ⅛ of the start
+radius. The creep is smooth rather than a teleporting wall because painted terrain
+cannot un-burn. `RingStateMsg` is re-broadcast at each stage boundary and periodically
+(~5s) for late HUD refresh.
+
+The original 45-minute / 120-second schedule was reported as *"the lava is going way too
+slow"* (2026-07-27): eight stages spread over 40 minutes, on a radius that was itself
+~41% too large, meant the wall was never anywhere near anyone. Defaults are now 18 / 2 /
+45. Note these are **defaults** — a server that has already written its `config.cfg`
+keeps the old values until that file is edited.
 
 **Physical form — two layers:**
 
@@ -204,6 +233,19 @@ from `RingStateMsg` + `ClockSync`-aligned time.
 
 ## 5. Combat rules
 
+- **Projectiles can HIT other players** (`src/Patches/BattleRoyalePvP.cs`). PUNK is
+  co-op, so every player ship shares one faction, and `Projectile.FixedUpdate` asks
+  `Owner.IsFriendsWith(hitUnit)` before registering a hit — if true it calls
+  `MoveForward()` instead of `OnObjectHit()`. Direct-fire projectiles therefore flew
+  straight THROUGH another player without ever reaching a collision, let alone the
+  damage routing below: *"none of my attacks are hitting the other player"*
+  (2026-07-27). Hitscan beams and explosions have no such filter, which is why they DID
+  land and the symptom looked weapon-dependent. A postfix makes `IsFriendsWith` false
+  in a live BR match when both units are player ships and are not the same ship —
+  enemy AI is untouched (an `AIAgent`'s unit is never a `Ship`) and self-hits stay
+  friendly. **Known gap:** a player's MINIONS still pass through other players; their
+  projectiles' `Owner` is the minion Unit, so "which player owns this unit" would have
+  to be resolved first to avoid making their fire hostile to its own owner too.
 - **PvP always on**: the FriendlyFire gate (`ProjectileSync.FriendlyFireBlocked`,
   `src/Sync/ProjectileSync.cs:1302`, and `FriendlyExplosionBlocked`, `:1316`) is
   forced open when `CurrentMode == BattleRoyale`; the lobby FF toggle is ignored (UI
@@ -225,6 +267,49 @@ from `RingStateMsg` + `ClockSync`-aligned time.
   routed (`DamageSync.cs:444`) and local (`:157`) damage paths and interacting per-hit
   with resistances. Enemy→player damage unchanged. (The per-player co-op HP scaling is
   inherently replaced — BR sets the multiplier absolutely.)
+
+## 5b. Loot is CONTESTED, not instanced
+
+Standard co-op instances loot: every machine drops its own copy and a player too far to
+reach the pile is granted an equivalent straight into their (never-synced) Vault, so a
+kill rewards the whole party. BR inverts that — the drop **is** the contest. Omar,
+2026-07-27: *"gold and resources, while they should be destroyed for everyone, should
+only be granting one item visible to all clients, but only one may pick it up."*
+
+Implemented in `src/Modes/BattleRoyaleLoot.cs`:
+
+- **The pile stays a local copy on every machine.** Replicating each coin as a real
+  networked entity would drag hundreds of short-lived pickups into the
+  authority/streaming pool for an object whose only interesting state is *"has someone
+  taken it yet"*. That single bit is what travels instead.
+- **Identity without a shared reference.** A drop is named by `(Group, Ordinal)`:
+  `Group` = the dying entity's `netId`, or `-(cellIndex + 1)` for a destroyed terrain
+  cell; `Ordinal` = the item's position in that drop's roll. Both halves were already
+  deterministic (the death roll runs inside `LootDiag.DropLootGuard`'s seeded scope;
+  cell drops are seeded from the cell position by vanilla) and everything spawns through
+  the one funnel `LootFactory.Create` — so ordinal 3 of group #812 is the same item on
+  every machine.
+- **Collecting is a request.** The pickup is intercepted at the last moment (the coin's
+  magnet reaching the ship, or the interact-pickup's fly-in), a `LootClaimMsg` goes to
+  the host, and the pile visibly HOLDS until the verdict. First claim the host sees
+  wins; `LootClaimedMsg` goes to everyone and the losers destroy their copy. The
+  winner's own pickup then completes through the **untouched vanilla path** — which is
+  the point of gating rather than granting: coins, ingredients, consumables and modules
+  each keep their own collection behaviour and none needs a bespoke grant routine.
+  Claims are idempotent, so a lost verdict heals on retry without ever awarding twice.
+- **No distant grant** (`LootDiag.GrantRemoteLoot` returns immediately in BR) and **no
+  far-drop suppression** (the pile always spawns where the death happened, so a machine
+  has something to destroy when someone else claims it).
+- **Remote puppets cannot collect.** Another player's ship is a real `Ship` with a real
+  `LootCollector` on this machine, and vanilla's magnet was happy to let a puppet hoover
+  up a pile and charge its snapshot-driven tank — consuming loot nobody claimed.
+
+The cost is one round trip of hold before the item is yours; predicting the win and
+rolling it back would mean un-granting a module or subtracting gold a player already
+saw. **Known gap:** a peer for whom the dying entity was never resident never runs the
+drop chain, so that pile does not exist on their machine and will not appear if they fly
+over later — contested loot is correct exactly where two players are close enough to
+contest it.
 
 ## 6. Care packages
 
@@ -266,14 +351,27 @@ Stacked, health on top:
    ▂▂▂▂▂▂▂▂▂▂   blue  = fuel
 ```
 
-**Fixed size, normalized fill.** This is the one place we deliberately do NOT reuse the
-vanilla widget: `HealthbarOwner`/`HealthbarWidget` build **segmented** bars through
-`ResourceBar` rows at a constant 20 px per resource unit, so a ship that has upgraded
-its health draws a physically longer (and eventually wrapped, multi-row) bar. Instead
-the mod draws its own fixed-width bar and fills it by **fraction** (`tank.Value /
-tank.Capacity`), so a fully-upgraded ship and a starter ship show the same size widget —
-only the fill differs. Width/height are tuned to match a grunt's bar so it reads as part
-of the game's visual language, and the widget is scale-stable regardless of upgrades.
+**Built from the vanilla enemy healthbar** (revised 2026-07-27, Omar's call). The bars
+are real `ResourceBar` instances borrowed from the game's own
+`HealthbarManager → HealthbarWidget → resourceBarPrefab` chain, stacked health-over-fuel
+the way `HealthbarWidget.GenerateResourceBars` stacks shield-over-health, at
+`BarScale` 0.6 — so a player ship advertises itself in exactly the language every
+hostile on the map already does: same segments, same shader, same pop animation. Fuel is
+re-tinted blue by overriding `_ResourceColor` / `_ResourceColorEmpty` on the instanced
+row material (the colour otherwise comes from the `Resource` asset, which is not ours to
+edit), reapplied each frame because the vanilla bar re-instantiates its rows whenever
+capacity changes.
+
+**Trade accepted:** `ResourceBar` draws one segment per unit of **capacity**, so an
+upgraded ship grows a physically longer bar rather than a fuller one — the opposite of
+the fixed-size widget this replaced. `MaxResourcePerRow` (16) wraps it instead of letting
+it run off across the screen.
+
+**Not drawn over the map.** The widget is parented to `HealthbarManager`'s transform and
+positioned in world space the way `HealthbarWidget.UpdateTransform` does, so it sits in
+the same layer, depth and camera as the enemy bars — and it hides outright while
+`ShipMenuToggler.isOpen`, because a status bar punching through the full-screen map was
+the reported symptom.
 
 **Data**: both values come from the ship's `Unit` tanks — health from
 `DamagableResource.Tank`, fuel from the tank whose `Resource` is the fuel resource
@@ -344,10 +442,11 @@ separate path.
 |---|---|---|
 | `EnableGameModes` | `false` | **Master feature flag.** Off = every run is Standard, the GAME MODE row is hidden, and a server ignores `GameMode`. Joining someone else's BR server still works — the host owns its runs' ruleset. |
 | `GameMode` | `Standard` | `Standard` \| `BattleRoyale` (dedicated server; restart-applied; requires `EnableGameModes`. Self-host uses the GAME SETTINGS row) |
-| `BrMatchMinutes` | `45` | total match length; ring reaches 0 at this time |
-| `BrRingStartMinutes` | `5` | first-shrink announcement time |
+| `BrMatchMinutes` | `18` | total match length; ring reaches 0 at this time (was 45 — the ring read as scenery) |
+| `BrRingStartMinutes` | `2` | first-shrink announcement time (was 5) |
 | `BrRingStages` | `8` | discrete shrink stages |
-| `BrCarePackageMinutes` | `10` | care-package drop interval (0 = disabled) |
+| `BrRingCloseSeconds` | `45` | how long ONE closure takes; the zone holds still between them (was 120) |
+| `BrCarePackageMinutes` | `4` | care-package drop interval (0 = disabled; was 10, which fit one drop in a match) |
 | `PvPDamageScale` | `0.25` | ship→ship damage multiplier in BR |
 | `BrEnemyHpScale` | `0.5` | enemy HP multiplier in BR (0.5 ≈ double damage) |
 | `BrMinPlayers` | `2` | minimum connected players for START in BR (1 allowed with a logged warning, for testing) |

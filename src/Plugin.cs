@@ -60,6 +60,8 @@ namespace PunkMultiverse
 
             _harmony = new Harmony(Guid);
             _harmony.PatchAll(typeof(Plugin).Assembly);
+            // Kept out of PatchAll on purpose — see BattleRoyaleLoot.ApplyGenericPatches.
+            Modes.BattleRoyaleLoot.ApplyGenericPatches(_harmony);
 
             _runtime = new GameObject("PunkMultiverse");
             Object.DontDestroyOnLoad(_runtime);
@@ -70,6 +72,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<LobbyScreen>();
             _runtime.AddComponent<MainMenuInjection>();
             _runtime.AddComponent<PlayerTracker>();
+            _runtime.AddComponent<RingWorldMapOverlay>();
             _runtime.AddComponent<Scoreboard>();
             _runtime.AddComponent<ShipStatusBars>();
             _runtime.AddComponent<SpectatorCam>();

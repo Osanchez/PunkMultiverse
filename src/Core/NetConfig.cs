@@ -336,19 +336,19 @@ namespace PunkMultiverse
                     "docs/BATTLE_ROYALE.md). Players hosting their own game choose the mode on the " +
                     "GAME SETTINGS screen instead — this setting does not affect them.",
                     new AcceptableValueList<string>("Standard", "BattleRoyale")));
-            BrMatchMinutes = cfg.Bind("Session", "BrMatchMinutes", 45,
+            BrMatchMinutes = cfg.Bind("Session", "BrMatchMinutes", 18,
                 "Battle Royale: total match length in minutes. The lava ring finishes closing " +
                 "exactly at this mark, so this IS the match timer.");
-            BrRingStartMinutes = cfg.Bind("Session", "BrRingStartMinutes", 5,
+            BrRingStartMinutes = cfg.Bind("Session", "BrRingStartMinutes", 2,
                 "Battle Royale: minutes of grace before the ring starts closing (the first warning).");
             BrRingStages = cfg.Bind("Session", "BrRingStages", 8,
                 "Battle Royale: how many announced stages the ring closes in.");
-            BrRingCloseSeconds = cfg.Bind("Session", "BrRingCloseSeconds", 120f,
+            BrRingCloseSeconds = cfg.Bind("Session", "BrRingCloseSeconds", 45f,
                 "Battle Royale: how long ONE ring closure takes. The zone holds still between " +
                 "closures and then draws in over this many seconds, evenly, so the pace is " +
                 "predictable and the terrain painting stays light. Automatically shortened if a " +
                 "stage is too brief to fit it (short test matches).");
-            BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 10,
+            BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 4,
                 "Battle Royale: minutes between care-package drops (0 disables them). Each package " +
                 "is destructible; only the player who destroys it gets the loot.");
             PvPDamageScale = cfg.Bind("Session", "PvPDamageScale", 0.25f,

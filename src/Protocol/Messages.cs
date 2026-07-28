@@ -362,6 +362,54 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    /// <summary>Battle Royale contested loot. A drop is identified by (Group, Ordinal) — a value
+    /// every machine derives identically, never a GameObject reference, because the pile is a local
+    /// copy on each machine rather than one replicated entity. Group is the dying entity's netId,
+    /// or the NEGATIVE of a destroyed cell's index + 1; Ordinal is the position of the item within
+    /// that drop's deterministic roll.</summary>
+    public struct LootClaimMsg
+    {
+        public int Group;
+        public byte Ordinal;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.LootClaim);
+            w.WriteInt(Group);
+            w.WriteByte(Ordinal);
+        }
+
+        public static LootClaimMsg Read(NetReader r) => new LootClaimMsg
+        {
+            Group = r.ReadInt(),
+            Ordinal = r.ReadByte(),
+        };
+    }
+
+    /// <summary>Host's verdict on a <see cref="LootClaimMsg"/>: this drop belongs to Slot, and
+    /// every other machine destroys its copy.</summary>
+    public struct LootClaimedMsg
+    {
+        public int Group;
+        public byte Ordinal;
+        public byte Slot;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.LootClaimed);
+            w.WriteInt(Group);
+            w.WriteByte(Ordinal);
+            w.WriteByte(Slot);
+        }
+
+        public static LootClaimedMsg Read(NetReader r) => new LootClaimedMsg
+        {
+            Group = r.ReadInt(),
+            Ordinal = r.ReadByte(),
+            Slot = r.ReadByte(),
+        };
+    }
+
     public struct LevelReadyMsg
     {
         public ulong Checksum;

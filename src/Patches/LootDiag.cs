@@ -121,6 +121,10 @@ namespace PunkMultiverse.Patches
         internal static void GrantRemoteLoot(int netId, LootEntry[] loot, UnityEngine.Vector2 deathPos, bool hasPos)
         {
             if (loot == null || loot.Length == 0) return;
+            // Battle Royale has no distant grant: loot is a CONTEST at the death site, not a
+            // reward for the party (Modes/BattleRoyaleLoot.cs). Handing a far-away player their own
+            // copy is exactly the instancing BR exists to remove.
+            if (Modes.BattleRoyale.Active) return;
             if (!EnemySync.TryMarkLootDropped(netId)) return; // already dropped/granted here
 
             IngredientRegistry registry = null;
@@ -364,7 +368,12 @@ namespace PunkMultiverse.Patches
                 byte killer = EnemySync.SuppressLocalDeathEffects
                     ? EnemySync.RemoteKillerSlot
                     : DamageSync.LastKiller(netId);
-                if (killer != local && !NearLocalShip(__instance))
+                // BR drops ALWAYS spawn where the death happened, however far away the local player
+                // is: the pile is the same contested object on every machine, so a machine that
+                // skipped it would have nothing to destroy when someone else claimed it — and
+                // nothing to offer if that player flies over later. There is no grant path behind
+                // this in BR (see GrantRemoteLoot), so suppressing here would delete the loot.
+                if (killer != local && !Modes.BattleRoyale.Active && !NearLocalShip(__instance))
                 {
                     NetDiag.Throttled($"loot-far-{netId}", 10f, "Loot",
                         () => $"{NetDiag.Describe(netId)} local drop SUPPRESSED — too far; granted at ship via payload");

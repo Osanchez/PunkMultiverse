@@ -152,7 +152,7 @@ namespace PunkMultiverse.Modes
         /// <c>Enemy_*</c> (Enemy_Raven, Enemy_Fish, Enemy_Turret_Laser, ...) or <c>Unit_*</c>
         /// (Unit_Grunt, Unit_Floater_Soldier, Unit_Swimmer_Maggot, ...). Everything else generated
         /// into the world is scenery, plants, crates or the stations themselves.</summary>
-        private static bool IsHostileEntityId(string entityId) =>
+        internal static bool IsHostileEntityId(string entityId) =>
             !string.IsNullOrEmpty(entityId)
             && (entityId.StartsWith("Enemy", System.StringComparison.Ordinal)
                 || entityId.StartsWith("Unit_", System.StringComparison.Ordinal));

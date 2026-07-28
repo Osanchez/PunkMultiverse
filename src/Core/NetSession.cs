@@ -2305,6 +2305,7 @@ namespace PunkMultiverse.Core
             // a new seed. (Must live HERE, not in BeginRun: invalidating at run START destroys the
             // very world START is about to reuse — found the hard way.)
             Modes.BattleRoyale.Reset();
+            Modes.BattleRoyaleLoot.Reset();
             InvalidatePreGen("run ended");
             _preGenNextAttemptAt = Time.unscaledTime + 5f; // let the teardown settle first
             ChosenSeed = 0;                                // the next world rolls a new seed
@@ -2781,6 +2782,18 @@ namespace PunkMultiverse.Core
                     break;
                 case MsgType.CarePackage when !IsHost:
                     Modes.BattleRoyale.ApplyCarePackage(CarePackageMsg.Read(_reader));
+                    break;
+                // Contested loot: the ONE battle-royale message that travels client -> host. The
+                // host is the single ordering point, so "who claimed it first" needs no clocks.
+                case MsgType.LootClaim when IsHost:
+                {
+                    var claim = LootClaimMsg.Read(_reader);
+                    var claimant = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (claimant != null) Modes.BattleRoyaleLoot.ApplyClaim(claim, claimant.Slot, this);
+                    break;
+                }
+                case MsgType.LootClaimed when !IsHost:
+                    Modes.BattleRoyaleLoot.ApplyClaimed(LootClaimedMsg.Read(_reader), this);
                     break;
                 case MsgType.AuthRelease when IsHost:
                 {

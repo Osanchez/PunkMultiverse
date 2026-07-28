@@ -123,6 +123,11 @@
                              // remain — elimination toasts and the "YOU PLACED #N" screen
         CarePackage = 94,    // host -> all: a supply drop spawned at x,y with this netId — arrow
                              // target for everyone; whoever destroys it gets the loot
+        LootClaim = 95,      // client -> host: I am picking up the loot identified by (group,
+                             // ordinal). BR loot is CONTESTED — one pile, one taker — so a pickup
+                             // is a request, not a fact (docs/BATTLE_ROYALE.md)
+        LootClaimed = 96,    // host -> all: that loot went to this slot. First claim wins; everyone
+                             // else destroys their copy of it
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

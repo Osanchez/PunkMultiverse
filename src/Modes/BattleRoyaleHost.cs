@@ -45,8 +45,13 @@ namespace PunkMultiverse.Modes
                 ? NetConfig.BrCarePackageMinutes.Value * 60f
                 : float.MaxValue;
 
+            // The closure RATE is the number that decides whether the ring reads as pressure or as
+            // scenery, so state it outright instead of leaving it to be derived from four configs.
+            float stepPerStage = _startRadius / Mathf.Max(1, _stages);
             Plugin.Log.LogInfo($"[BR] MATCH START — {MatchPlayers.Count} players, {_matchSeconds / 60f:0} min, " +
-                $"ring center ({_center.x:0},{_center.y:0}) r={_startRadius:0}, {_stages} stages");
+                $"ring center ({_center.x:0},{_center.y:0}) r={_startRadius:0}, {_stages} stages, " +
+                $"each closing {stepPerStage:0}u over {_closeSeconds:0}s = {stepPerStage / Mathf.Max(1f, _closeSeconds):0.0} u/s " +
+                $"(hold {Mathf.Max(0f, _stageSpan - _closeSeconds):0}s between)");
             Announce(session, $"BATTLE ROYALE — {MatchPlayers.Count} PLAYERS. LAST ONE ALIVE WINS.", 8f);
             BroadcastRing(session);
         }
@@ -151,29 +156,106 @@ namespace PunkMultiverse.Modes
             }
         }
 
+        // The PLAYABLE map, which is not the cell grid. BorderGenerator stamps everything outside
+        // distance Width/2 of the grid centre as the VOID biome, so the world a player can reach is
+        // a DISC inscribed in a square array — measured here rather than assumed, because the
+        // generator's radius is config-driven and the array need not be square.
+        private static Vector2 _mapCenter;
+        private static float _mapRadius;
+
+        /// <summary>Measure the playable disc from the biome map: the bounding box of every cell
+        /// that is not VOID. Used for both the ring's size and its centre, because sizing the ring
+        /// off the cell ARRAY instead put its first ~22% of travel entirely outside the world —
+        /// field-reported as "the ring starts way out in world space" (2026-07-27; the match log
+        /// showed centre (1282,955) r=1654 on a disc of radius ~1000).</summary>
+        private static void MeasurePlayableArea(Level level)
+        {
+            int w = level != null ? level.Width : 2000;
+            int h = level != null ? level.Height : 2000;
+            _mapCenter = new Vector2(w * 0.5f, h * 0.5f);
+            _mapRadius = Mathf.Min(w, h) * 0.5f;
+            _voidBiomeId = 255;
+
+            try
+            {
+                var cfg = ServiceLocator.Get<LevelGeneratorConfig>();
+                var voidBiom = cfg != null ? cfg.voidBiom : null;
+                if (voidBiom == null || level == null) return;
+                _voidBiomeId = voidBiom.id;
+
+                var bioms = level.bioms;
+                if (!bioms.IsCreated || bioms.Length < w * h) return;
+
+                int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
+                for (int y = 0; y < h; y++)
+                {
+                    int row = y * w;
+                    for (int x = 0; x < w; x++)
+                    {
+                        if (bioms[row + x] == _voidBiomeId) continue;
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                    }
+                }
+                if (minX > maxX || minY > maxY) return; // all void — keep the array-based fallback
+
+                _mapCenter = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+                // The playable region is a disc, so its bounding box is a square whose half-width
+                // IS the radius. Take the smaller half-extent: never claim ground that isn't there.
+                _mapRadius = Mathf.Min(maxX - minX + 1, maxY - minY + 1) * 0.5f;
+                Plugin.Log.LogInfo($"[BR] playable map = disc centre ({_mapCenter.x:0},{_mapCenter.y:0}) " +
+                    $"r={_mapRadius:0} (grid {w}x{h}, void biome id {_voidBiomeId})");
+            }
+            catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] playable-area measure failed: {e.Message}"); }
+        }
+
+        private static byte _voidBiomeId = 255; // 255 = unknown; nothing is treated as void
+
+        private static bool IsVoidCell(Level level, int x, int y)
+        {
+            if (_voidBiomeId == 255 || level == null) return false;
+            try
+            {
+                var bioms = level.bioms;
+                int idx = y * level.Width + x;
+                return bioms.IsCreated && idx >= 0 && idx < bioms.Length && bioms[idx] == _voidBiomeId;
+            }
+            catch { return false; }
+        }
+
         /// <summary>The final zone should be somewhere players can actually fight, so candidate
-        /// centers are scored by how much open space surrounds them and the most open wins.</summary>
+        /// centers are scored by how much open space surrounds them and the most open wins.
+        ///
+        /// Candidates are drawn from a disc around the MAP's centre, not from the middle half of
+        /// the cell array: the further the ring's centre sits from the map's, the more of its
+        /// travel is spent shrinking through ground nobody can stand on (the ring has to start big
+        /// enough to contain the whole disc, so every unit of offset costs two units of dead
+        /// radius). "Open" also now means open AND real — void cells are empty, so the old scoring
+        /// rated the border as the most fightable ground on the map.</summary>
         private static void PickRingCenter()
         {
             var level = LevelRef;
-            int w = level != null ? level.Width : 2000;
-            int h = level != null ? level.Height : 2000;
-            _center = new Vector2(w * 0.5f, h * 0.5f);
+            MeasurePlayableArea(level);
+            _center = _mapCenter;
 
             try
             {
                 var cells = Traverse.Create(level).Field("cellTypes").GetValue();
-                if (cells is Unity.Collections.NativeArray<byte> native && native.IsCreated)
+                if (cells is Unity.Collections.NativeArray<byte> native && native.IsCreated && level != null)
                 {
+                    int w = level.Width, h = level.Height;
                     var rnd = new System.Random(NetSession.Instance?.CurrentRunSeed ?? 12345);
                     float bestScore = -1f;
                     const int candidates = 64, samples = 200, probeRadius = 60;
+                    float drift = _mapRadius * CenterDriftFraction;
                     for (int c = 0; c < candidates; c++)
                     {
-                        // Middle half of the map: a corner "center" would make half the ring
-                        // stages pointless.
-                        float cx = w * 0.25f + (float)rnd.NextDouble() * w * 0.5f;
-                        float cy = h * 0.25f + (float)rnd.NextDouble() * h * 0.5f;
+                        double ca = rnd.NextDouble() * System.Math.PI * 2.0;
+                        double cr = System.Math.Sqrt(rnd.NextDouble()) * drift;
+                        float cx = _mapCenter.x + (float)(cr * System.Math.Cos(ca));
+                        float cy = _mapCenter.y + (float)(cr * System.Math.Sin(ca));
                         int open = 0;
                         for (int s = 0; s < samples; s++)
                         {
@@ -182,6 +264,7 @@ namespace PunkMultiverse.Modes
                             int x = (int)(cx + r * System.Math.Cos(a));
                             int y = (int)(cy + r * System.Math.Sin(a));
                             if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                            if (IsVoidCell(level, x, y)) continue; // outside the world, not "open"
                             if (native[y * w + x] == 0) open++;
                         }
                         float score = open / (float)samples;
@@ -194,15 +277,19 @@ namespace PunkMultiverse.Modes
             }
             catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] ring center pick failed: {e.Message}"); }
 
-            // Cover the whole map from wherever the center landed.
-            float far = 0f;
-            far = Mathf.Max(far, Vector2.Distance(_center, new Vector2(0, 0)));
-            far = Mathf.Max(far, Vector2.Distance(_center, new Vector2(w, 0)));
-            far = Mathf.Max(far, Vector2.Distance(_center, new Vector2(0, h)));
-            far = Mathf.Max(far, Vector2.Distance(_center, new Vector2(w, h)));
-            _startRadius = far;
-            _paintedRadius = far;
+            // The SMALLEST circle around the chosen centre that still contains the whole playable
+            // disc. Everyone starts inside the ring (nobody burns at t=0) and not one metre of the
+            // schedule is spent closing through the void.
+            _startRadius = _mapRadius + Vector2.Distance(_center, _mapCenter);
+            _paintedRadius = _startRadius;
+            Plugin.Log.LogInfo($"[BR] ring start radius {_startRadius:0} " +
+                $"(map r={_mapRadius:0} + centre offset {Vector2.Distance(_center, _mapCenter):0})");
         }
+
+        /// <summary>How far the ring's centre may sit from the map's, as a fraction of the map
+        /// radius. Every unit of offset adds a unit of radius the ring must close through before it
+        /// touches the world, so this buys variety at a directly measurable cost in pacing.</summary>
+        private const float CenterDriftFraction = 0.15f;
 
         // The ring alternates HOLD and CLOSE, the way a battle royale is supposed to feel: the zone
         // sits still long enough to fight over, then draws in over a couple of minutes to the next
@@ -386,6 +473,10 @@ namespace PunkMultiverse.Modes
                     float dx = x - _center.x;
                     float d2 = dx * dx + dy * dy;
                     if (d2 < innerSq || d2 > outerSq) continue;
+                    // Never lava the void border: those cells are outside the world, so the wall
+                    // would only be visible on the map as a ring drawn around nothing — and every
+                    // one of them is a terrain diff replicated to every client for no reason.
+                    if (IsVoidCell(level, x, y)) continue;
                     level.SetCell(y * w + x, id); // changeSource 0 => captured + replicated
                     painted++;
                 }
