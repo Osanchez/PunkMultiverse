@@ -129,6 +129,15 @@
         LootClaimed = 96,    // host -> all: that loot went to this slot. First claim wins; everyone
                              // else destroys their copy of it
 
+        // ---- Channel 0 (control): Battle Royale drop selection (pre-go-live) ----
+        SpawnChoice = 97,    // client -> host: I am dropping in this biome
+        SpawnTally = 98,     // host -> all: how many players have picked each biome so far. Drives
+                             // the heat colouring; deliberately a COUNT the UI turns into
+                             // green/amber/red rather than a number shown to players
+        SpawnAssign = 99,    // host -> all: the final slot -> station assignment. Sent once the
+                             // choices close, immediately before GO LIVE, so every machine places
+                             // its ship on the chosen pad with no teleport
+
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match
         IdResolveReply = 58,   // host -> client: their entity type + position, for

@@ -83,13 +83,27 @@ namespace PunkMultiverse.Patches
         /// cannot locate yourself on cannot be used to run from a closing ring, and it tells you
         /// nothing you do not already know.
         ///
+        /// STATIONS stay too (Omar, 2026-07-28). Battle Royale unlocks every shop and spawns players
+        /// on them, so hiding them would make the one thing the mode hands you discoverable only by
+        /// flying into it — and unlike an enemy or another player, a shop's location is not
+        /// information anyone can be ambushed with.
+        ///
         /// The supply drop is NOT excepted here because it is not drawn by this system at all: it
         /// gets a purpose-built marker in UI/RingWorldMapOverlay.cs, which is why it can look like
         /// a supply drop instead of whatever icon its crate prefab happens to carry.</summary>
         private static bool ShouldHide(EntityData entity)
         {
             if (entity.entityId == "Ship") return !LocalShipInstanceIds.Contains(entity.instanceId);
-            return true;
+            return !IsStation(entity);
+        }
+
+        /// <summary>Identified by COMPONENT, not by entity id: station prefabs are named per biome
+        /// (Station_Ice, Station_Lava, ...), so a name match would silently drop whichever ones a
+        /// future map introduces — the same blocklist rot this allowlist exists to avoid.</summary>
+        private static bool IsStation(EntityData entity)
+        {
+            try { return entity.TryGetComponent<Station.Data>(out _); }
+            catch { return false; }
         }
 
         /// <summary>Which entity instance is OUR ship. Rescanned on a timer rather than cached

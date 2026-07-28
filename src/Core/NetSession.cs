@@ -1171,6 +1171,12 @@ namespace PunkMultiverse.Core
             _localLevelReady.VisualVariantDigest = visual.Digest;
             Plugin.Log.LogInfo($"[Determinism] visuals={visual.VariantCount}/{visual.Digest:X16} " +
                 $"renderers={visual.RendererCount}");
+            // The world is generated and verified here, which is the earliest this machine can know
+            // which biomes exist and where the stations are — so it is where the drop screen's
+            // option list gets built. A ship-flying host builds it too; only a coordinator sits out.
+            if (LobbyMode == Protocol.GameMode.BattleRoyale && !NetConfig.IsCoordinator)
+                Modes.BattleRoyaleSpawnSelect.BuildOptions();
+
             if (IsHost)
             {
                 _levelChecksums[HostSlot] = _localLevelChecksum;
@@ -1273,6 +1279,12 @@ namespace PunkMultiverse.Core
                 $"fingerprints=[{string.Join(",", _levelFingerprints.Keys.Select(s => "P" + (s + 1)))}]");
         }
 
+        /// <summary>Re-evaluate the go-live barrier. Needed because the barrier is event-driven
+        /// (it runs when a checksum arrives) and Battle Royale's drop selection resolves on a
+        /// different clock entirely — the last player choosing must not have to wait for the
+        /// timer to expire before anything re-checks.</summary>
+        internal void PokeGoLive() => CheckGoLive();
+
         private void CheckGoLive()
         {
             if (!IsHost || State != SessionState.Loading) return;
@@ -1300,6 +1312,15 @@ namespace PunkMultiverse.Core
                 new RejectMsg { Reason = "World generation diverged between players (terrain/entity/plant/visual fingerprint mismatch)." }.Write(_writer);
                 ForEachRemotePeer(peer => SendReliable(peer, NetChannel.Control, _writer.ToSegment()));
                 StopSession("generation fingerprint mismatch");
+                return;
+            }
+
+            // Battle Royale: nobody is placed until everybody has said where they are dropping.
+            // This is the only moment the world exists and no ship does, which is what lets players
+            // spawn straight onto their chosen station instead of being teleported there later.
+            if (!Modes.BattleRoyaleSpawnSelect.HostReadyToGoLive(this, present))
+            {
+                CheckGoLiveDiag("waiting for battle royale drop choices");
                 return;
             }
 
@@ -2317,6 +2338,10 @@ namespace PunkMultiverse.Core
             // very world START is about to reuse — found the hard way.)
             Modes.BattleRoyale.Reset();
             Modes.BattleRoyaleLoot.Reset();
+            // Run teardown is the ONLY safe place for this: the drop assignment is made just before
+            // go-live and consumed just after it, so anything that clears it mid-run loses a
+            // player's choice between the two.
+            Modes.BattleRoyaleSpawnSelect.Reset();
             InvalidatePreGen("run ended");
             _preGenNextAttemptAt = Time.unscaledTime + 5f; // let the teardown settle first
             ChosenSeed = 0;                                // the next world rolls a new seed
@@ -2805,6 +2830,20 @@ namespace PunkMultiverse.Core
                 }
                 case MsgType.LootClaimed when !IsHost:
                     Modes.BattleRoyaleLoot.ApplyClaimed(LootClaimedMsg.Read(_reader), this);
+                    break;
+                case MsgType.SpawnChoice when IsHost:
+                {
+                    var choice = SpawnChoiceMsg.Read(_reader);
+                    var chooser = _players.FirstOrDefault(p => p != null && p.Connected && p.PeerId == peer);
+                    if (chooser != null)
+                        Modes.BattleRoyaleSpawnSelect.ApplyChoice(choice, chooser.Slot, this);
+                    break;
+                }
+                case MsgType.SpawnTally when !IsHost:
+                    Modes.BattleRoyaleSpawnSelect.ApplyTally(SpawnTallyMsg.Read(_reader));
+                    break;
+                case MsgType.SpawnAssign when !IsHost:
+                    Modes.BattleRoyaleSpawnSelect.ApplyAssignment(SpawnAssignMsg.Read(_reader));
                     break;
                 case MsgType.AuthRelease when IsHost:
                 {

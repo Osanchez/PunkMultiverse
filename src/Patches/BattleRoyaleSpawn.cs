@@ -70,12 +70,19 @@ namespace PunkMultiverse.Patches
 
         private static void Place(NetSession session, ShipManager shipManager)
         {
-            var assignment = Modes.BattleRoyale.AssignSpawnStations(session);
-            if (!assignment.TryGetValue((byte)session.LocalSlot, out int stationNetId))
+            // The player's own choice wins when the drop screen ran; otherwise fall back to the
+            // deterministic farthest-point scatter, which is still the right answer for a match
+            // with selection disabled or a world with no station-bearing biomes.
+            int stationNetId = Modes.BattleRoyaleSpawnSelect.StationFor((byte)session.LocalSlot);
+            if (stationNetId == 0)
             {
-                Plugin.Log.LogWarning($"[BR] no spawn station assigned for slot {session.LocalSlot} " +
-                    "— using the scatter teleport");
-                return;
+                var assignment = Modes.BattleRoyale.AssignSpawnStations(session);
+                if (!assignment.TryGetValue((byte)session.LocalSlot, out stationNetId))
+                {
+                    Plugin.Log.LogWarning($"[BR] no spawn station assigned for slot {session.LocalSlot} " +
+                        "— using the scatter teleport");
+                    return;
+                }
             }
             if (!NetIds.TryGetInstanceId(stationNetId, out int stationInstance)) return;
             var em = ServiceLocator.Get<EntityManager>();

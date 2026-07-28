@@ -410,6 +410,71 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    /// <summary>Client -> host: the biome this player wants to drop into. Sent from the drop
+    /// screen, which runs during the go-live barrier — before any ship exists.</summary>
+    public struct SpawnChoiceMsg
+    {
+        public byte BiomeId;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SpawnChoice);
+            w.WriteByte(BiomeId);
+        }
+
+        public static SpawnChoiceMsg Read(NetReader r) => new SpawnChoiceMsg { BiomeId = r.ReadByte() };
+    }
+
+    /// <summary>Host -> all: how many players have picked each biome so far. Pairs of
+    /// (biomeId, count). The UI turns these into green/amber/red — players never see the
+    /// numbers, because "3 players here" invites counting rather than reading the map.</summary>
+    public struct SpawnTallyMsg
+    {
+        public byte[] BiomeIds;
+        public byte[] Counts;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SpawnTally);
+            int n = BiomeIds != null ? BiomeIds.Length : 0;
+            w.WriteByte((byte)(n > 255 ? 255 : n));
+            for (int i = 0; i < n; i++) { w.WriteByte(BiomeIds[i]); w.WriteByte(Counts[i]); }
+        }
+
+        public static SpawnTallyMsg Read(NetReader r)
+        {
+            int n = r.ReadByte();
+            var msg = new SpawnTallyMsg { BiomeIds = new byte[n], Counts = new byte[n] };
+            for (int i = 0; i < n; i++) { msg.BiomeIds[i] = r.ReadByte(); msg.Counts[i] = r.ReadByte(); }
+            return msg;
+        }
+    }
+
+    /// <summary>Host -> all: the settled slot -> station assignment, sent immediately before GO
+    /// LIVE. The host decides so nothing has to be derived identically on every machine — players
+    /// are allowed to share a station, so there is no constraint left worth agreeing on.</summary>
+    public struct SpawnAssignMsg
+    {
+        public byte[] Slots;
+        public int[] StationNetIds;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SpawnAssign);
+            int n = Slots != null ? Slots.Length : 0;
+            w.WriteByte((byte)(n > 255 ? 255 : n));
+            for (int i = 0; i < n; i++) { w.WriteByte(Slots[i]); w.WriteVarUInt((uint)StationNetIds[i]); }
+        }
+
+        public static SpawnAssignMsg Read(NetReader r)
+        {
+            int n = r.ReadByte();
+            var msg = new SpawnAssignMsg { Slots = new byte[n], StationNetIds = new int[n] };
+            for (int i = 0; i < n; i++) { msg.Slots[i] = r.ReadByte(); msg.StationNetIds[i] = (int)r.ReadVarUInt(); }
+            return msg;
+        }
+    }
+
     public struct LevelReadyMsg
     {
         public ulong Checksum;

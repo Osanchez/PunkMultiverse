@@ -71,6 +71,8 @@ namespace PunkMultiverse
         public static ConfigEntry<float> BrRingCloseSeconds;
         public static ConfigEntry<float> BrStationUnlockDelaySeconds;
         public static ConfigEntry<bool> BrSpawnAtStationDirectly;
+        public static ConfigEntry<bool> BrChooseSpawn;
+        public static ConfigEntry<float> BrChooseSpawnSeconds;
         public static ConfigEntry<bool> ShowZoneVisual;
         public static ConfigEntry<float> BrZoneKillSeconds;
         public static ConfigEntry<float> BrZoneDamageStageScale;
@@ -370,6 +372,18 @@ namespace PunkMultiverse
                 "all frame time at 979ms per call while the ring closed. Behaviour is identical - " +
                 "the discarded changes failed the segment's own rect test anyway. Turn off only to " +
                 "prove a terrain bug is or is not this patch.");
+            BrChooseSpawn = cfg.Bind("Session", "BrChooseSpawn", true,
+                "Battle Royale: let players pick which BIOME to drop into before the match places " +
+                "them, with a live heat map of where everyone else is heading. Runs inside the " +
+                "go-live barrier — the only moment the world exists and no ship does — so players " +
+                "land on their chosen station with no teleport. Off spawns everyone by the " +
+                "farthest-point scatter as before. A dedicated server/sidecar never chooses; its " +
+                "clients still do.");
+            BrChooseSpawnSeconds = cfg.Bind("Session", "BrChooseSpawnSeconds", 30f,
+                "Battle Royale: seconds players get to choose a drop region. When it expires " +
+                "anyone who has not chosen is given a random region — the timer is a decision, not " +
+                "a punishment. The match cannot start until this resolves, so one idle player can " +
+                "hold the lobby for this long.");
             BrSpawnAtStationDirectly = cfg.Bind("Session", "BrSpawnAtStationDirectly", true,
                 "Battle Royale: place each ship ON its own spawn station from the first frame, and " +
                 "point the opening cinematic at that station, instead of spawning everyone on the " +

@@ -22,6 +22,7 @@ namespace PunkMultiverse.UI
             // The Battle Royale match clock / ring readout shares this OnGUI host: it belongs in
             // the same top-center strip as toasts and needs no separate component.
             Modes.BattleRoyale.DrawHud();
+            SpawnSelectScreen.Draw(); // pre-run drop selection; no-ops outside that window
             if (string.IsNullOrEmpty(_text) || Time.unscaledTime > _until) return;
             if (_style == null)
                 _style = new GUIStyle(GUI.skin.label)

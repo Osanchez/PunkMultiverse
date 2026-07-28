@@ -115,6 +115,10 @@ namespace PunkMultiverse.Modes
             // the next run would restore another ship's numbers onto this one.
             ResetZoneFire();
             Patches.BattleRoyaleSpawn.Reset();
+            // NOT BattleRoyaleSpawnSelect: this runs from BeginMatch at go-live, and the drop
+            // assignment was settled just BEFORE go-live and is read just AFTER it, when the game
+            // scene places ships. Clearing it here would throw away the choice between the moment
+            // it was made and the moment it is used. It is reset when the run ends instead.
         }
 
         // ---------------------------------------------------------------- announcements
