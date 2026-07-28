@@ -181,6 +181,52 @@ The match-start log states the resulting closure RATE outright (`each closing Nu
 Ns = X u/s`), because that number — not the four configs behind it — is what decides
 whether the ring reads as pressure or as scenery.
 
+**Paint cost (measured 2026-07-28, `tools/br-test.ps1 -Phases ring -ProfileRing`).** The
+wall is written through `Level.SetCell`, so every cell is a terrain diff replicated to
+every client — the one part of the ring that scales with the map. Two defects were found
+and fixed, and they were not the same problem:
+
+1. **The painting itself.** `PaintRing` scanned the boundary's bounding box testing every
+   cell — O(radius²) work to paint O(radius) cells (3M distance tests to write 22k cells
+   at r=868) — and the band width was however far the ring had moved since the last pass,
+   so a slow frame widened the next band and made the next frame slower. Worst single pass
+   **221ms**. Now it solves each row for the two x-spans inside the annulus, and the band
+   is capped by a self-tuning budget (`BrRingPaintMs`, from the MEASURED cost per cell).
+   Worst pass **3.2ms**.
+2. **Everything downstream of the painting, which was 100x larger.** See below.
+
+**⚠ The ring exposed a vanilla defect that has nothing to do with Battle Royale.**
+Painting drove the coordinator from 120fps to **0.1fps**, with 9-second frames, while the
+painting itself stayed under 50ms per ten seconds. `simprof` blamed
+`LevelChangeBuffer.Update` — true and useless, since that method's whole body is
+`CellsChanged?.Invoke(...)`. Timing its eight subscribers individually (the `cellfanout`
+devcmd, added for this) named the real one:
+
+```
+GroundTilemapUpdater   12583.4ms  avg=1398ms/call  worst=4381ms   <- 94%
+LightmapGenerator       1410.5ms  avg= 470ms/call
+MapDrawer                 11.3ms
+LevelSegmentComponent      1.5ms
+NavigationManager          0.8ms
+```
+
+`GroundTilemapUpdater.OnCellsChanged` calls `Refresh` per changed cell, and each `Refresh`
+issues four Unity Tilemap calls (`SetTile`, `SetTransformMatrix`, `SetTileFlags`,
+`SetColor`) — ~0.6ms per cell, per tilemap layer. It is **pure presentation**, and a
+headless coordinator renders none of it. `Patches/TerrainPresentationTrim.cs` skips it
+outright on a coordinator and narrows it to VISIBLE cells on a player's machine (lossless:
+`TilemapUpdater` already refreshes a cell via `UnityTilemapRenderer.CellBecameVisible`
+when it scrolls into view, and both paths read the same `visibleCells` set).
+
+Result on the same match: the host holds **119.5fps** through every closure, paint passes
+go from 2-15 per 10s to **1192 per 10s**, throughput from ~1.5k to **57k cells/s**, and
+`behind=` drops from 400-928 units to **0.0** — the visible wall now sits exactly on the
+boundary that is burning you, which was a gameplay bug as much as a performance one.
+
+Any bulk terrain change pays this: a large explosion, a terrain repair chunk, a rejoining
+client's catch-up diff. BR was just the first thing to change enough cells to make it
+fatal.
+
 **Timeline** (t = time since go-live, host clock):
 
 | t | Event |
@@ -483,7 +529,8 @@ the block opens by collapsing that distance with `tpplayer`; then:
 
 | `-Phases` | Drives | Asserts |
 |---|---|---|
-| `ring` | — | Start radius ≤ 1.2 × the playable disc radius (catches a regression back to array-corner sizing); the closure rate is stated; worst single paint pass < 50 ms; host hitch count |
+| `ring` | — | Start radius ≤ 1.2 × the playable disc radius (catches a regression back to array-corner sizing); the closure rate is stated; worst single paint pass < 50 ms; **worst host frame < 250 ms** (the check that caught the tilemap collapse — asserted on the WORST sample, never first-vs-last, because the host recovers the instant the ring stops painting and a start/end comparison scores four minutes at 0.2fps as healthy) |
+| `ring -ProfileRing` | `simprof` + `cellfanout` mid-closure | Ranked attribution of the frame. `simprof` names the per-frame method; `cellfanout` names which of `LevelChangeBuffer`'s eight subscribers is responsible, which `simprof` structurally cannot |
 | `sync` | bot1 `orbit`, bot0 `shipsmooth` | Drawn-pose CV ≤ 1.5 and stall% ≤ 15 on the observed ship; `[ShipLatency]` saturation |
 | `pvp` | bot0 `fire … player <slot>` | ≥1 routed PvP hit **applied** on the victim, and its hp actually moved. This is the whole chain in one line — a projectile that collided, a hit routed to the owner, damage applied through the vanilla pipeline |
 | `bars` | `shipbars` before/after the burst | The observer's copy of the remote ship's health *changed* while it was being shot, and its capacity is non-zero — the bars bind these tanks, so a stale puppet tank is a full bar on a dying ship |
@@ -497,6 +544,10 @@ Two devcmds exist for this harness and are useful by hand:
 - `shipbars` — print health/fuel for the local ship and every remote one, read through
   the same tanks `UI/ShipStatusBars` binds. The bars themselves are UI and a bot runs
   `-nographics`, so the data is the testable half — and the half that actually breaks.
+- `cellfanout on|off` — per-handler timing of `LevelChangeBuffer.CellsChanged`. `simprof`
+  can only ever blame the publisher of an event; this is the level below it. Written after
+  three consecutive wrong diagnoses (the burn simulation, `LevelSegmentComponent`, then
+  `MapDrawer`) that all came from reading the source instead of measuring it.
 
 Note: god mode does **not** shield a ship from a routed damage request
 (`ApplyDamageRequest` runs with `_applyingRemote` set, which the god gate sits behind),

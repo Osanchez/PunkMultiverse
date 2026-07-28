@@ -147,7 +147,13 @@ namespace PunkMultiverse.Modes
                     if (best != null)
                     {
                         _ringCellId = best.id;
-                        Plugin.Log.LogInfo($"[BR] ring material = '{best.name}' id={best.id} contactDamage={bestDamage}");
+                        // colliderType is the expensive property, not the damage: LevelSegmentComponent
+                        // rebuilds a segment's polygon collider whenever a changed cell's collider type
+                        // differs from what it replaced, and the ring changes millions of cells. A ring
+                        // material with colliderType None painted over empty ground costs nothing here;
+                        // anything else rebuilds colliders across every segment the front is crossing.
+                        Plugin.Log.LogInfo($"[BR] ring material = '{best.name}' id={best.id} " +
+                            $"contactDamage={bestDamage} colliderType={best.colliderType}");
                     }
                     else Plugin.Log.LogWarning("[BR] no damaging cell type found — the ring will rely on the kill zone only");
                 }
@@ -377,7 +383,9 @@ namespace PunkMultiverse.Modes
         private static float _nextCarePackageAt;
         private const float WallThickness = 32f;   // cells; thick enough to be a wall, thin enough
                                                    // that the terrain ledger stays bounded
-        private const float PaintStep = 4f;        // repaint once the front has moved this far
+        // (PaintStep is gone: the front is now repainted every frame, with the band width capped
+        // by BrRingPaintBudget. A fixed step made the pass size depend on how long the last frame
+        // took, which is precisely how a slow frame grew the next band and stalled the host worse.)
 
         /// <summary>Host: advance the match. Called every frame while InGame.</summary>
         public static void HostTick(NetSession session)
@@ -399,16 +407,35 @@ namespace PunkMultiverse.Modes
                 BroadcastRing(session);
             }
 
-            if (radius < _paintedRadius - PaintStep)
+            // Paint whatever the front has uncovered since last frame, but never more than one
+            // frame's worth. Measured 2026-07-28: with an uncapped band the coordinator spent
+            // 221ms in a single pass (75-238k cells) — a visible freeze for every player, and the
+            // slower the host got the wider the next band grew, which is a spiral. The band is now
+            // capped by cell budget, so a fast closure on a big ring simply takes several frames to
+            // catch up instead of stalling one.
+            if (_paintedRadius > radius)
             {
+                // How many cells fit in this frame's time budget, from the MEASURED cost of the
+                // cells already painted. A per-frame CELL cap would be either too slow on a fast
+                // host or a stall on a slow one; the host's own throughput is the only number that
+                // knows the difference.
+                float budgetCells = Mathf.Max(64f, (float)(NetConfig.BrRingPaintMs.Value / _msPerCell));
+                float budgetWidth = Mathf.Max(0.25f,
+                    budgetCells / (2f * Mathf.PI * Mathf.Max(1f, radius)));
+                float inner = Mathf.Max(radius, _paintedRadius - budgetWidth);
                 long before = System.Diagnostics.Stopwatch.GetTimestamp();
-                _paintCells += PaintRing(radius);
+                int cells = PaintRing(inner);
                 double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - before)
                     * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                _paintCells += cells;
                 _paintMs += ms;
                 if (ms > _paintWorstMs) _paintWorstMs = ms;
                 _paintCount++;
-                _paintedRadius = radius;
+                // Rolling estimate, heavily damped: a single pass that happened to land on a GC or
+                // a scheduler hiccup must not convince us the map got ten times more expensive.
+                if (cells > 64) _msPerCell = _msPerCell * 0.9 + (ms / cells) * 0.1;
+                _paintBehind = inner > radius ? _paintedRadius - radius : 0f;
+                _paintedRadius = inner;
             }
             ReportPaintCost(radius, closing);
 
@@ -438,6 +465,13 @@ namespace PunkMultiverse.Modes
         private static int _paintCells;
         private static double _paintWorstMs;
         private static float _nextPaintReportAt;
+        // How far the painted wall is trailing the real boundary because the per-frame budget
+        // clipped it. Non-zero for long means the budget is too tight for this ring's size: the
+        // lava you can SEE is behind the radius that is actually burning you.
+        private static float _paintBehind;
+        // Measured cost of one painted cell (SetCell + the terrain-diff capture behind it), seeded
+        // from the first live measurement on 2026-07-28 and re-estimated every pass.
+        private static double _msPerCell = 0.0017;
 
         internal static void ResetPaintCost()
         {
@@ -455,7 +489,8 @@ namespace PunkMultiverse.Modes
             _nextPaintReportAt = Time.unscaledTime + 10f;
             Plugin.Log.LogInfo($"[BR] ring paint r={radius:0} passes={_paintCount} cells={_paintCells} " +
                 $"totalMs={_paintMs:0.0} avgMs={_paintMs / Mathf.Max(1, _paintCount):0.00} " +
-                $"worstMs={_paintWorstMs:0.00}");
+                $"worstMs={_paintWorstMs:0.00} behind={_paintBehind:0.0}u " +
+                $"usPerCell={_msPerCell * 1000.0:0.0}");
             _paintMs = 0.0;
             _paintCount = 0;
             _paintCells = 0;
@@ -486,8 +521,13 @@ namespace PunkMultiverse.Modes
         }
 
         /// <summary>Paint the wall at the current boundary. Only the newly-crossed annulus is
-        /// written, so the cost is proportional to how far the front moved, not to the burned
-        /// area — which also keeps the terrain ledger bounded.</summary>
+        /// written, so the cost is proportional to how far the front moved, not to the burned area.
+        ///
+        /// The annulus is walked by SOLVING each row for the two x-spans that fall inside it, not
+        /// by scanning the boundary's bounding box and testing every cell. The scan version was
+        /// O(radius²) work to paint O(radius) cells — at r=868 that is 3 million distance tests to
+        /// write ~22k cells — and it was most of the 221ms single-frame stall measured on
+        /// 2026-07-28. Here the loop touches only cells it actually paints.</summary>
         private static int PaintRing(float radius)
         {
             byte id = RingCellId;
@@ -499,8 +539,6 @@ namespace PunkMultiverse.Modes
             float inner = radius;
             if (outer <= inner) return 0;
 
-            int minX = Mathf.Max(0, Mathf.FloorToInt(_center.x - outer));
-            int maxX = Mathf.Min(w - 1, Mathf.CeilToInt(_center.x + outer));
             int minY = Mathf.Max(0, Mathf.FloorToInt(_center.y - outer));
             int maxY = Mathf.Min(h - 1, Mathf.CeilToInt(_center.y + outer));
             float innerSq = inner * inner, outerSq = outer * outer;
@@ -508,20 +546,41 @@ namespace PunkMultiverse.Modes
             for (int y = minY; y <= maxY; y++)
             {
                 float dy = y - _center.y;
-                for (int x = minX; x <= maxX; x++)
+                float dy2 = dy * dy;
+                if (dy2 > outerSq) continue;
+                float outerHalf = Mathf.Sqrt(outerSq - dy2);
+                if (dy2 >= innerSq)
                 {
-                    float dx = x - _center.x;
-                    float d2 = dx * dx + dy * dy;
-                    if (d2 < innerSq || d2 > outerSq) continue;
-                    // Never lava the void border: those cells are outside the world, so the wall
-                    // would only be visible on the map as a ring drawn around nothing — and every
-                    // one of them is a terrain diff replicated to every client for no reason.
-                    if (IsVoidCell(level, x, y)) continue;
-                    level.SetCell(y * w + x, id); // changeSource 0 => captured + replicated
-                    painted++;
+                    // This row passes above/below the inner circle entirely — one solid span.
+                    painted += PaintSpan(level, w, y, _center.x - outerHalf, _center.x + outerHalf, id);
+                }
+                else
+                {
+                    // The inner circle carves the row in two: a left arc and a right arc.
+                    float innerHalf = Mathf.Sqrt(innerSq - dy2);
+                    painted += PaintSpan(level, w, y, _center.x - outerHalf, _center.x - innerHalf, id);
+                    painted += PaintSpan(level, w, y, _center.x + innerHalf, _center.x + outerHalf, id);
                 }
             }
             if (painted > 0) InstrumentationCounters.BrRingCellsPainted(painted);
+            return painted;
+        }
+
+        private static int PaintSpan(Level level, int w, int y, float fromX, float toX, byte id)
+        {
+            int x0 = Mathf.Max(0, Mathf.CeilToInt(fromX));
+            int x1 = Mathf.Min(w - 1, Mathf.FloorToInt(toX));
+            int painted = 0;
+            int row = y * w;
+            for (int x = x0; x <= x1; x++)
+            {
+                // Never lava the void border: those cells are outside the world, so the wall would
+                // only be visible on the map as a ring drawn around nothing — and every one of them
+                // is a terrain diff replicated to every client for no reason.
+                if (IsVoidCell(level, x, y)) continue;
+                level.SetCell(row + x, id); // changeSource 0 => captured + replicated
+                painted++;
+            }
             return painted;
         }
 

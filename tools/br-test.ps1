@@ -12,7 +12,12 @@ param(
     [int]$Bots = 2,
     [int]$WatchSeconds = 420,
     # lifecycle | ring | sync | pvp | bars | loot | all. Comma-separated.
-    [string]$Phases = "all"
+    [string]$Phases = "all",
+    # Fire simprof at the coordinator while the ring is mid-closure and print the attribution.
+    # The ring phase measures what PAINTING costs; this answers what the painted WORLD costs,
+    # which turned out to be a far bigger number (2026-07-28: the host fell from 120fps to 0.2fps
+    # during a match while paint itself stayed under 50ms per 10s).
+    [switch]$ProfileRing
 )
 $ErrorActionPreference = "Stop"
 $CoordDir = "C:\Program Files (x86)\Steam\steamapps\common\PUNK Playtest - OD Test2"
@@ -170,14 +175,29 @@ try {
     if ($probed) { Write-Host "probes done - letting the match play out" }
 
     # Let the match run: ring stages, care packages, eliminations.
+    $profiled = $false
     $deadline = (Get-Date).AddSeconds($WatchSeconds)
     while ((Get-Date) -lt $deadline) {
         if ((CountIn $CoordLog "\[BR\] WINNER") -ge 1) { Write-Host "match resolved early"; break }
+        # Profile once the ring has had time to convert real ground - the cost being chased only
+        # exists after a large area has been painted, so profiling at match start measures nothing.
+        if ($ProfileRing -and -not $profiled -and (CountIn $CoordLog "\[BR\] ring paint") -ge 6) {
+            $profiled = $true
+            Write-Host "firing simprof + cellfanout at the coordinator (mid-closure)"
+            # simprof blames the publisher (LevelChangeBuffer.Update); cellfanout says WHICH of its
+            # eight subscribers is responsible. Both, or the answer is "a method whose entire body
+            # is one Invoke", which explains nothing.
+            Cmd $CoordPlug "cellfanout on"
+            Cmd $CoordPlug "simprof 20"
+        }
         Start-Sleep 10
     }
 
-    # Prove the endgame too: drop god on one bot and let the ring finish it.
-    Cmd $BotPlugs[0] "god off"
+    # Prove the endgame too: drop god on EVERY bot and let the ring finish them. God must come off
+    # the eventual winner as well — the winner's self-destruct damages its own ship, and
+    # IsGodShieldedLocalShip blocks exactly that, so leaving one godded made the self-destruct
+    # assertion pass or fail on which bot happened to survive.
+    foreach ($p in $BotPlugs) { Cmd $p "god off" }
     WaitFor $CoordLog "\[BR\] WINNER" 240 "winner" | Out-Null
     # The winner's self-destruct is on a countdown (BrWinnerSelfDestructSeconds, default 10s) and
     # the host holds the run open for it. Assert AFTER it has had time to fire, or the check races
@@ -281,6 +301,61 @@ try {
         } else { Line "ring paint" "MISSING (the ring never advanced?)"; $ok = $false }
 
         Line "host hitches" (CountIn $CoordLog "\[Hitch\]")
+
+        # Frame health across the whole match. The ring is the only thing that changes the world at
+        # scale, so a host that starts healthy and ends unplayable indicts what the ring LEAVES
+        # BEHIND, not the painting - which is measured separately above and is small.
+        # Assert on the WORST sample, never first-vs-last: the host recovers the moment the ring
+        # stops painting, so a run that spent four minutes at 0.2fps still ends at 118fps and a
+        # start/end comparison calls it healthy.
+        $frames = @(Lines $CoordLog "\[Frame\] mono=([0-9.]+)s .*avg=([0-9.]+)ms.* fps=([0-9.]+)")
+        if ($frames.Count -ge 2) {
+            $worstMs = 0.0; $worstAt = 0; $best = 0.0
+            foreach ($f in $frames) {
+                $g = $f.Matches[0].Groups
+                $ms = [double]$g[2].Value
+                if ($ms -gt $worstMs) { $worstMs = $ms; $worstAt = [int][double]$g[1].Value }
+                if ([double]$g[3].Value -gt $best) { $best = [double]$g[3].Value }
+            }
+            $bad = @($frames | Where-Object { [double]$_.Matches[0].Groups[3].Value -lt 10.0 }).Count
+            Line "host frame time" ("best {0}fps, WORST {1:0}ms at {2}s, {3}/{4} windows under 10fps" -f `
+                $best, $worstMs, $worstAt, $bad, $frames.Count)
+            if ($worstMs -gt 250.0) {
+                $ok = $false
+                Write-Host "  FAIL: the host degraded to an unplayable frame rate during the match."
+                Write-Host "        Ring PAINT cost is reported above and is NOT it. Re-run with"
+                Write-Host "        -ProfileRing and read [SimProf]: LevelChangeBuffer.Update at"
+                Write-Host "        ~99% of frame time means every segment is scanning every cell"
+                Write-Host "        change again (see Patches/SegmentChangeRouting.cs)."
+            }
+        } else { Line "host frame time" "no [Frame] samples" }
+
+        if ($ProfileRing) {
+            $prof = @(Lines $CoordLog "\[SimProf\] (\S+)\s+total=\s*([0-9.]+)ms calls=\s*(\d+) avg=\s*([0-9.]+)ms")
+            if ($prof.Count -ge 1) {
+                Write-Host "  simprof (top 8 by total, mid-closure):"
+                foreach ($p in ($prof | Select-Object -First 8)) {
+                    $g = $p.Matches[0].Groups
+                    Write-Host ("    {0,-44} total={1,8}ms calls={2,7} avg={3}ms" -f $g[1].Value, $g[2].Value, $g[3].Value, $g[4].Value)
+                }
+            } else { Line "simprof" "no [SimProf] attribution in the log" }
+
+            # The line that actually names a culprit.
+            $fan = @(Lines $CoordLog "\[CellFanout\] (\S+)\s+total=\s*([0-9.]+)ms calls=\s*(\d+) avg=\s*([0-9.]+)ms worst=\s*([0-9.]+)ms")
+            if ($fan.Count -ge 1) {
+                Write-Host "  cell-change fanout (worst 10s window, by handler):"
+                $byHandler = @{}
+                foreach ($f in $fan) {
+                    $g = $f.Matches[0].Groups
+                    $name = $g[1].Value
+                    $ms = [double]$g[2].Value
+                    if (-not $byHandler.ContainsKey($name) -or $byHandler[$name] -lt $ms) { $byHandler[$name] = $ms }
+                }
+                foreach ($k in ($byHandler.Keys | Sort-Object { -$byHandler[$_] } | Select-Object -First 6)) {
+                    Write-Host ("    {0,-34} {1,9:0.0}ms in a 10s window" -f $k, $byHandler[$k])
+                }
+            } else { Line "cell fanout" "no [CellFanout] breakdown in the log" }
+        }
     }
 
     if ($probed -and (Phase "sync")) {

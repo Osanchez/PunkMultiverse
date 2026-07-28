@@ -913,6 +913,16 @@ namespace PunkMultiverse.Core
                             : _fireDir != Vector2.zero ? $" dir {_fireDir.x:0.00},{_fireDir.y:0.00}" : ""));
                     return;
                 }
+                case "cellfanout":
+                {
+                    // Which subscriber to LevelChangeBuffer.CellsChanged is actually costing the
+                    // frame. simprof can only blame the publisher (the whole body of
+                    // LevelChangeBuffer.Update is one Invoke), which is true and useless.
+                    bool on = parts.Length < 2 || !parts[1].Equals("off", StringComparison.OrdinalIgnoreCase);
+                    Patches.CellFanoutProfiler.SetEnabled(on);
+                    Out($"cellfanout: {(on ? "ON — per-handler breakdown every 10s" : "off")}");
+                    return;
+                }
                 case "shipbars":
                 {
                     // What the health/fuel bars above other players' ships would READ, printed from

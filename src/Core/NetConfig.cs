@@ -69,6 +69,9 @@ namespace PunkMultiverse
         public static ConfigEntry<int> BrRingStartMinutes;
         public static ConfigEntry<int> BrRingStages;
         public static ConfigEntry<float> BrRingCloseSeconds;
+        public static ConfigEntry<float> BrRingPaintMs;
+        public static ConfigEntry<bool> SegmentChangeRouting;
+        public static ConfigEntry<bool> TrimTerrainPresentation;
         public static ConfigEntry<int> BrCarePackageMinutes;
         public static ConfigEntry<float> PvPDamageScale;
         public static ConfigEntry<float> BrEnemyHpScale;
@@ -348,6 +351,30 @@ namespace PunkMultiverse
                 "closures and then draws in over this many seconds, evenly, so the pace is " +
                 "predictable and the terrain painting stays light. Automatically shortened if a " +
                 "stage is too brief to fit it (short test matches).");
+            TrimTerrainPresentation = cfg.Bind("Perf", "TrimTerrainPresentation", true,
+                "Skip tile/lightmap refresh for cells nobody is looking at. A coordinator renders " +
+                "nothing, so it does none of it; a player's machine refreshes only cells the " +
+                "tilemap renderer reports VISIBLE, because off-screen cells are already refreshed " +
+                "by CellBecameVisible when they scroll in. Measured on a BR coordinator: " +
+                "GroundTilemapUpdater.OnCellsChanged was 94% of all frame time (~0.6ms per changed " +
+                "cell, 15k cells per 10s) and drove the host to 0.1fps as the ring closed. Turn " +
+                "off only to prove a terrain-rendering bug is or is not this patch.");
+            SegmentChangeRouting = cfg.Bind("Perf", "SegmentChangeRouting", true,
+                "Hand each level segment only the terrain changes inside it, instead of vanilla's " +
+                "every-segment-scans-every-change (which is O(segments x changes) per frame). " +
+                "Measured on a Battle Royale coordinator: LevelChangeBuffer.Update was 99.3% of " +
+                "all frame time at 979ms per call while the ring closed. Behaviour is identical - " +
+                "the discarded changes failed the segment's own rect test anyway. Turn off only to " +
+                "prove a terrain bug is or is not this patch.");
+            BrRingPaintMs = cfg.Bind("Session", "BrRingPaintMs", 6f,
+                "Battle Royale: milliseconds per frame the host may spend painting the lava wall. " +
+                "The wall is written through the game's own SetCell, so every cell is a terrain " +
+                "diff replicated to every client; an uncapped band froze the host for 200ms+ at a " +
+                "time on a large ring. The band width is derived from the MEASURED cost per cell, " +
+                "so a fast host paints far more per frame than a slow one and neither stalls. If " +
+                "the front outruns the budget the wall trails and catches up during the next hold " +
+                "phase — watch 'behind=' in the [BR] ring paint line; a value that never returns " +
+                "to 0 means this host cannot paint a ring this large at this closure rate.");
             BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 4,
                 "Battle Royale: minutes between care-package drops (0 disables them). Each package " +
                 "is destructible; only the player who destroys it gets the loot.");
