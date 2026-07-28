@@ -70,13 +70,26 @@ namespace PunkMultiverse.Patches
             }
         }
 
-        /// <summary>Hostiles and every ship that is not ours. The local ship stays on the map: you
-        /// must never lose track of yourself, and it reveals nothing you don't already know.</summary>
+        /// <summary>EVERYTHING is hidden except your own ship.
+        ///
+        /// This started as "hide the enemies and the other players" and that was the wrong shape —
+        /// it was a blocklist, so every entity type nobody had thought about stayed on the map.
+        /// Crates and beacons were still being handed out for free (Omar, 2026-07-28: "really the
+        /// only thing that should be shown on the map in battle royale is the supply drop and the
+        /// ring zones"). An allowlist cannot rot the same way: a new entity type added to the game
+        /// is hidden by default rather than quietly leaking whatever it is.
+        ///
+        /// Your own ship is the one exception, and it is not a compromise of the rule — a map you
+        /// cannot locate yourself on cannot be used to run from a closing ring, and it tells you
+        /// nothing you do not already know.
+        ///
+        /// The supply drop is NOT excepted here because it is not drawn by this system at all: it
+        /// gets a purpose-built marker in UI/RingWorldMapOverlay.cs, which is why it can look like
+        /// a supply drop instead of whatever icon its crate prefab happens to carry.</summary>
         private static bool ShouldHide(EntityData entity)
         {
-            if (Modes.BattleRoyale.IsHostileEntityId(entity.entityId)) return true;
             if (entity.entityId == "Ship") return !LocalShipInstanceIds.Contains(entity.instanceId);
-            return false;
+            return true;
         }
 
         /// <summary>Which entity instance is OUR ship. Rescanned on a timer rather than cached

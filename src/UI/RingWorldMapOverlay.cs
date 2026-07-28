@@ -108,6 +108,9 @@ namespace PunkMultiverse.UI
         private void DrawDrops(float zoom)
         {
             var packages = Modes.BattleRoyale.CarePackages;
+            // One shared pulse so every drop breathes together — staggering them would read as
+            // several unrelated things blinking rather than one kind of objective.
+            float pulse = 1f + 0.22f * Mathf.Sin(Time.unscaledTime * 3.4f);
             int i = 0;
             foreach (var kv in packages)
             {
@@ -115,6 +118,7 @@ namespace PunkMultiverse.UI
                 var rt = _drops[i++];
                 rt.gameObject.SetActive(true);
                 rt.localPosition = ToMapLocal(kv.Value, zoom);
+                rt.localScale = new Vector3(pulse, pulse, 1f);
             }
             for (; i < _drops.Count; i++) _drops[i].gameObject.SetActive(false);
         }
@@ -165,18 +169,50 @@ namespace PunkMultiverse.UI
             return rt;
         }
 
+        /// <summary>A purpose-built supply-drop marker: a bracketed target that PULSES.
+        ///
+        /// It used to be a small static diamond, which on a map full of vanilla station icons read
+        /// as one more piece of furniture. Now that Battle Royale hides every other icon
+        /// (Patches/BattleRoyaleMapIcons.cs) the drop is the only thing on the map besides the ring
+        /// and your own ship, so it should look like the objective it is — Omar, 2026-07-28: "we
+        /// need a custom marker of some sort so it's clear where it is".
+        ///
+        /// Motion is what actually makes it findable: a static shape at map zoom is a few pixels
+        /// and easy to sweep past, while something breathing catches the eye immediately. The pulse
+        /// is driven in Draw() so it costs one scale assignment per frame.</summary>
         private RectTransform MakeDrop()
         {
-            var go = new GameObject("SupplyDrop", typeof(RectTransform), typeof(Image));
+            var go = new GameObject("SupplyDrop", typeof(RectTransform));
             go.transform.SetParent(_root.transform, worldPositionStays: false);
             var rt = (RectTransform)go.transform;
             rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(9f, 9f);
-            rt.localRotation = Quaternion.Euler(0f, 0f, 45f); // a square on its point = a diamond
+            rt.sizeDelta = new Vector2(26f, 26f);
+
+            // Four corner brackets: reads as a targeting reticle rather than a blob, and stays
+            // legible at one or two pixels of stroke.
+            for (int i = 0; i < 4; i++)
+            {
+                float sx = (i % 2 == 0) ? -1f : 1f;
+                float sy = (i < 2) ? 1f : -1f;
+                MakeBar(rt, new Vector2(sx * 9f, sy * 13f), new Vector2(10f, 2.5f)); // horizontal
+                MakeBar(rt, new Vector2(sx * 13f, sy * 9f), new Vector2(2.5f, 10f)); // vertical
+            }
+            // Solid centre dot: the exact spot, unambiguous once the brackets have drawn the eye.
+            MakeBar(rt, Vector2.zero, new Vector2(5f, 5f));
+            return rt;
+        }
+
+        private void MakeBar(RectTransform parent, Vector2 offset, Vector2 size)
+        {
+            var go = new GameObject("Mark", typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, worldPositionStays: false);
+            var rt = (RectTransform)go.transform;
+            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = offset;
+            rt.sizeDelta = size;
             var image = go.GetComponent<Image>();
             image.color = DropMarker;
             image.raycastTarget = false;
-            return rt;
         }
 
         // ---------------------------------------------------------------- generated ring sprite
