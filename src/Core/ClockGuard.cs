@@ -38,7 +38,23 @@ namespace PunkMultiverse.Core
         private static bool SessionActive =>
             NetSession.Instance != null && NetSession.Instance.State != SessionState.Offline;
 
-        private void Awake() { Instance = this; }
+        private void Awake()
+        {
+            Instance = this;
+            // THE reason an unfocused instance runs slow. Unity throttles a player build to a
+            // crawl when it loses focus unless this is set, and the game ships with it off — so
+            // alt-tabbing away from a live session stops simulating it, which every OTHER player
+            // sees as that ship stuttering or freezing. ClockGuard already DETECTED this (the
+            // "GAME RAN SLOW WHILE UNFOCUSED" toast is its own) and fought the symptom by
+            // swapping vsync; it never addressed the cause. A multiplayer session must keep
+            // running whether or not its window is on top.
+            if (!Application.runInBackground)
+            {
+                Application.runInBackground = true;
+                Plugin.Log.LogInfo("[ClockGuard] Application.runInBackground was OFF — enabled. " +
+                    "An unfocused instance now keeps simulating instead of stalling its teammates.");
+            }
+        }
 
         private void Update()
         {

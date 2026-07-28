@@ -114,6 +114,7 @@ namespace PunkMultiverse.Modes
             // The saved burn settings belong to the PREVIOUS run's ship object; carrying them into
             // the next run would restore another ship's numbers onto this one.
             ResetZoneFire();
+            Patches.BattleRoyaleSpawn.Reset();
         }
 
         // ---------------------------------------------------------------- announcements

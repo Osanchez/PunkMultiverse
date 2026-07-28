@@ -70,6 +70,7 @@ namespace PunkMultiverse
         public static ConfigEntry<int> BrRingStages;
         public static ConfigEntry<float> BrRingCloseSeconds;
         public static ConfigEntry<float> BrStationUnlockDelaySeconds;
+        public static ConfigEntry<bool> BrSpawnAtStationDirectly;
         public static ConfigEntry<bool> ShowZoneVisual;
         public static ConfigEntry<float> BrZoneKillSeconds;
         public static ConfigEntry<float> BrZoneDamageStageScale;
@@ -369,6 +370,11 @@ namespace PunkMultiverse
                 "all frame time at 979ms per call while the ring closed. Behaviour is identical - " +
                 "the discarded changes failed the segment's own rect test anyway. Turn off only to " +
                 "prove a terrain bug is or is not this patch.");
+            BrSpawnAtStationDirectly = cfg.Bind("Session", "BrSpawnAtStationDirectly", true,
+                "Battle Royale: place each ship ON its own spawn station from the first frame, and " +
+                "point the opening cinematic at that station, instead of spawning everyone on the " +
+                "shared start pad and teleporting them apart a few seconds later. Off falls back to " +
+                "the teleport (which also happens automatically if the direct placement fails).");
             BrStationUnlockDelaySeconds = cfg.Bind("Session", "BrStationUnlockDelaySeconds", 8f,
                 "Battle Royale: seconds after go-live before every station is unlocked. NOT " +
                 "cosmetic — the vanilla start cinematic identifies the station to pan to as 'the " +

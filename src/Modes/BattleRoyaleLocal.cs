@@ -248,7 +248,11 @@ namespace PunkMultiverse.Modes
 
         public static void TickScatter(NetSession session)
         {
-            if (_scattered || !Active || Time.unscaledTime < _scatterAt) return;
+            if (_scattered || !Active) return;
+            // Already standing on our own station — Patches/BattleRoyaleSpawn.cs put us there
+            // before the cinematic even started, so there is nothing to teleport.
+            if (Patches.BattleRoyaleSpawn.PlacedAtStation) { _scattered = true; return; }
+            if (Time.unscaledTime < _scatterAt) return;
             var ship = ShipSync.LocalShip;
             if (ship == null) return;
             // Control restored == the cinematic reached its final line (the same signal
