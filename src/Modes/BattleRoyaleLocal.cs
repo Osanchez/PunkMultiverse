@@ -394,7 +394,11 @@ namespace PunkMultiverse.Modes
             if (_selfDestructAt < 0f)
             {
                 _selfDestructAt = Time.unscaledTime + seconds;
-                UI.Toast.Show("SELF-DESTRUCT SEQUENCE ENGAGED", 4f);
+                // NO TOAST here. Toast shows one message at a time, and this fired the same
+                // moment as the VICTORY callout — so the ONE machine whose player just won was
+                // the one machine that never saw it (Omar, 2026-07-29: "the winner's name only
+                // appeared on the dead client"). The victory line owns the screen; the countdown
+                // below is announcement enough that the ship is about to go.
                 Plugin.Log.LogInfo($"[BR] winner self-destruct armed — {seconds:0}s");
             }
 
@@ -403,7 +407,9 @@ namespace PunkMultiverse.Modes
             if (count != _lastSelfDestructCount && count > 0 && count <= 5)
             {
                 _lastSelfDestructCount = count;
-                UI.Toast.Show($"SELF-DESTRUCT IN {count}", 1.1f);
+                // Keep the win on screen even while counting down — this replaces the victory
+                // toast (one-at-a-time), so it must carry the victory with it.
+                UI.Toast.Show($"YOU WIN — SELF-DESTRUCT IN {count}", 1.1f);
             }
             if (remaining > 0f) return;
 

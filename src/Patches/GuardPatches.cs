@@ -119,6 +119,53 @@ namespace PunkMultiverse.Patches
             }
         }
 
+        // The battle-royale WINNER dies too (the self-destruct is how a won match ends), which
+        // routes them onto the same screen as everyone else — one that shouts GAME OVER at the
+        // person who just won (Omar, 2026-07-29: "the winner's GAME OVER SCREEN should instead
+        // say YOU WIN! only losers get GAME OVER"). Retitle it for the winner; losers keep the
+        // vanilla screen. Separate from NetRunGameOverButtons because that one exits early for
+        // the host, and a winning listen-host deserves the retitle too.
+        [HarmonyPatch(typeof(GameOverScreen), "OnGameOver")]
+        internal static class WinnerGameOverTitle
+        {
+            private static void Postfix(GameOverScreen __instance)
+            {
+                try
+                {
+                    if (!NetSession.Active) return;
+                    if (NetSession.Instance.CurrentMode != Protocol.GameMode.BattleRoyale) return;
+                    if (!Modes.BattleRoyale.LocalIsWinner) return;
+
+                    // The title is scene UI, not a serialized field — find the label that says
+                    // GAME OVER. Fallback: the biggest non-button, non-stats text on the screen.
+                    var stats = Traverse.Create(__instance).Field("statsText").GetValue<TMPro.TMP_Text>();
+                    TMPro.TMP_Text title = null;
+                    foreach (var t in __instance.GetComponentsInChildren<TMPro.TMP_Text>(true))
+                    {
+                        if (t == null || ReferenceEquals(t, stats)) continue;
+                        if (t.GetComponentInParent<UnityEngine.UI.Button>() != null) continue;
+                        string txt = (t.text ?? string.Empty).Trim();
+                        if (txt.IndexOf("game over", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                        { title = t; break; }
+                        if (title == null || t.fontSize > title.fontSize) title = t;
+                    }
+                    if (title == null)
+                    {
+                        Plugin.Log.LogWarning("[GameOver] winner retitle: no title label found — the screen keeps GAME OVER");
+                        return;
+                    }
+                    // Kill any localizer that would put GAME OVER back on the next locale refresh.
+                    foreach (var comp in title.GetComponents<UnityEngine.MonoBehaviour>())
+                        if (comp != null && comp.GetType().Name.Contains("Localiz"))
+                            UnityEngine.Object.Destroy(comp);
+                    title.text = "YOU WIN!";
+                    Plugin.Log.LogInfo("[GameOver] winner's screen retitled YOU WIN!");
+                }
+                catch (System.Exception e)
+                { Plugin.Log.LogWarning($"[GameOver] winner retitle failed: {e.Message}"); }
+            }
+        }
+
         // In a net run the suspend-save is blocked (below) and there is no single-player save
         // to come back to — the pause menu's "Save & Exit" would lie. While networking is live
         // it reads just EXIT (localization stripped from that one label); rejoining a still-live
