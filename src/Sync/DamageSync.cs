@@ -1086,6 +1086,25 @@ namespace PunkMultiverse.Sync
             if (PendingDormantDamage.Count > 0) PruneDormantClaims();
             var ship = ShipSync.LocalShip;
             if (ship == null) return;
+            // Belt and braces on NoMenuInvulnerabilityInNetRuns's sibling rule (health is never
+            // infinite in a net run): the HasInfiniteResource-setter postfix catches the toggle,
+            // but vanilla also stamps isInfinite DIRECTLY onto tanks it creates — InstallNewTank
+            // copies the armed flag onto every tank a shop upgrade installs — and the F1 menu's
+            // off-toggle can die silently partway through its ship loop, leaving the button
+            // saying OFF while the tank stays frozen (Omar, 2026-07-29: "would toggle it off so
+            // not sure why it wasn't registering shots"). Whatever armed it, this clears it
+            // within half a second.
+            try
+            {
+                var infTank = ship.GetComponent<DamagableResource>()?.Tank;
+                if (infTank != null && infTank.isInfinite)
+                {
+                    infTank.isInfinite = false;
+                    Plugin.Log.LogInfo("[Damage] health tank was INFINITE (debug toggle or an " +
+                        "upgrade installed while it was armed) — cleared; a net-run ship stays killable");
+                }
+            }
+            catch { }
             bool dead;
             try { dead = ship.IsDead; } catch { return; }
             if (dead == _announcedDead) return;
