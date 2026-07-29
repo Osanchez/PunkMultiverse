@@ -49,6 +49,13 @@ namespace PunkMultiverse.UI
 
         // ------------------------------------------------------------------ resizable window
         [DllImport("user32.dll")] private static extern IntPtr GetActiveWindow();
+        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr param);
+        [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr param);
+        private const uint GW_OWNER = 4;
         [DllImport("user32.dll", SetLastError = true)] private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
         [DllImport("user32.dll", SetLastError = true)] private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
         [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
@@ -61,20 +68,69 @@ namespace PunkMultiverse.UI
         private const uint SWP_NOMOVE = 0x0002, SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004;
 
         private static IntPtr _hwnd;
+        private static bool _loggedCapture;
 
-        /// <summary>Capture the game window handle — call once early while the window is active.</summary>
-        internal static void CaptureWindowHandle()
+        /// <summary>
+        /// Find THIS process's own top-level window, without needing it to be focused.
+        ///
+        /// This used to be <c>GetActiveWindow()</c>, which is why resizing worked only sometimes
+        /// (Omar, 2026-07-29: "sometimes the window resizer doesn't work... other times it does").
+        /// GetActiveWindow returns the active window of the CALLING THREAD and gives back
+        /// IntPtr.Zero whenever the game does not have focus at that instant — and it was called
+        /// once, at plugin load. Alt-tab away while the game starts, or let Steam or any other app
+        /// take focus during startup, and the handle was never captured; nothing retried, so the
+        /// resize frame was missing for the whole session. Whether it worked came down to where the
+        /// mouse happened to be during loading, which is exactly how an intermittent bug looks.
+        ///
+        /// Enumerating our own visible, unowned top-level window is deterministic and works
+        /// regardless of focus. GetActiveWindow stays as a last-resort fallback.
+        /// </summary>
+        private static IntPtr FindProcessWindow()
         {
-            var h = GetActiveWindow();
-            if (h != IntPtr.Zero) _hwnd = h;
+            IntPtr found = IntPtr.Zero;
+            try
+            {
+                uint me = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+                EnumWindows((h, _) =>
+                {
+                    GetWindowThreadProcessId(h, out uint pid);
+                    if (pid != me) return true;                       // someone else's window
+                    if (!IsWindowVisible(h)) return true;             // hidden helper window
+                    if (GetWindow(h, GW_OWNER) != IntPtr.Zero) return true; // owned tool/dialog
+                    found = h;
+                    return false;                                     // stop at the first real one
+                }, IntPtr.Zero);
+            }
+            catch { }
+            return found;
+        }
+
+        /// <summary>Capture (or re-capture) the game window handle. Safe to call at any time and
+        /// from any focus state; returns true when a usable handle is held.</summary>
+        internal static bool CaptureWindowHandle()
+        {
+            if (_hwnd != IntPtr.Zero && IsWindow(_hwnd)) return true;  // still valid
+            var h = FindProcessWindow();
+            bool byEnum = h != IntPtr.Zero;
+            if (h == IntPtr.Zero) h = GetActiveWindow();               // fallback: only works when focused
+            if (h == IntPtr.Zero) return false;
+            _hwnd = h;
+            // Says WHICH route found it. This feature failed intermittently for a year because the
+            // focus-dependent route silently returned nothing; if that ever becomes the only one
+            // that works again, this line is the evidence rather than a guess.
+            if (!_loggedCapture)
+            {
+                _loggedCapture = true;
+                Plugin.Log.LogInfo($"[Video] game window found via {(byEnum ? "process enumeration (focus-independent)" : "GetActiveWindow FALLBACK — focus-dependent")}");
+            }
+            return true;
         }
 
         internal static void ApplyResizableWindow()
         {
             if (!NetConfig.ResizableWindow.Value) return;
             if (Screen.fullScreenMode != FullScreenMode.Windowed) return; // borderless keeps its style
-            if (_hwnd == IntPtr.Zero) CaptureWindowHandle();
-            if (_hwnd == IntPtr.Zero) return;
+            if (!CaptureWindowHandle()) return;
             try
             {
                 int style = GetWindowLong(_hwnd, GWL_STYLE);
@@ -86,6 +142,29 @@ namespace PunkMultiverse.UI
                 Plugin.Log.LogInfo("[Video] window is now resizable (drag edges / maximize)");
             }
             catch (Exception e) { Plugin.Log.LogWarning($"[Video] resizable-window patch failed: {e.Message}"); }
+        }
+
+        /// <summary>
+        /// Re-asserts the resize frame once a second. Cheap by construction: it exits immediately
+        /// when the feature is off or the game is not windowed, and once the style is already
+        /// correct the whole check is a single GetWindowLong.
+        ///
+        /// It exists because the one-shot apply at load has three ways to miss, all of which
+        /// present to the player as "resizing works sometimes": the window may not have been
+        /// focused (or even created) when the plugin loaded, and Alt+Enter rebuilds the window
+        /// style WITHOUT going through SettingsManager.Apply, so the postfix below never fires for
+        /// it. Retrying makes the feature converge instead of depending on startup timing.
+        /// </summary>
+        internal sealed class Ticker : MonoBehaviour
+        {
+            private float _nextCheckAt;
+
+            private void Update()
+            {
+                if (Time.unscaledTime < _nextCheckAt) return;
+                _nextCheckAt = Time.unscaledTime + 1f;
+                ApplyResizableWindow();
+            }
         }
 
         /// <summary>Both tweaks re-asserted after the game applies video settings (screen-mode

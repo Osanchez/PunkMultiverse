@@ -150,6 +150,7 @@ namespace PunkMultiverse.Sync
             _requestSequence = 0;
             _takeDamageListDepth = 0;
             ResetKiller();       // last run's killer must never be credited with this run's death
+            UI.KillFeed.Clear(); // and last run's deaths must not still be on screen
             WorldDamageSource.Reset();
             Patches.PvPDiag.Reset();
             ResetLifeWatchdog(); // fresh run starts alive and un-announced
@@ -1000,10 +1001,19 @@ namespace PunkMultiverse.Sync
                 if (session == null || session.State != SessionState.InGame) return;
                 var player = msg.Slot < session.Players.Count ? session.Players[msg.Slot] : null;
                 string name = !string.IsNullOrEmpty(player?.Name) ? player.Name : $"P{msg.Slot + 1}";
-                string text = string.IsNullOrEmpty(msg.KilledBy)
-                    ? $"{name.ToUpperInvariant()} DIED"
-                    : $"{name.ToUpperInvariant()} DIED (KILLER - {msg.KilledBy.ToUpperInvariant()})";
-                UI.Toast.Show(text, 6f);
+                bool mine = msg.Slot == session.LocalSlot;
+                string killer = msg.KilledBy?.ToUpperInvariant();
+                // Addressed to the person reading it. "TRIHARDEST DIED" is what a bystander needs;
+                // the player it happened to needs "YOU WERE KILLED BY —", and they are the one who
+                // was seeing nothing at all before this moved off the single-slot toast.
+                string text = mine
+                    ? (string.IsNullOrEmpty(killer) ? "YOU DIED" : $"YOU WERE KILLED BY {killer}")
+                    : (string.IsNullOrEmpty(killer)
+                        ? $"{name.ToUpperInvariant()} DIED"
+                        : $"{name.ToUpperInvariant()} KILLED BY {killer}");
+                // The kill feed, NOT Toast: Toast is single-slot and Battle Royale's placement
+                // announcement lands in the same frame, which is precisely what used to erase this.
+                UI.KillFeed.Show(text, mine);
                 Plugin.Log.LogInfo($"[Death] {text}");
             }
             catch { }

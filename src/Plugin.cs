@@ -83,6 +83,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<ShipStatusBars>();
             _runtime.AddComponent<SpectatorCam>();
             _runtime.AddComponent<Toast>();
+            _runtime.AddComponent<KillFeed>();   // deaths get their own top-right channel
 
             // LiteNetLib is merged into this assembly (ILRepack, internalized) as of v0.1.164 —
             // delete the stale standalone DLL an older install left. Safe at this point: the
@@ -120,11 +121,15 @@ namespace PunkMultiverse
             else
             {
                 // Video QoL: fps cap (defaults to the monitor's refresh) + resizable window. The
-                // window handle is only capturable while the window is active — grab it now, at
-                // launch focus; SettingsManager.Apply postfixes re-assert both on later changes.
+                // handle lookup no longer depends on the window being focused (that was the cause
+                // of "resizing works sometimes" — see VideoTweaks.FindProcessWindow), and the
+                // Ticker below re-asserts it for windows that appear or get rebuilt later.
                 UI.VideoTweaks.CaptureWindowHandle();
                 UI.VideoTweaks.ApplyFpsLimit();
                 UI.VideoTweaks.ApplyResizableWindow();
+                // ...and keep re-asserting it: the window may not exist or be focused yet at load,
+                // and Alt+Enter rebuilds the window style without raising the settings event.
+                _runtime.AddComponent<UI.VideoTweaks.Ticker>();
 
                 Log.LogInfo($"{Name} v{Version} loaded (transport: {NetConfig.Transport.Value}). F9 = net overlay, F10 = sync diagnostics. F8 (or the pause menu in a net run) sends this machine's log for the current run id.");
             }
