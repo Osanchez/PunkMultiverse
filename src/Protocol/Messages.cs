@@ -450,6 +450,32 @@ namespace PunkMultiverse.Protocol
         }
     }
 
+    /// <summary>Deployer -> host -> all: the exact entities silently removed from a drop pad the
+    /// moment a player landed on it. An ID LIST, not a position+radius: every machine's entity
+    /// positions differ slightly (owner vs puppet), so a radius each machine evaluates locally
+    /// would remove slightly different sets — the sender's set is the canonical one.</summary>
+    public struct SpawnClearMsg
+    {
+        public int[] NetIds;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.SpawnClear);
+            int n = NetIds != null ? NetIds.Length : 0;
+            if (n > 255) n = 255;
+            w.WriteByte((byte)n);
+            for (int i = 0; i < n; i++) w.WriteInt(NetIds[i]);
+        }
+
+        public static SpawnClearMsg Read(NetReader r)
+        {
+            int n = r.ReadByte();
+            var msg = new SpawnClearMsg { NetIds = new int[n] };
+            for (int i = 0; i < n; i++) msg.NetIds[i] = r.ReadInt();
+            return msg;
+        }
+    }
+
     public struct LevelReadyMsg
     {
         public ulong Checksum;

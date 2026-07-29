@@ -17,6 +17,14 @@ namespace PunkMultiverse.UI
             Plugin.Log.LogInfo($"[Toast] {text}");
         }
 
+        private void Update()
+        {
+            // The drop-screen holding pen must win EVERY frame, including Loading frames where the
+            // net tick isn't running — vanilla's async ship placement lands exactly there. This
+            // component exists in every state, which is why the hold lives here and not in a tick.
+            Modes.BattleRoyaleSpawnSelect.HoldPendingDeploy();
+        }
+
         private void OnGUI()
         {
             // The Battle Royale match clock / ring readout shares this OnGUI host: it belongs in

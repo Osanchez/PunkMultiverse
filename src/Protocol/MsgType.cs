@@ -137,6 +137,11 @@
         // (99 was SpawnAssign — retired. The host no longer assigns stations: players may share a
         //  pad, so there is nothing to agree on, and a player deploys the instant they pick rather
         //  than waiting for the host to answer.)
+        SpawnClear = 100,    // deployer -> host -> all: the exact netIds this player silently
+                             // removed from their landing pad at deploy. The go-live sweep can't
+                             // cover this (a drop lands up to 30s later, and enemies wander back),
+                             // and a deploy is one machine's moment — so unlike the go-live clear
+                             // the SET must travel, or the removals become ghosts everywhere else
 
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match

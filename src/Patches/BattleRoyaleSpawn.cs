@@ -74,7 +74,19 @@ namespace PunkMultiverse.Patches
             // them: they deploy themselves the moment they pick a region
             // (Modes/BattleRoyaleSpawnSelect.Deploy). Placing here would put the ship on a station
             // it is about to leave, and the redirected cinematic would open the wrong platform.
-            if (NetConfig.BrChooseSpawn.Value) return;
+            //
+            // But it must not stay on the START PAD either. This postfix is the moment the ship
+            // first exists, and it runs BEFORE the first InGame net tick — the tick that holds the
+            // pen. Returning without parking left the ship standing on the shared pad through that
+            // gap: in the world, visible, attackable, ahead of any choice (Omar, 2026-07-29: "we
+            // still seem to be spawning before spawn selection"). Park it here, in the same frame
+            // it spawns, so an undeployed ship never stands anywhere real.
+            if (NetConfig.BrChooseSpawn.Value)
+            {
+                if (!Modes.BattleRoyaleSpawnSelect.Deployed)
+                    Modes.BattleRoyaleSpawnSelect.HoldInTheVoid();
+                return;
+            }
 
             var assignment = Modes.BattleRoyale.AssignSpawnStations(session);
             if (!assignment.TryGetValue((byte)session.LocalSlot, out int stationNetId))

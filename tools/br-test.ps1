@@ -79,14 +79,21 @@ try {
         "Transport"="Udp"; "UdpPort"="7787"; "CommandFile"="devcmd.txt"; "AutoLaunchRun"="false";
         "LogLevel"="Verbose"; "PreGenerateWorld"="true"; "EmptyServerResetSeconds"="600";
         "EnableGameModes"="true"; "GameMode"="BattleRoyale"; "BrMatchMinutes"="6"; "BrRingStartMinutes"="1";
-        "BrRingStages"="4"; "BrRingCloseSeconds"="20"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1"
+        "BrRingStages"="4"; "BrRingCloseSeconds"="20"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1";
+        # The drop screen needs a human: a bot never clicks it, sits parked in the void until the
+        # 30s timeout, and then deploys with spawn protection up - which turns every behaviour
+        # probe into a false FAIL (79% "stalled" motion = the holding pen, a 49k u/s "spike" = the
+        # deploy teleport, "hp never moved" = the protection window eating the PvP burst). The
+        # harness tests the deterministic scatter path; the drop screen is a manual/controller test.
+        "BrChooseSpawn"="false"
     }
     Remove-Item -Force -EA SilentlyContinue (Join-Path $CoordPlug "devcmd.txt"), $CoordLog
     foreach ($d in $BotDirs) {
         $plug = Join-Path $d "BepInEx\plugins\PunkMultiverse"
         SetCfg (Join-Path $plug "config.cfg") @{
             "Transport"="Udp"; "UdpAddress"="127.0.0.1"; "UdpPort"="7787"; "AutoStart"="Join";
-            "AutoReady"="true"; "CommandFile"="devcmd.txt"; "LogLevel"="Normal"; "AutoLaunchRun"="false"
+            "AutoReady"="true"; "CommandFile"="devcmd.txt"; "LogLevel"="Normal"; "AutoLaunchRun"="false";
+            "BrChooseSpawn"="false" # bots cannot click a drop screen - see the coordinator block
         }
         Remove-Item -Force -EA SilentlyContinue (Join-Path $plug "devcmd.txt"), (Join-Path $d "BepInEx\LogOutput.log"), (Join-Path $plug "devout.txt")
     }

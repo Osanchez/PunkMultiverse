@@ -4,6 +4,7 @@ using PunkMultiverse.Core;
 using PunkMultiverse.Protocol;
 using PunkMultiverse.Transport;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace PunkMultiverse.Modes
 {
@@ -95,6 +96,8 @@ namespace PunkMultiverse.Modes
             _protectedUntil = -1f;
             _inputArmedAt = -1f;
             _nextHoldReportAt = 0f;
+            Highlighted = 0;
+            _navNextAt = 0f;
         }
 
         // ---------------------------------------------------------------- the option list
@@ -236,6 +239,11 @@ namespace PunkMultiverse.Modes
             if (Options.Count == 0)
             {
                 _closed = true;
+                // The spawn-frame and per-frame holds have been parking this ship since it was
+                // created, on the assumption a drop screen was coming. There isn't one — hand the
+                // ship back (input, physics, crosshair) so the scatter drops a flyable ship and
+                // not a statue in the void.
+                ReleaseHold();
                 Plugin.Log.LogWarning("[BRDrop] no station-bearing biomes — dropping by the scatter instead");
                 return;
             }
@@ -258,16 +266,27 @@ namespace PunkMultiverse.Modes
         /// everything past Width/2 from the grid centre as void, so there are no cells, no
         /// collision and nothing living out there. The ship is also frozen STATIC with input off,
         /// so it cannot drift, and the screen draws an opaque backdrop over it — between them the
-        /// player is simply not in the game yet, which is the intended fiction.</summary>
-        private static void HoldInTheVoid(bool quiet = false)
+        /// player is simply not in the game yet, which is the intended fiction.
+        ///
+        /// CALLED FROM SPAWN, not just from go-live (Omar, 2026-07-29: "we still seem to be
+        /// spawning before spawn selection. why are we doing that"). OpenWindow and Tick both hold,
+        /// but Tick only runs once the session is InGame — and vanilla places the ship on the
+        /// shared start pad at scene load, BEFORE the first InGame tick. That gap put the player in
+        /// the world, on the pad, attackable, ahead of any choice. BattleRoyaleSpawn's
+        /// SpawnShipGameObjects postfix now parks the ship the moment it exists, so there is no
+        /// frame in which an undeployed ship stands anywhere real.</summary>
+        internal static void HoldInTheVoid(bool quiet = false)
         {
             try
             {
                 var level = ServiceLocator.Get<Level>();
                 if (level == null)
                 {
-                    Plugin.Log.LogWarning("[BRDrop] no Level when opening the drop window — the ship " +
-                        "stays in the world while choosing and CAN be attacked");
+                    // Only worth a warning from the one-shot calls (OpenWindow, the spawn postfix).
+                    // The per-frame hold runs through Loading, where "no Level yet" is simply early.
+                    if (!quiet)
+                        Plugin.Log.LogWarning("[BRDrop] no Level when opening the drop window — the ship " +
+                            "stays in the world while choosing and CAN be attacked");
                     return;
                 }
                 // Straight "up" from the grid centre, comfortably past the disc edge.
@@ -298,6 +317,44 @@ namespace PunkMultiverse.Modes
                 Plugin.Log.LogWarning($"[BRDrop] could not park the ship for selection: {e.Message} — " +
                     "it stays where the run put it and may be attacked while choosing");
             }
+        }
+
+        /// <summary>Undo everything the pen did to the ship: input, physics, crosshair. Deploy has
+        /// its own copy of this inline (plus camera work); this exists for the paths that close the
+        /// window WITHOUT deploying, which would otherwise inherit a frozen ship.</summary>
+        private static void ReleaseHold()
+        {
+            try
+            {
+                var ship = Sync.ShipSync.LocalShip;
+                if (ship == null) return;
+                if (ship.shipInput != null) ship.shipInput.enabled = true;
+                if (ship.Rigidbody != null) ship.Rigidbody.bodyType = RigidbodyType2D.Dynamic;
+                if (ship.Crosshair != null) ship.Crosshair.Visible = true;
+            }
+            catch (System.Exception e)
+            { Plugin.Log.LogWarning($"[BRDrop] could not release the held ship: {e.Message}"); }
+        }
+
+        /// <summary>Hold the pen on RENDER frames, not just net ticks. Called from Toast.Update —
+        /// a component that lives regardless of session state — because the two existing holds
+        /// both have blind spots: the spawn postfix runs once, and Tick only runs while InGame.
+        /// Vanilla's async PlaceShipEntitiesToStartPosition lands between them (during Loading,
+        /// after the ship exists), which is how an undeployed ship kept turning up on the shared
+        /// start pad (Omar, 2026-07-29: "we still seem to be spawning before spawn selection").
+        /// Whoever places the ship, whenever they do it, the very next frame parks it again.</summary>
+        internal static void HoldPendingDeploy()
+        {
+            var s = NetSession.Instance;
+            if (s == null || !NetSession.Active) return;
+            // CurrentMode, NOT LobbyMode: the mode of the run actually underway. It is set on every
+            // machine at run start, before Loading — and LobbyMode can be flipped to BR from the
+            // lobby UI while a CO-OP run is still being played, which must not pen anyone.
+            if (s.CurrentMode != GameMode.BattleRoyale) return;
+            if (s.State != SessionState.Loading && s.State != SessionState.InGame) return;
+            if (NetConfig.IsCoordinator || !NetConfig.BrChooseSpawn.Value) return;
+            if (_closed || Deployed) return;
+            HoldInTheVoid(quiet: true);
         }
 
         /// <summary>True once this player has actually dropped into the world.</summary>
@@ -342,6 +399,84 @@ namespace PunkMultiverse.Modes
                     "the focusing click cannot pick a region");
             }
             _wasFocused = focused;
+        }
+
+        // ---------------------------------------------------------------- keyboard & gamepad
+        //
+        // The drop screen is IMGUI, and an IMGUI button only ever answers a mouse. On a controller
+        // the whole screen was therefore dead — you could watch the clock run out and be dropped
+        // somewhere at random, with no way to say otherwise (Omar, 2026-07-28: "our spawn selection
+        // screen is not navigatable or selectable with a controller"). PUNK's own menus never run
+        // EventSystem navigation either, which is why UI/LobbyScreen polls the pad itself; this does
+        // the same thing for the one screen that has no Selectables to walk.
+        //
+        // A HIGHLIGHT is the whole mechanism: the pad moves it, the mouse moves it by hovering, and
+        // both confirm the same row. Mouse users see exactly what they saw before — the row under the
+        // pointer lights up and clicking it drops them — so nothing was traded away to add the pad.
+        internal static int Highlighted { get; private set; }
+
+        private static float _navNextAt;
+        private const float NavFirstRepeat = 0.40f;
+        private const float NavRepeat = 0.16f;
+
+        /// <summary>Point the highlight at a row (the mouse does this by hovering).</summary>
+        internal static void Highlight(int index)
+        {
+            if (Options.Count == 0) return;
+            Highlighted = Mathf.Clamp(index, 0, Options.Count - 1);
+        }
+
+        private static void TickNavigation()
+        {
+            if (Options.Count == 0) return;
+            Highlighted = Mathf.Clamp(Highlighted, 0, Options.Count - 1);
+
+            var pad = Gamepad.current;
+            var kb = Keyboard.current;
+
+            // Confirm. Gated by Choose()'s own arming check, so a controller cannot spend the
+            // decision on the press that brought the window forward any more than a mouse can.
+            bool confirm =
+                (pad != null && (pad.buttonSouth.wasPressedThisFrame || pad.startButton.wasPressedThisFrame))
+                || (kb != null && (kb.enterKey.wasPressedThisFrame
+                                   || kb.numpadEnterKey.wasPressedThisFrame
+                                   || kb.spaceKey.wasPressedThisFrame));
+            if (confirm && !LocalHasChosen)
+            {
+                Choose(Options[Highlighted].BiomeId);
+                return;
+            }
+
+            // Move, with hold-to-repeat. Stick and d-pad are summed the way LobbyScreen does it, so
+            // either works and neither has to be discovered.
+            float v = 0f;
+            if (pad != null) v = pad.dpad.ReadValue().y + pad.leftStick.ReadValue().y;
+            int step = Mathf.Abs(v) > 0.5f ? (v > 0f ? -1 : 1) : 0; // up on the stick = up the list
+            bool held = step != 0;
+            if (kb != null)
+            {
+                if (kb.upArrowKey.wasPressedThisFrame || kb.wKey.wasPressedThisFrame) { step = -1; held = false; }
+                else if (kb.downArrowKey.wasPressedThisFrame || kb.sKey.wasPressedThisFrame) { step = 1; held = false; }
+                else if (step == 0
+                         && (kb.upArrowKey.isPressed || kb.wKey.isPressed)) { step = -1; held = true; }
+                else if (step == 0
+                         && (kb.downArrowKey.isPressed || kb.sKey.isPressed)) { step = 1; held = true; }
+            }
+            if (step == 0) { _navNextAt = 0f; return; }
+
+            if (held)
+            {
+                float now = Time.unscaledTime;
+                bool fresh = _navNextAt <= 0f;
+                if (!fresh && now < _navNextAt) return;
+                _navNextAt = now + (fresh ? NavFirstRepeat : NavRepeat);
+            }
+            else _navNextAt = Time.unscaledTime + NavFirstRepeat;
+
+            // Wraps: a four-item list is short enough that running off the end and starting again is
+            // what a player expects, and it means the stick never feels stuck.
+            Highlighted = (Highlighted + step + Options.Count) % Options.Count;
+            UI.UiTheme.PlayClick();
         }
 
         private static float _nextHoldReportAt;
@@ -433,6 +568,7 @@ namespace PunkMultiverse.Modes
             // every frame simply outlasts whoever else wants to place the ship.
             HoldInTheVoid(quiet: true);
             TickInputArming();
+            TickNavigation();
             ReportHold();
             if (Time.unscaledTime < _deadline) return;
             Plugin.Log.LogInfo("[BRDrop] timer expired — picking a region at random");
@@ -468,7 +604,8 @@ namespace PunkMultiverse.Modes
             {
                 var option = Options.FirstOrDefault(o => o.Covers(biomeId)) ?? Options[0];
                 if (option.StationPositions.Count == 0) return;
-                var pad = option.StationPositions[UnityEngine.Random.Range(0, option.StationPositions.Count)];
+                var pad = PickPad(option);
+                ClearChosenPad(pad); // nothing hostile greets an arrival — remove, then land
                 Sync.ShipSync.TeleportLocalShipTo(pad + Vector2.up * 2f); // hover above the platform
 
                 var ship = Sync.ShipSync.LocalShip;
@@ -509,6 +646,185 @@ namespace PunkMultiverse.Modes
             {
                 Plugin.Log.LogWarning($"[BRDrop] deploy failed: {e.Message} — the scatter will place this ship");
             }
+        }
+
+        // ---------------------------------------------------------------- clearing the chosen pad
+        //
+        // The go-live sweep (BattleRoyale.ClearSpawnAreas) empties every station once, but a drop
+        // lands up to 30 seconds later and enemies wander back — Omar, 2026-07-29: "those red
+        // electrons by spawns need to be considered, we shouldn't have any directly on a spawn."
+        // So the deployer clears its own landing pad AT THE MOMENT OF LANDING, with the same verb
+        // the go-live sweep uses (RemoveSilently: no loot, no VFX, no kill credit, tombstoned).
+        //
+        // Unlike the go-live sweep this MUST travel: that one is derived identically on every
+        // machine at the same instant, while a deploy is one machine's chosen moment. The exact
+        // netId set is broadcast (SpawnClearMsg) rather than a position+radius, because peers'
+        // entity positions differ slightly (owner vs puppet) and a locally-evaluated radius would
+        // remove slightly different sets — the deployer's set is canonical. RemoveSilently is
+        // idempotent (KilledNetIds tombstone), so the sender receiving its own echo is a no-op.
+
+        /// <summary>Silently remove every hostile within the spawn-clear radius of the pad this
+        /// player is about to land on, and tell everyone which ones.</summary>
+        private static void ClearChosenPad(Vector2 pad)
+        {
+            float radius = NetConfig.BrSpawnClearRadius.Value;
+            if (radius <= 0f) return;
+            try
+            {
+                var em = ServiceLocator.Get<EntityManager>();
+                if (em == null) return;
+
+                // Ships are savable entities too; never let a prefix match delete a player.
+                var shipInstances = new HashSet<int>();
+                try
+                {
+                    foreach (var s in ServiceLocator.Get<ShipManager>().Ships)
+                    {
+                        var se = s != null ? s.GetComponentInChildren<SavableEntity>() : null;
+                        if (se != null && se.EntityData != null) shipInstances.Add(se.EntityData.instanceId);
+                    }
+                }
+                catch { }
+
+                float radiusSq = radius * radius;
+                var doomed = new List<int>();
+                foreach (var data in em.GetAllEntities())
+                {
+                    if (data == null || shipInstances.Contains(data.instanceId)) continue;
+                    if (!BattleRoyale.IsHostileEntityId(data.entityId)) continue;
+                    if (((Vector2)data.position - pad).sqrMagnitude > radiusSq) continue;
+                    if (Core.NetIds.TryGetNetId(data.instanceId, out int netId)) doomed.Add(netId);
+                    if (doomed.Count == 255) break; // wire cap; a pad with 255+ hostiles has bigger problems
+                }
+                if (doomed.Count == 0) return;
+
+                foreach (int netId in doomed) Sync.EnemySync.RemoveSilently(netId);
+                Plugin.Log.LogInfo($"[BRDrop] pad clear: removed {doomed.Count} hostile(s) within " +
+                    $"{radius:0} units of the landing pad ({pad.x:0},{pad.y:0})");
+
+                var session = NetSession.Instance;
+                if (session == null) return;
+                var w = new NetWriter(8 + doomed.Count * 4);
+                new SpawnClearMsg { NetIds = doomed.ToArray() }.Write(w);
+                session.SendToAll(NetChannel.Control, w.ToSegment(), reliable: true);
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[BRDrop] pad clear failed: {e.Message} — landing among " +
+                    "whatever is there; spawn protection still covers the arrival");
+            }
+        }
+
+        /// <summary>A peer's pad clear arriving here: remove the same set. The host also relays it
+        /// on to everyone else — clients only ever talk to the host.</summary>
+        public static void ApplySpawnClear(SpawnClearMsg msg, NetSession session)
+        {
+            if (msg.NetIds == null || msg.NetIds.Length == 0) return;
+            foreach (int netId in msg.NetIds) Sync.EnemySync.RemoveSilently(netId);
+            Plugin.Log.LogInfo($"[BRDrop] applied a peer's pad clear — {msg.NetIds.Length} entities");
+            if (session != null && session.IsHost)
+            {
+                var w = new NetWriter(8 + msg.NetIds.Length * 4);
+                msg.Write(w);
+                session.SendToAll(NetChannel.Control, w.ToSegment(), reliable: true);
+            }
+        }
+
+        // ---------------------------------------------------------------- choosing WHICH pad
+        //
+        // The region is the player's decision; the pad inside it is not, and it used to be a coin
+        // toss. That is how a drop ends in "TRIHARDEST DIED" with nothing to blame it on (Omar,
+        // 2026-07-28: "look at what eliminated my player 1, that is something that is by the shops
+        // that shouldn't be"): the go-live spawn-area clear (BattleRoyaleLocal.ClearSpawnAreas)
+        // empties every station ONCE, at go-live, and a drop lands up to 30 seconds later — long
+        // enough for the map to have moved on. And the clear only ever removed hostile ENTITIES; a
+        // damaging Hazard prop or a patch of contact-damage terrain beside the platform was never in
+        // its remit at all, which is precisely the kind of thing that kills a ship the instant its
+        // spawn protection lapses.
+        //
+        // So: look before landing. Every pad in the region is scored on what is actually sitting on
+        // it right now, and the quietest wins. This CHANGES NOTHING in the world — no removals, no
+        // wire traffic, no divergence — it only decides where to put our own ship, which was always
+        // a local decision.
+        private const float PadDangerRadius = 22f;
+
+        /// <summary>Pick the least dangerous station in the region, breaking ties randomly so a
+        /// whole lobby heading for the same biome does not pile onto one platform.</summary>
+        private static Vector2 PickPad(BiomeOption option)
+        {
+            var pads = option.StationPositions;
+            var scores = new int[pads.Count];
+            bool scored = false;
+            try { scored = ScorePads(pads, scores); }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[BRDrop] could not check the pads for danger ({e.Message}) — " +
+                    "landing on a random one");
+            }
+            if (!scored) return pads[UnityEngine.Random.Range(0, pads.Count)];
+
+            int best = int.MaxValue;
+            for (int i = 0; i < scores.Length; i++) best = Mathf.Min(best, scores[i]);
+            var safest = new List<int>();
+            for (int i = 0; i < scores.Length; i++) if (scores[i] == best) safest.Add(i);
+            int chosen = safest[UnityEngine.Random.Range(0, safest.Count)];
+
+            if (best > 0)
+                Plugin.Log.LogWarning($"[BRDrop] every pad in {option.Name} has something hostile " +
+                    $"within {PadDangerRadius:0} units — landing on the quietest ({best} nearby)");
+            else
+                Plugin.Log.LogInfo($"[BRDrop] pad chosen from {safest.Count}/{pads.Count} clear " +
+                    $"platform(s) in {option.Name}");
+            return pads[chosen];
+        }
+
+        /// <summary>Count what would greet a ship at each pad: hostile entities within
+        /// <see cref="PadDangerRadius"/>, plus damaging terrain right under the platform.
+        ///
+        /// Entity DATA is used rather than colliders on purpose — the pads are far away and not
+        /// streamed in, so a physics query there would find an empty world and call everything safe.
+        /// Terrain is read the same way, straight off the cell grid, which is complete everywhere.
+        /// Returns false if the world is not in a state that can answer, so the caller falls back to
+        /// the old random pick rather than pretending it checked.</summary>
+        private static bool ScorePads(List<Vector2> pads, int[] scores)
+        {
+            var em = ServiceLocator.Get<EntityManager>();
+            if (em == null) return false;
+
+            float radiusSq = PadDangerRadius * PadDangerRadius;
+            foreach (var data in em.GetAllEntities())
+            {
+                if (data == null || !BattleRoyale.IsHostileEntityId(data.entityId)) continue;
+                Vector2 pos = data.position;
+                for (int i = 0; i < pads.Count; i++)
+                    if ((pos - pads[i]).sqrMagnitude <= radiusSq) scores[i]++;
+            }
+
+            // Contact-damage terrain counts for a lot more than one enemy: an enemy can be shot, and
+            // lava cannot. StationGenerator clears the cells around a station, so anything left here
+            // is something that arrived afterwards and is worth avoiding outright.
+            var level = ServiceLocator.Get<Level>();
+            if (level != null)
+                for (int i = 0; i < pads.Count; i++)
+                    scores[i] += 10 * DamagingCellsAt(level, pads[i]);
+            return true;
+        }
+
+        /// <summary>Damaging cells in the small box a ship actually occupies on arrival.</summary>
+        private static int DamagingCellsAt(Level level, Vector2 pad)
+        {
+            const int Reach = 3; // the hover offset is +2; this covers the hull around it
+            int count = 0;
+            var origin = Vector2Int.RoundToInt(pad);
+            for (int dy = -Reach; dy <= Reach + 2; dy++)
+                for (int dx = -Reach; dx <= Reach; dx++)
+                {
+                    int x = origin.x + dx, y = origin.y + dy;
+                    if (!level.ContainsCell(x, y)) continue;
+                    var cell = level.GetCellType(x, y);
+                    if (cell != null && Sync.DamageSync.AmountOf(cell.contactDamage) > 0f) count++;
+                }
+            return count;
         }
 
         public static void ApplyTally(SpawnTallyMsg msg)

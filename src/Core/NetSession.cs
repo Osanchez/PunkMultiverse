@@ -22,7 +22,7 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 17; // 17 = GameMode byte (StartRun/LobbyState/LeaderSettings)
+        public const int ProtocolVersion = 18; // 18 = SpawnClear (BR deploy-time pad clear)
                                                //      + BR messages (Announce/RingState/Placement/CarePackage)
                                                // 16 = LobbyStateMsg.WorldStatus + AdminCmd.EndRun
                                                // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder
@@ -2835,6 +2835,12 @@ namespace PunkMultiverse.Core
                 }
                 case MsgType.SpawnTally when !IsHost:
                     Modes.BattleRoyaleSpawnSelect.ApplyTally(SpawnTallyMsg.Read(_reader));
+                    break;
+                // A deployer cleared its landing pad: apply the same removals here. On the host
+                // this also relays the set to everyone else (clients only ever talk to the host);
+                // the sender receiving its own echo is a no-op (RemoveSilently tombstones).
+                case MsgType.SpawnClear:
+                    Modes.BattleRoyaleSpawnSelect.ApplySpawnClear(SpawnClearMsg.Read(_reader), this);
                     break;
                 case MsgType.AuthRelease when IsHost:
                 {

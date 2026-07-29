@@ -23,7 +23,7 @@ namespace PunkMultiverse.UI
     /// </summary>
     internal static class SpawnSelectScreen
     {
-        private static GUIStyle _title, _sub, _button, _chosen, _clock, _clockUrgent;
+        private static GUIStyle _title, _sub, _hint, _button, _chosen, _clock, _clockUrgent;
 
         private static readonly Color Empty = new Color(0.35f, 0.85f, 0.40f);
         private static readonly Color Filling = new Color(0.95f, 0.80f, 0.25f);
@@ -50,7 +50,7 @@ namespace PunkMultiverse.UI
 
             float panelW = Mathf.Min(760f, Screen.width - 80f);
             float rowH = 46f, gap = 8f;
-            float panelH = 172f + count * (rowH + gap);
+            float panelH = 190f + count * (rowH + gap);
             // Clear of the top edge: match announcements ("BATTLE ROYALE - 2 PLAYERS...") toast in
             // at y=8 and were landing on the title.
             const float topMargin = 96f;
@@ -70,6 +70,12 @@ namespace PunkMultiverse.UI
             bool armed = Modes.BattleRoyaleSpawnSelect.InputArmed;
             GUI.Label(new Rect(panel.x, panel.y + 74f, panel.width, 24f),
                 armed ? "A REGION IS CHOSEN FOR YOU WHEN THIS REACHES ZERO" : "...", _sub);
+            // Say the screen takes a controller, because on a pad there is nothing else that would
+            // tell you: no cursor to move, no button that lights up under a pointer.
+            if (armed && !Modes.BattleRoyaleSpawnSelect.LocalHasChosen)
+                GUI.Label(new Rect(panel.x, panel.y + 94f, panel.width, 22f),
+                    UiTheme.GamepadLastUsed ? "STICK / D-PAD TO MOVE     A TO DROP"
+                                            : "ARROWS TO MOVE     ENTER TO DROP     OR CLICK", _hint);
 
             // Scaled against the NUMBER OF PLAYERS, not against the busiest region. Scaling to the
             // busiest made the first pick in a lobby fill its bar completely — one player out of
@@ -83,7 +89,8 @@ namespace PunkMultiverse.UI
                     if (p != null && p.Connected && !p.IsCoordinator) roster++;
             roster = Mathf.Max(1, roster);
 
-            float y = panel.y + 106f;
+            float y = panel.y + 124f;
+            int highlighted = Modes.BattleRoyaleSpawnSelect.Highlighted;
             for (int i = 0; i < count; i++)
             {
                 var option = options[i];
@@ -92,12 +99,31 @@ namespace PunkMultiverse.UI
 
                 bool mine = Modes.BattleRoyaleSpawnSelect.LocalHasChosen
                             && Modes.BattleRoyaleSpawnSelect.LocalChoice == option.BiomeId;
+                // The pointer OWNS the highlight while it is over a row, so mouse and pad never
+                // disagree about which region a click or an A press is about to take.
+                if (row.Contains(Event.current.mousePosition))
+                {
+                    Modes.BattleRoyaleSpawnSelect.Highlight(i);
+                    highlighted = i;
+                }
+                bool focused = i == highlighted && !Modes.BattleRoyaleSpawnSelect.LocalHasChosen;
 
                 GUI.backgroundColor = mine ? new Color(1f, 1f, 1f, 0.95f)
+                    : focused ? new Color(1f, 1f, 1f, armed ? 0.62f : 0.30f)
                     : new Color(1f, 1f, 1f, armed ? 0.35f : 0.18f);
                 if (GUI.Button(row, GUIContent.none) && !Modes.BattleRoyaleSpawnSelect.LocalHasChosen)
                     Modes.BattleRoyaleSpawnSelect.Choose(option.BiomeId);
                 GUI.backgroundColor = Color.white;
+
+                // A brighter fill is not enough on a pad — with no pointer on screen there is nothing
+                // to compare it against. The bar down the left edge is unambiguous on its own.
+                if (focused)
+                {
+                    prev = GUI.color;
+                    GUI.color = new Color(1f, 1f, 1f, 0.95f);
+                    GUI.DrawTexture(new Rect(row.x - 6f, row.y, 4f, row.height), Texture2D.whiteTexture);
+                    GUI.color = prev;
+                }
 
                 // The biome's own map colour as a swatch, so the button ties to what the map shows.
                 var swatch = new Rect(row.x + 10f, row.y + 11f, 24f, 24f);
@@ -154,6 +180,11 @@ namespace PunkMultiverse.UI
                 alignment = TextAnchor.UpperCenter, fontSize = 15,
             };
             _sub.normal.textColor = new Color(0.85f, 0.85f, 0.85f);
+            _hint = new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.UpperCenter, fontSize = 13,
+            };
+            _hint.normal.textColor = new Color(0.62f, 0.62f, 0.62f);
             _button = new GUIStyle(GUI.skin.label)
             {
                 alignment = TextAnchor.MiddleLeft, fontSize = 18, fontStyle = FontStyle.Bold,

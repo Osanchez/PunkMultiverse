@@ -53,6 +53,9 @@ namespace PunkMultiverse.Sync
             internal ProjectileSync.DamageTrace Trace;
             internal bool HasTrace;
             internal bool EnteredList;
+            /// <summary>What we were TOUCHING when this landed (hazard, arc, damaging terrain), for
+            /// the hits no projectile ever explains. See Sync/WorldDamageSource.</summary>
+            internal string WorldSource;
         }
 
         /// <summary>Slot that last damaged the entity, or 255 if unknown.</summary>
@@ -70,6 +73,7 @@ namespace PunkMultiverse.Sync
             _requestSequence = 0;
             _takeDamageListDepth = 0;
             ResetKiller();       // last run's killer must never be credited with this run's death
+            WorldDamageSource.Reset();
             ResetLifeWatchdog(); // fresh run starts alive and un-announced
         }
 
@@ -301,7 +305,23 @@ namespace PunkMultiverse.Sync
             // Locally-applied damage to OUR ship — enemy fire, a hazard, a fall. Recorded here
             // because this is where the trace is still attached to the hit.
             if (state.HasTrace) NoteKiller(DescribeSource(state.Trace));
+            // No trace means nobody SHOT us: contact damage, and the only machine that can name it
+            // is this one, in this frame. A shot always wins if both are present — "who shot me"
+            // beats "what was I touching".
+            else if (WorldDamageSource.TryTake(out string worldSource))
+            {
+                state.WorldSource = worldSource;
+                NoteKiller(worldSource);
+            }
             return state;
+        }
+
+        /// <summary>Read a Damage's amount without assuming the field is accessible at compile time
+        /// (the rest of this file reads Damage through Traverse for the same reason).</summary>
+        internal static float AmountOf(Damage damage)
+        {
+            try { return Traverse.Create(damage).Field("amount").GetValue<float>(); }
+            catch { return 0f; }
         }
 
         private static void ReadDamage(Damage damage, out float amount, out string typeName)
@@ -325,6 +345,7 @@ namespace PunkMultiverse.Sync
             string source = state.HasTrace
                 ? (state.Trace.SourceNetId >= 0 ? $"entity#{state.Trace.SourceNetId}"
                     : state.Trace.SourceNetId == -1 ? $"player=P{state.Trace.SourceSlot + 1}" : "source=unknown")
+                : !string.IsNullOrEmpty(state.WorldSource) ? $"contact={state.WorldSource}"
                 : "source=unknown";
             string identity = state.HasTrace
                 ? $"shot={state.Trace.ShotId} pellet={state.Trace.ProjectileOrdinal} projectile={state.Trace.ProjectileInstanceId} kind={state.Trace.Kind} replayed={state.Trace.Replayed}"
