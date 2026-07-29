@@ -61,6 +61,47 @@ namespace PunkMultiverse.Sync
         /// <summary>Slot that last damaged the entity, or 255 if unknown.</summary>
         public static byte LastKiller(int netId) => LastDamager.TryGetValue(netId, out var s) ? s : (byte)255;
 
+        // Non-zero while a PvP-scaled damage request is being applied to the local ship — read by
+        // the GetDamageAmount postfix so the scale lands AFTER the armor gate. A depth, not a
+        // bool, purely for symmetry with the other reentrancy guards in this file.
+        private static int _pvpApplyDepth;
+
+        /// <summary>Scale surviving PvP damage AFTER vanilla's armor gate has judged the full hit.
+        /// GetDamageAmount is `scale by type matrix -> Validate(minDamage) -> return`; a zero
+        /// result means armor rejected it and stays zero — this only shrinks what armor let
+        /// through. Runs solely inside ApplyDamageRequest's PvP window (depth flag), so co-op,
+        /// enemy fire, and local damage never see it.</summary>
+        [HarmonyPatch(typeof(DamagableResource), nameof(DamagableResource.GetDamageAmount))]
+        internal static class ScalePvpAfterArmor
+        {
+            private static void Postfix(ref float __result)
+            {
+                if (_pvpApplyDepth <= 0 || __result <= 0f) return;
+                __result *= Mathf.Clamp(NetConfig.PvPDamageScale.Value, 0.01f, 1f);
+            }
+        }
+
+        /// <summary>Vanilla's damageBlockers (all-active GameObjects on the prefab — the ship-menu
+        /// canopy among them) silently blocked EVERY hit while a menu was open. In vanilla that is
+        /// balanced by the whole world pausing; a shared sim cannot pause, and Omar's standing rule
+        /// (2.5) is that only a STATION SHOP shields. Defeat the blocker check for the LOCAL ship
+        /// in net runs unless the station-shop gate is the thing protecting it — enemies, props and
+        /// single-player keep vanilla behaviour. This was the `applied=True hp=4->4` freeze in the
+        /// 2026-07-29 match log: minutes of hits of every kind, none of which moved the tank.</summary>
+        [HarmonyPatch(typeof(DamagableResource), "IsDamageBlocked")]
+        internal static class NoMenuInvulnerabilityInNetRuns
+        {
+            private static bool Prefix(DamagableResource __instance, ref bool __result)
+            {
+                if (!NetSession.Active) return true;
+                var local = ShipSync.LocalShip;
+                if (local == null || __instance.GetComponentInParent<Ship>() != local) return true;
+                if (LocalShopMenuOpen()) return true; // the one sanctioned shield keeps vanilla's answer
+                __result = false;
+                return false;
+            }
+        }
+
         public static void Reset()
         {
             _resourcesByHash = null;
@@ -471,19 +512,26 @@ namespace PunkMultiverse.Sync
                 return;
             }
             if (amount <= 0) return;
-            // Battle Royale: scale player-vs-player damage down. This is THE ship-vs-ship
-            // chokepoint — a ship's health lives on its owner's machine, so every hit on another
-            // player is routed through here exactly once (direct fire and AoE alike), and the
-            // victim applies the scaled amount through the normal vanilla pipeline. Damage to
-            // ENEMIES is untouched: BR speeds that up via the enemy-HP multiplier instead.
-            if (!isEntity && Modes.BattleRoyale.Active)
-            {
-                amount *= Mathf.Clamp(NetConfig.PvPDamageScale.Value, 0.01f, 1f);
-                if (amount <= 0f) return;
-            }
             // Host shooting a client-simulated entity never re-enters Dispatch — mark here.
             if (isEntity && session.IsHost) Core.AuthorityManager.NoteCombat(targetNetId);
             bool hasTrace = ProjectileSync.TryGetCurrentDamageTrace(out var trace);
+            // The Battle Royale PvP scale-down used to be applied HERE, to the amount on the wire.
+            // That put the scaled number in front of the victim's armor gate
+            // (DamagableResource.GetDamageAmount -> damageConditions.Validate), so any armor with
+            // minDamage above the scaled hit swallowed PvP entirely — Omar's match log
+            // (2026-07-29): early hits landed at 0.25, then every hit after the first shop visit
+            // read `applied=True hp=N->N`. The wire now carries the RAW amount plus the two facts
+            // the victim needs to scale correctly on its own side, after armor:
+            //   PlayerShot   — this is the attacking player's own weapon (the only thing the PvP
+            //                  scale should touch). Routed ENEMY damage arrives on a player's
+            //                  slot too — whoever simulates the enemy sends its hit under their
+            //                  own slot — and quartering enemy fire was never intended.
+            //   SourceNetId  — the entity that actually dealt it, so a death callout can say
+            //                  "KILLER - TURRET LASER" instead of crediting the machine that
+            //                  routed the hit (deaths were reading "KILLER - SERVER").
+            // Traceless ship damage (an enemy's melee hazard brushing a puppet, world contact) is
+            // NOT a player shot — a swarm's routed melee must land at full strength.
+            bool playerShot = !isEntity && hasTrace && trace.SourceNetId == -1;
             var msg = new DamageRequestMsg
             {
                 IsEntity = isEntity,
@@ -496,6 +544,8 @@ namespace PunkMultiverse.Sync
                 RequestId = NextDamageRequestId((byte)session.LocalSlot),
                 ShotId = hasTrace ? trace.ShotId : 0,
                 ProjectileOrdinal = hasTrace ? trace.ProjectileOrdinal : (ushort)0,
+                PlayerShot = playerShot,
+                SourceNetId = hasTrace && trace.SourceNetId >= 0 ? trace.SourceNetId : -1,
             };
             Writer.Reset();
             msg.Write(Writer);
@@ -614,6 +664,13 @@ namespace PunkMultiverse.Sync
             if (dr == null && hb == null) return;
 
             _applyingRemote = true;
+            // PvP scale is applied on the VICTIM, after the armor gate. TakeDamage runs
+            // GetDamageAmount -> damageConditions.Validate(minDamage) — armor judges the FULL
+            // hit (a 1.0 shot is a 1.0 shot), and the postfix below then scales what survives.
+            // Scaling before the wire meant any armor ate scaled PvP whole.
+            bool pvpScaled = !msg.IsEntity && msg.PlayerShot && Modes.BattleRoyale.Active;
+            float pvpScale = Mathf.Clamp(NetConfig.PvPDamageScale.Value, 0.01f, 1f);
+            if (pvpScaled) _pvpApplyDepth++;
             float hpBefore = dr != null ? dr.CurrentHealth : hb.CurrentHealth;
             float shieldBefore = !msg.IsEntity && ShipSync.LocalShip != null
                 ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
@@ -625,7 +682,9 @@ namespace PunkMultiverse.Sync
                     if (type != null)
                         dr.TakeDamage(new Damage(msg.Amount, type)); // full pipeline: shields, matrix, i-frames
                     else
-                        dr.Damage(msg.Amount); // untyped fallback
+                        // The untyped path skips GetDamageAmount (no armor gate to preserve), so
+                        // the scale applies directly.
+                        dr.Damage(pvpScaled ? msg.Amount * pvpScale : msg.Amount);
                 }
                 else
                 {
@@ -641,18 +700,25 @@ namespace PunkMultiverse.Sync
             }
             finally
             {
+                if (pvpScaled) _pvpApplyDepth--;
                 _applyingRemote = false;
                 if (!msg.IsEntity)
                 {
-                    // A ROUTED hit: another player shot us. This is the attribution that matters
-                    // most in a battle royale, and it arrives here rather than through a local
-                    // trace, because the shot was resolved on the shooter's machine.
+                    // A ROUTED hit. Attribution follows what actually dealt it: the attacking
+                    // player's own weapon names the PLAYER; an enemy simulated on their machine
+                    // names the ENEMY. Crediting the router unconditionally is how a death came
+                    // out as "KILLER - SERVER" (the coordinator routes most enemy fire).
                     var attacker = msg.AttackerSlot < session.Players.Count
                         ? session.Players[msg.AttackerSlot] : null;
-                    NoteKiller(!string.IsNullOrEmpty(attacker?.Name)
-                        ? attacker.Name : $"P{msg.AttackerSlot + 1}");
+                    if (msg.PlayerShot)
+                        NoteKiller(!string.IsNullOrEmpty(attacker?.Name)
+                            ? attacker.Name : $"P{msg.AttackerSlot + 1}");
+                    else if (msg.SourceNetId >= 0)
+                        NoteKiller(PrettyEntityName(EntityIdOf(msg.SourceNetId)));
+                    // No source at all (world contact routed off another machine): leave the
+                    // previous killer note alone rather than blaming the router.
                     float shieldAfter = ShipSync.LocalShip != null ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
-                    Plugin.Log.LogInfo($"[CombatHit] remote-request={msg.RequestId} attacker=P{msg.AttackerSlot + 1} shot={msg.ShotId} pellet={msg.ProjectileOrdinal} amount={msg.Amount:0.###} typeHash={msg.TypeHash:X8} applied=True hp={hpBefore:0.###}->{dr.CurrentHealth:0.###} shield={shieldBefore:0.###}->{shieldAfter:0.###}");
+                    Plugin.Log.LogInfo($"[CombatHit] remote-request={msg.RequestId} attacker=P{msg.AttackerSlot + 1} playerShot={msg.PlayerShot} source={(msg.SourceNetId >= 0 ? "#" + msg.SourceNetId : "none")} shot={msg.ShotId} pellet={msg.ProjectileOrdinal} amount={msg.Amount:0.###}{(pvpScaled ? $" (pvp x{pvpScale:0.##})" : "")} typeHash={msg.TypeHash:X8} applied=True hp={hpBefore:0.###}->{dr.CurrentHealth:0.###} shield={shieldBefore:0.###}->{shieldAfter:0.###}");
                 }
             }
         }

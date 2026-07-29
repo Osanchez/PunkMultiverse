@@ -1534,14 +1534,32 @@ namespace PunkMultiverse.Core
                 try
                 {
                     if (IsOpenedF == null || (bool)IsOpenedF.GetValue(__instance)) return;
-                    IsOpenedF.SetValue(__instance, true);
-                    ServiceLocator.Get<ShipManager>()?.DisableShipControl();
-                    SetHoverM?.Invoke(__instance, new object[] { true });
-                    // Deliberately NOT the vanilla SetTimeScale(0.1f) here: local slow-mo while
-                    // peers run full speed starves this machine's share of the shared sim.
-                    (ScreenF?.GetValue(__instance) as UIScreen)?.Open();
-                    (WeaponDropF?.GetValue(__instance) as WeaponDropdown)?.Refresh();
-                    Plugin.Log.LogInfo("[Dev] debug menu opened (F1)");
+                    // NOT ShipManager.DisableShipControl(): in a net run Ships contains PUPPETS,
+                    // whose null shipInput NRE'd vanilla's loop mid-iteration. That exception left
+                    // this open HALF-APPLIED — isOpened already true (so F1 was dead for the rest
+                    // of the session), the local ship's control already off — because the flag was
+                    // set first and nothing rolled back (2026-07-29 match log: one "[Dev] F1 debug
+                    // menu open failed" and every later F1 press silently ignored). Only the LOCAL
+                    // ship's control matters here anyway; puppets have no input to disable.
+                    var localInput = Sync.ShipSync.LocalShip != null ? Sync.ShipSync.LocalShip.shipInput : null;
+                    if (localInput != null) localInput.ShipControlActionMap.Disable();
+                    try
+                    {
+                        SetHoverM?.Invoke(__instance, new object[] { true });
+                        // Deliberately NOT the vanilla SetTimeScale(0.1f) here: local slow-mo while
+                        // peers run full speed starves this machine's share of the shared sim.
+                        (ScreenF?.GetValue(__instance) as UIScreen)?.Open();
+                        (WeaponDropF?.GetValue(__instance) as WeaponDropdown)?.Refresh();
+                        // The latch is set LAST: a failure above must leave the menu closable and
+                        // reopenable, not wedged "open" with no screen.
+                        IsOpenedF.SetValue(__instance, true);
+                        Plugin.Log.LogInfo("[Dev] debug menu opened (F1)");
+                    }
+                    catch
+                    {
+                        if (localInput != null) localInput.ShipControlActionMap.Enable(); // give the ship back
+                        throw;
+                    }
                 }
                 catch (Exception e)
                 {

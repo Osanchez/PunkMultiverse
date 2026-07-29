@@ -712,6 +712,15 @@ namespace PunkMultiverse.Protocol
         // when the original broadcast passed through, so replays must bypass the dedup or the
         // claim is dead on arrival at any remote owner.
         public bool Replay;
+        // True when this hit came from the ATTACKING PLAYER'S OWN WEAPON — the only damage the
+        // Battle Royale PvP scale should touch. A request whose AttackerSlot is a player can still
+        // carry an ENEMY's hit: whoever simulates an enemy routes its damage to the victim under
+        // their own slot (a dedicated coordinator routes most of them, which is how enemy shots
+        // were arriving as "attacker=P5 'SERVER'" at a quarter strength).
+        public bool PlayerShot;
+        // The entity that actually dealt this damage when PlayerShot is false (+1 on the wire so
+        // 0 can mean "none"). The victim's death callout names THIS, not the machine that routed.
+        public int SourceNetId;
 
         public void Write(NetWriter w) => Write(w, MsgType.DamageRequest);
 
@@ -731,6 +740,8 @@ namespace PunkMultiverse.Protocol
             w.WriteUInt(ShotId);
             w.WriteUShort(ProjectileOrdinal);
             w.WriteBool(Replay);
+            w.WriteBool(PlayerShot);
+            w.WriteVarUInt((uint)(SourceNetId + 1));
         }
 
         public static DamageRequestMsg Read(NetReader r) => new DamageRequestMsg
@@ -746,6 +757,8 @@ namespace PunkMultiverse.Protocol
             ShotId = r.ReadUInt(),
             ProjectileOrdinal = r.ReadUShort(),
             Replay = r.ReadBool(),
+            PlayerShot = r.ReadBool(),
+            SourceNetId = (int)r.ReadVarUInt() - 1,
         };
     }
 

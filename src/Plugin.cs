@@ -74,6 +74,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<PlayerTracker>();
             _runtime.AddComponent<RingLavaVisual>();
             _runtime.AddComponent<RingWorldMapOverlay>();
+            _runtime.AddComponent<CarePackageArrow>(); // gold edge arrow + crate glyph to BR drops
             _runtime.AddComponent<Scoreboard>();
             _runtime.AddComponent<ShipStatusBars>();
             _runtime.AddComponent<SpectatorCam>();

@@ -348,8 +348,13 @@ namespace PunkMultiverse.Modes
 
         /// <summary>How far the ring's centre may sit from the map's, as a fraction of the map
         /// radius. Every unit of offset adds a unit of radius the ring must close through before it
-        /// touches the world, so this buys variety at a directly measurable cost in pacing.</summary>
-        private const float CenterDriftFraction = 0.15f;
+        /// touches the world, so this buys variety at a directly measurable cost in pacing — and in
+        /// LEGIBILITY: at 0.15 the starting circle sat up to 150 units past the world border, which
+        /// on the map screen read as a ring that "is closing off map" and in the world as no lava
+        /// anywhere (Omar, 2026-07-29: "I don't see the ring closing at all"). At 0.05 the wall
+        /// begins within ~50 units of the disc edge — hugging the border a player can fly to and
+        /// SEE — while the openness scoring still nudges the endgame toward fightable ground.</summary>
+        private const float CenterDriftFraction = 0.05f;
 
         // The ring alternates HOLD and CLOSE, the way a battle royale is supposed to feel: the zone
         // sits still long enough to fight over, then draws in over a couple of minutes to the next

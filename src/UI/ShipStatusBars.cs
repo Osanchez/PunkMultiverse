@@ -37,6 +37,7 @@ namespace PunkMultiverse.UI
             internal GameObject Root;
             internal ResourceBar Health;
             internal ResourceBar Fuel;
+            internal TMPro.TextMeshProUGUI Name;
             internal Ship Ship;
         }
 
@@ -47,7 +48,9 @@ namespace PunkMultiverse.UI
         /// <summary>Small enough to read as part of the world next to a grunt's bar, which is drawn
         /// at full size — a player ship is not more important than the fight around it.</summary>
         private const float BarScale = 0.6f;
-        private const float WorldYOffset = 2.2f;
+        // 2.2 floated the stack a full ship-height clear of the hull (Omar, 2026-07-29: "the
+        // health and fuel bars are a little too high") — 1.4 sits it just above the sprite.
+        private const float WorldYOffset = 1.4f;
         /// <summary>Segments per row before the bar wraps. A late-game hull is worth far more units
         /// than any enemy on the map, and an unwrapped bar would be wider than the ship is tall.</summary>
         private const int MaxUnitsPerRow = 16;
@@ -175,8 +178,48 @@ namespace PunkMultiverse.UI
             float y = 0f;
             bars.Health = MakeBar(root.transform, healthTank, ref y);
             if (fuelTank != null) bars.Fuel = MakeBar(root.transform, fuelTank, ref y);
+            bars.Name = MakeNameLabel(root.transform, slot, bars.Health);
             _bars[slot] = bars;
             return bars;
+        }
+
+        /// <summary>The player's NAME above the stack, tinted their ship colour — the same colour
+        /// the hull flies in, so the label and the ship identify each other (Omar, 2026-07-29:
+        /// "there is no player name above the players ship"). Sized RELATIVE to the vanilla bar's
+        /// own rect (auto-fit inside 1.6 bar-heights) rather than in absolute canvas units, because
+        /// the enemy-bar canvas's scale is vanilla's business and may change under us.</summary>
+        private TMPro.TextMeshProUGUI MakeNameLabel(Transform parent, byte slot, ResourceBar reference)
+        {
+            try
+            {
+                var session = NetSession.Instance;
+                var player = session != null && slot < session.Players.Count ? session.Players[slot] : null;
+                string name = !string.IsNullOrEmpty(player?.Name) ? player.Name : $"P{slot + 1}";
+
+                float rowH = reference != null ? reference.RectTransform.sizeDelta.y : 0.5f;
+                var go = new GameObject("Name", typeof(RectTransform));
+                go.transform.SetParent(parent, worldPositionStays: false);
+                var rect = go.GetComponent<RectTransform>();
+                rect.sizeDelta = new Vector2(rowH * 24f, rowH * 1.6f); // wide, centered on the stack
+                rect.anchoredPosition = new Vector2(0f, rowH * 1.5f);  // one row-and-a-half above
+
+                var text = go.AddComponent<TMPro.TextMeshProUGUI>();
+                text.text = name.ToUpperInvariant();
+                text.alignment = TMPro.TextAlignmentOptions.Bottom;
+                text.enableAutoSizing = true;             // fit the rect, whatever the canvas scale
+                text.fontSizeMin = 0f;
+                text.fontSizeMax = 500f;
+                text.fontStyle = TMPro.FontStyles.Bold;
+                text.color = PlayerColors.Get(player?.ColorIndex ?? slot);
+                text.outlineWidth = 0.2f;                 // readable over bright terrain
+                text.outlineColor = new Color32(0, 0, 0, 220);
+                return text;
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[Bars] name label failed: {e.Message} — bars only");
+                return null;
+            }
         }
 
         /// <summary>One vanilla bar, stacked under the previous one — the same layout

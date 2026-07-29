@@ -22,7 +22,7 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 18; // 18 = SpawnClear (BR deploy-time pad clear)
+        public const int ProtocolVersion = 19; // 19 = DamageRequest carries PlayerShot + SourceNetId
                                                //      + BR messages (Announce/RingState/Placement/CarePackage)
                                                // 16 = LobbyStateMsg.WorldStatus + AdminCmd.EndRun
                                                // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder

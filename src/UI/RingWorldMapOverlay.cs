@@ -32,9 +32,9 @@ namespace PunkMultiverse.UI
     internal sealed class RingWorldMapOverlay : MonoBehaviour
     {
         // Same palette roles as the minimap overlay, so the two surfaces read as one language.
+        // (The drop marker's gold lives in UI/CarePackageArrow.cs with the shared crate sprite.)
         private static readonly Color CurrentRing = new Color32(255, 70, 30, 255);
         private static readonly Color IncomingRing = new Color32(255, 170, 40, 255);
-        private static readonly Color DropMarker = new Color32(90, 255, 210, 255);
 
         private Transform _iconsParent;
         private MapMover _mapMover;
@@ -170,50 +170,24 @@ namespace PunkMultiverse.UI
             return rt;
         }
 
-        /// <summary>A purpose-built supply-drop marker: a bracketed target that PULSES.
-        ///
-        /// It used to be a small static diamond, which on a map full of vanilla station icons read
-        /// as one more piece of furniture. Now that Battle Royale hides every other icon
-        /// (Patches/BattleRoyaleMapIcons.cs) the drop is the only thing on the map besides the ring
-        /// and your own ship, so it should look like the objective it is — Omar, 2026-07-28: "we
-        /// need a custom marker of some sort so it's clear where it is".
-        ///
-        /// Motion is what actually makes it findable: a static shape at map zoom is a few pixels
-        /// and easy to sweep past, while something breathing catches the eye immediately. The pulse
-        /// is driven in Draw() so it costs one scale assignment per frame.</summary>
+        /// <summary>The supply-drop marker: the GOLD PIXEL-ART CRATE-UNDER-A-PARACHUTE, shared with
+        /// the in-world edge arrow (UI/CarePackageArrow.cs) so the map and the world visibly point
+        /// at the same object. It replaced a teal bracket reticle that still went unfound in the
+        /// field — Omar, 2026-07-29: "I also can't find where the supply drop is. we need a gold
+        /// identifiable logo or something." Gold is reserved for drops (players get the lobby
+        /// palette, the ring gets reds), and the pulse in Draw() keeps it moving so the eye snags
+        /// on it at any zoom.</summary>
         private RectTransform MakeDrop()
         {
-            var go = new GameObject("SupplyDrop", typeof(RectTransform));
+            var go = new GameObject("SupplyDrop", typeof(RectTransform), typeof(Image));
             go.transform.SetParent(_root.transform, worldPositionStays: false);
             var rt = (RectTransform)go.transform;
             rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(26f, 26f);
-
-            // Four corner brackets: reads as a targeting reticle rather than a blob, and stays
-            // legible at one or two pixels of stroke.
-            for (int i = 0; i < 4; i++)
-            {
-                float sx = (i % 2 == 0) ? -1f : 1f;
-                float sy = (i < 2) ? 1f : -1f;
-                MakeBar(rt, new Vector2(sx * 9f, sy * 13f), new Vector2(10f, 2.5f)); // horizontal
-                MakeBar(rt, new Vector2(sx * 13f, sy * 9f), new Vector2(2.5f, 10f)); // vertical
-            }
-            // Solid centre dot: the exact spot, unambiguous once the brackets have drawn the eye.
-            MakeBar(rt, Vector2.zero, new Vector2(5f, 5f));
-            return rt;
-        }
-
-        private void MakeBar(RectTransform parent, Vector2 offset, Vector2 size)
-        {
-            var go = new GameObject("Mark", typeof(RectTransform), typeof(Image));
-            go.transform.SetParent(parent, worldPositionStays: false);
-            var rt = (RectTransform)go.transform;
-            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.anchoredPosition = offset;
-            rt.sizeDelta = size;
+            rt.sizeDelta = new Vector2(34f, 34f);
             var image = go.GetComponent<Image>();
-            image.color = DropMarker;
-            image.raycastTarget = false;
+            image.sprite = SupplyCrateSprites.Crate();
+            image.raycastTarget = false; // the map is click-to-teleport; never eat that click
+            return rt;
         }
 
         // ---------------------------------------------------------------- generated ring sprite
