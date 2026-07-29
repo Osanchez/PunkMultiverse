@@ -89,6 +89,11 @@ function StartGame($dir, $coord) {
     $psi.FileName = Join-Path $dir "Punk.exe"; $psi.Arguments = "-batchmode -nographics"
     $psi.WorkingDirectory = $dir; $psi.UseShellExecute = $false
     if ($coord) { $psi.EnvironmentVariables["PUNKMV_COORDINATOR"]="1"; $psi.EnvironmentVariables["PUNKMV_TRANSPORT"]="Udp" }
+    # Drop screen OFF for every harness process, via the ENVIRONMENT rather than config.cfg. A bot
+    # cannot click a drop screen, but config.cfg persists and these installs are played on — writing
+    # the key there disabled the drop screen for Omar's second player long after the test ended
+    # (2026-07-29). An env var dies with the process; that is the whole point.
+    $psi.EnvironmentVariables["PUNKMV_BR_CHOOSE_SPAWN"]="0"
     foreach($k in @($psi.EnvironmentVariables.Keys | Where-Object {$_ -like "DOORSTOP*"})){ $psi.EnvironmentVariables.Remove($k) }
     return [System.Diagnostics.Process]::Start($psi).Id
 }
@@ -111,21 +116,14 @@ try {
         "Transport"="Udp"; "UdpPort"="7787"; "CommandFile"="devcmd.txt"; "AutoLaunchRun"="false";
         "LogLevel"="Verbose"; "PreGenerateWorld"="true"; "EmptyServerResetSeconds"="600";
         "EnableGameModes"="true"; "GameMode"="BattleRoyale"; "BrMatchMinutes"="6"; "BrRingStartMinutes"="1";
-        "BrRingStages"="4"; "BrRingCloseSeconds"="20"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1";
-        # The drop screen needs a human: a bot never clicks it, sits parked in the void until the
-        # 30s timeout, and then deploys with spawn protection up - which turns every behaviour
-        # probe into a false FAIL (79% "stalled" motion = the holding pen, a 49k u/s "spike" = the
-        # deploy teleport, "hp never moved" = the protection window eating the PvP burst). The
-        # harness tests the deterministic scatter path; the drop screen is a manual/controller test.
-        "BrChooseSpawn"="false"
+        "BrRingStages"="4"; "BrRingCloseSeconds"="20"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1"
     }
     Remove-Item -Force -EA SilentlyContinue (Join-Path $CoordPlug "devcmd.txt"), $CoordLog
     foreach ($d in $BotDirs) {
         $plug = Join-Path $d "BepInEx\plugins\PunkMultiverse"
         SetCfg (Join-Path $plug "config.cfg") @{
             "Transport"="Udp"; "UdpAddress"="127.0.0.1"; "UdpPort"="7787"; "AutoStart"="Join";
-            "AutoReady"="true"; "CommandFile"="devcmd.txt"; "LogLevel"="Normal"; "AutoLaunchRun"="false";
-            "BrChooseSpawn"="false" # bots cannot click a drop screen - see the coordinator block
+            "AutoReady"="true"; "CommandFile"="devcmd.txt"; "LogLevel"="Normal"; "AutoLaunchRun"="false"
         }
         Remove-Item -Force -EA SilentlyContinue (Join-Path $plug "devcmd.txt"), (Join-Path $d "BepInEx\LogOutput.log"), (Join-Path $plug "devout.txt")
     }
@@ -190,6 +188,19 @@ try {
         Write-Host "probe: player-vs-player damage (22s)"
         Cmd $BotPlugs[0] ("tpplayer {0} 8" -f $BotSlots[1])
         Start-Sleep 2
+        # Both ships sit on a station, embedded in ground: without this every shot detonates on
+        # terrain at the muzzle and the probe reports "PvP is broken" no matter what the netcode
+        # does (measured 2026-07-29 - `player bullet HIT layer=10(Ground)` at the shooter's own
+        # position). Clear a pocket around BOTH so there is an actual line of fire between them.
+        # Ships FALL after a teleport, so a pocket cleared on arrival is 30 units above them by the
+        # time they shoot (measured: cleared at y=490, fired from y=475, buried again). Re-teleport
+        # and clear immediately before the burst, and make the pocket big enough to survive the drop.
+        Cmd $BotPlugs[0] "clearterrain 30"
+        Cmd $BotPlugs[1] "clearterrain 30"
+        Start-Sleep 2
+        Cmd $BotPlugs[0] ("tpplayer {0} 8" -f $BotSlots[1])
+        Cmd $BotPlugs[0] "clearterrain 30"
+        Start-Sleep 1
         Cmd $BotPlugs[0] "shipbars"
         Cmd $BotPlugs[1] "shipbars"
         Start-Sleep 2

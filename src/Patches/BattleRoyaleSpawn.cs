@@ -81,7 +81,7 @@ namespace PunkMultiverse.Patches
             // gap: in the world, visible, attackable, ahead of any choice (Omar, 2026-07-29: "we
             // still seem to be spawning before spawn selection"). Park it here, in the same frame
             // it spawns, so an undeployed ship never stands anywhere real.
-            if (NetConfig.BrChooseSpawn.Value)
+            if (NetConfig.ChooseSpawn)
             {
                 if (!Modes.BattleRoyaleSpawnSelect.Deployed)
                     Modes.BattleRoyaleSpawnSelect.HoldInTheVoid();

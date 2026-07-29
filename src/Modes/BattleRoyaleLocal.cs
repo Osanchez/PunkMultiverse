@@ -251,7 +251,7 @@ namespace PunkMultiverse.Modes
             if (_scattered || !Active) return;
             // The drop screen owns placement when it is on — the player puts themselves on a pad by
             // choosing. Scattering underneath that would move a ship that has already deployed.
-            if (NetConfig.BrChooseSpawn.Value) { _scattered = true; return; }
+            if (NetConfig.ChooseSpawn) { _scattered = true; return; }
             // Already standing on our own station — Patches/BattleRoyaleSpawn.cs put us there
             // before the cinematic even started, so there is nothing to teleport.
             if (Patches.BattleRoyaleSpawn.PlacedAtStation) { _scattered = true; return; }
@@ -314,7 +314,7 @@ namespace PunkMultiverse.Modes
                 if (em == null) return;
 
                 var centers = new List<Vector2>();
-                if (NetConfig.BrChooseSpawn.Value)
+                if (NetConfig.ChooseSpawn)
                 {
                     // With the drop screen on, ANY station can be a spawn — the player picks after
                     // the world is already running, so there is no "assigned" pad to clear ahead of

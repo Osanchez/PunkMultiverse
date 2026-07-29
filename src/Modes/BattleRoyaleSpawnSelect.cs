@@ -78,7 +78,7 @@ namespace PunkMultiverse.Modes
                        && s.LobbyMode == GameMode.BattleRoyale
                        && s.State == SessionState.InGame
                        && !NetConfig.IsCoordinator
-                       && NetConfig.BrChooseSpawn.Value
+                       && NetConfig.ChooseSpawn
                        && Options.Count > 0
                        && !_closed;
             }
@@ -235,7 +235,7 @@ namespace PunkMultiverse.Modes
             _closed = false;
             LocalHasChosen = false;
             Deployed = false;
-            if (NetConfig.IsCoordinator || !NetConfig.BrChooseSpawn.Value) { _closed = true; return; }
+            if (NetConfig.IsCoordinator || !NetConfig.ChooseSpawn) { _closed = true; return; }
             if (Options.Count == 0) BuildOptions();
             if (Options.Count == 0)
             {
@@ -353,7 +353,7 @@ namespace PunkMultiverse.Modes
             // lobby UI while a CO-OP run is still being played, which must not pen anyone.
             if (s.CurrentMode != GameMode.BattleRoyale) return;
             if (s.State != SessionState.Loading && s.State != SessionState.InGame) return;
-            if (NetConfig.IsCoordinator || !NetConfig.BrChooseSpawn.Value) return;
+            if (NetConfig.IsCoordinator || !NetConfig.ChooseSpawn) return;
             if (_closed || Deployed) return;
             HoldInTheVoid(quiet: true);
         }
@@ -536,7 +536,7 @@ namespace PunkMultiverse.Modes
                 // "not deployed yet" — the latter is also true before the window exists and after a
                 // reset, which would quietly make a ship invulnerable outside the moment this is
                 // meant to cover.
-                if (NetConfig.BrChooseSpawn.Value && !Deployed && _deadline > 0f) return true; // still choosing
+                if (NetConfig.ChooseSpawn && !Deployed && _deadline > 0f) return true; // still choosing
                 return _protectedUntil > 0f && Time.unscaledTime < _protectedUntil;
             }
         }

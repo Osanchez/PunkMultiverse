@@ -2007,6 +2007,7 @@ namespace PunkMultiverse.Core
                     EconomyStash.Tick(this);                    NetProfiler.Mark("Economy");
                     RuntimeInstrumentation.SetPhase(PerfPhase.Diagnostics);
                     NetDiag.TickPeriodic();                     NetProfiler.Mark("Diag");
+                    Patches.PvPDiag.Tick();
                     Patches.StartSequenceWatchdog.Tick();
                     if (IsBattleRoyale)
                     {

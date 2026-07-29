@@ -151,6 +151,7 @@ namespace PunkMultiverse.Sync
             _takeDamageListDepth = 0;
             ResetKiller();       // last run's killer must never be credited with this run's death
             WorldDamageSource.Reset();
+            Patches.PvPDiag.Reset();
             ResetLifeWatchdog(); // fresh run starts alive and un-announced
         }
 
@@ -593,6 +594,7 @@ namespace PunkMultiverse.Sync
                 PlayerShot = playerShot,
                 SourceNetId = hasTrace && trace.SourceNetId >= 0 ? trace.SourceNetId : -1,
             };
+            if (!isEntity) Patches.PvPDiag.NoteRouted(); // gate 4 probe: a hit aimed at a PLAYER
             Writer.Reset();
             msg.Write(Writer);
             session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);

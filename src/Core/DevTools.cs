@@ -586,6 +586,35 @@ namespace PunkMultiverse.Core
                     Out($"tpplayer: -> beside slot {tpSlot} at {dest.x:0.0},{dest.y:0.0}");
                     return;
                 }
+                // Empty the terrain around the local ship so a PvP probe has a clear line of fire.
+                // Measured 2026-07-29: `tpplayer` collapses the distance between two ships but says
+                // nothing about what is BETWEEN them — both bots sit on a station, embedded in
+                // ground, and every shot logged `player bullet HIT layer=10(Ground)` at the muzzle.
+                // A test that cannot land a shot in an empty room proves nothing about PvP.
+                case "clearterrain":
+                {
+                    float ctRadius = 14f;
+                    if (parts.Length >= 2) float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out ctRadius);
+                    var ctShip = ShipSync.LocalShip;
+                    if (ctShip == null) { Out("clearterrain: no local ship"); return; }
+                    var ctLevel = ServiceLocator.Get<Level>();
+                    if (ctLevel == null) { Out("clearterrain: no level"); return; }
+                    Vector2 c = ctShip.transform.position;
+                    int cleared = 0;
+                    float r2 = ctRadius * ctRadius;
+                    for (int y = Mathf.FloorToInt(c.y - ctRadius); y <= Mathf.CeilToInt(c.y + ctRadius); y++)
+                        for (int x = Mathf.FloorToInt(c.x - ctRadius); x <= Mathf.CeilToInt(c.x + ctRadius); x++)
+                        {
+                            if (!ctLevel.ContainsCell(x, y)) continue;
+                            float dx = x - c.x, dy = y - c.y;
+                            if (dx * dx + dy * dy > r2) continue;
+                            if (ctLevel.GetCellTypeId(x, y) == 0) continue;
+                            ctLevel.SetCell(new Vector2Int(x, y), 0);
+                            cleared++;
+                        }
+                    Out($"clearterrain: emptied {cleared} cells within {ctRadius:0} of ({c.x:0},{c.y:0})");
+                    return;
+                }
                 case "freezeprobe":
                 {
                     float fpSecs = 40f;

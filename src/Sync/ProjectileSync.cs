@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using HarmonyLib;
 using PunkMultiverse.Core;
 using PunkMultiverse.Protocol;
@@ -1244,7 +1244,13 @@ namespace PunkMultiverse.Sync
                 if (owner == null) return !VictimIsRemote(__instance);
                 // Real local enemy vs a teammate's puppet: suppressed — they apply the replay.
                 // (Player-vs-player stays shooter-routed: Ship owners fall through.)
-                if (owner.GetComponent<Ship>() == null && IsPuppetShip(__instance)) return false;
+                if (IsPuppetShip(__instance)) Patches.PvPDiag.NoteDamagePrefix(); // gate 3 probe
+                // OwnerIsShip, NOT owner.GetComponent<Ship>(): a ship's Unit and its Ship are not
+                // guaranteed to share a GameObject, and when they do not this read returns null, the
+                // branch reads a PLAYER's shot as "a local enemy hit a teammate's puppet", and the
+                // hit is dropped one step before it would have been routed. Measured 2026-07-29:
+                // bullets reached here 20 times (PvPDiag damagePrefix=20) and routed zero times.
+                if (!OwnerIsShip(owner) && IsPuppetShip(__instance)) return false;
                 if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
             }
@@ -1297,6 +1303,14 @@ namespace PunkMultiverse.Sync
             return true;
         }
 
+        /// <summary>Is this projectile's owner a PLAYER's ship? Searches the Unit's own object, its
+        /// ancestors and its children, because where Ship sits relative to Unit is a prefab detail
+        /// this file must not assert — getting it wrong silently deletes player-vs-player damage.</summary>
+        private static bool OwnerIsShip(Unit owner) =>
+            owner != null && (owner.GetComponent<Ship>() != null
+                              || owner.GetComponentInParent<Ship>() != null
+                              || owner.GetComponentInChildren<Ship>() != null);
+
         /// <summary>My real shot against a teammate's puppet while the host disabled friendly
         /// fire — drop it before it reaches the routed damage path.</summary>
         private static bool FriendlyFireBlocked(Unit owner, Component victim)
@@ -1305,7 +1319,7 @@ namespace PunkMultiverse.Sync
             // Battle Royale is PvP by definition — the lobby's friendly-fire choice does not apply.
             if (session == null || session.FriendlyFire || Modes.BattleRoyale.Active) return false;
             return owner != null
-                   && owner.GetComponent<Ship>() != null
+                   && OwnerIsShip(owner)
                    && owner.GetComponent<RemotePuppet>() == null
                    && IsPuppetShip(victim);
         }
@@ -1493,7 +1507,13 @@ namespace PunkMultiverse.Sync
                     return false;
                 }
                 if (owner == null) return !VictimIsRemote(__instance);
-                if (owner.GetComponent<Ship>() == null && IsPuppetShip(__instance)) return false;
+                if (IsPuppetShip(__instance)) Patches.PvPDiag.NoteDamagePrefix(); // gate 3 probe
+                // OwnerIsShip, NOT owner.GetComponent<Ship>(): a ship's Unit and its Ship are not
+                // guaranteed to share a GameObject, and when they do not this read returns null, the
+                // branch reads a PLAYER's shot as "a local enemy hit a teammate's puppet", and the
+                // hit is dropped one step before it would have been routed. Measured 2026-07-29:
+                // bullets reached here 20 times (PvPDiag damagePrefix=20) and routed zero times.
+                if (!OwnerIsShip(owner) && IsPuppetShip(__instance)) return false;
                 if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
             }

@@ -139,6 +139,24 @@ namespace PunkMultiverse
             System.Environment.GetEnvironmentVariable("PUNKMV_COORDINATOR") is string v
             && (v == "1" || v.Equals("true", System.StringComparison.OrdinalIgnoreCase));
 
+        /// <summary>Whether the Battle Royale drop screen is on for THIS process.
+        ///
+        /// Reads the config, but PUNKMV_BR_CHOOSE_SPAWN overrides it — and that override exists for
+        /// exactly one reason: the bot harness needs the drop screen OFF (a bot cannot click a
+        /// screen), and it used to get that by writing BrChooseSpawn=false into config.cfg. Those
+        /// are the same installs Omar plays on and config.cfg PERSISTS, so a test run silently
+        /// disabled the drop screen for his second player until he reported it (2026-07-29). An
+        /// environment variable dies with the process it was set for; a config file does not.
+        /// Never make a test change state that outlives the test.</summary>
+        public static bool ChooseSpawn =>
+            EnvChooseSpawn ?? (BrChooseSpawn != null && BrChooseSpawn.Value);
+
+        private static readonly bool? EnvChooseSpawn =
+            System.Environment.GetEnvironmentVariable("PUNKMV_BR_CHOOSE_SPAWN") is string cs
+            && !string.IsNullOrWhiteSpace(cs)
+                ? (bool?)(cs == "1" || cs.Equals("true", System.StringComparison.OrdinalIgnoreCase))
+                : null;
+
         /// <summary>Transport a spawned coordinator should use, from PUNKMV_TRANSPORT (the launcher
         /// sets it to match the hosting player's own capability: SteamServer on a Steam machine,
         /// Loopback for local-only). Default Loopback — the safe local behavior.</summary>
