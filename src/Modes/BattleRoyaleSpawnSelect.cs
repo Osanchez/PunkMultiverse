@@ -93,6 +93,8 @@ namespace PunkMultiverse.Modes
             LocalChoice = 0;
             Deployed = false;
             _protectedUntil = -1f;
+            _inputArmedAt = -1f;
+            _nextHoldReportAt = 0f;
         }
 
         // ---------------------------------------------------------------- the option list
@@ -238,6 +240,7 @@ namespace PunkMultiverse.Modes
                 return;
             }
             _deadline = Time.unscaledTime + Mathf.Max(5f, NetConfig.BrChooseSpawnSeconds.Value);
+            ArmInputAfter(InitialInputGrace);
             HoldInTheVoid();
             Plugin.Log.LogInfo($"[BRDrop] drop window open — {NetConfig.BrChooseSpawnSeconds.Value:0}s, " +
                 $"{Options.Count} regions");
@@ -302,6 +305,60 @@ namespace PunkMultiverse.Modes
 
         private static float _protectedUntil = -1f;
 
+        // ---------------------------------------------------------------- input arming
+        //
+        // A player was dropped into a region "before I even selected anything" (Omar, 2026-07-29).
+        // IMGUI buttons fire on a plain mouse-up inside their rect, and the click that FOCUSES a
+        // game window is delivered to the game like any other — so alt-tabbing back to a client
+        // presses whatever row happens to be under the cursor. The screen also opens under a
+        // cursor that is already somewhere, mid-click from the lobby.
+        //
+        // So selection is dead for a moment after the screen appears, and dead again for a moment
+        // after the window regains focus. A drop region is a decision worth one deliberate click;
+        // it should never be possible to spend it by accident.
+        private const float InitialInputGrace = 0.75f;
+        private const float RefocusInputGrace = 0.40f;
+
+        private static float _inputArmedAt = -1f;
+        private static bool _wasFocused = true;
+
+        internal static bool InputArmed => _inputArmedAt >= 0f && Time.unscaledTime >= _inputArmedAt;
+        internal static float ArmedInSeconds => Mathf.Max(0f, _inputArmedAt - Time.unscaledTime);
+
+        private static void ArmInputAfter(float seconds)
+        {
+            _inputArmedAt = Time.unscaledTime + Mathf.Max(0f, seconds);
+            _wasFocused = Application.isFocused;
+        }
+
+        private static void TickInputArming()
+        {
+            bool focused = Application.isFocused;
+            if (focused && !_wasFocused)
+            {
+                // The click that brought this window forward must not also choose a region.
+                _inputArmedAt = Mathf.Max(_inputArmedAt, Time.unscaledTime + RefocusInputGrace);
+                Plugin.Log.LogInfo("[BRDrop] window regained focus — selection disarmed briefly so " +
+                    "the focusing click cannot pick a region");
+            }
+            _wasFocused = focused;
+        }
+
+        private static float _nextHoldReportAt;
+
+        /// <summary>Say where the ship is while it waits. If a player is ever placed before they
+        /// choose, this is the line that shows whether the pen was holding at the time.</summary>
+        private static void ReportHold()
+        {
+            if (Time.unscaledTime < _nextHoldReportAt) return;
+            _nextHoldReportAt = Time.unscaledTime + 3f;
+            var ship = Sync.ShipSync.LocalShip;
+            string pos = ship != null
+                ? $"({ship.transform.position.x:0},{ship.transform.position.y:0})" : "no ship";
+            Plugin.Log.LogInfo($"[BRDrop] waiting: {SecondsLeft:0}s left, ship {pos}, " +
+                $"armed={InputArmed}, chosen={LocalHasChosen}, deployed={Deployed}");
+        }
+
         /// <summary>No damage may touch this ship yet.
         ///
         /// Two windows, for two different reasons. WHILE CHOOSING, because a player reading a menu
@@ -338,6 +395,15 @@ namespace PunkMultiverse.Modes
         internal static void Choose(byte biomeId)
         {
             if (_closed || Deployed) return;
+            if (!InputArmed)
+            {
+                Plugin.Log.LogInfo($"[BRDrop] IGNORED a pick of biome {biomeId} — input not armed yet " +
+                    $"({ArmedInSeconds:0.00}s to go). This is the click that focused the window or " +
+                    "landed in the first moments of the screen, not a decision.");
+                return;
+            }
+            Plugin.Log.LogInfo($"[BRDrop] pick: biome {biomeId} after " +
+                $"{Mathf.Max(0f, NetConfig.BrChooseSpawnSeconds.Value) - SecondsLeft:0.0}s on screen");
             LocalHasChosen = true;
             LocalChoice = biomeId;
 
@@ -366,7 +432,10 @@ namespace PunkMultiverse.Modes
             // one (Omar, 2026-07-28), and why they were in danger while reading the screen. Holding
             // every frame simply outlasts whoever else wants to place the ship.
             HoldInTheVoid(quiet: true);
+            TickInputArming();
+            ReportHold();
             if (Time.unscaledTime < _deadline) return;
+            Plugin.Log.LogInfo("[BRDrop] timer expired — picking a region at random");
             byte biomeId = Options[UnityEngine.Random.Range(0, Options.Count)].BiomeId;
             LocalHasChosen = true;
             LocalChoice = biomeId;
@@ -431,7 +500,9 @@ namespace PunkMultiverse.Modes
                     if (cam != null) cam.MoveCameraInstantlyToPosition(pad + Vector2.up * 2f);
                 }
                 catch (System.Exception e) { Plugin.Log.LogWarning($"[BRDrop] camera handover failed: {e.Message}"); }
-                Plugin.Log.LogInfo($"[BRDrop] deployed to {option.Name} at ({pad.x:0},{pad.y:0}) ({why})");
+                Plugin.Log.LogInfo($"[BRDrop] DEPLOYED to {option.Name} at ({pad.x:0},{pad.y:0}) — " +
+                    $"reason={why}, {SecondsLeft:0}s were left on the clock, " +
+                    $"{option.StationPositions.Count} pads in that region");
                 UI.Toast.Show($"DROPPING INTO {option.Name.ToUpperInvariant()}", 4f);
             }
             catch (System.Exception e)

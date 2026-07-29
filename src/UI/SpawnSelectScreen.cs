@@ -65,8 +65,11 @@ namespace PunkMultiverse.UI
             int left = Mathf.CeilToInt(secs);
             var clockStyle = secs <= 5f ? _clockUrgent : _clock;
             GUI.Label(new Rect(panel.x, panel.y + 34f, panel.width, 44f), $"{left}", clockStyle);
+            // Say when clicking is dead, rather than silently swallowing a press — a button that
+            // ignores you without explaining looks broken.
+            bool armed = Modes.BattleRoyaleSpawnSelect.InputArmed;
             GUI.Label(new Rect(panel.x, panel.y + 74f, panel.width, 24f),
-                "A REGION IS CHOSEN FOR YOU WHEN THIS REACHES ZERO", _sub);
+                armed ? "A REGION IS CHOSEN FOR YOU WHEN THIS REACHES ZERO" : "...", _sub);
 
             // Scaled against the NUMBER OF PLAYERS, not against the busiest region. Scaling to the
             // busiest made the first pick in a lobby fill its bar completely — one player out of
@@ -90,7 +93,8 @@ namespace PunkMultiverse.UI
                 bool mine = Modes.BattleRoyaleSpawnSelect.LocalHasChosen
                             && Modes.BattleRoyaleSpawnSelect.LocalChoice == option.BiomeId;
 
-                GUI.backgroundColor = mine ? new Color(1f, 1f, 1f, 0.95f) : new Color(1f, 1f, 1f, 0.35f);
+                GUI.backgroundColor = mine ? new Color(1f, 1f, 1f, 0.95f)
+                    : new Color(1f, 1f, 1f, armed ? 0.35f : 0.18f);
                 if (GUI.Button(row, GUIContent.none) && !Modes.BattleRoyaleSpawnSelect.LocalHasChosen)
                     Modes.BattleRoyaleSpawnSelect.Choose(option.BiomeId);
                 GUI.backgroundColor = Color.white;
