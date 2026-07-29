@@ -69,6 +69,7 @@ namespace PunkMultiverse.Sync
             SeenDamageRequestOrder.Clear();
             _requestSequence = 0;
             _takeDamageListDepth = 0;
+            ResetKiller();       // last run's killer must never be credited with this run's death
             ResetLifeWatchdog(); // fresh run starts alive and un-announced
         }
 
@@ -297,6 +298,9 @@ namespace PunkMultiverse.Sync
                 Type = "untyped",
             };
             state.HasTrace = ProjectileSync.TryGetCurrentDamageTrace(out state.Trace);
+            // Locally-applied damage to OUR ship — enemy fire, a hazard, a fall. Recorded here
+            // because this is where the trace is still attached to the hit.
+            if (state.HasTrace) NoteKiller(DescribeSource(state.Trace));
             return state;
         }
 
@@ -619,6 +623,13 @@ namespace PunkMultiverse.Sync
                 _applyingRemote = false;
                 if (!msg.IsEntity)
                 {
+                    // A ROUTED hit: another player shot us. This is the attribution that matters
+                    // most in a battle royale, and it arrives here rather than through a local
+                    // trace, because the shot was resolved on the shooter's machine.
+                    var attacker = msg.AttackerSlot < session.Players.Count
+                        ? session.Players[msg.AttackerSlot] : null;
+                    NoteKiller(!string.IsNullOrEmpty(attacker?.Name)
+                        ? attacker.Name : $"P{msg.AttackerSlot + 1}");
                     float shieldAfter = ShipSync.LocalShip != null ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
                     Plugin.Log.LogInfo($"[CombatHit] remote-request={msg.RequestId} attacker=P{msg.AttackerSlot + 1} shot={msg.ShotId} pellet={msg.ProjectileOrdinal} amount={msg.Amount:0.###} typeHash={msg.TypeHash:X8} applied=True hp={hpBefore:0.###}->{dr.CurrentHealth:0.###} shield={shieldBefore:0.###}->{shieldAfter:0.###}");
                 }
@@ -827,11 +838,107 @@ namespace PunkMultiverse.Sync
             if (session == null || session.State != SessionState.InGame || _applyingRemote) return;
             if (ship != ShipSync.LocalShip) return; // only our own ship's fate is ours to announce
             _announcedDead = died;
+            string killedBy = died ? DescribeKiller() : string.Empty;
             Writer.Reset();
-            new ShipLifeMsg { Slot = (byte)session.LocalSlot }.Write(Writer, died);
+            new ShipLifeMsg { Slot = (byte)session.LocalSlot, KilledBy = killedBy }.Write(Writer, died);
             session.SendToAll(NetChannel.Combat, Writer.ToSegment(), reliable: true);
             if (died) NetStats.AddDeath(session.LocalSlot);
-            Plugin.Log.LogInfo($"[Damage] local ship {(died ? "died" : "resurrected")} — broadcast");
+            Plugin.Log.LogInfo($"[Damage] local ship {(died ? "died" : "resurrected")} — broadcast" +
+                (died && !string.IsNullOrEmpty(killedBy) ? $" (killed by {killedBy})" : ""));
+            // Locally too: a sender never receives its own broadcast, and the player most entitled
+            // to know what killed them is the one it happened to.
+            if (died)
+                AnnounceDeath(new ShipLifeMsg { Slot = (byte)session.LocalSlot, KilledBy = killedBy });
+        }
+
+        /// <summary>"NAME died (killer - THING)" on every machine, including the victim's.
+        ///
+        /// Announced from the death event rather than from Battle Royale's elimination broadcast so
+        /// it works in co-op too, and so it says WHAT killed them — an elimination message only
+        /// knows that someone stopped being alive. The killer travels with the death because only
+        /// the victim's machine could work it out.</summary>
+        private static void AnnounceDeath(ShipLifeMsg msg)
+        {
+            try
+            {
+                var session = NetSession.Instance;
+                if (session == null || session.State != SessionState.InGame) return;
+                var player = msg.Slot < session.Players.Count ? session.Players[msg.Slot] : null;
+                string name = !string.IsNullOrEmpty(player?.Name) ? player.Name : $"P{msg.Slot + 1}";
+                string text = string.IsNullOrEmpty(msg.KilledBy)
+                    ? $"{name.ToUpperInvariant()} DIED"
+                    : $"{name.ToUpperInvariant()} DIED (KILLER - {msg.KilledBy.ToUpperInvariant()})";
+                UI.Toast.Show(text, 6f);
+                Plugin.Log.LogInfo($"[Death] {text}");
+            }
+            catch { }
+        }
+
+        // ---------------------------------------------------------------- killer attribution
+        //
+        // Only the VICTIM can answer "what killed me": the killer is whatever last damaged this
+        // ship, and that is known where the damage was applied, not where the death is observed.
+        // So it is recorded here on every hit to the local ship and shipped out with the death.
+        //
+        // Kept as a short window rather than "the last thing ever": a ship that limps away from a
+        // fight and dies to lava a minute later was killed by lava, and naming the player who hurt
+        // it earlier would be a lie in the one place players will quote it back at each other.
+        private static string _lastDamageSource;
+        private static float _lastDamageAt = -999f;
+        private const float KillerCreditSeconds = 12f;
+
+        internal static void NoteKiller(string source)
+        {
+            if (string.IsNullOrEmpty(source)) return;
+            _lastDamageSource = source;
+            _lastDamageAt = Time.unscaledTime;
+        }
+
+        internal static void ResetKiller() { _lastDamageSource = null; _lastDamageAt = -999f; }
+
+        private static string DescribeKiller()
+        {
+            if (string.IsNullOrEmpty(_lastDamageSource)) return string.Empty;
+            if (Time.unscaledTime - _lastDamageAt > KillerCreditSeconds) return string.Empty;
+            return _lastDamageSource;
+        }
+
+        /// <summary>Turn a damage trace into something worth reading. A player beats an entity beats
+        /// nothing: being killed BY SOMEONE is the fact that matters in a battle royale, and an
+        /// entity id like "Enemy_Turret_Laser" is tidied into "Turret Laser" because the callout is
+        /// for players, not for logs.</summary>
+        internal static string DescribeSource(ProjectileSync.DamageTrace trace)
+        {
+            var session = NetSession.Instance;
+            if (trace.SourceNetId == -1 && session != null)
+            {
+                var p = trace.SourceSlot < session.Players.Count ? session.Players[trace.SourceSlot] : null;
+                if (p != null && !string.IsNullOrEmpty(p.Name)) return p.Name;
+                return $"P{trace.SourceSlot + 1}";
+            }
+            if (trace.SourceNetId >= 0) return PrettyEntityName(EntityIdOf(trace.SourceNetId));
+            return string.Empty;
+        }
+
+        private static string EntityIdOf(int netId)
+        {
+            try
+            {
+                if (!Core.NetIds.TryGetInstanceId(netId, out int instanceId)) return null;
+                var data = ServiceLocator.Get<EntityManager>()?.GetEntity(instanceId);
+                return data?.entityId;
+            }
+            catch { return null; }
+        }
+
+        internal static string PrettyEntityName(string entityId)
+        {
+            if (string.IsNullOrEmpty(entityId)) return "";
+            string s = entityId;
+            foreach (var prefix in new[] { "Enemy_", "Unit_", "Enemy", "Unit_" })
+                if (s.StartsWith(prefix, System.StringComparison.OrdinalIgnoreCase))
+                { s = s.Substring(prefix.Length); break; }
+            return s.Replace('_', ' ').Trim();
         }
 
         // ---------------------------------------------------------------- life watchdog
@@ -865,6 +972,7 @@ namespace PunkMultiverse.Sync
 
         public static void ApplyLifeEvent(ShipLifeMsg msg, bool died)
         {
+            if (died) AnnounceDeath(msg);
             if (!ShipSync.ShipsBySlot.TryGetValue(msg.Slot, out var ship) || ship == null) return;
             if (ship.GetComponent<RemotePuppet>() == null) return; // our own echo
             if (died) NetStats.AddDeath(msg.Slot);

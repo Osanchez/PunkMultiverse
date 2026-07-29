@@ -1583,14 +1583,24 @@ namespace PunkMultiverse.Protocol
     public struct ShipLifeMsg // ShipDied / ShipResurrected share the body
     {
         public byte Slot;
+        /// <summary>What killed them, in words, for the death callout. Only the VICTIM's machine
+        /// can know this — the killer is whatever last damaged the ship, and that is recorded where
+        /// the damage was applied. Empty for resurrections and for deaths with no attributable
+        /// source (fell in lava, ran out of hull with nobody shooting).</summary>
+        public string KilledBy;
 
         public void Write(NetWriter w, bool died)
         {
             w.WriteMsgType(died ? MsgType.ShipDied : MsgType.ShipResurrected);
             w.WriteByte(Slot);
+            w.WriteString(KilledBy ?? string.Empty);
         }
 
-        public static ShipLifeMsg Read(NetReader r) => new ShipLifeMsg { Slot = r.ReadByte() };
+        public static ShipLifeMsg Read(NetReader r) => new ShipLifeMsg
+        {
+            Slot = r.ReadByte(),
+            KilledBy = r.ReadString(),
+        };
     }
 
     public struct CellDiffMsg
