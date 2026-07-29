@@ -44,7 +44,12 @@ namespace PunkMultiverse.Modes
             internal string Name;          // friendly, for the button
             internal Color Color;          // the biome's own map colour
             internal readonly List<Vector2> StationPositions = new List<Vector2>();
+            /// <summary>Other biome ids merged into this row (Flesh Solid, Flesh Techno -> Flesh).
+            /// A tally keyed on any of them belongs to this option.</summary>
+            internal readonly List<byte> AliasBiomeIds = new List<byte>();
             internal int Picks;            // live tally from the host
+
+            internal bool Covers(byte id) => id == BiomeId || AliasBiomeIds.Contains(id);
         }
 
         private static readonly List<BiomeOption> Options = new List<BiomeOption>();
@@ -123,8 +128,30 @@ namespace PunkMultiverse.Modes
                     option.StationPositions.Add(world);
                 }
 
+                // MERGE VARIANTS OF THE SAME MATERIAL. The generator splits a material into several
+                // biome assets — Flesh / Flesh Solid / Flesh Techno, Caverns / Caverns Deep, Crust /
+                // Crust Boss — which is meaningful to level generation and meaningless to a player
+                // picking a destination under a 30-second clock (Omar, 2026-07-29: "we need to group
+                // biomes of the same type"). Three near-identical rows are three ways to fail to
+                // read the list. Grouped by leading word, which is how the assets are named and
+                // therefore how the family is already expressed.
+                foreach (var group in byBiome.Values
+                             .GroupBy(o => o.Name.Split(' ')[0], System.StringComparer.OrdinalIgnoreCase))
+                {
+                    var members = group.OrderBy(o => o.BiomeId).ToList();
+                    var merged = members[0];               // lowest id represents the family
+                    merged.Name = group.Key;               // "Flesh", not "Flesh Techno"
+                    for (int i = 1; i < members.Count; i++)
+                    {
+                        merged.StationPositions.AddRange(members[i].StationPositions);
+                        // Every id in the family answers to the representative, so a tally that
+                        // arrives keyed on a variant still lands on the row the player pressed.
+                        merged.AliasBiomeIds.Add(members[i].BiomeId);
+                    }
+                    Options.Add(merged);
+                }
                 // Stable order so the buttons do not shuffle between machines or frames.
-                Options.AddRange(byBiome.Values.OrderBy(o => o.Name, System.StringComparer.Ordinal));
+                Options.Sort((a, b) => System.StringComparer.Ordinal.Compare(a.Name, b.Name));
                 Plugin.Log.LogInfo($"[BRDrop] {Options.Count} drop regions: " +
                     string.Join(", ", Options.Select(o => $"{o.Name}({o.StationPositions.Count})")));
             }
@@ -370,7 +397,7 @@ namespace PunkMultiverse.Modes
             _protectedUntil = Time.unscaledTime + Mathf.Max(0f, NetConfig.BrSpawnProtectionSeconds.Value);
             try
             {
-                var option = Options.FirstOrDefault(o => o.BiomeId == biomeId) ?? Options[0];
+                var option = Options.FirstOrDefault(o => o.Covers(biomeId)) ?? Options[0];
                 if (option.StationPositions.Count == 0) return;
                 var pad = option.StationPositions[UnityEngine.Random.Range(0, option.StationPositions.Count)];
                 Sync.ShipSync.TeleportLocalShipTo(pad + Vector2.up * 2f); // hover above the platform
@@ -419,8 +446,10 @@ namespace PunkMultiverse.Modes
             foreach (var option in Options) option.Picks = 0;
             for (int i = 0; i < msg.BiomeIds.Length; i++)
             {
-                var option = Options.FirstOrDefault(o => o.BiomeId == msg.BiomeIds[i]);
-                if (option != null) option.Picks = msg.Counts[i];
+                // Covers(), not equality: a pick made on a variant id belongs to the family row it
+                // was merged into, or a grouped region would show an empty bar for a real choice.
+                var option = Options.FirstOrDefault(o => o.Covers(msg.BiomeIds[i]));
+                if (option != null) option.Picks += msg.Counts[i];
             }
         }
         // ---------------------------------------------------------------- host side (tally only)

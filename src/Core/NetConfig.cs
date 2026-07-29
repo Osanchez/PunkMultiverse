@@ -86,6 +86,7 @@ namespace PunkMultiverse
         public static ConfigEntry<float> BrEnemyHpScale;
         public static ConfigEntry<int> BrMinPlayers;
         public static ConfigEntry<float> BrSpawnClearRadius;
+        public static ConfigEntry<float> BrStationHazardClearRadius;
         public static ConfigEntry<float> BrWinnerSelfDestructSeconds;
         public static ConfigEntry<string> InstallId;
 
@@ -449,6 +450,13 @@ namespace PunkMultiverse
             BrEnemyHpScale = cfg.Bind("Session", "BrEnemyHpScale", 0.5f,
                 "Battle Royale: enemy max-health multiplier. 0.5 makes players effectively deal " +
                 "double damage to enemies, so kills and gold come twice as fast.");
+            BrStationHazardClearRadius = cfg.Bind("Session", "BrStationHazardClearRadius", 14f,
+                "Battle Royale: world units of DAMAGING TERRAIN (lava, gas, anything with contact " +
+                "damage) scrubbed off the ground around every shop at match start. World generation " +
+                "will happily put lava against a station — fine in co-op where you arrive on your " +
+                "own terms, unfair when that station is a SPAWN. Deliberately small: a landing pad, " +
+                "not a cleared arena, and every cleared cell is a replicated terrain diff. 0 " +
+                "disables it and leaves the world exactly as generated.");
             BrSpawnClearRadius = cfg.Bind("Session", "BrSpawnClearRadius", 60f,
                 "Battle Royale: world units of clear ground around every player's spawn station. " +
                 "Enemies inside that circle are removed at match start so nobody opens the match " +

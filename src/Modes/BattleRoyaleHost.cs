@@ -96,6 +96,7 @@ namespace PunkMultiverse.Modes
             if (_stationsOpened || elapsed < _openStationsAt) return;
             _stationsOpened = true;
             OpenAllStations();
+            ClearHazardsAroundStations();
         }
 
         /// <summary>BR is about fighting over a map you can already shop on, not about unlock
@@ -119,6 +120,94 @@ namespace PunkMultiverse.Modes
             }
             catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] open-all-stations failed: {e.Message}"); }
             Plugin.Log.LogInfo($"[BR] opened {opened} stations");
+        }
+
+        /// <summary>Scrub damaging TERRAIN off the ground around every shop.
+        ///
+        /// World generation is free to put lava, gas or anything else with contact damage right up
+        /// against a station — reasonable in the co-op game, where you arrive on your own terms and
+        /// can see it coming. In Battle Royale a station is a SPAWN, and Omar's report stands on
+        /// its own: "one of the spawn locations had hazards around it... it seems kind of crazy that
+        /// world gen allows hazards close to the shops." Dropping into damage you did not choose and
+        /// could not see is not a fight, it is a coin toss.
+        ///
+        /// Host only, because these are real terrain writes that replicate through the normal cell
+        /// pipeline — the enemy sweep next door is the opposite (derived identically everywhere and
+        /// sent nowhere), and confusing the two would either double-apply or diverge.
+        ///
+        /// Radius is deliberately small. This is a landing pad, not a cleared arena: far enough that
+        /// you are not standing in fire on arrival, close enough that the hazard still shapes the
+        /// ground you fight over. And the cost scales with it — every cleared cell is a replicated
+        /// diff, which is the bill the ring taught us to read before writing terrain in bulk.</summary>
+        private static void ClearHazardsAroundStations()
+        {
+            float radius = Mathf.Max(0f, NetConfig.BrStationHazardClearRadius.Value);
+            if (radius <= 0f) return;
+            try
+            {
+                var level = LevelRef;
+                var em = ServiceLocator.Get<EntityManager>();
+                if (level == null || em == null) return;
+
+                var damaging = DamagingCellIds();
+                if (damaging.Count == 0) return;
+
+                var cells = Traverse.Create(level).Field("cellTypes").GetValue();
+                if (!(cells is Unity.Collections.NativeArray<byte> native) || !native.IsCreated) return;
+
+                int w = level.Width, h = level.Height, cleared = 0, pads = 0;
+                float r2 = radius * radius;
+                foreach (var station in em.GetEntitiesWithComponent<Station.Data>().ToList())
+                {
+                    if (station?.entity == null) continue;
+                    pads++;
+                    var c = (Vector2)station.entity.position;
+                    int minX = Mathf.Max(0, Mathf.FloorToInt(c.x - radius));
+                    int maxX = Mathf.Min(w - 1, Mathf.CeilToInt(c.x + radius));
+                    int minY = Mathf.Max(0, Mathf.FloorToInt(c.y - radius));
+                    int maxY = Mathf.Min(h - 1, Mathf.CeilToInt(c.y + radius));
+                    for (int y = minY; y <= maxY; y++)
+                    {
+                        float dy = y - c.y;
+                        int row = y * w;
+                        for (int x = minX; x <= maxX; x++)
+                        {
+                            float dx = x - c.x;
+                            if (dx * dx + dy * dy > r2) continue;
+                            if (!damaging.Contains(native[row + x])) continue;
+                            level.SetCell(row + x, 0); // to empty; replicates like any terrain change
+                            cleared++;
+                        }
+                    }
+                }
+                Plugin.Log.LogInfo($"[BR] cleared {cleared} hazard cells within {radius:0} units of {pads} shops");
+            }
+            catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] shop hazard clear failed: {e.Message}"); }
+        }
+
+        /// <summary>Cell types that hurt on contact. Resolved at runtime because ids are registered
+        /// per run, and read from the same <c>contactDamage</c> struct the ring material lookup used
+        /// to — a float read of it silently scores every cell zero.</summary>
+        private static HashSet<byte> DamagingCellIds()
+        {
+            var ids = new HashSet<byte>();
+            try
+            {
+                foreach (var ct in Resources.FindObjectsOfTypeAll<CellType>())
+                {
+                    if (ct == null || ct.id == 0) continue;
+                    float dmg = 0f;
+                    try
+                    {
+                        var contact = Traverse.Create(ct).Field("contactDamage").GetValue();
+                        if (contact != null) dmg = Traverse.Create(contact).Field("amount").GetValue<float>();
+                    }
+                    catch { }
+                    if (dmg > 0f) ids.Add(ct.id);
+                }
+            }
+            catch { }
+            return ids;
         }
 
         // ---------------------------------------------------------------- ring geometry
