@@ -98,6 +98,7 @@ namespace PunkMultiverse.Modes
             _nextHoldReportAt = 0f;
             Highlighted = 0;
             _navNextAt = 0f;
+            _unfocusedPauseUsed = 0f;
         }
 
         // ---------------------------------------------------------------- the option list
@@ -556,11 +557,29 @@ namespace PunkMultiverse.Modes
             Deploy(biomeId, "chosen");
         }
 
+        // The clock PAUSES while the window is unfocused. The timeout exists so a player at the
+        // screen can't sit in the void forever — but an UNFOCUSED window has nobody at it, and the
+        // clock expiring there took the choice away from anyone running two clients (Omar,
+        // 2026-07-29: "I'm assuming you added something to auto choose spawn on the second player
+        // — I would like to choose the spawn for both players"). Alt-tab back and the countdown
+        // resumes where it stopped. The pause is CAPPED so a player who alt-tabs and walks away on
+        // a real server still deploys eventually instead of stalling the match from the void.
+        private const float MaxUnfocusedPauseSeconds = 300f;
+        private static float _unfocusedPauseUsed;
+
         /// <summary>Ticked while the window is open: nobody is held past the clock. Running out of
         /// time is a decision too — a random region, not a penalty and not a wait.</summary>
         internal static void Tick()
         {
             if (_closed || Deployed || _deadline < 0f) return;
+            if (!Application.isFocused && _unfocusedPauseUsed < MaxUnfocusedPauseSeconds)
+            {
+                float dt = Time.unscaledDeltaTime;
+                _deadline += dt;                 // hold the countdown exactly where it was
+                _unfocusedPauseUsed += dt;
+                if (_unfocusedPauseUsed >= MaxUnfocusedPauseSeconds)
+                    Plugin.Log.LogInfo("[BRDrop] unfocused-pause budget exhausted — the clock runs on");
+            }
             // KEEP it parked. A one-shot teleport at go-live loses a race it cannot win: the run
             // scene places ships AFTER go-live, so whatever we moved gets put straight back on the
             // start pad — which is why players kept spawning at a station before they had picked
