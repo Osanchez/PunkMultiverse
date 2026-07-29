@@ -81,6 +81,42 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        /// <summary>In a net run, HEALTH never rides the infinite-resource flag.
+        ///
+        /// Vanilla's "unlimited resources" (F1 debug menu; our `god` devcmd also arms it for
+        /// infinite ammo) sets <c>isInfinite</c> on EVERY tank via Unit.HasInfiniteResource — and
+        /// an infinite tank's Value setter silently refuses to decrease. In single-player that is
+        /// the cheat working as designed; in a shared match it makes that player unkillable by
+        /// players, enemies AND the ring (the zone burn skips infinite tanks), while every hit
+        /// still logs applied=True. This was BOTH "no damage between players" reports: the victim
+        /// had toggled unlimited resources to test weapons and the log froze at `hp=N->N` from the
+        /// moment the F1 menu opened (2026-07-29, twice). The toggle keeps its useful half —
+        /// infinite AMMO/FUEL — and loses the accidental immortality.</summary>
+        [HarmonyPatch(typeof(Unit), nameof(Unit.HasInfiniteResource), MethodType.Setter)]
+        internal static class NoInfiniteHealthInNetRuns
+        {
+            private static void Postfix(Unit __instance, bool value)
+            {
+                if (!value || !NetSession.Active || __instance == null) return;
+                try
+                {
+                    // Ships only: vanilla only ever arms this on ships, and stripping an
+                    // intentionally-invincible entity would be a different decision.
+                    if (__instance.GetComponent<Ship>() == null
+                        && __instance.GetComponentInChildren<Ship>() == null) return;
+                    var dr = __instance.GetComponent<DamagableResource>()
+                             ?? __instance.GetComponentInChildren<DamagableResource>();
+                    if (dr != null && dr.Tank != null && dr.Tank.isInfinite)
+                    {
+                        dr.Tank.isInfinite = false;
+                        Plugin.Log.LogInfo("[Damage] unlimited resources armed — health tank " +
+                            "EXCLUDED (a net-run ship must stay killable; ammo/fuel stay infinite)");
+                    }
+                }
+                catch { }
+            }
+        }
+
         /// <summary>Vanilla's damageBlockers (all-active GameObjects on the prefab — the ship-menu
         /// canopy among them) silently blocked EVERY hit while a menu was open. In vanilla that is
         /// balanced by the whole world pausing; a shared sim cannot pause, and Omar's standing rule

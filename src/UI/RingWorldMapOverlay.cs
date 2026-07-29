@@ -49,7 +49,13 @@ namespace PunkMultiverse.UI
 
         private void LateUpdate()
         {
-            if (!Modes.BattleRoyale.RingPersists || !Modes.BattleRoyale.RingVisible)
+            // Gate on the SESSION being live, not on the ring being visible: RingVisible is false
+            // for the whole first hold (deliberately, for the circles — a boundary that hasn't
+            // moved marks ground that isn't in play), and the SUPPLY DROP markers were caught
+            // behind the same gate. A drop that lands during the opening hold — which the first
+            // one now always does — was simply absent from the map (Omar, 2026-07-29: "you are not
+            // showing its location in the big map where players usually go to look").
+            if (!Modes.BattleRoyale.RingPersists)
             {
                 if (_root != null) Destroy(_root);
                 _root = null;
@@ -75,11 +81,15 @@ namespace PunkMultiverse.UI
 
             EnsureWidgets();
 
-            // The CURRENT boundary: where the lava is now.
-            Place(_current, _currentImage, ringCenter, ring.SafeRadius, zoom, CurrentRing, dashes: 64);
+            // The CURRENT boundary: where the lava is now. Hidden until the first closure — see
+            // RingVisible — while the drops below draw regardless.
+            bool ringVisible = Modes.BattleRoyale.RingVisible;
+            _current.gameObject.SetActive(ringVisible);
+            if (ringVisible)
+                Place(_current, _currentImage, ringCenter, ring.SafeRadius, zoom, CurrentRing, dashes: 64);
             // Where you have to be standing after this closure — shown only in the run-up to it and
             // during it (BattleRoyale.NextRingVisible), so the amber circle keeps meaning "move".
-            bool hasTarget = ring.TargetRadius > 1f && Modes.BattleRoyale.NextRingVisible;
+            bool hasTarget = ringVisible && ring.TargetRadius > 1f && Modes.BattleRoyale.NextRingVisible;
             _target.gameObject.SetActive(hasTarget);
             if (hasTarget)
                 Place(_target, _targetImage, ringCenter, ring.TargetRadius, zoom, IncomingRing, dashes: 32);

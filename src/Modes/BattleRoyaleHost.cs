@@ -49,8 +49,9 @@ namespace PunkMultiverse.Modes
             // ring could be the one lethal ground; the ring is now a rendered zone, visually
             // unmistakable, and wiping ~100k cells at go-live was itself a terrain-diff burst
             // replicated to every client at the worst possible moment.
+            // First wave at HALF the interval: a short match should still see a supply drop.
             _nextCarePackageAt = NetConfig.BrCarePackageMinutes.Value > 0
-                ? NetConfig.BrCarePackageMinutes.Value * 60f
+                ? NetConfig.BrCarePackageMinutes.Value * 30f
                 : float.MaxValue;
 
             // Print the actual radius ladder rather than a single averaged rate: the ring halves, so
@@ -376,8 +377,18 @@ namespace PunkMultiverse.Modes
             _closeSeconds = Mathf.Max(5f, NetConfig.BrRingCloseSeconds.Value);
             float hold = Mathf.Max(0f, NetConfig.BrRingHoldMinutes.Value * 60f);
             _stageSpan = hold + _closeSeconds;
-            _matchSeconds = _ringStartSeconds + _stageSpan * Mathf.Max(1, _stages);
+            // The FIRST hold may be shorter (Omar, 2026-07-29: "first closure in the first 3
+            // minutes will do" — everyone is looting during the opener; nobody is contesting
+            // ground). Implemented as a clock SHIFT rather than piecewise spans: RingAt adds this
+            // to elapsed time, which shortens exactly the first hold and leaves every later
+            // stage's rhythm untouched.
+            float firstHold = Mathf.Clamp(NetConfig.BrRingFirstHoldMinutes.Value * 60f, 0f, hold);
+            _firstHoldShorten = hold - firstHold;
+            _matchSeconds = _ringStartSeconds + _stageSpan * Mathf.Max(1, _stages) - _firstHoldShorten;
         }
+
+        /// <summary>Seconds shaved off the first hold; RingAt shifts its clock forward by this.</summary>
+        private static float _firstHoldShorten;
 
         // The ring HALVES. Omar, 2026-07-28, by worked example: from a start radius of 100 and six
         // closures — 100, 80, 40, 20, 10, 5, 0.
@@ -415,7 +426,10 @@ namespace PunkMultiverse.Modes
                 phaseRemaining = _ringStartSeconds - elapsed;
                 return;
             }
-            float t = elapsed - _ringStartSeconds;
+            // The shift that shortens the FIRST hold only (see ComputeSchedule): time past the
+            // ring start is advanced by the shaved amount, so stage 1's hold ends early and every
+            // subsequent stage keeps its full rhythm.
+            float t = elapsed - _ringStartSeconds + _firstHoldShorten;
             int done = Mathf.FloorToInt(t / _stageSpan);     // fully completed stages
             if (done >= _stages)
             {
@@ -502,8 +516,17 @@ namespace PunkMultiverse.Modes
             {
                 _nextCarePackageAt = elapsed + Mathf.Max(60f, NetConfig.BrCarePackageMinutes.Value * 60f);
                 // Drop into ground that stays safe through the NEXT closure, so a package is never
-                // swallowed by lava before anyone can reach it.
-                DropCarePackage(session, Mathf.Max(20f, nextTarget));
+                // swallowed by lava before anyone can reach it. A WAVE is several packages
+                // scattered independently (Omar, 2026-07-29: "more air drops throughout the
+                // world") with one announcement — five toasts for five crates is noise.
+                int wave = Mathf.Clamp(NetConfig.BrCarePackagesPerWave.Value, 1, 8);
+                int dropped = 0;
+                for (int i = 0; i < wave; i++)
+                    if (DropCarePackage(session, Mathf.Max(20f, nextTarget), i)) dropped++;
+                if (dropped > 0)
+                    Announce(session, dropped == 1
+                        ? "SUPPLY DROP INBOUND — CHECK YOUR MAP. DESTROY IT TO CLAIM IT"
+                        : $"{dropped} SUPPLY DROPS INBOUND — CHECK YOUR MAP. DESTROY THEM TO CLAIM THEM", 7f);
             }
 
             CheckLastAlive(session);
@@ -534,18 +557,21 @@ namespace PunkMultiverse.Modes
 
         // ---------------------------------------------------------------- care packages
 
-        private static void DropCarePackage(NetSession session, float radius)
+        /// <summary>One package. Returns whether it actually spawned; the caller owns the wave
+        /// announcement. <paramref name="waveIndex"/> salts the seed — two drops in the same wave
+        /// used to derive the same Random from the same millisecond and land on the same cell.</summary>
+        private static bool DropCarePackage(NetSession session, float radius, int waveIndex = 0)
         {
             try
             {
                 var level = LevelRef;
                 var egm = ServiceLocator.Get<EntityGameObjectManager>();
-                if (level == null || egm == null || egm.savablesCollection == null) return;
+                if (level == null || egm == null || egm.savablesCollection == null) return false;
                 var cells = Traverse.Create(level).Field("cellTypes").GetValue();
-                if (!(cells is Unity.Collections.NativeArray<byte> native) || !native.IsCreated) return;
+                if (!(cells is Unity.Collections.NativeArray<byte> native) || !native.IsCreated) return false;
 
                 // Somewhere open, inside the safe zone, so it is contestable rather than lethal.
-                var rnd = new System.Random((int)(Time.unscaledTime * 1000f));
+                var rnd = new System.Random((int)(Time.unscaledTime * 1000f) + waveIndex * 7919);
                 int w = level.Width, h = level.Height;
                 Vector2 spot = _center;
                 for (int attempt = 0; attempt < 200; attempt++)
@@ -561,9 +587,9 @@ namespace PunkMultiverse.Modes
                 }
 
                 if (!TryPickCarePackagePrefab(egm, out var prefab, out string prefabId))
-                { Plugin.Log.LogWarning("[BR] no care-package prefab available"); return; }
+                { Plugin.Log.LogWarning("[BR] no care-package prefab available"); return false; }
                 var spawned = egm.CreateEntity(prefab, spot); // replicates via runtime-spawn capture
-                if (spawned == null) return;
+                if (spawned == null) return false;
                 int netId = 0;
                 var se = spawned.GetComponent<SavableEntity>();
                 if (se != null && se.EntityData != null) NetIds.TryGetNetId(se.EntityData.instanceId, out netId);
@@ -573,9 +599,13 @@ namespace PunkMultiverse.Modes
                 var w2 = new NetWriter(32);
                 new CarePackageMsg { NetId = netId, X = spot.x, Y = spot.y }.Write(w2);
                 session.SendToAll(Transport.NetChannel.Control, w2.ToSegment(), reliable: true);
-                Announce(session, "SUPPLY DROP INBOUND — CHECK YOUR MAP. DESTROY IT TO CLAIM IT", 7f);
+                return true;
             }
-            catch (System.Exception e) { Plugin.Log.LogWarning($"[BR] care package drop failed: {e.Message}"); }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"[BR] care package drop failed: {e.Message}");
+                return false;
+            }
         }
 
         /// <summary>A destructible prop to use as the supply drop. Preference order is by entity

@@ -82,6 +82,8 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> SegmentChangeRouting;
         public static ConfigEntry<bool> TrimTerrainPresentation;
         public static ConfigEntry<int> BrCarePackageMinutes;
+        public static ConfigEntry<int> BrCarePackagesPerWave;
+        public static ConfigEntry<float> BrRingFirstHoldMinutes;
         public static ConfigEntry<float> PvPDamageScale;
         public static ConfigEntry<float> BrEnemyHpScale;
         public static ConfigEntry<int> BrMinPlayers;
@@ -441,9 +443,19 @@ namespace PunkMultiverse
                 "is multiplied by (1 + stage * this), so at the default 0.75 the opening zone takes " +
                 "BrZoneKillSeconds to kill and the 8th ring takes about an eighth of that. The " +
                 "early zones are meant to be survivable and the late ones are not.");
-            BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 4,
-                "Battle Royale: minutes between care-package drops (0 disables them). Each package " +
-                "is destructible; only the player who destroys it gets the loot.");
+            BrCarePackageMinutes = cfg.Bind("Session", "BrCarePackageMinutes", 3,
+                "Battle Royale: minutes between care-package waves (0 disables them). The FIRST " +
+                "wave lands at half this, so a short match still sees one. Each package is " +
+                "destructible; only the player who destroys it gets the loot.");
+            BrCarePackagesPerWave = cfg.Bind("Session", "BrCarePackagesPerWave", 2,
+                "Battle Royale: how many packages drop in each wave, scattered independently " +
+                "across the safe zone (Omar, 2026-07-29: 'I would like more air drops throughout " +
+                "the world').");
+            BrRingFirstHoldMinutes = cfg.Bind("Session", "BrRingFirstHoldMinutes", 2f,
+                "Battle Royale: minutes the ring holds before its FIRST closure (later closures " +
+                "use BrRingHoldMinutes). The opening hold plays differently from the rest — " +
+                "everyone is looting, nobody is contesting ground — and a full-length first hold " +
+                "read as 'the ring never closes' in short matches. Clamped to BrRingHoldMinutes.");
             PvPDamageScale = cfg.Bind("Session", "PvPDamageScale", 0.25f,
                 "Battle Royale: multiplier on player-vs-player damage. Late-game weapons would " +
                 "otherwise one-shot other players; damage to ENEMIES is unaffected.");
