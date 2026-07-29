@@ -24,6 +24,7 @@ namespace PunkMultiverse.Patches
     internal static class PvPDiag
     {
         private static int _castsAtShip;    // gate 1: a cast returned a ship collider
+        private static int _selfHits;       // gate 0c: shots that struck the hull that fired them
         private static int _friendFlips;    // gate 2: we made two ships hostile
         private static int _damagePrefix;   // gate 3: reached the projectile-damage prefix on a ship
         private static int _routed;         // gate 4: a DamageRequest was actually sent at a player
@@ -33,9 +34,18 @@ namespace PunkMultiverse.Patches
         private static int _playerProjTicks;  // gate 0: player-owned PROJECTILES exist and are ticking
         private static int _playerHitscans;   // gate 0b: player-owned HITSCAN shots were fired
 
+        // Physical facts about the most recent player-owned projectile, for `pvpprobe`. Read from a
+        // live bullet rather than guessed from layer names: the projectile layer is a prefab detail
+        // and the mask is whatever Projectile.Shoot computed AFTER the widening postfix ran, which
+        // is the only number that decides whether a sweep can return a ship.
+        internal static int LastProjectileLayer = -1;
+        internal static int LastProjectileMask;
+        internal static float LastProjectileRadius;
+
         internal static void NotePlayerProjectile() { _playerProjTicks++; _dirty = true; }
         internal static void NotePlayerHitscan() { _playerHitscans++; _dirty = true; }
         internal static void NoteCastAtShip() { _castsAtShip++; _dirty = true; }
+        internal static void NoteSelfHit() { _selfHits++; _dirty = true; }
         internal static void NoteFriendFlip() { _friendFlips++; _dirty = true; }
         internal static void NoteDamagePrefix() { _damagePrefix++; _dirty = true; }
         internal static void NoteRouted() { _routed++; _dirty = true; }
@@ -44,8 +54,11 @@ namespace PunkMultiverse.Patches
 
         internal static void Reset()
         {
-            _castsAtShip = _friendFlips = _damagePrefix = _routed = 0;
+            _castsAtShip = _friendFlips = _damagePrefix = _routed = _selfHits = 0;
             _playerProjTicks = _playerHitscans = 0;
+            LastProjectileLayer = -1;
+            LastProjectileMask = 0;
+            LastProjectileRadius = 0f;
             _dirty = false;
             _dumped = false;
             WatchProjectileHits.ResetLog();
@@ -61,11 +74,13 @@ namespace PunkMultiverse.Patches
         internal static class WatchProjectileHits
         {
             private static int _logged;
-            internal static void ResetLog() { _logged = 0; }
+            private static float _nextHitLogAt;
+            internal static void ResetLog() { _logged = 0; _nextHitLogAt = 0f; }
 
             private static void Prefix(Projectile __instance, RaycastHit2D __0)
             {
-                if (_logged >= 6 || !Modes.BattleRoyale.Active || __instance == null) return;
+                // NOT gated on _logged: the log line is capped at 6, the COUNTER must not be.
+                if (!BattleRoyalePvP.PlayersCanHitPlayers || __instance == null) return;
                 try
                 {
                     var owner = __instance.Owner;
@@ -74,8 +89,22 @@ namespace PunkMultiverse.Patches
                         && owner.GetComponentInChildren<Ship>() == null) return;
                     var col = __0.collider;
                     if (col == null) return;
-                    _logged++;
                     var hitShip = col.GetComponentInParent<Ship>();
+                    // GATE 1, measured properly. The old counter was a proximity test — "is any other
+                    // ship within 2 units of this bullet" — which a genuine hit FAILS: a bullet
+                    // detonates on the hull, several units out from the ship's transform origin, and
+                    // the projectile is destroyed before it ever gets that close to the centre. It
+                    // could therefore read 0 through a match in which every shot connected. This
+                    // counts the only thing that means "the sweep returned another player's ship":
+                    // a consumed hit whose collider actually belongs to one.
+                    if (hitShip != null && owner.GetComponentInParent<Ship>() != hitShip
+                        && owner.GetComponentInChildren<Ship>() != hitShip) NoteCastAtShip();
+                    // Throttled, not capped at six for the whole match: the six were always spent in
+                    // the first seconds on scenery, so by the time a staged PvP burst ran there was
+                    // nothing left to log and every run reported the same silent zero.
+                    if (Time.unscaledTime < _nextHitLogAt) return;
+                    _nextHitLogAt = Time.unscaledTime + 0.35f;
+                    _logged++;
                     var hitUnit = __0.rigidbody != null ? __0.rigidbody.GetComponent<Unit>() : null;
                     Plugin.Log.LogInfo($"[PvPDiag] player bullet HIT '{col.gameObject.name}' " +
                         $"layer={col.gameObject.layer}({LayerMask.LayerToName(col.gameObject.layer)}) " +
@@ -129,9 +158,149 @@ namespace PunkMultiverse.Patches
             _nextReportAt = Time.unscaledTime + 2f;
             _dirty = false;
             Plugin.Log.LogInfo($"[PvPDiag] playerProjTicks={_playerProjTicks} playerHitscans={_playerHitscans} " +
-                $"castHitShip={_castsAtShip} friendFlip={_friendFlips} " +
+                $"selfHitsSkipped={_selfHits} " +
+                $"hitAnotherShip={_castsAtShip} friendFlip={_friendFlips} " +
                 $"damagePrefix={_damagePrefix} routedAtPlayer={_routed} " +
-                "(the first ZERO from the left is where player-vs-player shots die)");
+                "(the first ZERO from the left is where player-vs-player shots die; " +
+                "run `pvpprobe` for the physical reason)");
+        }
+
+        /// <summary>
+        /// The decisive measurement, on demand: can a player's bullet physically reach another
+        /// player's ship from where I am standing, right now?
+        ///
+        /// Every previous round of this investigation inferred the answer from counters that could
+        /// read zero for innocent reasons, and from a bot rig that buried its ships in terrain and
+        /// detonated every shot at the muzzle. This asks the physics engine directly, using the mask
+        /// and radius taken off a real bullet, and reports what the sweep returns IN ORDER — so
+        /// "terrain is in the way" and "the ship is not castable" stop being the same observation.
+        /// </summary>
+        internal static string Probe()
+        {
+            var local = Sync.ShipSync.LocalShip;
+            if (local == null) return "pvpprobe: no local ship";
+            var sm = ServiceLocator.Get<ShipManager>();
+            if (sm == null) return "pvpprobe: no ShipManager";
+
+            var sb = new System.Text.StringBuilder();
+            int shipLayers = BattleRoyalePvP.ShipLayers();
+            int mask = LastProjectileMask;
+            float radius = LastProjectileRadius > 0f ? LastProjectileRadius : 0.1f;
+            string maskSource = "live bullet";
+            if (mask == 0)
+            {
+                // Nobody has fired yet. Fall back to the matrix value the projectile WOULD get,
+                // using the layer a player bullet was last seen on.
+                int layer = LastProjectileLayer >= 0 ? LastProjectileLayer : local.gameObject.layer;
+                mask = Physics2D.GetLayerCollisionMask(layer);
+                maskSource = $"matrix for layer {layer} (no bullet seen yet — FIRE ONCE then re-run)";
+            }
+            sb.AppendLine($"pvpprobe: mode={(Modes.BattleRoyale.Active ? "BattleRoyale" : "Standard")} " +
+                $"playersCanHitPlayers={BattleRoyalePvP.PlayersCanHitPlayers} " +
+                $"friendlyFire={(Core.NetSession.Instance != null && Core.NetSession.Instance.FriendlyFire)}");
+            sb.AppendLine($"  projectile: layer={LastProjectileLayer} radius={radius:0.###} " +
+                $"mask=0x{mask:X} ({maskSource})");
+            sb.AppendLine($"  ship layers=0x{shipLayers:X} -> " +
+                (shipLayers != 0 && (mask & shipLayers) == shipLayers
+                    ? "IN MASK (a sweep can return a ship)"
+                    : "*** NOT IN MASK — bullets pass straight through players ***"));
+
+            // What the shooter is actually holding. A hitscan beam has a hard RANGE from its data
+            // asset, and a target beyond it is simply never reached — indistinguishable, from the
+            // counters alone, from a mask or faction failure. Reported so "the shot did not land"
+            // can be read as "the shot could not have landed".
+            float longestReach = 0f;
+            foreach (var field in new[] { "primaryWeaponHolder", "secondaryWeaponHolder" })
+            {
+                try
+                {
+                    var holder = Traverse.Create(local).Field(field).GetValue() as WeaponHolder;
+                    var weapon = holder != null ? holder.Weapon : null;
+                    if (weapon == null) { sb.AppendLine($"  {field}: none"); continue; }
+                    if (weapon is HitscanWeapon hs)
+                    {
+                        int hsMask = hs.LayerMask.value;
+                        if (hs.Range > longestReach) longestReach = hs.Range;
+                        sb.AppendLine($"  {field}: HITSCAN range={hs.Range:0.#} rayWidth={hs.RayWidth:0.##} " +
+                            $"mask=0x{hsMask:X} shipsInMask={(shipLayers != 0 && (hsMask & shipLayers) == shipLayers)}");
+                    }
+                    else sb.AppendLine($"  {field}: {weapon.GetType().Name} (projectile-based)");
+                }
+                catch (System.Exception e) { sb.AppendLine($"  {field}: read failed ({e.Message})"); }
+            }
+
+            int others = 0;
+            foreach (var ship in sm.Ships)
+            {
+                if (ship == null || ship == local) continue;
+                others++;
+                Vector2 from = local.transform.position;
+                Vector2 to = ship.transform.position;
+                Vector2 dir = to - from;
+                float dist = dir.magnitude;
+                sb.AppendLine($"  --- target '{ship.name}' puppet={(ship.GetComponent<Sync.RemotePuppet>() != null)} " +
+                    $"at ({to.x:0.#},{to.y:0.#}) distance={dist:0.#}" +
+                    (longestReach > 0f && dist > longestReach
+                        ? $"  *** OUT OF WEAPON RANGE ({longestReach:0.#}) — no shot can reach ***"
+                        : ""));
+
+                // Is the ship castable at all? Colliders, their layers, and — the thing that
+                // silently removes a body from every query — whether its rigidbody is simulated.
+                int castable = 0;
+                foreach (var col in ship.GetComponentsInChildren<Collider2D>(true))
+                {
+                    if (col == null) continue;
+                    var rb = col.attachedRigidbody;
+                    bool inMask = (mask & (1 << col.gameObject.layer)) != 0;
+                    bool live = col.enabled && col.gameObject.activeInHierarchy
+                                && (rb == null || rb.simulated) && !col.isTrigger;
+                    if (inMask && live) castable++;
+                    sb.AppendLine($"      collider '{col.gameObject.name}' layer={col.gameObject.layer}" +
+                        $"({LayerMask.LayerToName(col.gameObject.layer)}) enabled={col.enabled} " +
+                        $"trigger={col.isTrigger} active={col.gameObject.activeInHierarchy} " +
+                        $"rb={(rb == null ? "none" : (rb.simulated ? "simulated" : "NOT SIMULATED"))} " +
+                        $"inMask={inMask}");
+                }
+                sb.AppendLine($"      castable colliders in mask: {castable}" +
+                    (castable == 0 ? "  *** the sweep can never return this ship ***" : ""));
+
+                // The real sweep, all hits in order: this separates "terrain blocks the shot"
+                // from "the ship is invisible to physics".
+                if (dist > 0.01f)
+                {
+                    var hits = Physics2D.CircleCastAll(from, radius, dir.normalized, dist, mask);
+                    sb.AppendLine($"      CircleCastAll returned {hits.Length} hit(s):");
+                    bool reached = false;
+                    for (int i = 0; i < hits.Length && i < 8; i++)
+                    {
+                        var h = hits[i];
+                        if (h.collider == null) continue;
+                        var owningShip = h.collider.GetComponentInParent<Ship>();
+                        bool isTarget = owningShip == ship;
+                        bool isSelf = owningShip == local;
+                        if (isTarget) reached = true;
+                        sb.AppendLine($"        [{i}] '{h.collider.gameObject.name}' " +
+                            $"layer={h.collider.gameObject.layer}({LayerMask.LayerToName(h.collider.gameObject.layer)}) " +
+                            $"dist={h.distance:0.##}" +
+                            (isTarget ? "  <== THE TARGET" : isSelf ? "  (my own hull)" : ""));
+                    }
+                    sb.AppendLine(reached
+                        ? "      VERDICT: the target IS reachable by a bullet along this line."
+                        : "      VERDICT: nothing on this line belongs to the target" +
+                          (castable == 0 ? " (it is not castable at all)" : " (something is in the way)"));
+                }
+
+                // Gate 2, asked directly rather than waited for.
+                try
+                {
+                    bool friends = local.Unit != null && ship.Unit != null && local.Unit.IsFriendsWith(ship.Unit);
+                    sb.AppendLine($"      IsFriendsWith={friends} " +
+                        (friends ? "*** still friendly — the bullet will pass through ***" : "(hostile: a hit will register)"));
+                }
+                catch (System.Exception e) { sb.AppendLine($"      IsFriendsWith threw: {e.Message}"); }
+            }
+            if (others == 0) sb.AppendLine("  no other ships in ShipManager — nothing to shoot at");
+            return sb.ToString().TrimEnd();
         }
 
         /// <summary>Gate 1. The same CircleCast Projectile.FixedUpdate runs, observed: did the
@@ -143,7 +312,7 @@ namespace PunkMultiverse.Patches
         {
             private static void Postfix(Projectile __instance)
             {
-                if (!Modes.BattleRoyale.Active || __instance == null) return;
+                if (!BattleRoyalePvP.PlayersCanHitPlayers || __instance == null) return;
                 try
                 {
                     var owner = __instance.Owner;
@@ -151,9 +320,16 @@ namespace PunkMultiverse.Patches
                     if (owner.GetComponentInParent<Ship>() == null
                         && owner.GetComponentInChildren<Ship>() == null) return; // not a player's shot
                     NotePlayerProjectile(); // gate 0: this IS a player's projectile, and it is alive
-                    // Cheap proximity test rather than re-running the cast: is any OTHER ship within
-                    // a projectile radius of where this bullet now is? If yes, the bullet is passing
-                    // through a ship it should have hit.
+                    // Snapshot the real numbers a live player bullet is flying with, so `pvpprobe`
+                    // can re-run the game's own sweep with the game's own mask instead of a guess.
+                    LastProjectileLayer = __instance.gameObject.layer;
+                    try
+                    {
+                        LastProjectileMask = Traverse.Create(__instance)
+                            .Field("collisionLayerMask").GetValue<LayerMask>().value;
+                        LastProjectileRadius = __instance.Radius;
+                    }
+                    catch { }
                     var sm = ServiceLocator.Get<ShipManager>();
                     if (sm == null) return;
                     Vector2 p = __instance.transform.position;
@@ -161,7 +337,6 @@ namespace PunkMultiverse.Patches
                     {
                         if (ship == null || ship.Unit == owner) continue;
                         float d2 = ((Vector2)ship.transform.position - p).sqrMagnitude;
-                        if (d2 <= 4f) NoteCastAtShip();
                         // ONE full physical picture per match, taken while a player's bullet is
                         // genuinely near another player's ship. Everything above only counts
                         // events; this says WHY the count is zero — whether the target has

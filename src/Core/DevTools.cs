@@ -83,6 +83,8 @@ namespace PunkMultiverse.Core
         private static int _fireTargetSlot = -1; // aim: track this PLAYER's ship while firing
         private static Vector2 _fireDir;       // aim: fixed direction (zero = don't steer)
         private static BarrelTransform[] _fireBarrels;
+        private static Aimer[] _fireAimers;
+        private static float _nextDirectShotAt;
 
         private static void TickFire()
         {
@@ -95,7 +97,7 @@ namespace PunkMultiverse.Core
                     if (_fireWeapon != null) _fireWeapon.IsTriggerPulled = false;
                     _fireShooter = null; _fireWeapon = null; _fireUntil = 0f;
                     _fireTargetNetId = 0; _fireTargetSlot = -1;
-                    _fireDir = Vector2.zero; _fireBarrels = null;
+                    _fireDir = Vector2.zero; _fireBarrels = null; _fireAimers = null;
                     Out("fire: stopped");
                     return;
                 }
@@ -127,11 +129,55 @@ namespace PunkMultiverse.Core
                         dir = ((Vector2)target.transform.position - (Vector2)ship.transform.position).normalized;
                 }
                 else if (_fireDir != Vector2.zero) dir = _fireDir;
-                if (dir != Vector2.zero && _fireBarrels != null)
-                    foreach (var b in _fireBarrels)
-                        if (b != null) b.Direction = dir;
+                // Feed the AIMER, not just the barrel. A direct BarrelTransform.Direction write on a
+                // LOCAL ship loses every frame: the ship's Aimer is enabled, its Update runs after
+                // this one, and it rotates the barrel back toward its own target. Sync/RemotePuppet
+                // documents exactly this race for puppets and solves it the same way. The comment
+                // that used to sit here claimed an unfocused harness window meant the crosshair was
+                // not fighting us; that was an assumption, and it was wrong — measured 2026-07-29,
+                // with the target proven reachable, hostile and in range, the bot's shots went
+                // somewhere else entirely and hitAnotherShip stayed 0 across four runs.
+                if (dir != Vector2.zero)
+                {
+                    if (_fireAimers == null && ship != null) _fireAimers = ship.GetComponentsInChildren<Aimer>(true);
+                    if (_fireAimers != null)
+                        foreach (var aimer in _fireAimers)
+                            if (aimer != null)
+                                aimer.AimAt((Vector2)aimer.transform.position + dir * 20f);
+                    if (ship != null && ship.Crosshair != null)
+                        ship.Crosshair.transform.position = (Vector2)ship.transform.position + dir * 20f;
+                    if (_fireBarrels != null)
+                        foreach (var b in _fireBarrels)
+                            if (b != null) b.Direction = dir;
+
+                    // Aiming at a PLAYER: drive the weapon exactly the way ProjectileSync's own
+                    // replay does — DoShoot with a FakeBarrel at a chosen muzzle and direction.
+                    // Neither of the other two paths can be aimed: the Shooter is an auto-turret
+                    // that re-targets itself, and IsTriggerPulled + Warmup produced no projectiles
+                    // at all (measured 2026-07-29: playerProjTicks=0 through a full 12s burst).
+                    // This is the game's real fire path, so everything downstream — identity
+                    // stamping, the fire broadcast, collision, routing — behaves like a live shot.
+                    // The muzzle is pushed clear of the shooter's own hull, which is now IN the
+                    // sweep mask and would otherwise be the first thing every round meets.
+                    if (_fireTargetSlot >= 0 && _fireWeapon != null && ship != null
+                        && Time.unscaledTime >= _nextDirectShotAt)
+                    {
+                        _nextDirectShotAt = Time.unscaledTime + 0.2f;
+                        Vector2 muzzle = (Vector2)ship.transform.position + dir * 3f;
+                        try
+                        {
+                            AccessTools.Method(typeof(WeaponBase), "DoShoot")
+                                ?.Invoke(_fireWeapon, new object[] { new FakeBarrel(muzzle, dir) });
+                        }
+                        catch (System.Exception e)
+                        {
+                            Out($"fire: direct shot failed: {e.InnerException?.Message ?? e.Message}");
+                            _fireUntil = 0f;
+                        }
+                    }
+                }
             }
-            catch { _fireShooter = null; _fireWeapon = null; _fireUntil = 0f; _fireBarrels = null; }
+            catch { _fireShooter = null; _fireWeapon = null; _fireUntil = 0f; _fireBarrels = null; _fireAimers = null; }
         }
 
         /// <summary>Health and fuel exactly as UI/ShipStatusBars binds them: health from the unit's
@@ -615,6 +661,70 @@ namespace PunkMultiverse.Core
                     Out($"clearterrain: emptied {cleared} cells within {ctRadius:0} of ({c.x:0},{c.y:0})");
                     return;
                 }
+                // The one command that answers "why did my shot not hurt the other player" with a
+                // fact instead of a theory. Run it while standing in sight of them.
+                case "pvpprobe":
+                {
+                    foreach (var probeLine in Patches.PvPDiag.Probe().Split('\n'))
+                        Out(probeLine.TrimEnd());
+                    return;
+                }
+                // Put two ships in an empty room and hold them there. The PvP probe kept failing on
+                // rig geometry, not on the code under test: teleporting a ship next to another drops
+                // it into terrain, and every shot detonated on the ground at the muzzle.
+                case "pvpstage":
+                {
+                    var stageShip = ShipSync.LocalShip;
+                    if (stageShip == null) { Out("pvpstage: no local ship"); return; }
+                    float stageR = 26f;
+                    if (parts.Length >= 2) float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out stageR);
+                    // Optional LIFT. Clearing terrain is not enough on its own: ships spawn docked at
+                    // a station, and a station is a prefab with its own colliders on the Ground layer
+                    // — `clearterrain` deletes cells and leaves the Hatch and Platform standing. The
+                    // measured consequence (2026-07-29) was a probe reporting the target reachable at
+                    // 9.2 units with station geometry at 6.0, so every round detonated on the station
+                    // and not one bullet ever reached a ship. Lifting into open air removes the whole
+                    // class of obstruction instead of trying to delete it piece by piece.
+                    float stageLift = 0f;
+                    if (parts.Length >= 3) float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out stageLift);
+                    if (stageLift > 0f)
+                    {
+                        Vector2 lifted = (Vector2)stageShip.transform.position + new Vector2(0f, stageLift);
+                        stageShip.Unit.ComponentData.entity.MoveTo(lifted);
+                        var liftRb = stageShip.GetComponent<Rigidbody2D>();
+                        if (liftRb != null) RemoteEntityPuppet.TeleportWithChildren(liftRb, lifted);
+                        stageShip.transform.position = lifted;
+                    }
+                    var stageLevel = ServiceLocator.Get<Level>();
+                    int stageCleared = 0;
+                    if (stageLevel != null)
+                    {
+                        Vector2 sc = stageShip.transform.position;
+                        float sr2 = stageR * stageR;
+                        for (int y = Mathf.FloorToInt(sc.y - stageR); y <= Mathf.CeilToInt(sc.y + stageR); y++)
+                            for (int x = Mathf.FloorToInt(sc.x - stageR); x <= Mathf.CeilToInt(sc.x + stageR); x++)
+                            {
+                                if (!stageLevel.ContainsCell(x, y)) continue;
+                                float dx = x - sc.x, dy = y - sc.y;
+                                if (dx * dx + dy * dy > sr2) continue;
+                                if (stageLevel.GetCellTypeId(x, y) == 0) continue;
+                                stageLevel.SetCell(new Vector2Int(x, y), 0);
+                                stageCleared++;
+                            }
+                    }
+                    // Hold the hull still: a ship that falls out of the cleared pocket while the
+                    // burst is in flight re-introduces exactly the terrain the clear removed.
+                    var stageRb = stageShip.GetComponent<Rigidbody2D>();
+                    if (stageRb != null)
+                    {
+                        stageRb.gravityScale = 0f;
+                        stageRb.linearVelocity = Vector2.zero;
+                        stageRb.angularVelocity = 0f;
+                    }
+                    Out($"pvpstage: emptied {stageCleared} cells within {stageR:0}, gravity held at 0 " +
+                        $"({stageShip.transform.position.x:0},{stageShip.transform.position.y:0})");
+                    return;
+                }
                 case "freezeprobe":
                 {
                     float fpSecs = 40f;
@@ -931,10 +1041,18 @@ namespace PunkMultiverse.Core
                         && float.TryParse(parts[argAt + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out float dx)
                         && float.TryParse(parts[argAt + 2], NumberStyles.Float, CultureInfo.InvariantCulture, out float dy))
                         _fireDir = new Vector2(dx, dy).normalized;
-                    _fireShooter = FindShooter(ship, fireSec);
+                    // Aiming at a PLAYER must not go through the ship's Shooter. A Shooter is an
+                    // auto-turret: it picks its own target and re-aims the barrels every frame, so
+                    // `fire ... player N` quietly became "fire at whatever the turret already
+                    // wanted". Measured 2026-07-29 with the target staged 13.9 units away on a
+                    // completely clear line: every logged impact was an Enemy_Larva off in the
+                    // opposite direction. Pull the weapon's trigger directly instead, which leaves
+                    // the aim to the Aimer feed below.
+                    _fireShooter = _fireTargetSlot >= 0 ? null : FindShooter(ship, fireSec);
                     _fireWeapon = _fireShooter == null ? (fireSec ? ship.SecondaryWeapon : ship.PrimaryWeapon) : null;
                     if (_fireShooter == null && _fireWeapon == null) { Out("fire: no shooter/weapon on ship"); return; }
                     _fireBarrels = ship.GetComponentsInChildren<BarrelTransform>(true);
+                    _fireAimers = ship.GetComponentsInChildren<Aimer>(true);
                     _fireUntil = Time.unscaledTime + fireSecs;
                     Out($"fire: {fireSecs:0.0}s{(fireSec ? " SECONDARY" : "")} via {(_fireShooter != null ? "Shooter" : "weapon trigger")}" +
                         (_fireTargetSlot >= 0 ? $" at P{_fireTargetSlot + 1}"

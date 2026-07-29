@@ -54,7 +54,7 @@ namespace PunkMultiverse.Patches
         {
             private static void Postfix(Projectile __instance)
             {
-                if (__instance == null || !Modes.BattleRoyale.Active) return;
+                if (__instance == null || !PlayersCanHitPlayers) return;
                 try
                 {
                     var owner = __instance.Owner;
@@ -83,6 +83,51 @@ namespace PunkMultiverse.Patches
             }
         }
 
+        /// <summary>The other half of the widening, and the reason the widening alone changed
+        /// nothing.
+        ///
+        /// Once the ship layer is in the sweep mask, a bullet's FIRST <c>CircleCast</c> — taken at
+        /// the muzzle, which sits inside the firing ship's own silhouette — returns the SHOOTER'S
+        /// hull. Vanilla has a guard for that: <c>Owner.IsFriendsWith(hitUnit)</c> calls
+        /// <c>MoveForward()</c> instead of registering a hit. But it only reaches that guard when
+        /// <c>hit.rigidbody</c> itself carries the <c>Unit</c>, and a ship's hull is a set of CHILD
+        /// colliders whose bodies carry no <c>Unit</c> at all. So the check is skipped, the bullet
+        /// takes the impact branch, and every shot detonates on the ship that fired it.
+        ///
+        /// Measured 2026-07-29, with the target proven reachable by <c>pvpprobe</c> (in mask, three
+        /// castable colliders, <c>IsFriendsWith=False</c>, clear line of fire, VERDICT reachable):
+        /// 1148 player projectile ticks, <c>hitAnotherShip=0</c>. The bullets were never travelling.
+        /// The shooter's own hull is the first thing on the ray — the probe's own cast shows it at
+        /// distance 0 and 0.1, ahead of the target at 37.97.
+        ///
+        /// This restores vanilla's intent for the case its own check cannot see: a shot passes
+        /// through the ship that fired it, exactly as <c>MoveForward()</c> would have made it.
+        /// </summary>
+        [HarmonyPatch(typeof(Projectile), "OnObjectHit")]
+        internal static class ShotsDoNotDetonateOnTheirOwnHull
+        {
+            private static bool Prefix(Projectile __instance, RaycastHit2D __0)
+            {
+                if (__instance == null || !PlayersCanHitPlayers) return true;
+                try
+                {
+                    var owner = __instance.Owner;
+                    if (owner == null) return true;
+                    var ownerShip = owner.GetComponentInParent<Ship>() ?? owner.GetComponentInChildren<Ship>();
+                    if (ownerShip == null) return true;          // not a player's shot
+                    var col = __0.collider;
+                    if (col == null) return true;
+                    if (col.GetComponentInParent<Ship>() != ownerShip) return true; // someone else — real hit
+                    // Our own hull. This is vanilla's MoveForward, inlined: keep flying.
+                    PvPDiag.NoteSelfHit();
+                    var v = __instance.Velocity;
+                    __instance.transform.position += new Vector3(v.x, v.y, 0f) * Time.deltaTime;
+                    return false;
+                }
+                catch { return true; }
+            }
+        }
+
         /// <summary>The same widening for HITSCAN weapons. These carry their own
         /// <c>LayerMask</c> from the weapon's data asset rather than the physics matrix, so they are
         /// a second, independent way for a shot to miss a player — and the GUNNER loadout every
@@ -92,7 +137,7 @@ namespace PunkMultiverse.Patches
         {
             private static void Prefix(HitscanWeapon __instance)
             {
-                if (__instance == null || !Modes.BattleRoyale.Active) return;
+                if (__instance == null || !PlayersCanHitPlayers) return;
                 try
                 {
                     Patches.PvPDiag.NotePlayerHitscan();
@@ -118,9 +163,26 @@ namespace PunkMultiverse.Patches
         private static int _shipLayers;
         private static float _shipLayersAt = -999f;
 
+        /// <summary>Player ships are shootable when Battle Royale is running, and — for the same
+        /// physical reason — when a co-op lobby has friendly fire switched ON. The layer matrix
+        /// excludes player-bullet-vs-player-ship in BOTH cases, so a co-op host who enabled
+        /// friendly fire got a setting that silently did nothing to direct-fire weapons: the
+        /// routed-damage gate in <c>ProjectileSync.FriendlyFireBlocked</c> was ready to let those
+        /// hits through, but the collision they depend on never happened. Everything else — the
+        /// faction flip, the PvP damage scale — stays Battle-Royale-only.</summary>
+        internal static bool PlayersCanHitPlayers
+        {
+            get
+            {
+                if (Modes.BattleRoyale.Active) return true;
+                var session = Core.NetSession.Instance;
+                return session != null && session.FriendlyFire;
+            }
+        }
+
         /// <summary>Every layer a player ship actually presents a collider on, recomputed
         /// occasionally (a ship's parts can stream in after it spawns).</summary>
-        private static int ShipLayers()
+        internal static int ShipLayers()
         {
             if (_shipLayers != 0 && Time.unscaledTime - _shipLayersAt < 5f) return _shipLayers;
             _shipLayersAt = Time.unscaledTime;
@@ -150,7 +212,11 @@ namespace PunkMultiverse.Patches
             private static void Postfix(Unit __instance, Unit __0, ref bool __result)
             {
                 if (!__result) return;                       // already hostile — nothing to do
-                if (!Modes.BattleRoyale.Active) return;
+                // Same gate as the mask widening: without the faction flip a direct-fire
+                // projectile calls MoveForward() and passes through, so a friendly-fire co-op
+                // lobby needs this exactly as much as Battle Royale does. The PvP damage SCALE
+                // stays Battle-Royale-only — that is a mode rule, not a collision rule.
+                if (!PlayersCanHitPlayers) return;
                 if (__instance == null || __0 == null) return;
                 if (ReferenceEquals(__instance, __0)) return; // never make a ship hostile to itself
                 // GetComponentInParent, not GetComponent: it searches this object AND its ancestors,

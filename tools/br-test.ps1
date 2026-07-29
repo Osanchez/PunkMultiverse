@@ -186,29 +186,62 @@ try {
         # (ApplyDamageRequest runs with _applyingRemote set, which the god gate sits behind), so
         # the bots stay alive against the ring while PvP still lands and can be measured.
         Write-Host "probe: player-vs-player damage (22s)"
-        Cmd $BotPlugs[0] ("tpplayer {0} 8" -f $BotSlots[1])
+        # Both ships sit on a station, embedded in ground. Clearing terrain alone was not enough:
+        # a ship FALLS after a teleport, so a pocket cleared on arrival is 30 units above it by the
+        # time it shoots (measured 2026-07-29: cleared at y=490, fired from y=475, buried again,
+        # `player bullet HIT layer=10(Ground)` at the shooter's own position). `pvpstage` clears the
+        # pocket AND pins gravity to zero, so the two ships stay in the empty room they were given.
+        # Order matters: the target is staged first, then the shooter teleports beside it and stages
+        # its own pocket around the position it will actually fire from.
+        # The target is lifted clear of the station FIRST (a station's Hatch and Platform are prefab
+        # colliders on the Ground layer that `clearterrain` cannot delete - they blocked the line at
+        # 6 units while the target sat at 9.2), then the shooter teleports beside it up there and
+        # stages its own pocket. Both then hang in open air with nothing in between.
+        # Autofly OFF first, or the two ships simply fly apart: the probe caught them 38 units
+        # apart moments after being staged 8 units apart. Re-armed after the burst so the rest of
+        # the match still plays out.
+        foreach ($p in $BotPlugs) { Cmd $p "autofly 0" }
         Start-Sleep 2
-        # Both ships sit on a station, embedded in ground: without this every shot detonates on
-        # terrain at the muzzle and the probe reports "PvP is broken" no matter what the netcode
-        # does (measured 2026-07-29 - `player bullet HIT layer=10(Ground)` at the shooter's own
-        # position). Clear a pocket around BOTH so there is an actual line of fire between them.
-        # Ships FALL after a teleport, so a pocket cleared on arrival is 30 units above them by the
-        # time they shoot (measured: cleared at y=490, fired from y=475, buried again). Re-teleport
-        # and clear immediately before the burst, and make the pocket big enough to survive the drop.
-        Cmd $BotPlugs[0] "clearterrain 30"
-        Cmd $BotPlugs[1] "clearterrain 30"
+        Cmd $BotPlugs[1] "pvpstage 30 45"
         Start-Sleep 2
-        Cmd $BotPlugs[0] ("tpplayer {0} 8" -f $BotSlots[1])
-        Cmd $BotPlugs[0] "clearterrain 30"
+        Cmd $BotPlugs[0] ("tpplayer {0} 5" -f $BotSlots[1])
         Start-Sleep 1
+        Cmd $BotPlugs[0] "pvpstage 30"
+        Start-Sleep 2
         Cmd $BotPlugs[0] "shipbars"
         Cmd $BotPlugs[1] "shipbars"
+        Start-Sleep 1
+        # One shot first, so the probe below reads the mask off a REAL bullet rather than the
+        # physics matrix, then the physical verdict, then the measured burst.
+        Cmd $BotPlugs[0] ("fire 1 player {0}" -f $BotSlots[1])
         Start-Sleep 2
-        Cmd $BotPlugs[0] ("fire 12 player {0}" -f $BotSlots[1])
-        Start-Sleep 15
+        Cmd $BotPlugs[0] "pvpprobe"
+        Start-Sleep 2
+        # Re-anchor before each short burst rather than trusting one teleport to hold for twelve
+        # seconds. The target kept drifting out to 20-38 units between staging and firing (its own
+        # machine keeps simulating it, and the puppet the shooter aims at lags behind by the interp
+        # delay), which made the whole probe a coin flip: identical code measured hitAnotherShip=4
+        # on one run and 0 on the next. Four short cycles put the two ships back at 5 units apart
+        # immediately before every burst.
+        for ($cyc = 0; $cyc -lt 4; $cyc++) {
+            Cmd $BotPlugs[0] ("tpplayer {0} 5" -f $BotSlots[1])
+            Start-Sleep 1
+            Cmd $BotPlugs[0] "pvpprobe"
+            Cmd $BotPlugs[0] ("fire 3 player {0}" -f $BotSlots[1])
+            Start-Sleep 3
+            # Sample the bars WHILE the victim is hurt. The bots are godded so the run survives the
+            # ring, and god heals them back to full within a second or two - so a sample taken after
+            # the burst finished always read a healthy ship and the bar check failed on a ship that
+            # had genuinely just been shot (PvP damage is scaled x0.25, so the dip is small and
+            # short-lived).
+            Cmd $BotPlugs[0] "shipbars"
+            Cmd $BotPlugs[1] "shipbars"
+            Start-Sleep 2
+        }
         Cmd $BotPlugs[0] "shipbars"
         Cmd $BotPlugs[1] "shipbars"
         Start-Sleep 3
+        foreach ($p in $BotPlugs) { Cmd $p "autofly 600" }
     }
 
     if ($probed -and (Phase "loot")) {
@@ -456,12 +489,19 @@ try {
         # applied it through the vanilla pipeline.
         $hits = @(Lines $BotLogs[1] "\[CombatHit\] remote-request=\d+ attacker=P(\d+) .*applied=True hp=([0-9.]+)->([0-9.]+)")
         Line "damage registered" ("{0} routed PvP hits applied on the victim" -f $hits.Count)
+        # The gate ladder and the physical probe, echoed on every run - a bare FAIL sent this
+        # investigation after three different imaginary defects. These say WHERE it died.
+        $ladder = @(Lines $BotLogs[0] "\[PvPDiag\] playerProjTicks=.*")
+        if ($ladder.Count -ge 1) { Line "gate ladder" $ladder[-1].Matches[0].Value }
+        foreach ($v in @(Lines $BotLogs[0] "(VERDICT:.*|\*\*\* NOT IN MASK.*|ship layers=.*|castable colliders in mask:.*)")) {
+            Write-Host ("        probe: " + $v.Matches[0].Value.Trim())
+        }
         if ($hits.Count -lt 1) {
             $ok = $false
             Write-Host "  FAIL: not one shot landed on the other player."
-            Write-Host "        Check Patches/BattleRoyalePvP.cs - if IsFriendsWith is true for two"
-            Write-Host "        ships again, Projectile.FixedUpdate skips the collision entirely and"
-            Write-Host "        nothing downstream of it ever runs."
+            Write-Host "        Read the probe lines above BEFORE changing any code: they say whether"
+            Write-Host "        the target was physically reachable. 'something is in the way' is a rig"
+            Write-Host "        failure, not a PvP failure, and no netcode change will fix it."
         } else {
             $first = [double]$hits[0].Matches[0].Groups[2].Value
             $last  = [double]$hits[-1].Matches[0].Groups[3].Value

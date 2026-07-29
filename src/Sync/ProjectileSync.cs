@@ -1194,7 +1194,15 @@ namespace PunkMultiverse.Sync
                 {
                     if (!TryAcceptImpact(__instance, __0)) return false;
                     bool allowed = PrefixBody(__instance, __0);
-                    if (allowed && IsLocalShip(__instance)) _currentDamageTrace = TraceOf(__0, "projectile");
+                    // Stamp the trace for a PUPPET victim too, not only the local ship. The trace is
+                    // what puts the shot's identity on the outgoing DamageRequest, and PlayerShot is
+                    // derived from it — so while this only fired for local victims, every
+                    // player-vs-player hit travelled as an anonymous, untraced request: the Battle
+                    // Royale PvP damage scale (which is gated on PlayerShot) never applied, and the
+                    // victim's death could not name who killed them. Measured 2026-07-29: 1766
+                    // routed requests applied on the victim, playerShot=True on exactly none of them.
+                    if (allowed && (IsLocalShip(__instance) || IsPuppetShip(__instance)))
+                        _currentDamageTrace = TraceOf(__0, "projectile");
                     return allowed;
                 }
                 finally { PatchProfiler.Exit(PatchId.ProjectileSuppressDamage, profile); }
@@ -1244,13 +1252,19 @@ namespace PunkMultiverse.Sync
                 if (owner == null) return !VictimIsRemote(__instance);
                 // Real local enemy vs a teammate's puppet: suppressed — they apply the replay.
                 // (Player-vs-player stays shooter-routed: Ship owners fall through.)
-                if (IsPuppetShip(__instance)) Patches.PvPDiag.NoteDamagePrefix(); // gate 3 probe
-                // OwnerIsShip, NOT owner.GetComponent<Ship>(): a ship's Unit and its Ship are not
-                // guaranteed to share a GameObject, and when they do not this read returns null, the
-                // branch reads a PLAYER's shot as "a local enemy hit a teammate's puppet", and the
-                // hit is dropped one step before it would have been routed. Measured 2026-07-29:
-                // bullets reached here 20 times (PvPDiag damagePrefix=20) and routed zero times.
-                if (!OwnerIsShip(owner) && IsPuppetShip(__instance)) return false;
+                // Gate 3 probe. Counted only for a PLAYER's shot: this branch is also the one a
+                // local ENEMY's bullet takes when it hits a teammate's puppet, and counting those
+                // made the ladder read "20 hits reached the damage prefix, 0 routed" during a
+                // session in which no player shot had reached it at all — a measurement that sent
+                // the whole investigation after an imaginary defect. An instrument that cannot tell
+                // the two cases apart is worse than no instrument.
+                bool ownerIsShip = OwnerIsShip(owner);
+                if (ownerIsShip && IsPuppetShip(__instance)) Patches.PvPDiag.NoteDamagePrefix();
+                // OwnerIsShip, NOT owner.GetComponent<Ship>(): where Ship sits relative to Unit is a
+                // prefab detail this file must not assert — if that read ever returns null a PLAYER's
+                // shot is misread as "a local enemy hit a teammate's puppet" and dropped one step
+                // before it would have been routed.
+                if (!ownerIsShip && IsPuppetShip(__instance)) return false;
                 if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
             }
@@ -1460,7 +1474,9 @@ namespace PunkMultiverse.Sync
                 {
                     if (!TryAcceptHitscan(__instance)) return false;
                     bool allowed = PrefixBody(__instance, __0);
-                    if (allowed && IsLocalShip(__instance))
+                    // Puppet victims too — see the projectile twin above: without this a beam that
+                    // hits another player routes untraced, unscaled and unattributed.
+                    if (allowed && (IsLocalShip(__instance) || IsPuppetShip(__instance)))
                     {
                         if (_currentShot != null)
                             _currentDamageTrace = new DamageTrace(_currentShot.SourceNetId, _currentShot.SourceSlot,
@@ -1507,13 +1523,19 @@ namespace PunkMultiverse.Sync
                     return false;
                 }
                 if (owner == null) return !VictimIsRemote(__instance);
-                if (IsPuppetShip(__instance)) Patches.PvPDiag.NoteDamagePrefix(); // gate 3 probe
-                // OwnerIsShip, NOT owner.GetComponent<Ship>(): a ship's Unit and its Ship are not
-                // guaranteed to share a GameObject, and when they do not this read returns null, the
-                // branch reads a PLAYER's shot as "a local enemy hit a teammate's puppet", and the
-                // hit is dropped one step before it would have been routed. Measured 2026-07-29:
-                // bullets reached here 20 times (PvPDiag damagePrefix=20) and routed zero times.
-                if (!OwnerIsShip(owner) && IsPuppetShip(__instance)) return false;
+                // Gate 3 probe. Counted only for a PLAYER's shot: this branch is also the one a
+                // local ENEMY's bullet takes when it hits a teammate's puppet, and counting those
+                // made the ladder read "20 hits reached the damage prefix, 0 routed" during a
+                // session in which no player shot had reached it at all — a measurement that sent
+                // the whole investigation after an imaginary defect. An instrument that cannot tell
+                // the two cases apart is worse than no instrument.
+                bool ownerIsShip = OwnerIsShip(owner);
+                if (ownerIsShip && IsPuppetShip(__instance)) Patches.PvPDiag.NoteDamagePrefix();
+                // OwnerIsShip, NOT owner.GetComponent<Ship>(): where Ship sits relative to Unit is a
+                // prefab detail this file must not assert — if that read ever returns null a PLAYER's
+                // shot is misread as "a local enemy hit a teammate's puppet" and dropped one step
+                // before it would have been routed.
+                if (!ownerIsShip && IsPuppetShip(__instance)) return false;
                 if (FriendlyFireBlocked(owner, __instance)) return false;
                 return true;
             }
