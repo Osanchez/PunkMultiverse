@@ -68,10 +68,17 @@ namespace PunkMultiverse.UI
             GUI.Label(new Rect(panel.x, panel.y + 74f, panel.width, 24f),
                 "A REGION IS CHOSEN FOR YOU WHEN THIS REACHES ZERO", _sub);
 
-            // Busiest region sets the scale, so the colours mean "relative to where everyone else
-            // is going" rather than an arbitrary threshold that breaks at 2 players or at 16.
-            int busiest = 0;
-            for (int i = 0; i < count; i++) busiest = Mathf.Max(busiest, options[i].Picks);
+            // Scaled against the NUMBER OF PLAYERS, not against the busiest region. Scaling to the
+            // busiest made the first pick in a lobby fill its bar completely — one player out of
+            // two read as "everybody is here" (Omar, 2026-07-28: "before I even select a spawn
+            // there is a bar"). The data was right and the picture was not. Against the roster,
+            // one of two is half a bar, which is what it actually means.
+            int roster = 0;
+            var session = Core.NetSession.Instance;
+            if (session != null)
+                foreach (var p in session.Players)
+                    if (p != null && p.Connected && !p.IsCoordinator) roster++;
+            roster = Mathf.Max(1, roster);
 
             float y = panel.y + 106f;
             for (int i = 0; i < count; i++)
@@ -110,22 +117,24 @@ namespace PunkMultiverse.UI
                 // is the clearest possible way to say nobody has picked this.
                 if (option.Picks > 0)
                 {
-                    float fill = busiest <= 0 ? 0f : Mathf.Clamp01(option.Picks / (float)busiest);
-                    GUI.color = HeatColor(option.Picks, busiest);
-                    GUI.DrawTexture(new Rect(heat.x, heat.y, Mathf.Max(14f, heat.width * fill), heat.height),
+                    float share = Mathf.Clamp01(option.Picks / (float)roster);
+                    GUI.color = HeatColor(share);
+                    GUI.DrawTexture(new Rect(heat.x, heat.y, Mathf.Max(14f, heat.width * share), heat.height),
                         Texture2D.whiteTexture);
                 }
                 GUI.color = prev;
             }
         }
 
-        private static Color HeatColor(int picks, int busiest)
+        /// <summary>Colour by the SHARE OF THE LOBBY heading there: green while a region is a small
+        /// part of where people are going, red once most of them are. An absolute threshold cannot
+        /// work at both 2 players and 16, and scaling to the busiest region makes the very first
+        /// pick look maximal.</summary>
+        private static Color HeatColor(float share)
         {
-            if (picks <= 0) return Empty;
-            if (busiest <= 1) return Filling;
-            float t = Mathf.Clamp01(picks / (float)busiest);
-            return t < 0.5f ? Color.Lerp(Empty, Filling, t * 2f)
-                            : Color.Lerp(Filling, Crowded, (t - 0.5f) * 2f);
+            if (share <= 0f) return Empty;
+            return share < 0.5f ? Color.Lerp(Empty, Filling, share * 2f)
+                                : Color.Lerp(Filling, Crowded, (share - 0.5f) * 2f);
         }
 
         private static void EnsureStyles()

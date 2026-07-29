@@ -429,6 +429,11 @@ namespace PunkMultiverse.Modes
         {
             if (session == null || !session.IsHost) return;
             Choices[fromSlot] = msg.BiomeId;
+            // Named out loud: a bar appearing on the drop screen should always be traceable to a
+            // player who actually pressed something. Without this, "someone is already there" and
+            // "the tally is wrong" look identical from a screenshot.
+            Plugin.Log.LogInfo($"[BRDrop] P{fromSlot + 1} picked biome {msg.BiomeId} " +
+                $"({Choices.Count} choice(s) in)");
             BroadcastTally(session);
         }
 
