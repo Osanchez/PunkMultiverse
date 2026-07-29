@@ -81,6 +81,103 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        // ---------------------------------------------------------------- enemy damage scale
+        //
+        // Omar, 2026-07-29: "I'm getting complaints that the enemies are doing too much damage. We
+        // should make enemies deal half the damage they normally do."
+        //
+        // Scaled the same way PvP damage is — a depth flag opened around the vanilla entry point,
+        // and the multiply applied in the GetDamageAmount postfix AFTER armour has judged the hit.
+        // Doing it here rather than by editing weapon data means nothing shared is mutated: enemy
+        // weapons keep their real numbers, they simply land softer on a PLAYER. Enemies hitting each
+        // other, and every single-player run, are untouched.
+        private static int _enemyDamageDepth;
+
+        /// <summary>Is this an ENEMY's attack against the LOCAL player's ship? A player's own shot,
+        /// a hit on an enemy, and an ownerless world hazard all answer no.</summary>
+        private static bool EnemyHitOnLocalShip(HealthBase victim, object source)
+        {
+            if (victim == null || !Modes.BattleRoyale.Active) return false;
+            var local = ShipSync.LocalShip;
+            if (local == null || victim.GetComponentInParent<Ship>() != local) return false;
+            var owner = OwnerUnitOf(source);
+            if (owner == null) return false;                    // world/ownerless — not an enemy
+            // A ship's shot is PvP and has its own scale; anything else with an owner is an enemy.
+            return owner.GetComponent<Ship>() == null
+                   && owner.GetComponentInParent<Ship>() == null
+                   && owner.GetComponentInChildren<Ship>() == null;
+        }
+
+        private static Unit OwnerUnitOf(object source)
+        {
+            try
+            {
+                var owner = Traverse.Create(source).Property("Owner").GetValue() as Unit;
+                if (owner == null) owner = Traverse.Create(source).Field("owner").GetValue() as Unit;
+                return owner;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Open the scale window around every vanilla path an enemy's attack reaches a
+        /// player through: bullets, beams and explosions. Contact/ram damage is deliberately NOT
+        /// covered — it arrives with no attacker reference to test, and silently halving terrain and
+        /// hazard damage along with it would change the ring and the lava too.</summary>
+        [HarmonyPatch]
+        internal static class ScaleEnemyDamageOnPlayers
+        {
+            private static System.Collections.Generic.IEnumerable<System.Reflection.MethodBase> TargetMethods()
+            {
+                yield return AccessTools.Method(typeof(HealthBase), "ProjectileCollided");
+                yield return AccessTools.Method(typeof(HealthBase), "OnHitByHitscanWeapon");
+                yield return AccessTools.Method(typeof(HealthBase), "OnExplosion");
+            }
+
+            private static void Prefix(HealthBase __instance, object __0, out bool __state)
+            {
+                __state = false;
+                try
+                {
+                    if (!NetSession.Active || !EnemyHitOnLocalShip(__instance, __0)) return;
+                    __state = true;
+                    _enemyDamageDepth++;
+                }
+                catch { }
+            }
+
+            // Finalizer, not Postfix: the window must close even if the vanilla body throws.
+            private static void Finalizer(bool __state)
+            {
+                if (__state && _enemyDamageDepth > 0) _enemyDamageDepth--;
+            }
+        }
+
+        /// <summary>The multiply itself, after armour — same placement and reasoning as
+        /// <see cref="ScalePvpAfterArmor"/>. A zero result means armour rejected the hit outright and
+        /// stays zero.</summary>
+        [HarmonyPatch(typeof(DamagableResource), nameof(DamagableResource.GetDamageAmount))]
+        internal static class ScaleEnemyAfterArmor
+        {
+            private static bool _logged;
+            internal static void Reset() => _logged = false;
+
+            private static void Postfix(ref float __result)
+            {
+                if (_enemyDamageDepth <= 0 || __result <= 0f) return;
+                float before = __result;
+                __result *= Mathf.Clamp(NetConfig.BrEnemyDamageScale.Value, 0.01f, 1f);
+                // Once per run: a damage multiplier is otherwise invisible unless you happen to know
+                // what the number should have been, and a headless test cannot see health bars.
+                if (!_logged)
+                {
+                    _logged = true;
+                    Plugin.Log.LogInfo($"[Damage] enemy damage scaled for this player: " +
+                        $"{before:0.###} -> {__result:0.###} (BrEnemyDamageScale=" +
+                        $"{NetConfig.BrEnemyDamageScale.Value:0.##}), applied after armour");
+                }
+            }
+        }
+
         /// <summary>In a net run, HEALTH never rides the infinite-resource flag.
         ///
         /// Vanilla's "unlimited resources" (F1 debug menu; our `god` devcmd also arms it for
@@ -149,8 +246,12 @@ namespace PunkMultiverse.Sync
             SeenDamageRequestOrder.Clear();
             _requestSequence = 0;
             _takeDamageListDepth = 0;
+            _enemyDamageDepth = 0;
+            ScaleEnemyAfterArmor.Reset();
             ResetKiller();       // last run's killer must never be credited with this run's death
             UI.KillFeed.Clear(); // and last run's deaths must not still be on screen
+            UI.HitMarker.Reset();
+            Patches.PuppetPresentation.FuelWarningsArePilotOnly.Reset();
             WorldDamageSource.Reset();
             Patches.PvPDiag.Reset();
             ResetLifeWatchdog(); // fresh run starts alive and un-announced
@@ -244,6 +345,12 @@ namespace PunkMultiverse.Sync
                 if (ProjectileSync.FriendlyExplosionBlocked(__instance)) return false; // FF off: my AoE spares teammates
                 SendDamageRequest(isEntity, slot, netId, __0);
                 UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
+                // ...and tell the ATTACKER, at the centre of their screen plus a sound. The flash
+                // above is on the victim's sprite, which in a fight is small, distant, often
+                // off-camera, and not where the shooter is looking (Omar, 2026-07-29: "the client
+                // that hit the other player does not have any sort of indicator"). Players only —
+                // a hitmarker for every rock and crate would be noise.
+                if (!isEntity) UI.HitMarker.Note(AmountOf(__0));
                 return false;
             }
         }
@@ -286,8 +393,10 @@ namespace PunkMultiverse.Sync
                     return true;
                 }
                 if (ProjectileSync.FriendlyExplosionBlocked(__instance)) return false; // FF off: my AoE spares teammates
-                foreach (var damage in __0) SendDamageRequest(isEntity, slot, netId, damage);
+                float routedTotal = 0f;
+                foreach (var damage in __0) { SendDamageRequest(isEntity, slot, netId, damage); routedTotal += AmountOf(damage); }
                 UnitStatus.PlayDamageFlash(__instance); // instant local feedback; HP truth arrives later
+                if (!isEntity) UI.HitMarker.Note(routedTotal); // see the single-damage twin above
                 return false;
             }
         }

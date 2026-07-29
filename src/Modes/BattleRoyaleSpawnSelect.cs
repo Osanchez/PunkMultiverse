@@ -93,6 +93,7 @@ namespace PunkMultiverse.Modes
             LocalHasChosen = false;
             LocalChoice = 0;
             Deployed = false;
+            _settling = false;
             _protectedUntil = -1f;
             _inputArmedAt = -1f;
             _nextHoldReportAt = 0f;
@@ -235,6 +236,7 @@ namespace PunkMultiverse.Modes
             _closed = false;
             LocalHasChosen = false;
             Deployed = false;
+            _settling = false;
             if (NetConfig.IsCoordinator || !NetConfig.ChooseSpawn) { _closed = true; return; }
             if (Options.Count == 0) BuildOptions();
             if (Options.Count == 0)
@@ -318,6 +320,90 @@ namespace PunkMultiverse.Modes
                 Plugin.Log.LogWarning($"[BRDrop] could not park the ship for selection: {e.Message} — " +
                     "it stays where the run put it and may be attacked while choosing");
             }
+        }
+
+        // ---------------------------------------------------------------- post-deploy settle
+        //
+        // Omar, 2026-07-29: "my host just had a weird teleport glitch... they're not even at the
+        // station, they're below it and they took a little damage."
+        //
+        // Measured from his own log, which named it exactly:
+        //     [BRDrop] DEPLOYED to Flesh at (1014,834)
+        //     [CombatHit] contact=CellType Hazard applied=True at (1005,810) hp=8->7
+        // The hit landed TWENTY-FOUR UNITS BELOW the pad it deployed to. The ship did not arrive
+        // wrong — it arrived correctly and then fell, because Deploy handed physics back in the same
+        // frame as the teleport. The pad is ~1250 units from the holding pen, so none of its terrain
+        // or station colliders were streamed in: there was nothing there to land on. By the time the
+        // world caught up the ship was already under the platform, sitting in hazard cells.
+        //
+        // So physics stays OFF until there is demonstrably ground beneath the ship, rather than for
+        // a guessed number of milliseconds. The timeout is only a backstop for a pad that genuinely
+        // has nothing under it, and it says so in the log instead of failing silently.
+        private static Vector2 _settlePad;
+        private static bool _settling;
+        private static float _settleDeadline;
+        private static int _groundMask = -1;
+
+        private static void BeginSettle(Vector2 pad)
+        {
+            _settlePad = pad;
+            _settling = true;
+            _settleDeadline = Time.unscaledTime + 4f;
+            var ship = Sync.ShipSync.LocalShip;
+            if (ship?.Rigidbody != null)
+            {
+                ship.Rigidbody.bodyType = RigidbodyType2D.Kinematic;
+                ship.Rigidbody.linearVelocity = Vector2.zero;
+                ship.Rigidbody.angularVelocity = 0f;
+            }
+        }
+
+        /// <summary>Hold the deployed ship at its pad until the ground it is standing on actually
+        /// exists, then hand physics back. Runs on RENDER frames from Toast.Update, like the pen —
+        /// streaming completes during frames the net tick may not see.</summary>
+        internal static void TickSettle()
+        {
+            if (!_settling) return;
+            var ship = Sync.ShipSync.LocalShip;
+            if (ship == null) { _settling = false; return; }
+            if (_groundMask == -1)
+            {
+                try { _groundMask = LayerMask.GetMask("Ground"); } catch { _groundMask = 0; }
+            }
+
+            // Pin it. Anything that nudges the ship while the world loads is undone next frame.
+            if (((Vector2)ship.transform.position - _settlePad).sqrMagnitude > 0.25f)
+                Sync.ShipSync.TeleportLocalShipTo(_settlePad);
+            if (ship.Rigidbody != null)
+            {
+                ship.Rigidbody.linearVelocity = Vector2.zero;
+                ship.Rigidbody.angularVelocity = 0f;
+            }
+
+            bool grounded = false;
+            try
+            {
+                // Stations and terrain both present their solid colliders on the Ground layer
+                // (verified via pvpprobe: a station's Hatch and Platform are layer 10 = Ground).
+                if (_groundMask != 0)
+                    grounded = Physics2D.Raycast(_settlePad, Vector2.down, 10f, _groundMask).collider != null;
+            }
+            catch { }
+
+            bool timedOut = Time.unscaledTime >= _settleDeadline;
+            if (!grounded && !timedOut) return;
+
+            _settling = false;
+            if (ship.Rigidbody != null) ship.Rigidbody.bodyType = RigidbodyType2D.Dynamic;
+            // Re-arm protection from the moment the ship is actually free, not from the teleport:
+            // the whole point is that the player gets their look-around window while in control,
+            // not while pinned waiting for terrain.
+            _protectedUntil = Time.unscaledTime + Mathf.Max(0f, NetConfig.BrSpawnProtectionSeconds.Value);
+            Plugin.Log.LogInfo(grounded
+                ? $"[BRDrop] settled at ({_settlePad.x:0},{_settlePad.y:0}) — ground streamed in, physics live, " +
+                  $"{NetConfig.BrSpawnProtectionSeconds.Value:0}s protection starts now"
+                : $"[BRDrop] settle TIMED OUT at ({_settlePad.x:0},{_settlePad.y:0}) — no ground within 10 units " +
+                  "after 4s; releasing anyway (the ship may fall)");
         }
 
         /// <summary>Undo everything the pen did to the ship: input, physics, crosshair. Deploy has
@@ -647,10 +733,13 @@ namespace PunkMultiverse.Modes
                 if (ship != null)
                 {
                     if (ship.shipInput != null) ship.shipInput.enabled = true;
-                    if (ship.Rigidbody != null) ship.Rigidbody.bodyType = RigidbodyType2D.Dynamic;
                     if (ship.Crosshair != null) ship.Crosshair.Visible = true;
                     ship.UnlockCamera(0f);
                     ship.SetHeadlightsEnabled(true);
+                    // NOT Dynamic yet — see TickSettle. The destination is over a thousand units
+                    // from the holding pen and its terrain has not streamed in, so releasing physics
+                    // in this frame drops the ship through a platform that does not exist yet.
+                    BeginSettle(pad + Vector2.up * 2f);
                 }
 
                 // THE CAMERA MUST BE TOLD TO RUN AGAIN. ProCamera2D is disabled for the opening

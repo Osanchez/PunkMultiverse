@@ -23,6 +23,10 @@ namespace PunkMultiverse.UI
             // net tick isn't running — vanilla's async ship placement lands exactly there. This
             // component exists in every state, which is why the hold lives here and not in a tick.
             Modes.BattleRoyaleSpawnSelect.HoldPendingDeploy();
+            // And the mirror of the pen: once deployed, hold the ship at its pad until the
+            // terrain it landed on has streamed in. Same reason this lives here — it must run
+            // on render frames, which is when streaming finishes.
+            Modes.BattleRoyaleSpawnSelect.TickSettle();
         }
 
         private void OnGUI()

@@ -377,13 +377,16 @@ namespace PunkMultiverse.Modes
             _closeSeconds = Mathf.Max(5f, NetConfig.BrRingCloseSeconds.Value);
             float hold = Mathf.Max(0f, NetConfig.BrRingHoldMinutes.Value * 60f);
             _stageSpan = hold + _closeSeconds;
-            // The FIRST hold may be shorter (Omar, 2026-07-29: "first closure in the first 3
-            // minutes will do" — everyone is looting during the opener; nobody is contesting
-            // ground). Implemented as a clock SHIFT rather than piecewise spans: RingAt adds this
-            // to elapsed time, which shortens exactly the first hold and leaves every later
-            // stage's rhythm untouched.
-            float firstHold = Mathf.Clamp(NetConfig.BrRingFirstHoldMinutes.Value * 60f, 0f, hold);
-            _firstHoldShorten = hold - firstHold;
+            // There is NO first hold. The ring starts closing the instant BrRingStartMinutes runs
+            // out, so the countdown on screen is the time until the ground actually moves.
+            //
+            // Previously the grace and a separate first hold were ADDITIVE, and since the HUD only
+            // ever shows the phase it is currently in, the first countdown hitting zero produced a
+            // second countdown rather than a closing ring (Omar, 2026-07-29: "it gives a timer for
+            // the first ring, but in reality its just the cool down for ring closing sequence to
+            // start"). Still expressed as the same clock SHIFT — shaving the whole first hold — so
+            // every LATER stage keeps its full hold-then-close rhythm untouched.
+            _firstHoldShorten = hold;
             _matchSeconds = _ringStartSeconds + _stageSpan * Mathf.Max(1, _stages) - _firstHoldShorten;
         }
 
@@ -519,7 +522,13 @@ namespace PunkMultiverse.Modes
                 // swallowed by lava before anyone can reach it. A WAVE is several packages
                 // scattered independently (Omar, 2026-07-29: "more air drops throughout the
                 // world") with one announcement — five toasts for five crates is noise.
-                int wave = Mathf.Clamp(NetConfig.BrCarePackagesPerWave.Value, 1, 8);
+                // HALF the players, minimum one, unless the config names a fixed count. Scarcity is
+                // the mechanism: a crate per player is a distribution, half a crate per player is a
+                // reason to fight over one.
+                int configured = NetConfig.BrCarePackageCount.Value;
+                int wave = configured > 0
+                    ? Mathf.Clamp(configured, 1, 8)
+                    : Mathf.Clamp(Mathf.Max(1, MatchPlayers.Count / 2), 1, 8);
                 int dropped = 0;
                 for (int i = 0; i < wave; i++)
                     if (DropCarePackage(session, Mathf.Max(20f, nextTarget), i)) dropped++;
@@ -571,13 +580,21 @@ namespace PunkMultiverse.Modes
                 if (!(cells is Unity.Collections.NativeArray<byte> native) || !native.IsCreated) return false;
 
                 // Somewhere open, inside the safe zone, so it is contestable rather than lethal.
+                //
+                // Placed in a BAND near the edge of the NEXT ring rather than spread evenly across
+                // the zone (Omar, 2026-07-29: "the crates should be spawned closer to the next
+                // ring"). Uniform-over-the-disc sampling put most crates near the middle, which is
+                // where players end up anyway — so the crate added no reason to move and no reason
+                // to meet anyone. Out at the next ring's edge it is a decision: go now, while the
+                // ground there is still safe, or leave it. `radius` is already the NEXT target
+                // radius, so 55-92% of it is comfortably inside the ground players will still have.
                 var rnd = new System.Random((int)(Time.unscaledTime * 1000f) + waveIndex * 7919);
                 int w = level.Width, h = level.Height;
                 Vector2 spot = _center;
                 for (int attempt = 0; attempt < 200; attempt++)
                 {
                     double a = rnd.NextDouble() * System.Math.PI * 2.0;
-                    double r = System.Math.Sqrt(rnd.NextDouble()) * Mathf.Max(20f, radius * 0.8f);
+                    double r = Mathf.Max(18f, (float)(radius * (0.55 + rnd.NextDouble() * 0.37)));
                     int x = (int)(_center.x + r * System.Math.Cos(a));
                     int y = (int)(_center.y + r * System.Math.Sin(a));
                     if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) continue;

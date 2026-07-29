@@ -17,7 +17,12 @@ param(
     # The ring phase measures what PAINTING costs; this answers what the painted WORLD costs,
     # which turned out to be a far bigger number (2026-07-28: the host fell from 120fps to 0.2fps
     # during a match while paint itself stayed under 50ms per 10s).
-    [switch]$ProfileRing
+    [switch]$ProfileRing,
+    # Run the bots WITH the drop screen and drive it via the `drop` devcmd. The drop path was
+    # manual-test-only, which is how "deploy drops you through terrain that has not streamed in"
+    # reached a live match: no automated run could reach Deploy at all. Implies its own assertions
+    # and skips the other probes, which all need ships already placed.
+    [switch]$DropScreen
 )
 $ErrorActionPreference = "Stop"
 $CoordDir = "C:\Program Files (x86)\Steam\steamapps\common\PUNK Playtest - OD Test2"
@@ -93,7 +98,7 @@ function StartGame($dir, $coord) {
     # cannot click a drop screen, but config.cfg persists and these installs are played on — writing
     # the key there disabled the drop screen for Omar's second player long after the test ended
     # (2026-07-29). An env var dies with the process; that is the whole point.
-    $psi.EnvironmentVariables["PUNKMV_BR_CHOOSE_SPAWN"]="0"
+    $psi.EnvironmentVariables["PUNKMV_BR_CHOOSE_SPAWN"] = $(if ($DropScreen -and -not $coord) { "1" } else { "0" })
     foreach($k in @($psi.EnvironmentVariables.Keys | Where-Object {$_ -like "DOORSTOP*"})){ $psi.EnvironmentVariables.Remove($k) }
     return [System.Diagnostics.Process]::Start($psi).Id
 }
@@ -163,6 +168,16 @@ try {
     # ============================ BEHAVIOUR PROBES ============================
     # Every probe below needs the ships adjacent. BR scatters spawns ~1600 units apart on purpose,
     # so none of this is observable until that distance is collapsed.
+    if ($DropScreen) {
+        Write-Host "probe: drop screen -> deploy -> settle"
+        foreach ($i in 0..($BotDirs.Count-1)) {
+            if (-not (WaitFor $BotLogs[$i] "drop window open" 120 "bot$i drop window")) { $ok = $false; continue }
+        }
+        Start-Sleep 4                      # let the input-arm delay pass
+        foreach ($p in $BotPlugs) { Cmd $p "drop" }
+        Start-Sleep 25                     # deploy + settle + protection window
+    }
+
     $probed = $false
     if ($BotDirs.Count -ge 2 -and ((Phase "sync") -or (Phase "pvp") -or (Phase "bars") -or (Phase "loot") -or (Phase "fire"))) {
         $probed = $true
@@ -263,6 +278,19 @@ try {
         Cmd $BotPlugs[0] "burn 100"
         Start-Sleep 5
         Cmd $BotPlugs[0] "burn"          # read-only: shielded state
+        Start-Sleep 2
+        # ENEMY DAMAGE SCALE. Spawn a shooter next to an un-godded bot: the spawn areas are cleared
+        # and the bots are godded all match, so a normal run never lands a single enemy hit and the
+        # scale went three runs unmeasured.
+        # Several types, because the first attempt spawned a Unit_Floater_Soldier whose projectiles
+        # log amount=0 - it hit the bot four times and there was nothing to scale. A probe enemy has
+        # to actually deal damage or it measures nothing.
+        Cmd $BotPlugs[0] "god off"
+        foreach ($e in @("Enemy_Turret_Worm","Unit_FlyAlfa","Enemy_Raven","Unit_Floater_SoldierPurple")) {
+            Cmd $BotPlugs[0] ("spawn {0}" -f $e)
+        }
+        Start-Sleep 22
+        Cmd $BotPlugs[0] "god"
         Start-Sleep 2
     }
 
@@ -532,6 +560,34 @@ try {
         }
     }
 
+    if ($DropScreen) {
+        Write-Host "--- drop screen: deploy + settle ---"
+        foreach ($i in 0..($BotDirs.Count-1)) {
+            $dep = @(Lines $BotLogs[$i] "\[BRDrop\] DEPLOYED to (\S+) at \((-?[0-9.]+),(-?[0-9.]+)\)")
+            $set = @(Lines $BotLogs[$i] "\[BRDrop\] (settled|settle TIMED OUT) at \((-?[0-9.]+),(-?[0-9.]+)\)")
+            if ($dep.Count -lt 1) { Line "bot$i deploy" "MISSING - never deployed"; $ok = $false; continue }
+            $g = $dep[-1].Matches[0].Groups
+            Line "bot$i deploy" ("{0} at ({1},{2})" -f $g[1].Value,$g[2].Value,$g[3].Value)
+            if ($set.Count -lt 1) { Line "bot$i settle" "MISSING - physics released with no settle"; $ok = $false; continue }
+            $sg = $set[-1].Matches[0].Groups
+            Line "bot$i settle" ("{0} at ({1},{2})" -f $sg[1].Value,$sg[2].Value,$sg[3].Value)
+            if ($sg[1].Value -ne "settled") {
+                Write-Host "  WARN: settle timed out - no ground under that pad within 10 units."
+            }
+            # THE regression this exists for: the ship must not end up far BELOW the pad it chose.
+            $padY = [double]$g[3].Value
+            $fell = @(Lines $BotLogs[$i] "\[CombatHit\] contact=CellType Hazard .*applied=True at \((-?[0-9.]+),(-?[0-9.]+)\)")
+            if ($fell.Count -ge 1) {
+                $hy = [double]$fell[-1].Matches[0].Groups[2].Value
+                if ($padY - $hy -gt 8.0) {
+                    $ok = $false
+                    Write-Host ("  FAIL: took hazard damage {0:N0} units BELOW the pad - the ship fell through" -f ($padY - $hy))
+                    Write-Host "        unstreamed terrain again (Modes/BattleRoyaleSpawnSelect.TickSettle)."
+                } else { Line "bot$i hazard" ("contact at y={0}, pad y={1} - within tolerance" -f $hy, $padY) }
+            } else { Line "bot$i hazard" "none - clean arrival" }
+        }
+    }
+
     if ($probed -and (Phase "fire")) {
         Write-Host "--- fire vs damage shields ---"
         $burns = @(Lines $BotLogs[0] "\[Dev\] burn: BurnLevel=([0-9.]+) onFire=(\w+) hp=([0-9.-]+) shielded=(\w+)")
@@ -552,6 +608,13 @@ try {
                 Write-Host "        this probe proved nothing (too short a window, or it healed)."
             }
         } else { Line "fire probe" ("only {0} burn sample(s) - need 4" -f $burns.Count); $ok = $false }
+
+        $scaled = @(Lines $BotLogs[0] "\[Damage\] enemy damage scaled for this player: ([0-9.]+) -> ([0-9.]+)")
+        if ($scaled.Count -ge 1) {
+            $sg = $scaled[0].Matches[0].Groups
+            Line "enemy dmg scale" ("{0} -> {1} (after armour)" -f $sg[1].Value, $sg[2].Value)
+            if ([double]$sg[2].Value -ge [double]$sg[1].Value) { $ok = $false; Write-Host "  FAIL: enemy damage was not reduced" }
+        } else { Line "enemy dmg scale" "NOT OBSERVED - no enemy hit landed on the un-godded bot" }
     }
 
     if ($probed -and (Phase "bars")) {

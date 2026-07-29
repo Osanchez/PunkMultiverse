@@ -83,10 +83,10 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> SegmentChangeRouting;
         public static ConfigEntry<bool> TrimTerrainPresentation;
         public static ConfigEntry<int> BrCarePackageMinutes;
-        public static ConfigEntry<int> BrCarePackagesPerWave;
-        public static ConfigEntry<float> BrRingFirstHoldMinutes;
+        public static ConfigEntry<int> BrCarePackageCount;
         public static ConfigEntry<float> PvPDamageScale;
         public static ConfigEntry<float> BrEnemyHpScale;
+        public static ConfigEntry<float> BrEnemyDamageScale;
         public static ConfigEntry<int> BrMinPlayers;
         public static ConfigEntry<float> BrSpawnClearRadius;
         public static ConfigEntry<float> BrStationHazardClearRadius;
@@ -382,7 +382,13 @@ namespace PunkMultiverse
                 "and logged at match start — set the pacing you want and read the total, rather " +
                 "than setting a total and discovering the pacing.");
             BrRingStartMinutes = cfg.Bind("Session", "BrRingStartMinutes", 2,
-                "Battle Royale: minutes of grace before the ring starts closing (the first warning).");
+                "Battle Royale: minutes of grace before the ring starts closing. This is the WHOLE " +
+                "time until the first closure and it is what the on-screen countdown shows. There " +
+                "used to be a second, additive first-hold on top of it, which meant the timer " +
+                "reaching zero produced another timer instead of a closing ring (Omar, 2026-07-29: " +
+                "'it gives a timer for the first ring, but in reality it is just the cooldown for " +
+                "the ring closing sequence to start'). That knob is gone rather than re-defaulted, " +
+                "because a persisted config.cfg would have kept the old value forever.");
             BrRingStages = cfg.Bind("Session", "BrRingStages", 6,
                 "Battle Royale: how many closures the ring makes. The ring HALVES rather than " +
                 "stepping evenly — from a start radius of 100 with 6 closures the ladder is " +
@@ -472,18 +478,26 @@ namespace PunkMultiverse
                 "Battle Royale: minutes between care-package waves (0 disables them). The FIRST " +
                 "wave lands at half this, so a short match still sees one. Each package is " +
                 "destructible; only the player who destroys it gets the loot.");
-            BrCarePackagesPerWave = cfg.Bind("Session", "BrCarePackagesPerWave", 2,
-                "Battle Royale: how many packages drop in each wave, scattered independently " +
-                "across the safe zone (Omar, 2026-07-29: 'I would like more air drops throughout " +
-                "the world').");
-            BrRingFirstHoldMinutes = cfg.Bind("Session", "BrRingFirstHoldMinutes", 2f,
-                "Battle Royale: minutes the ring holds before its FIRST closure (later closures " +
-                "use BrRingHoldMinutes). The opening hold plays differently from the rest — " +
-                "everyone is looting, nobody is contesting ground — and a full-length first hold " +
-                "read as 'the ring never closes' in short matches. Clamped to BrRingHoldMinutes.");
+            BrCarePackageCount = cfg.Bind("Session", "BrCarePackageCount", 0,
+                "Battle Royale: packages per wave. 0 = AUTO, which is HALF the players in the match " +
+                "(minimum 1) — Omar, 2026-07-29: 'spawn in crates equal to half of the number of " +
+                "players to engage more fighting'. Fewer crates than players is the point: they " +
+                "cannot be shared out, so someone has to be denied one. Above 0 is used verbatim. " +
+                "(Replaces BrCarePackagesPerWave. A NEW KEY on purpose: config.cfg persists, so " +
+                "changing an old key's DEFAULT reaches nobody who has already played — the first " +
+                "attempt at this shipped as a default flip and every existing install, including " +
+                "Omar's, kept dropping 2.)");
             PvPDamageScale = cfg.Bind("Session", "PvPDamageScale", 0.25f,
                 "Battle Royale: multiplier on player-vs-player damage. Late-game weapons would " +
                 "otherwise one-shot other players; damage to ENEMIES is unaffected.");
+            BrEnemyDamageScale = cfg.Bind("Session", "BrEnemyDamageScale", 0.5f,
+                "Battle Royale: multiplier on damage ENEMIES deal to players (Omar, 2026-07-29: " +
+                "'I am getting complaints that the enemies are doing too much damage, we should " +
+                "make enemies deal half the damage they normally do'). A battle royale asks players " +
+                "to spend the match exposed and moving between fights, which is not the loop the " +
+                "vanilla numbers were tuned for. Applied AFTER the victim's armour, exactly like " +
+                "PvPDamageScale, so armour still decides whether a hit lands at all. Covers enemy " +
+                "projectiles, beams and explosions; contact/ram damage is not scaled. 1.0 = vanilla.");
             BrEnemyHpScale = cfg.Bind("Session", "BrEnemyHpScale", 0.5f,
                 "Battle Royale: enemy max-health multiplier. 0.5 makes players effectively deal " +
                 "double damage to enemies, so kills and gold come twice as fast.");

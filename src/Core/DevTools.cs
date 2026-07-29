@@ -667,6 +667,21 @@ namespace PunkMultiverse.Core
                 // Set the local ship alight on demand. Burn is applied straight from
                 // DamagableResource.Update and never touches the damage pipeline, so it is the one
                 // source no existing probe could reach — and the one that was bypassing every shield.
+                // Pick a drop region without a mouse. The drop screen has been manual-test-only,
+                // which is exactly why "deploy drops you through unstreamed terrain" reached a real
+                // match: no automated run could reach Deploy at all.
+                case "drop":
+                {
+                    var dropOpts = Modes.BattleRoyaleSpawnSelect.AvailableOptions;
+                    if (dropOpts == null || dropOpts.Count == 0) { Out("drop: no regions offered (no window open?)"); return; }
+                    byte dropBiome = dropOpts[0].BiomeId;
+                    if (parts.Length >= 2 && byte.TryParse(parts[1], out byte wanted)) dropBiome = wanted;
+                    Out($"drop: choosing biome {dropBiome} of {dropOpts.Count} region(s), " +
+                        $"armed={Modes.BattleRoyaleSpawnSelect.InputArmed}, " +
+                        $"deployed={Modes.BattleRoyaleSpawnSelect.Deployed}");
+                    Modes.BattleRoyaleSpawnSelect.Choose(dropBiome);
+                    return;
+                }
                 case "burn":
                 {
                     var burnShip = ShipSync.LocalShip;

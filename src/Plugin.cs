@@ -84,6 +84,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<SpectatorCam>();
             _runtime.AddComponent<Toast>();
             _runtime.AddComponent<KillFeed>();   // deaths get their own top-right channel
+            _runtime.AddComponent<HitMarker>();  // attacker-side hit confirmation
 
             // LiteNetLib is merged into this assembly (ILRepack, internalized) as of v0.1.164 —
             // delete the stale standalone DLL an older install left. Safe at this point: the
