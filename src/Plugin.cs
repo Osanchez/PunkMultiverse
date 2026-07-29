@@ -58,6 +58,10 @@ namespace PunkMultiverse
                 Core.DiagWatch.Register("segmentCache", () => Core.AuthorityManager.EntitySegmentCacheCount, floor: 12000);
             };
 
+            // Before anything else can fail: quitting must always end the process, even when a
+            // native library deadlocks the shutdown. See Core/ExitWatchdog.cs.
+            Core.ExitWatchdog.Install();
+
             _harmony = new Harmony(Guid);
             _harmony.PatchAll(typeof(Plugin).Assembly);
             // Kept out of PatchAll on purpose — see BattleRoyaleLoot.ApplyGenericPatches.
@@ -133,6 +137,9 @@ namespace PunkMultiverse
             if (_runtime != null) Object.Destroy(_runtime);
             try { _harmony?.UnpatchSelf(); } catch { }
             RuntimeInstrumentation.Shutdown();
+            // Backstop: if this teardown ran without Application.quitting (or that event never
+            // fires on this exit path), the guarantee still applies from here.
+            ExitWatchdog.Arm();
             // Last: we own SteamAPI on direct launches, and an un-shut-down steamclient
             // intermittently deadlocks process exit (the windowless zombie Punk.exe).
             Transport.GameServerBootstrap.Shutdown();

@@ -30,6 +30,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> AutoLaunchRun;
         public static ConfigEntry<float> AutoFly;
         public static ConfigEntry<bool> DebugMenuKey;
+        public static ConfigEntry<int> ExitWatchdogSeconds;
         public static ConfigEntry<string> CommandFile;
 
         public static ConfigEntry<bool> TrackerNames;
@@ -262,6 +263,12 @@ namespace PunkMultiverse
             CommandFile = cfg.Bind("Debug", "CommandFile", "",
                 "DEV ONLY: name of a command file in the plugin folder polled twice a second for " +
                 "scripted test scenarios (spawn/tp/autofly/say). Empty = off. See docs/harness.md.");
+
+            ExitWatchdogSeconds = cfg.Bind("Debug", "ExitWatchdogSeconds", 10,
+                "Seconds to wait for a normal shutdown after you quit before force-closing the " +
+                "process. Steam's client library intermittently deadlocks process exit, leaving a " +
+                "windowless Punk.exe running that you cannot see but Steam still counts as playing. " +
+                "0 disables the guarantee.");
 
             FpsLimit = cfg.Bind("Video", "FpsLimit", 0,
                 "Frame-rate cap. 0 = MAX (your monitor's refresh rate — the default); any other " +

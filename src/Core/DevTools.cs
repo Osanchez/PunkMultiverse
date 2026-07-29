@@ -663,6 +663,15 @@ namespace PunkMultiverse.Core
                 }
                 // The one command that answers "why did my shot not hurt the other player" with a
                 // fact instead of a theory. Run it while standing in sight of them.
+                // Verify the shutdown safety net without needing a real deadlock to happen.
+                case "exitkill":
+                {
+                    int ekSecs = 3;
+                    if (parts.Length >= 2) int.TryParse(parts[1], out ekSecs);
+                    Out($"exitkill: process will be force-closed in {ekSecs}s (testing Core/ExitWatchdog.cs)");
+                    ExitWatchdog.ForceTest(ekSecs);
+                    return;
+                }
                 case "pvpprobe":
                 {
                     foreach (var probeLine in Patches.PvPDiag.Probe().Split('\n'))
