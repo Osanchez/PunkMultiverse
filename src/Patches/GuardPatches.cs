@@ -389,5 +389,61 @@ namespace PunkMultiverse.Patches
                 return false;
             }
         }
+
+        /// <summary>
+        /// <c>ShipManager.EnableShipControl</c>/<c>DisableShipControl</c> walk EVERY ship and
+        /// dereference <c>ship.shipInput.ShipControlActionMap</c>. In a net run that list contains
+        /// other players' PUPPETS, whose input is neutered — so the loop throws partway through and
+        /// the ships it had not reached yet keep whatever state they were in.
+        ///
+        /// The half that hurts is <c>EnableShipControl</c>: it is what vanilla's <c>DebugMenu.Close</c>
+        /// calls to give the ship back. If it throws before reaching the local ship, the player is
+        /// left permanently unable to fly — Omar, 2026-07-29: "I close it by going into the start menu
+        /// and closing the start menu, but then lose ship control". The same call sits behind the debug
+        /// menu's Free Move Camera and Teleport Away And Back buttons, so this is not F1-specific.
+        ///
+        /// Replaced with a loop that skips puppets, tolerates a missing action map per ship, and
+        /// cannot abandon the remaining ships because one entry was unusable.
+        /// </summary>
+        [HarmonyPatch]
+        internal static class ShipControlLoopsSurvivePuppets
+        {
+            private static IEnumerable<MethodBase> TargetMethods()
+            {
+                var t = AccessTools.TypeByName("ShipManager");
+                if (t == null) yield break;
+                foreach (var name in new[] { "EnableShipControl", "DisableShipControl" })
+                {
+                    var m = AccessTools.Method(t, name);
+                    if (m != null) yield return m;
+                }
+            }
+
+            private static bool Prefix(ShipManager __instance, MethodBase __originalMethod)
+            {
+                if (!NetSession.Active) return true;   // solo: vanilla is correct and cheaper
+                bool enable = __originalMethod.Name == "EnableShipControl";
+                int touched = 0, skipped = 0;
+                foreach (var ship in __instance.Ships)
+                {
+                    if (ship == null) { skipped++; continue; }
+                    // A puppet is driven by replication; it has no local input to enable, and
+                    // touching it is exactly what threw.
+                    if (ship.GetComponent<RemotePuppet>() != null) { skipped++; continue; }
+                    try
+                    {
+                        var map = ship.shipInput != null ? ship.shipInput.ShipControlActionMap : null;
+                        if (map == null) { skipped++; continue; }
+                        if (enable) map.Enable(); else map.Disable();
+                        touched++;
+                    }
+                    catch { skipped++; }   // never let one ship strand the others
+                }
+                if (skipped > 0 && NetDiag.Enabled)
+                    NetDiag.Throttled("shipcontrol", 5f, "Guard",
+                        () => $"{__originalMethod.Name}: {touched} ship(s) applied, {skipped} skipped (puppets/no input)");
+                return false;
+            }
+        }
     }
 }

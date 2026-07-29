@@ -1651,6 +1651,12 @@ namespace PunkMultiverse.Core
             private static readonly FieldInfo WeaponDropF = AccessTools.Field(typeof(DebugMenu), "weaponDropdown");
             private static readonly FieldInfo ShowActionF = AccessTools.Field(typeof(DebugMenu), "showDebugInputAction");
             private static readonly MethodInfo SetHoverM = AccessTools.Method(typeof(DebugMenu), "SetShipsHovering");
+            private static readonly FieldInfo SecondaryF = AccessTools.Field(typeof(DebugMenu), "secondaryMenu");
+            private static readonly FieldInfo EnemyListF = AccessTools.Field(typeof(DebugMenu), "enemyList");
+            private static readonly FieldInfo TimeManagerF = AccessTools.Field(typeof(DebugMenu), "timeManager");
+            private static readonly FieldInfo ScreenCanvasF = AccessTools.Field(typeof(UIScreen), "canvas");
+            private static readonly MethodInfo RemoveModifiersM =
+                AccessTools.Method(AccessTools.TypeByName("TimeManager"), "RemoveAllModifiers");
             private static bool _warned;
 
             // The PLAYTEST BUILD ships this action live: vanilla F1 disables ship control, sets
@@ -1676,11 +1682,78 @@ namespace PunkMultiverse.Core
             private static void Postfix(DebugMenu __instance)
             {
                 if (NetConfig.DebugMenuKey == null || !NetConfig.DebugMenuKey.Value) return;
+                if (IsOpenedF == null) return;
+                // Something else may have taken the screen down while our latch still says open —
+                // the pause menu does exactly that, and it is the workaround Omar had been using.
+                // Left unreconciled the latch stays true (so F1 is dead for the rest of the session)
+                // and the ship's control map stays disabled (so he "loses ship control").
+                ReconcileClosedElsewhere(__instance);
                 var kb = Keyboard.current;
                 if (kb == null || !kb.f1Key.wasPressedThisFrame) return;
+                // F1 is a TOGGLE. It only ever opened: the second press hit the `already open` guard
+                // and returned, and vanilla's own close is bound to a DIFFERENT action
+                // (hideDebugInputAction), so nothing closed it. Omar, 2026-07-29: "I can't reclose it
+                // pressing F1 again, it gets stuck open."
+                if ((bool)IsOpenedF.GetValue(__instance)) { CloseMenu(__instance); return; }
+                OpenMenu(__instance);
+            }
+
+            /// <summary>The debug screen is not actually on screen, but our latch says it is: give the
+            /// ship back and clear the latch so F1 works again.</summary>
+            private static void ReconcileClosedElsewhere(DebugMenu menu)
+            {
                 try
                 {
-                    if (IsOpenedF == null || (bool)IsOpenedF.GetValue(__instance)) return;
+                    if (!(bool)IsOpenedF.GetValue(menu)) return;
+                    var screen = ScreenF?.GetValue(menu) as UIScreen;
+                    var canvas = screen != null ? ScreenCanvasF?.GetValue(screen) as Canvas : null;
+                    if (canvas == null || canvas.enabled) return;   // still up (or unreadable) — leave it
+                    IsOpenedF.SetValue(menu, false);
+                    RestoreLocalShipControl();
+                    Plugin.Log.LogInfo("[Dev] debug menu was closed by another screen — ship control restored, F1 re-armed");
+                }
+                catch { }
+            }
+
+            /// <summary>Vanilla's Close(), made safe for a net run. The latch clear and the control
+            /// restore are in a finally: whatever else fails, F1 must keep working and the player
+            /// must keep their ship.</summary>
+            private static void CloseMenu(DebugMenu menu)
+            {
+                try
+                {
+                    try { (SecondaryF?.GetValue(menu) as SecondaryDebugMenu)?.Hide(); } catch { }
+                    try { (EnemyListF?.GetValue(menu) as GameObject)?.SetActive(false); } catch { }
+                    try { (ScreenF?.GetValue(menu) as UIScreen)?.Close(); } catch { }
+                    try { SetHoverM?.Invoke(menu, new object[] { false }); } catch { }
+                    // We never set vanilla's 0.1x slow-mo on open, but the menu's own slow-motion
+                    // BUTTON can still be armed under this owner — clear it or the world stays slow.
+                    try { RemoveModifiersM?.Invoke(TimeManagerF?.GetValue(menu), new object[] { menu }); } catch { }
+                }
+                finally
+                {
+                    RestoreLocalShipControl();
+                    try { IsOpenedF.SetValue(menu, false); } catch { }
+                    Plugin.Log.LogInfo("[Dev] debug menu closed (F1)");
+                }
+            }
+
+            /// <summary>Only the LOCAL ship — puppets have no input to re-enable, and reaching for
+            /// theirs is what threw inside vanilla's loop.</summary>
+            private static void RestoreLocalShipControl()
+            {
+                try
+                {
+                    var input = Sync.ShipSync.LocalShip != null ? Sync.ShipSync.LocalShip.shipInput : null;
+                    if (input != null) input.ShipControlActionMap.Enable();
+                }
+                catch { }
+            }
+
+            private static void OpenMenu(DebugMenu __instance)
+            {
+                try
+                {
                     // NOT ShipManager.DisableShipControl(): in a net run Ships contains PUPPETS,
                     // whose null shipInput NRE'd vanilla's loop mid-iteration. That exception left
                     // this open HALF-APPLIED — isOpened already true (so F1 was dead for the rest
