@@ -11,7 +11,7 @@
 param(
     [int]$Bots = 2,
     [int]$WatchSeconds = 420,
-    # lifecycle | ring | sync | pvp | bars | loot | all. Comma-separated.
+    # lifecycle | ring | sync | pvp | bars | loot | fire | all. Comma-separated.
     [string]$Phases = "all",
     # Fire simprof at the coordinator while the ring is mid-closure and print the attribution.
     # The ring phase measures what PAINTING costs; this answers what the painted WORLD costs,
@@ -164,7 +164,7 @@ try {
     # Every probe below needs the ships adjacent. BR scatters spawns ~1600 units apart on purpose,
     # so none of this is observable until that distance is collapsed.
     $probed = $false
-    if ($BotDirs.Count -ge 2 -and ((Phase "sync") -or (Phase "pvp") -or (Phase "bars") -or (Phase "loot"))) {
+    if ($BotDirs.Count -ge 2 -and ((Phase "sync") -or (Phase "pvp") -or (Phase "bars") -or (Phase "loot") -or (Phase "fire"))) {
         $probed = $true
         Cmd $BotPlugs[0] ("tpplayer {0}" -f $BotSlots[1])
         Start-Sleep 5
@@ -242,6 +242,28 @@ try {
         Cmd $BotPlugs[1] "shipbars"
         Start-Sleep 3
         foreach ($p in $BotPlugs) { Cmd $p "autofly 600" }
+    }
+
+    if ($probed -and (Phase "fire")) {
+        # Fire vs the damage shields. Burn is ticked straight out of DamagableResource.Update via a
+        # private Damage(float), so it never passes TakeDamage - which is where god mode, shop
+        # invulnerability and Battle Royale spawn protection are all enforced. A/B in one run:
+        # UNSHIELDED must burn and lose health, SHIELDED must not, and the shielded ship must not
+        # still be alight afterwards (the whole point - you cannot walk out of spawn protection on
+        # fire and immediately start dying to it).
+        Write-Host "probe: fire vs shields (22s)"
+        Cmd $BotPlugs[0] "god off"
+        Start-Sleep 1
+        Cmd $BotPlugs[0] "burn 100"
+        Start-Sleep 4
+        Cmd $BotPlugs[0] "burn"          # read-only: unshielded state
+        Start-Sleep 2
+        Cmd $BotPlugs[0] "god"           # shield back on before the ring finishes the job
+        Start-Sleep 1
+        Cmd $BotPlugs[0] "burn 100"
+        Start-Sleep 5
+        Cmd $BotPlugs[0] "burn"          # read-only: shielded state
+        Start-Sleep 2
     }
 
     if ($probed -and (Phase "loot")) {
@@ -508,6 +530,28 @@ try {
             Line "victim hp" ("{0:0.#} -> {1:0.#} over the burst" -f $first, $last)
             if ($last -ge $first) { $ok = $false; Write-Host "  FAIL: hits applied but hp never moved" }
         }
+    }
+
+    if ($probed -and (Phase "fire")) {
+        Write-Host "--- fire vs damage shields ---"
+        $burns = @(Lines $BotLogs[0] "\[Dev\] burn: BurnLevel=([0-9.]+) onFire=(\w+) hp=([0-9.-]+) shielded=(\w+)")
+        if ($burns.Count -ge 4) {
+            $u = $burns[1].Matches[0].Groups   # read-only sample, god OFF
+            $s = $burns[3].Matches[0].Groups   # read-only sample, god ON
+            Line "unshielded" ("burn={0} onFire={1} hp={2} shielded={3}" -f $u[1].Value,$u[2].Value,$u[3].Value,$u[4].Value)
+            Line "shielded"   ("burn={0} onFire={1} hp={2} shielded={3}" -f $s[1].Value,$s[2].Value,$s[3].Value,$s[4].Value)
+            if ([double]$s[1].Value -gt 0.0 -or $s[2].Value -eq "True") {
+                $ok = $false
+                Write-Host "  FAIL: a SHIELDED ship is still burning - fire still bypasses the shield,"
+                Write-Host "        so spawn protection / god / shop invulnerability can be burned through."
+            }
+            $hpStart = [double]$burns[0].Matches[0].Groups[3].Value
+            $hpUnshielded = [double]$u[3].Value
+            if ($hpUnshielded -ge $hpStart) {
+                Write-Host "  WARN: unshielded ship did not lose health to fire - the control half of"
+                Write-Host "        this probe proved nothing (too short a window, or it healed)."
+            }
+        } else { Line "fire probe" ("only {0} burn sample(s) - need 4" -f $burns.Count); $ok = $false }
     }
 
     if ($probed -and (Phase "bars")) {

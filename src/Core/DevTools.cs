@@ -664,6 +664,27 @@ namespace PunkMultiverse.Core
                 // The one command that answers "why did my shot not hurt the other player" with a
                 // fact instead of a theory. Run it while standing in sight of them.
                 // Verify the shutdown safety net without needing a real deadlock to happen.
+                // Set the local ship alight on demand. Burn is applied straight from
+                // DamagableResource.Update and never touches the damage pipeline, so it is the one
+                // source no existing probe could reach — and the one that was bypassing every shield.
+                case "burn":
+                {
+                    var burnShip = ShipSync.LocalShip;
+                    if (burnShip == null) { Out("burn: no local ship"); return; }
+                    var burnData = burnShip.GetComponent<Unit>()?.ComponentData;
+                    if (burnData == null) { Out("burn: no unit data"); return; }
+                    // No argument = REPORT ONLY. The measurement that matters is what the burn
+                    // level is a few seconds AFTER being set, which needs a read that does not
+                    // itself re-light the ship.
+                    if (parts.Length >= 2
+                        && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float burnLevel))
+                        burnData.BurnLevel = burnLevel;
+                    var burnDr = burnShip.GetComponent<DamagableResource>();
+                    Out($"burn: BurnLevel={burnData.BurnLevel:0.#} onFire={burnData.IsOnFire} " +
+                        $"hp={(burnDr != null ? burnDr.CurrentHealth : -1f):0.##} " +
+                        $"shielded={(GodMode || Sync.DamageSync.LocalShopMenuOpen() || Modes.BattleRoyaleSpawnSelect.SpawnProtected)}");
+                    return;
+                }
                 case "exitkill":
                 {
                     int ekSecs = 3;

@@ -500,6 +500,66 @@ namespace PunkMultiverse.Sync
             }
         }
 
+        /// <summary>
+        /// Fire is the one damage source that never respected the shield.
+        ///
+        /// <c>DamagableResource.Update</c> ticks burn through the PRIVATE <c>Damage(float)</c>:
+        /// <c>if (IsOnFire &amp;&amp; ...) Damage(burnProperties.fireDmgPerTick)</c>. That skips
+        /// <c>TakeDamage</c> entirely — and <c>TakeDamage</c> is where every one of our shields is
+        /// enforced. So god mode, station-shop invulnerability AND Battle Royale spawn protection
+        /// were all silently bypassed by fire: a player could burn to death while "invulnerable".
+        ///
+        /// Omar spotted the shape of this from the symptom alone (2026-07-29): a client spawning in
+        /// briefly on fire, "we are leaving it to the fire damage tick expiring before our god mode
+        /// is removed". Exactly right, and worse than feared — the tick was never gated at all.
+        ///
+        /// Burn is held at zero for the whole shielded window rather than merely skipping the tick,
+        /// so a player cannot come OUT of spawn protection still alight and immediately start losing
+        /// health from a fire they caught while they had no control. Standing in lava after the
+        /// shield drops re-ignites them normally; nothing about the fire mechanic changes.
+        ///
+        /// (For the record on the other half of the question: nobody is spawned into the void. A
+        /// Battle Royale drop scatters to a real station, and stations can have lava close enough to
+        /// touch on arrival — the same CellType Hazard that was burning players at spawn before the
+        /// hazard clear radius went up.)
+        /// </summary>
+        [HarmonyPatch(typeof(DamagableResource), "Update")]
+        internal static class ShieldedShipsDoNotBurn
+        {
+            private static void Prefix(DamagableResource __instance)
+            {
+                if (__instance == null || !NetSession.Active) return;
+                if (!IsGodShieldedLocalShip(__instance)) return;
+                try
+                {
+                    var data = __instance.GetComponent<Unit>()?.ComponentData;
+                    if (data != null && data.BurnLevel > 0f) data.BurnLevel = 0f;
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>Name fire as a killer. Burn damage never passes through the audited pipeline —
+        /// it is applied straight from Update — so a player who burned to death produced a bare
+        /// "YOU DIED" with nothing to blame, which is precisely the gap the kill feed exists to
+        /// close. Recorded on the local ship only, like every other killer note.</summary>
+        [HarmonyPatch(typeof(DamagableResource), "Update")]
+        internal static class AttributeBurnDeaths
+        {
+            private static void Postfix(DamagableResource __instance)
+            {
+                if (__instance == null || !NetSession.Active) return;
+                try
+                {
+                    var local = ShipSync.LocalShip;
+                    if (local == null || __instance.GetComponentInParent<Ship>() != local) return;
+                    var data = __instance.GetComponent<Unit>()?.ComponentData;
+                    if (data != null && data.IsOnFire) NoteKiller("FIRE");
+                }
+                catch { }
+            }
+        }
+
         /// <summary>Blocks damage to the LOCAL ship only: while the `god` dev command is armed, OR
         /// while this player has the shop / ship-menu open. Vanilla pauses the whole world when you
         /// shop (so nothing can hit you); a shared co-op sim can't freeze, so we drop damage to the
