@@ -462,7 +462,12 @@ namespace PunkMultiverse
             BrEnemyHpScale = cfg.Bind("Session", "BrEnemyHpScale", 0.5f,
                 "Battle Royale: enemy max-health multiplier. 0.5 makes players effectively deal " +
                 "double damage to enemies, so kills and gold come twice as fast.");
-            BrStationHazardClearRadius = cfg.Bind("Session", "BrStationHazardClearRadius", 14f,
+            // 14 was too tight to survive contact with a real world: 199 cells cleared across 44
+            // shops (measured 2026-07-29) left lava just outside the bubble, and a ship that spawns
+            // and drifts one hull-length is in it — both players burned 8->0 on arrival that match.
+            // 26 is still a landing pad rather than an arena, and the diff cost stays in the low
+            // thousands of cells for a whole map.
+            BrStationHazardClearRadius = cfg.Bind("Session", "BrStationHazardClearRadius", 26f,
                 "Battle Royale: world units of DAMAGING TERRAIN (lava, gas, anything with contact " +
                 "damage) scrubbed off the ground around every shop at match start. World generation " +
                 "will happily put lava against a station — fine in co-op where you arrive on your " +

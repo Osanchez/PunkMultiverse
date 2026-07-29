@@ -126,6 +126,7 @@ namespace PunkMultiverse.Patches
             catch { }
 
             PlacedAtStation = true;
+            Modes.BattleRoyaleSpawnSelect.NoteSpawn("direct station spawn");
             Plugin.Log.LogInfo($"[BR] spawned directly on station #{stationNetId} at " +
                 $"({pos.x:0},{pos.y:0}) — no scatter teleport needed");
         }

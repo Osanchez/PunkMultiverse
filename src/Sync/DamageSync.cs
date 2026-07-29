@@ -427,7 +427,17 @@ namespace PunkMultiverse.Sync
             string identity = state.HasTrace
                 ? $"shot={state.Trace.ShotId} pellet={state.Trace.ProjectileOrdinal} projectile={state.Trace.ProjectileInstanceId} kind={state.Trace.Kind} replayed={state.Trace.Replayed}"
                 : "shot=unknown";
-            Plugin.Log.LogInfo($"[CombatHit] {source} {identity} amount={state.Amount:0.###} type={state.Type} applied={state.Applied} hp={state.HpBefore:0.###}->{hpAfter:0.###} shield={state.ShieldBefore:0.###}->{shieldAfter:0.###}");
+            // WHERE it happened, always. "I'm not sure the location this is being inflicted at or
+            // where the source even came from" (Omar, 2026-07-29) is two questions, and the second
+            // one (contact=) was useless without the first: damaging terrain is a PLACE.
+            string at = "at ?";
+            try
+            {
+                var s = ShipSync.LocalShip;
+                if (s != null) at = $"at ({s.transform.position.x:0},{s.transform.position.y:0})";
+            }
+            catch { }
+            Plugin.Log.LogInfo($"[CombatHit] {source} {identity} amount={state.Amount:0.###} type={state.Type} applied={state.Applied} {at} hp={state.HpBefore:0.###}->{hpAfter:0.###} shield={state.ShieldBefore:0.###}->{shieldAfter:0.###}");
         }
 
         /// <summary>Real damage to an entity we simulate: only the LOCAL player's weapons deal

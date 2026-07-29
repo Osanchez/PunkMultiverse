@@ -270,6 +270,9 @@ namespace PunkMultiverse.Modes
             var assignment = AssignSpawnStations(session);
             if (!assignment.TryGetValue((byte)session.LocalSlot, out int stationNetId)) return;
             ShipSync.TeleportLocalShip(stationNetId);
+            // Same grace the drop screen's Deploy gives: arriving somewhere you have never seen is
+            // the same problem however you got there, and this path used to give none at all.
+            BattleRoyaleSpawnSelect.NoteSpawn("scatter teleport");
             Plugin.Log.LogInfo($"[BR] scattered to station #{stationNetId}");
         }
 

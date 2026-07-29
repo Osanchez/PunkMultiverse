@@ -358,6 +358,17 @@ namespace PunkMultiverse.Modes
             HoldInTheVoid(quiet: true);
         }
 
+        /// <summary>Arm the post-arrival protection window from a path that placed the ship WITHOUT
+        /// the drop screen (the scatter teleport, the direct station spawn). Deploy arms its own;
+        /// this exists so every way of arriving in a BR match gets the same grace.</summary>
+        internal static void NoteSpawn(string why)
+        {
+            float seconds = Mathf.Max(0f, NetConfig.BrSpawnProtectionSeconds.Value);
+            if (seconds <= 0f) return;
+            _protectedUntil = Time.unscaledTime + seconds;
+            Plugin.Log.LogInfo($"[BRDrop] spawn protection armed for {seconds:0}s ({why})");
+        }
+
         /// <summary>True once this player has actually dropped into the world.</summary>
         internal static bool Deployed { get; private set; }
 
@@ -515,12 +526,17 @@ namespace PunkMultiverse.Modes
             {
                 var s = NetSession.Instance;
                 if (s == null || !NetSession.Active || s.CurrentMode != GameMode.BattleRoyale) return false;
-                if (!NetConfig.BrChooseSpawn.Value) return false;
+                // NOT gated on BrChooseSpawn any more. "You arrive somewhere you have never seen
+                // and deserve a moment to look" is true of a SCATTERED spawn too — and with the
+                // drop screen off that path set no protection at all, so a player teleported onto
+                // a station beside lava burned 8->0 before they could react (2026-07-29, both
+                // clients, `contact=CellType Hazard`). NoteSpawn() below arms the window from
+                // whichever path actually placed the ship.
                 // Gate on the window actually being OPEN (_deadline is set by OpenWindow), not on
                 // "not deployed yet" — the latter is also true before the window exists and after a
                 // reset, which would quietly make a ship invulnerable outside the moment this is
                 // meant to cover.
-                if (!Deployed && _deadline > 0f) return true;   // still choosing
+                if (NetConfig.BrChooseSpawn.Value && !Deployed && _deadline > 0f) return true; // still choosing
                 return _protectedUntil > 0f && Time.unscaledTime < _protectedUntil;
             }
         }

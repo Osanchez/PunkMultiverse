@@ -35,10 +35,42 @@ function CountIn($p,$pat){ if(-not(Test-Path $p)){return 0}; return @(Select-Str
 function WaitFor($p,$pat,$to,$what,$min=1){ $d=(Get-Date).AddSeconds($to); while((Get-Date)-lt $d){ if((CountIn $p $pat)-ge $min){return $true}; Start-Sleep 3 }; Write-Host "TIMEOUT $what"; return $false }
 function Cmd($plug,$txt){ Add-Content -Path (Join-Path $plug "devcmd.txt") -Value $txt -Encoding Ascii }
 function Lines($p,$pat){ if(-not(Test-Path $p)){return @()}; return @(Select-String -Path $p -Pattern $pat -AllMatches -EA SilentlyContinue) }
+# Every key this run overwrites, so the finally block can put it back. config.cfg PERSISTS, and
+# these are the SAME installs Omar plays on: the harness's BrChooseSpawn=false silently disabled
+# the drop screen for his second player until he reported it as "the second player is still auto
+# spawning" (2026-07-29). A test harness must not be able to change how the game plays afterwards.
+$script:CfgBackups = @()   # each: @{ Path=...; Key=...; Line=...; Existed=$bool }
+
+function BackupCfgKeys([string]$path, [string[]]$keys) {
+    if (-not (Test-Path $path)) { return }
+    $cfg = Get-Content -Raw $path
+    foreach ($k in $keys) {
+        $pat = "(?m)^{0}\s*=.*$" -f [regex]::Escape($k)
+        $m = [regex]::Match($cfg, $pat)
+        $script:CfgBackups += @{ Path = $path; Key = $k; Line = $(if ($m.Success) { $m.Value } else { $null }); Existed = $m.Success }
+    }
+}
+
+function RestoreCfgKeys() {
+    foreach ($b in $script:CfgBackups) {
+        if (-not (Test-Path $b.Path)) { continue }
+        $cfg = Get-Content -Raw $b.Path
+        $pat = "(?m)^{0}\s*=.*$" -f [regex]::Escape($b.Key)
+        if ($b.Existed) { $cfg = [regex]::Replace($cfg, $pat, $b.Line) }
+        else { $cfg = [regex]::Replace($cfg, $pat, "") }   # we introduced it; take it back out
+        [System.IO.File]::WriteAllText($b.Path, $cfg)
+    }
+    if ($script:CfgBackups.Count -gt 0) {
+        Write-Host "restored $($script:CfgBackups.Count) config key(s) to their pre-test values"
+        $script:CfgBackups = @()
+    }
+}
+
 function SetCfg([string]$path, [hashtable]$kv, [string]$section = "Session") {
     # Replace the key if present; INSERT it under the section header if not. A plain replace
     # silently no-ops for a key the installed build has never written yet, and the game then
     # overwrites the file with defaults - which is exactly how the first BR run came up Standard.
+    BackupCfgKeys $path @($kv.Keys)
     $cfg = Get-Content -Raw $path
     foreach ($k in $kv.Keys) {
         $pat = "(?m)^{0}\s*=.*$" -f [regex]::Escape($k)
@@ -490,4 +522,6 @@ try {
 finally {
     foreach ($id in $pids) { Stop-Process -Id $id -Force -EA SilentlyContinue }
     Write-Host "all processes stopped"
+    # Runs even on a throw or Ctrl-C: these installs are played on, not just tested on.
+    RestoreCfgKeys
 }
