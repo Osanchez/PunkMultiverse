@@ -398,9 +398,39 @@ namespace PunkMultiverse.Transport
                 throw new InvalidOperationException("UDP client socket failed to start");
             IsHost = false;
             IsRunning = true;
-            _connectHost = host;
+            // Resolve HOSTNAMES to an IPv4 address OURSELVES. This socket is IPv4-only
+            // (IPv6Enabled = false above), but a hostname handed to LiteNetLib is resolved by
+            // LiteNetLib, and a name that publishes both A and AAAA records can resolve to the
+            // IPv6 address — which this socket cannot reach, so every connect attempt dies
+            // silently and the log fills with `retrying connect`. Field case 2026-07-29: the
+            // playit.gg tunnel domain punk-mv.playit.game (A 147.185.221.230 + AAAA) timed out
+            // for Omar while the raw IPv4 connected first try from the same LAN.
+            string dial = host;
+            if (!System.Net.IPAddress.TryParse(host, out _))
+            {
+                try
+                {
+                    foreach (var addr in System.Net.Dns.GetHostAddresses(host))
+                        if (addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                        {
+                            dial = addr.ToString();
+                            break;
+                        }
+                    if (!ReferenceEquals(dial, host))
+                        Plugin.Log.LogInfo($"[Udp] resolved {host} -> {dial} (IPv4; socket is IPv4-only)");
+                    else
+                        Plugin.Log.LogWarning($"[Udp] {host} has no IPv4 address — connect will " +
+                            "likely fail on this IPv4-only socket");
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning($"[Udp] DNS resolve of {host} failed ({e.Message}) — " +
+                        "letting LiteNetLib try");
+                }
+            }
+            _connectHost = dial;
             _connectPort = port;
-            _manager.Connect(host, port, ConnectionKey);
+            _manager.Connect(dial, port, ConnectionKey);
             Plugin.Log.LogInfo($"[Udp] connecting to {host}:{port} (LiteNetLib)");
         }
 
