@@ -47,7 +47,8 @@ text to stderr and it turns into a fatal error mid-script.
 |---|---|---|
 | LAN clients | **`192.168.1.226:7778`** | The desktop's Ethernet IP; this is `SERVER_ADDRESS` |
 | Tailnet clients | **`100.107.235.97:7778`** | Same host as SSH — works from anywhere on the tailnet |
-| Internet | router → UDP 7778 → `192.168.1.226` | Forward the port on the modem |
+| Internet (live) | **`punk-mv.playit.game:17201`** | playit.gg UDP tunnel — `playit` container on the same box; tunnel LOCAL address must be `192.168.1.226:7778`, never 127.0.0.1. Adds ~85ms vs direct. |
+| Internet (alt) | router → UDP 7778 → `192.168.1.226` | Direct port-forward on the modem — lower latency than the tunnel, exposes the home IP |
 
 **UDP now works from the LAN and the router.** Docker Desktop publishes `7778/udp` directly
 on the Windows host (`0.0.0.0:7778`), so the old WSL constraint is gone — no `netsh
