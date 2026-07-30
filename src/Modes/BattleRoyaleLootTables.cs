@@ -125,9 +125,24 @@ namespace PunkMultiverse.Modes
         [HarmonyPatch(typeof(LootDropper), "DropLoot")]
         internal static class AugmentBattleRoyaleDrops
         {
+            // One augment per entity per match. Belt on top of the __runOriginal check below: even a
+            // path where vanilla legitimately re-runs DropLoot must not mint the bonus twice.
+            private static readonly HashSet<int> Augmented = new HashSet<int>();
+            internal static void ResetLatch() => Augmented.Clear();
+
             [HarmonyPriority(HarmonyLib.Priority.High)]
-            private static void Postfix(LootDropper __instance)
+            private static void Postfix(LootDropper __instance, bool __runOriginal)
             {
+                // THE INFINITE BEACON FAUCET (Omar, 2026-07-29: "a beacon dropped and I picked it
+                // up, and it was infinitely picking them up"). LootDiag.DropLootGuard's prefix
+                // SUPPRESSES re-applied deaths — `drop SUPPRESSED — already dropped here (duplicate
+                // death)` — and duplicate death events are ROUTINE in this netcode; the dedup exists
+                // because of them. But Harmony runs postfixes even when a prefix skipped the
+                // original, and this postfix didn't check. So every re-application of a death minted
+                // a fresh bonus item with the SAME deterministic key, whose claim was already
+                // awarded to whoever grabbed the first one — instantly collectable, forever, an
+                // item faucet at the corpse. If vanilla's roll was suppressed, ours must be too.
+                if (!__runOriginal) return;
                 if (!BattleRoyale.Active || __instance == null) return;
                 try
                 {
@@ -140,6 +155,7 @@ namespace PunkMultiverse.Modes
                     // The same-on-every-machine seed: run seed x the entity's shared identity.
                     int netId = 0;
                     if (se.EntityData != null) NetIds.TryGetNetId(se.EntityData.instanceId, out netId);
+                    if (netId != 0 && !Augmented.Add(netId)) return; // this entity already paid out
                     var rnd = new System.Random(unchecked(session.CurrentRunSeed * 486187739 + netId));
                     Vector2 pos = __instance.transform.position;
 
@@ -210,7 +226,7 @@ namespace PunkMultiverse.Modes
         private static List<ModuleData> _whiteWeapons;
         private static List<ModuleData> _colouredWeapons;
 
-        internal static void Reset() { _whiteWeapons = null; _colouredWeapons = null; }
+        internal static void Reset() { _whiteWeapons = null; _colouredWeapons = null; AugmentBattleRoyaleDrops.ResetLatch(); }
 
         private static void BuildWeaponPools()
         {
@@ -265,7 +281,8 @@ namespace PunkMultiverse.Modes
                 var factory = ServiceLocator.Get<LootFactory>();
                 if (factory == null) return;
                 factory.Create(new DroppabbleItem { droppableType = DroppabbleType.Consumable, consumable = pick }, pos);
-                Plugin.Log.LogInfo($"[BRLoot] enemy '{source}' dropped consumable '{pick.Id}'");
+                string label = !string.IsNullOrEmpty(pick.displayName) ? pick.displayName : pick.Id;
+                Plugin.Log.LogInfo($"[BRLoot] enemy '{source}' dropped consumable '{label}'");
             }
             catch { }
         }

@@ -2333,6 +2333,7 @@ namespace PunkMultiverse.Core
             // very world START is about to reuse — found the hard way.)
             Modes.BattleRoyale.Reset();
             Modes.BattleRoyaleLoot.Reset();
+            Modes.BattleRoyaleLootTables.Reset();
             // Run teardown is the ONLY safe place for this: the drop assignment is made just before
             // go-live and consumed just after it, so anything that clears it mid-run loses a
             // player's choice between the two.

@@ -27,6 +27,9 @@ namespace PunkMultiverse.UI
             // terrain it landed on has streamed in. Same reason this lives here — it must run
             // on render frames, which is when streaming finishes.
             Modes.BattleRoyaleSpawnSelect.TickSettle();
+            // Slow (5s) truth-vs-presentation sweep: a station whose data is unlocked but
+            // whose hatch stayed shut repairs itself and logs which gate flag lied.
+            Patches.StationVisualHeal.Tick();
         }
 
         private void OnGUI()
