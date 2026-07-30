@@ -86,6 +86,13 @@ namespace PunkMultiverse
         public static ConfigEntry<int> BrCarePackageCount;
         public static ConfigEntry<float> PvPDamageScale;
         public static ConfigEntry<float> BrEnemyHpScale;
+        public static ConfigEntry<int> BrRoomCratePercent;
+        public static ConfigEntry<int> BrCrateWeaponPercent;
+        public static ConfigEntry<int> BrEnemyWeaponPercent;
+        public static ConfigEntry<int> BrEnemyConsumablePercent;
+        public static ConfigEntry<string> BrMiniBossIds;
+        public static ConfigEntry<int> BrMiniBossWeaponPercent;
+        public static ConfigEntry<int> BrBossWeaponDrops;
         public static ConfigEntry<float> BrEnemyDamageScale;
         public static ConfigEntry<int> BrMinPlayers;
         public static ConfigEntry<float> BrSpawnClearRadius;
@@ -498,6 +505,37 @@ namespace PunkMultiverse
                 "vanilla numbers were tuned for. Applied AFTER the victim's armour, exactly like " +
                 "PvPDamageScale, so armour still decides whether a hit lands at all. Covers enemy " +
                 "projectiles, beams and explosions; contact/ram damage is not scaled. 1.0 = vanilla.");
+            BrRoomCratePercent = cfg.Bind("Session", "BrRoomCratePercent", 45,
+                "Battle Royale: chance (0-100) that each ordinary room gains one extra container " +
+                "at world generation, drawn from the game's own container prefabs. Measured before " +
+                "writing: room spawn lists contain NO containers (they all come from PoI prefabs), " +
+                "so a multiplier on room entries did nothing — containers are placed directly " +
+                "instead. Rolled inside the generator's seeded pass; the go-live hash barrier " +
+                "enforces that every machine builds the same world.");
+            BrCrateWeaponPercent = cfg.Bind("Session", "BrCrateWeaponPercent", 50,
+                "Battle Royale: chance (0-100) that a destroyed container also drops a WHITE " +
+                "weapon module. White weapons circulate through crates; coloured weapons never " +
+                "come from containers (Omar, 2026-07-29: 'more weapons in crates... white " +
+                "weapons at least. All other resource type weapons should remain from killing " +
+                "bosses').");
+            BrEnemyWeaponPercent = cfg.Bind("Session", "BrEnemyWeaponPercent", 3,
+                "Battle Royale: chance (0-100) that an ordinary enemy drops a WHITE weapon " +
+                "module on death. Kept rare — crates are the weapon source; this is the lucky kill.");
+            BrEnemyConsumablePercent = cfg.Bind("Session", "BrEnemyConsumablePercent", 12,
+                "Battle Royale: chance (0-100) that an ordinary enemy drops a consumable on " +
+                "death, so kills pay in more than gold (Omar, 2026-07-29).");
+            BrMiniBossIds = cfg.Bind("Session", "BrMiniBossIds",
+                "Unit_FlyDad,Unit_FlyAlfa,Unit_Cross_Alpha,Unit_Cross_Jock,Enemy_Turret_Worm",
+                "Battle Royale: comma-separated entity-id PREFIXES treated as miniboss tier for " +
+                "loot (docs/bosses.md's observed elite roster). Minibosses can drop COLOURED " +
+                "weapons; ordinary enemies and crates never do. Full bosses are detected by the " +
+                "game's own BossStateActivator and need no listing.");
+            BrMiniBossWeaponPercent = cfg.Bind("Session", "BrMiniBossWeaponPercent", 40,
+                "Battle Royale: chance (0-100) that a miniboss-tier kill drops one COLOURED " +
+                "weapon module.");
+            BrBossWeaponDrops = cfg.Bind("Session", "BrBossWeaponDrops", 2,
+                "Battle Royale: COLOURED weapon modules a full boss (healthbar boss) always " +
+                "drops. Bosses are the only guaranteed source of non-white weapons.");
             BrEnemyHpScale = cfg.Bind("Session", "BrEnemyHpScale", 0.5f,
                 "Battle Royale: enemy max-health multiplier. 0.5 makes players effectively deal " +
                 "double damage to enemies, so kills and gold come twice as fast.");

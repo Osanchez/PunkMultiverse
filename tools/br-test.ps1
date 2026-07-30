@@ -266,6 +266,14 @@ try {
         # UNSHIELDED must burn and lose health, SHIELDED must not, and the shielded ship must not
         # still be alight afterwards (the whole point - you cannot walk out of spawn protection on
         # fire and immediately start dying to it).
+        # BR loot tables FIRST, while the bot is still godded and the match safely alive:
+        # destroy a container next to bot0 and watch what falls out of it.
+        Write-Host "probe: crate loot"
+        Cmd $BotPlugs[0] "spawn CrateTech"
+        Start-Sleep 3
+        Cmd $BotPlugs[0] "fire 6 dir 1 0"
+        Start-Sleep 9
+
         Write-Host "probe: fire vs shields (22s)"
         Cmd $BotPlugs[0] "god off"
         Start-Sleep 1
@@ -615,6 +623,22 @@ try {
             Line "enemy dmg scale" ("{0} -> {1} (after armour)" -f $sg[1].Value, $sg[2].Value)
             if ([double]$sg[2].Value -ge [double]$sg[1].Value) { $ok = $false; Write-Host "  FAIL: enemy damage was not reduced" }
         } else { Line "enemy dmg scale" "NOT OBSERVED - no enemy hit landed on the un-godded bot" }
+
+        Write-Host "--- BR loot tables ---"
+        foreach ($i in 0..($BotDirs.Count-1)) {
+            $gen = @(Lines $BotLogs[$i] "\[BRLoot\] generation: \+(\d+) container")
+            if ($gen.Count -ge 1) { Line "bot$i gen crates" ("+{0} extra containers" -f $gen[-1].Matches[0].Groups[1].Value) }
+            else { Line "bot$i gen crates" "MISSING - generation pass never ran"; $ok = $false }
+        }
+        # Generation determinism is proven by the match going live at all (hash barrier), but say it:
+        if (@(Lines $CoordLog "GENERATION MISMATCH").Count -gt 0) {
+            $ok = $false; Write-Host "  FAIL: GENERATION MISMATCH - the extra-crate pass diverged between machines"
+        }
+        $drops = @(Lines $BotLogs[0] "\[BRLoot\] (container|enemy|miniboss|boss) '([^']+)' dropped (WHITE|COLOURED) weapon '([^']+)'|\[BRLoot\].*dropped consumable '([^']+)'")
+        Line "augmented drops" ("{0} observed on bot0" -f $drops.Count)
+        foreach ($d in ($drops | Select-Object -First 4)) { Write-Host ("        " + $d.Matches[0].Value) }
+        $pool = @(Lines $BotLogs[0] "\[BRLoot\] weapon pools: (\d+) white, (\d+) coloured")
+        if ($pool.Count -ge 1) { Line "weapon pools" $pool[-1].Matches[0].Value.Replace("[BRLoot] weapon pools: ","") }
     }
 
     if ($probed -and (Phase "bars")) {

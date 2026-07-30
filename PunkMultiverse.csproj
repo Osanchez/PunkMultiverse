@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>PunkMultiverse</AssemblyName>
     <RootNamespace>PunkMultiverse</RootNamespace>
-    <Version>0.1.232</Version>
+    <Version>0.1.233</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -46,6 +46,7 @@
     <Reference Include="Sirenix.Serialization.Config"><HintPath>$(ManagedDir)\Sirenix.Serialization.Config.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Unity.InputSystem">          <HintPath>$(ManagedDir)\Unity.InputSystem.dll</HintPath>           <Private>false</Private></Reference>
     <Reference Include="Unity.Mathematics">          <HintPath>$(ManagedDir)\Unity.Mathematics.dll</HintPath>           <Private>false</Private></Reference>
+    <Reference Include="Unity.Collections">          <HintPath>$(ManagedDir)\Unity.Collections.dll</HintPath>          <Private>false</Private></Reference>
     <Reference Include="Unity.TextMeshPro">          <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>           <Private>false</Private></Reference>
     <Reference Include="UnityEngine">                <HintPath>$(ManagedDir)\UnityEngine.dll</HintPath>                 <Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule">     <HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath>      <Private>false</Private></Reference>
