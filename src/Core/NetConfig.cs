@@ -93,6 +93,8 @@ namespace PunkMultiverse
         public static ConfigEntry<string> BrMiniBossIds;
         public static ConfigEntry<int> BrMiniBossWeaponPercent;
         public static ConfigEntry<int> BrBossWeaponDrops;
+        public static ConfigEntry<float> PvpHitboxScale;
+        public static ConfigEntry<float> PvpHitboxMaxUnits;
         public static ConfigEntry<float> BrEnemyDamageScale;
         public static ConfigEntry<int> BrMinPlayers;
         public static ConfigEntry<float> BrSpawnClearRadius;
@@ -530,6 +532,21 @@ namespace PunkMultiverse
                 "loot (docs/bosses.md's observed elite roster). Minibosses can drop COLOURED " +
                 "weapons; ordinary enemies and crates never do. Full bosses are detected by the " +
                 "game's own BossStateActivator and need no listing.");
+            PvpHitboxScale = cfg.Bind("Session", "PvpHitboxScale", 1.5f,
+                "Player-vs-player only: a SQUARE aim-assist hitbox around every other player's " +
+                "ship, as a multiple of that ship's largest half-extent. 1.0 is a square that just " +
+                "encloses the ship; 0 (or anything <= 1.0) turns the assist off. MEASURED: a ship's " +
+                "real hull is about 0.70x0.70 world units, so 1.5 gives a 1.05u square — a 0.175u " +
+                "margin on each side, which converts near-misses without making a miss hard. Watch " +
+                "`squareAssists` in the [PvPDiag] line to see how many hits it is actually adding. " +
+                "The ship's real collider is untouched, so this can only ADD hits, never remove " +
+                "them — and it applies to nothing else: enemy fire, your shots at enemies, and " +
+                "terrain all keep vanilla hit detection.");
+            PvpHitboxMaxUnits = cfg.Bind("Session", "PvpHitboxMaxUnits", 0.5f,
+                "Player-vs-player hitbox: hard cap, in world units, on how far outside the ship's " +
+                "own silhouette the square may reach. At the measured 0.70u ship the scale binds " +
+                "first and this never applies; it is here so a much larger ship cannot turn the " +
+                "assist into a barn door.");
             BrMiniBossWeaponPercent = cfg.Bind("Session", "BrMiniBossWeaponPercent", 40,
                 "Battle Royale: chance (0-100) that a miniboss-tier kill drops one COLOURED " +
                 "weapon module.");

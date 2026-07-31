@@ -100,6 +100,7 @@ namespace PunkMultiverse.Modes
             Highlighted = 0;
             _navNextAt = 0f;
             _unfocusedPauseUsed = 0f;
+            _opened = false;
         }
 
         // ---------------------------------------------------------------- the option list
@@ -231,8 +232,25 @@ namespace PunkMultiverse.Modes
         /// <summary>Open the drop window on THIS machine. Called at go-live. The match is already
         /// running — nobody is waiting on this player — so the window is purely local: a screen, a
         /// clock, and a ship that has not deployed yet.</summary>
+        private static bool _opened;
+
         internal static void OpenWindow()
         {
+            // ONCE PER RUN. Re-opening is destructive: it clears LocalHasChosen and Deployed, so a
+            // player who has already dropped is pulled back into the void pen and made to choose
+            // again, and a player mid-decision loses the row they were on plus another 0.75s of
+            // input grace — which is what "my controller doesn't register right away" actually was
+            // (Omar, 2026-07-30). NetSession now latches GO_LIVE so this should never be reached
+            // twice, but the window is worth defending on its own: it is the one screen where a
+            // reset silently spends the player's decision.
+            if (_opened)
+            {
+                Plugin.Log.LogWarning("[BRDrop] second OpenWindow IGNORED — the drop window already " +
+                    $"opened this run (chosen={LocalHasChosen}, deployed={Deployed}). Re-opening " +
+                    "would un-deploy this player and reset their selection.");
+                return;
+            }
+            _opened = true;
             _closed = false;
             LocalHasChosen = false;
             Deployed = false;
@@ -529,7 +547,14 @@ namespace PunkMultiverse.Modes
             if (Options.Count == 0) return;
             Highlighted = Mathf.Clamp(Highlighted, 0, Options.Count - 1);
 
+            // `Gamepad.current` is the last-USED pad, and a pad that has not been touched since the
+            // process started may not be current yet — on a screen whose whole job is to be the
+            // first thing a controller talks to, that reads as "the controller does nothing at
+            // first, then starts working". Fall back to the first connected pad so the very first
+            // press counts. (Only a fallback: when a pad IS current it stays the one that drives
+            // the screen, so two pads on one machine behave exactly as before.)
             var pad = Gamepad.current;
+            if (pad == null && Gamepad.all.Count > 0) pad = Gamepad.all[0];
             var kb = Keyboard.current;
 
             // Confirm. Gated by Choose()'s own arming check, so a controller cannot spend the
@@ -588,8 +613,13 @@ namespace PunkMultiverse.Modes
             var ship = Sync.ShipSync.LocalShip;
             string pos = ship != null
                 ? $"({ship.transform.position.x:0},{ship.transform.position.y:0})" : "no ship";
+            // Pad state rides along: "the controller does nothing" is only diagnosable if the log
+            // says whether a pad was even visible to this screen at the time.
+            int pads = Gamepad.all.Count;
             Plugin.Log.LogInfo($"[BRDrop] waiting: {SecondsLeft:0}s left, ship {pos}, " +
-                $"armed={InputArmed}, chosen={LocalHasChosen}, deployed={Deployed}");
+                $"armed={InputArmed}, chosen={LocalHasChosen}, deployed={Deployed}, " +
+                $"pads={pads}(current={(Gamepad.current != null ? Gamepad.current.name : "none")}), " +
+                $"row={Highlighted + 1}/{Options.Count}");
         }
 
         /// <summary>No damage may touch this ship yet.

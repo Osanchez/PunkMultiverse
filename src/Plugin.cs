@@ -66,6 +66,9 @@ namespace PunkMultiverse
             _harmony.PatchAll(typeof(Plugin).Assembly);
             // Kept out of PatchAll on purpose — see BattleRoyaleLoot.ApplyGenericPatches.
             Modes.BattleRoyaleLoot.ApplyGenericPatches(_harmony);
+            // Same generic-method corner, same hand-application: a pickup may never outlive its
+            // own grant (Patches/PickupGrantGuard.cs — the infinite-item faucet).
+            Patches.PickupGrantGuard.ApplyGenericPatches(_harmony);
 
             _runtime = new GameObject("PunkMultiverse");
             Object.DontDestroyOnLoad(_runtime);

@@ -889,6 +889,7 @@ namespace PunkMultiverse.Core
             _localLevelReady = default;
             _nextLevelReadyRetryAt = 0f;
             _goLiveDeadline = 0f; // re-armed when this machine's LEVEL_READY goes out
+            _wentLive = false;    // this run has not gone live yet; see DoGoLive
             _levelReadyVisualPending = false;
             _levelReadyVisualStartedAt = 0f;
             Patches.StartSequenceWatchdog.Reset(); // re-armed at the next go-live
@@ -1366,8 +1367,35 @@ namespace PunkMultiverse.Core
             _orbitPeriod = Mathf.Max(0.5f, period);
         }
 
+        // GO_LIVE must happen exactly once per run, and until now nothing said so. The host sends it
+        // from CheckGoLive, again from SendGoLiveRecovery once a second whenever a peer repeats its
+        // LEVEL_READY (a real recovery path — the reliable stream can wedge behind a big baseline),
+        // and again in the rejoin catch-up. Vanilla's StartGame is already idempotent
+        // (ShipSync.GateStartGame.Started swallows the re-entry), which is exactly why this went
+        // unnoticed: the RE-RUN never showed up as a double start, it showed up as everything ELSE
+        // in DoGoLive happening again. Omar's 2026-07-30 log has three GO LIVEs in one match:
+        //
+        //     [BRDrop] DEPLOYED to Flesh at (730,1122) — reason=chosen
+        //     [Run] GO LIVE — all players in, starting gameplay      <- second copy
+        //     [BRDrop] holding at (1000,2090) in the void until deploy
+        //     [BRDrop] drop window open — 30s, 10 regions            <- re-opened AFTER he dropped
+        //
+        // He was pulled back out of the world he had already deployed into and made to choose again.
+        // The milder, more frequent face of it is the one he reported: a re-open resets the
+        // highlighted row and re-arms the 0.75s input grace, so a controller press lands on a screen
+        // that has just thrown away its state — "my controller doesn't register right away".
+        private bool _wentLive;
+
         private void DoGoLive()
         {
+            if (_wentLive)
+            {
+                Plugin.Log.LogInfo("[Run] duplicate GO_LIVE ignored — this run is already live " +
+                    "(a repeated LEVEL_READY recovery or rejoin catch-up). Re-running it would " +
+                    "re-open the drop screen and un-deploy a player who has already chosen.");
+                return;
+            }
+            _wentLive = true;
             Plugin.Log.LogInfo("[Run] GO LIVE — all players in, starting gameplay");
             DiagWatch.NotifyRunStarted(); // skip warmup in the growth watchdog
             Patches.StartSequenceWatchdog.Arm();
@@ -1769,6 +1797,7 @@ namespace PunkMultiverse.Core
             _levelFingerprints.Clear();
             _peersAwaitingRejoinState.Clear();
             _nextGoLiveRecoveryAt.Clear();
+            _wentLive = false;
             Sync.ShipSync.Reset();
             Sync.ShipSync.ResetStartGate();
             Sync.ProjectileSync.Reset();
@@ -2334,6 +2363,11 @@ namespace PunkMultiverse.Core
             Modes.BattleRoyale.Reset();
             Modes.BattleRoyaleLoot.Reset();
             Modes.BattleRoyaleLootTables.Reset();
+            // Per-run, so a repeat of the same fault reports again next match instead of being
+            // silenced by the first one's throttle.
+            Patches.PickupGrantGuard.Reset();
+            Patches.ConsumableWheelHeal.Reset();
+            Patches.BattleRoyalePvPHitbox.Reset(); // ship measurements are per-run objects
             // Run teardown is the ONLY safe place for this: the drop assignment is made just before
             // go-live and consumed just after it, so anything that clears it mid-run loses a
             // player's choice between the two.
@@ -2346,6 +2380,7 @@ namespace PunkMultiverse.Core
             _levelFingerprints.Clear();
             _peersAwaitingRejoinState.Clear();
             _nextGoLiveRecoveryAt.Clear();
+            _wentLive = false;
             Sync.ShipSync.Reset();
             Sync.ShipSync.ResetStartGate();
             Sync.ProjectileSync.Reset();

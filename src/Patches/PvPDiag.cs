@@ -33,6 +33,10 @@ namespace PunkMultiverse.Patches
 
         private static int _playerProjTicks;  // gate 0: player-owned PROJECTILES exist and are ticking
         private static int _playerHitscans;   // gate 0b: player-owned HITSCAN shots were fired
+        // Near-misses converted by the square aim-assist box (Patches/BattleRoyalePvPHitbox.cs).
+        // The number to watch when tuning PvpHitboxScale: it is the count of shots that landed ONLY
+        // because of the assist, so "squareAssists ≈ damagePrefix" means the box is doing the aiming.
+        private static int _squareAssists;
 
         // Physical facts about the most recent player-owned projectile, for `pvpprobe`. Read from a
         // live bullet rather than guessed from layer names: the projectile layer is a prefab detail
@@ -49,13 +53,14 @@ namespace PunkMultiverse.Patches
         internal static void NoteFriendFlip() { _friendFlips++; _dirty = true; }
         internal static void NoteDamagePrefix() { _damagePrefix++; _dirty = true; }
         internal static void NoteRouted() { _routed++; _dirty = true; }
+        internal static void NoteSquareAssist() { _squareAssists++; _dirty = true; }
 
         private static bool _dumped;
 
         internal static void Reset()
         {
             _castsAtShip = _friendFlips = _damagePrefix = _routed = _selfHits = 0;
-            _playerProjTicks = _playerHitscans = 0;
+            _playerProjTicks = _playerHitscans = _squareAssists = 0;
             LastProjectileLayer = -1;
             LastProjectileMask = 0;
             LastProjectileRadius = 0f;
@@ -160,6 +165,7 @@ namespace PunkMultiverse.Patches
             Plugin.Log.LogInfo($"[PvPDiag] playerProjTicks={_playerProjTicks} playerHitscans={_playerHitscans} " +
                 $"selfHitsSkipped={_selfHits} " +
                 $"hitAnotherShip={_castsAtShip} friendFlip={_friendFlips} " +
+                $"squareAssists={_squareAssists} " +
                 $"damagePrefix={_damagePrefix} routedAtPlayer={_routed} " +
                 "(the first ZERO from the left is where player-vs-player shots die; " +
                 "run `pvpprobe` for the physical reason)");

@@ -87,6 +87,8 @@ namespace PunkMultiverse.Modes
             Live.Clear();
             Awarded.Clear();
             AwardedOrder.Clear();
+            Minted.Clear();
+            MintedOrder.Clear();
             Pending.Clear();
             _group = 0;
             _ordinal = 0;
@@ -116,9 +118,36 @@ namespace PunkMultiverse.Modes
             if (_depth > 0) _depth--;
         }
 
+        // Every key this machine has ever minted an object for. A key NAMES ONE PILE: ordinals are
+        // handed out in roll order inside a single group scope, so two objects can only share a key
+        // if a drop was rolled TWICE here — a re-applied death, a re-destroyed cell, a postfix that
+        // fired behind a suppressed prefix. That is the OTHER half of the infinite-item faucet
+        // (Omar, 2026-07-29): the second object carries a key whose claim was already awarded to
+        // whoever took the first, so TryTake hands it over instantly, and every further copy after
+        // that. Rather than chase each mint path forever, a key is minted at most once per machine
+        // and the duplicate is destroyed on sight — with the group named, so the offending path
+        // still shows up in the log instead of being quietly papered over.
+        private static readonly HashSet<long> Minted = new HashSet<long>();
+        private static readonly Queue<long> MintedOrder = new Queue<long>();
+        private const int MintedLimit = 8192; // a long match drops a lot; never grow without bound
+
         private static void Tag(GameObject spawned)
         {
             if (_depth <= 0 || spawned == null || _ordinal == byte.MaxValue) return;
+            long key = MakeKey(_group, _ordinal);
+            if (!Minted.Add(key))
+            {
+                _ordinal++;
+                Plugin.Log.LogWarning($"[BRLoot] {Describe(key)} minted TWICE on this machine — " +
+                    "destroying the duplicate. Its contested-loot claim is already settled, so " +
+                    "keeping it would make the pile collectable over and over (the item faucet). " +
+                    "Whatever rolled this drop a second time is the bug.");
+                Object.Destroy(spawned);
+                return;
+            }
+            MintedOrder.Enqueue(key);
+            while (MintedOrder.Count > MintedLimit) Minted.Remove(MintedOrder.Dequeue());
+
             var tag = spawned.AddComponent<BrLootTag>();
             tag.Group = _group;
             tag.Ordinal = _ordinal++;
