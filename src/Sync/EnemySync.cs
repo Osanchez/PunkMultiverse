@@ -3332,6 +3332,37 @@ namespace PunkMultiverse.Sync
             Plugin.Log.LogWarning($"[Availability] DROPPED starved request for #{netId} — gate={gate}");
         }
 
+        // Repairs sent per entity, throttled: a starving requester re-asks on its own cadence and
+        // one restatement per couple of seconds is enough to heal it on the next snapshot tick,
+        // while a genuinely wedged entity still gets a fresh attempt rather than one and done.
+        private static readonly Dictionary<int, float> NextOwnershipRestateAt = new Dictionary<int, float>();
+        private const float OwnershipRestateInterval = 2f;
+
+        /// <summary>Host: tell the requester (and everyone, so no third machine keeps a third
+        /// opinion) who actually owns this entity. Used when a starved request arrives for an
+        /// entity the requester ALREADY owns here — the request is proof its local view diverged.
+        /// </summary>
+        private static void RestateOwnership(int netId, byte owner, NetSession session)
+        {
+            float now = Time.unscaledTime;
+            if (NextOwnershipRestateAt.TryGetValue(netId, out float at) && now < at)
+                return;
+            NextOwnershipRestateAt[netId] = now + OwnershipRestateInterval;
+
+            var assign = new AuthAssignMsg
+            {
+                Entries = new List<(int netId, byte owner)> { (netId, owner) },
+            };
+            ApplyAuthAssign(assign);            // the host's own view, made explicit too
+            Writer.Reset();
+            assign.Write(Writer);
+            session.SendToAll(NetChannel.Events, Writer.ToSegment(), reliable: true);
+            InstrumentationCounters.OwnershipRestated();
+            Plugin.Log.LogWarning($"[Availability] {NetDiag.Describe(netId)} — P{owner + 1} asked for rescue on an " +
+                "entity it ALREADY owns here: its view of ownership had diverged from the host's, which is why " +
+                "the object was starving. Restating authority explicitly so it can start simulating.");
+        }
+
         public static void ApplyStarvedOwnershipRequest(int netId, byte requester, NetSession session)
             => ApplyStarvedOwnershipRequest(netId, requester, session, wake: false);
 
@@ -3353,9 +3384,21 @@ namespace PunkMultiverse.Sync
 
             float now = Time.unscaledTime;
             byte previous = OwnerOf(netId);
-            // Includes already-explicit and segment-owned cases. The requester repairs a stale
-            // local puppet component itself; there is no authority change to transact here.
-            if (previous == requester) { LogStarvedDrop(netId, "requester-already-owner"); return; }
+            // THE UNRESPONSIVE GHOST (Omar, 2026-07-30). This branch used to just return, on the
+            // stated assumption that "the requester repairs a stale local puppet component itself".
+            // It does not, and it cannot: nothing tells it. Measured across one match — P1 sat 4-9
+            // units from #2303/#2079/#4938/#5038 with snapshotAge=never, believing P2 owned them;
+            // P2 had never heard of them; the host believed P1 owned them and answered all 31
+            // requests with silence (`gate=requester-already-owner`). Nobody simulated, nobody
+            // snapshotted, and the objects stayed inert for the whole match.
+            //
+            // The requester is the one machine that has PROVEN something is wrong — it is looking
+            // at a starving puppet. So the host restates the truth it already holds instead of
+            // dropping: an explicit AuthAssign for this netId, which ApplyAuthAssign turns into
+            // FixedOwners + ApplyOwnership on the receiver, overriding whatever its segment lease
+            // says. No authority changes hands (owner stays `previous == requester`), so this is
+            // safe to repeat and cannot thrash ownership — it is a restatement, not a handoff.
+            if (previous == requester) { RestateOwnership(netId, requester, session); return; }
             if (LastStarvedPromotionAt.TryGetValue(netId, out float last)
                 && now - last < StarvedPromotionCooldown) { LogStarvedDrop(netId, "promotion-cooldown"); return; }
             if (PendingPromotions.TryGetValue(netId, out var pending)

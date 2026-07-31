@@ -74,7 +74,32 @@ namespace PunkMultiverse.Sync
                     // lease holder also treated it as a replica — a mutual-puppet zombie nobody
                     // simulates (observed live: host's own grunt spawned as owner=P2 PUPPET).
                     // Pull the lease to the spawner — the same mechanism dormant wake-on-hit uses.
-                    if (Core.AuthorityManager.OwnerOf(netId) != session.LocalSlot)
+                    //
+                    // EXCEPT ON A DEDICATED COORDINATOR, which spawns things it will never simulate.
+                    // It owns no world simulation by definition (NetConfig.IsCoordinator), so a
+                    // lease pulled here is authority nobody can exercise: measured 2026-07-30 on
+                    // every Battle Royale care package —
+                    //     [BR]     care package 'CrateCaps' #5242880 at (603,545)
+                    //     [Spawns] spawn #5242880 landed in a foreign/dormant segment
+                    //              — pulling the lease to P5
+                    // and from then on the crate showed as
+                    //     starved=#5242880/CrateCaps@(24,21) owner=P256 age=never
+                    // on BOTH clients AND in the coordinator's own EntityAudit — the server listing
+                    // among its starving puppets the crate it had just spawned. Never a snapshot,
+                    // for the whole match, in every match.
+                    //
+                    // Leaving it Dormant is the correct answer, not a compromise: dormant is what
+                    // every GENERATED crate in an unvisited segment already is, and the first client
+                    // to stream that segment takes the lease through the ordinary scan and simulates
+                    // it. The spawner-pull exists for a player summoning a minion beside itself —
+                    // a case a coordinator never has.
+                    if (NetConfig.IsCoordinator)
+                    {
+                        Plugin.Log.LogInfo($"[Spawns] spawn #{netId} '{data.entityId}' left DORMANT — a coordinator " +
+                            "simulates nothing, so pulling the lease here would make it authority no machine can " +
+                            "exercise. The first player to reach that segment picks it up.");
+                    }
+                    else if (Core.AuthorityManager.OwnerOf(netId) != session.LocalSlot)
                     {
                         if (session.IsHost)
                             Core.AuthorityManager.OnDormantHit(netId, (byte)session.LocalSlot);

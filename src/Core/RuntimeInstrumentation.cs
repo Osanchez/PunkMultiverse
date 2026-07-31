@@ -510,7 +510,7 @@ namespace PunkMultiverse.Core
             _lastCellChanges = cells;
             _lastVisualSpawns = visualSpawns;
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
-                "[Counts] mono={0:0.000}s remoteShips={1} remoteEntities={2} visualIds={3} owners={4} fixed={5} killed={6} pendingCells={7} cells={8:0.#}/s visualSpawns={9:0.#}/s leases={10} pendingLeases={11} commits={12} acks={13} staleStateDrops={14} positionSegmentDrops={31} authorityDrops={32} authorityRebaselines={35} identityOverlaps={15} activeQuarantines={16} duplicateFireDrops={17} duplicateImpactDrops={18} staleFireDrops={19} damageRequestDedupes={20} starvedPuppetFrames={21} starvedRequests={36} availabilityPromotions={37} availabilityDeferrals={38} localAuthorityRepairs={39} killLedgerIds={22} dormantDamage={23}/{24} terrain={25}/{26:X16}/{27} terrainMismatch={28} repairs={29}/{30} disconnectDespawns={33} stationRespawns={34}",
+                "[Counts] mono={0:0.000}s remoteShips={1} remoteEntities={2} visualIds={3} owners={4} fixed={5} killed={6} pendingCells={7} cells={8:0.#}/s visualSpawns={9:0.#}/s leases={10} pendingLeases={11} commits={12} acks={13} staleStateDrops={14} positionSegmentDrops={31} authorityDrops={32} authorityRebaselines={35} identityOverlaps={15} activeQuarantines={16} duplicateFireDrops={17} duplicateImpactDrops={18} staleFireDrops={19} damageRequestDedupes={20} starvedPuppetFrames={21} starvedRequests={36} availabilityPromotions={37} availabilityDeferrals={38} ownershipRestated={40} localAuthorityRepairs={39} killLedgerIds={22} dormantDamage={23}/{24} terrain={25}/{26:X16}/{27} terrainMismatch={28} repairs={29}/{30} disconnectDespawns={33} stationRespawns={34}",
                 mono, InstrumentationCounters.RemoteShips, InstrumentationCounters.RemoteEntities,
                 ProjectileSync.VisualProjectileCount, EnemySync.Owners.Count, EnemySync.FixedOwners.Count,
                 EnemySync.KilledCount, WorldSync.PendingCount, cellDelta / elapsed,
@@ -530,7 +530,8 @@ namespace PunkMultiverse.Core
                 InstrumentationCounters.StarvedOwnershipRequests,
                 InstrumentationCounters.StarvedOwnershipPromotions,
                 InstrumentationCounters.AvailabilityCandidateDeferrals,
-                InstrumentationCounters.LocalAuthorityComponentRepairs));
+                InstrumentationCounters.LocalAuthorityComponentRepairs,
+                InstrumentationCounters.OwnershipRestatements));
             Plugin.Log.LogInfo(string.Format(CultureInfo.InvariantCulture,
                 "[Residency] mono={0:0.000}s ownerNoSimSegments={1} fixedOwnedNotLive={2} " +
                 "baselineOrigins=live{3}/last{4}/gen{5}/cache{6} dmgForwarded={7} claimsDropped={8} " +
@@ -865,6 +866,10 @@ namespace PunkMultiverse.Core
         private static long _authoritySnapshotRebaselines;
         private static long _starvedOwnershipRequests, _starvedOwnershipPromotions;
         private static long _availabilityCandidateDeferrals, _localAuthorityComponentRepairs;
+        // Host-side repairs of a client whose ownership view had diverged (the ghost-puppet fix).
+        // Non-zero means clients ARE going stale and being healed; a climbing number with no
+        // matching drop in starvedRequests means the repair is not landing.
+        private static long _ownershipRestatements;
         private static int _activeDuplicateLifetimes;
         private static long _duplicateLifetimesQuarantined, _duplicateFireDrops, _duplicateImpactDrops;
         private static long _staleFireDrops, _damageRequestDedupes;
@@ -921,6 +926,7 @@ namespace PunkMultiverse.Core
         internal static long StarvedOwnershipRequests => Interlocked.Read(ref _starvedOwnershipRequests);
         internal static long StarvedOwnershipPromotions => Interlocked.Read(ref _starvedOwnershipPromotions);
         internal static long AvailabilityCandidateDeferrals => Interlocked.Read(ref _availabilityCandidateDeferrals);
+        internal static long OwnershipRestatements => Interlocked.Read(ref _ownershipRestatements);
         internal static long LocalAuthorityComponentRepairs => Interlocked.Read(ref _localAuthorityComponentRepairs);
         internal static long DuplicatesPrevented => Interlocked.Read(ref _duplicatesPrevented);
         internal static int ActiveDuplicateLifetimes => Math.Max(0, Volatile.Read(ref _activeDuplicateLifetimes));
@@ -1084,6 +1090,7 @@ namespace PunkMultiverse.Core
         internal static void StarvedOwnershipRequested() => Interlocked.Increment(ref _starvedOwnershipRequests);
         internal static void StarvedOwnershipPromoted() => Interlocked.Increment(ref _starvedOwnershipPromotions);
         internal static void AvailabilityCandidateDeferred() => Interlocked.Increment(ref _availabilityCandidateDeferrals);
+        internal static void OwnershipRestated() => Interlocked.Increment(ref _ownershipRestatements);
         internal static void LocalAuthorityComponentRepaired() => Interlocked.Increment(ref _localAuthorityComponentRepairs);
         internal static void DuplicateEntityPrevented() => Interlocked.Increment(ref _duplicatesPrevented);
         internal static void DuplicateLifetimeActivated() => Interlocked.Increment(ref _activeDuplicateLifetimes);
