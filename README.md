@@ -10,6 +10,8 @@ personal.
 
 - **Scope:** ~30k lines of C#, one DLL, four transports, 4 players per session.
 - **Deployment:** Steam P2P, or a Dockerized headless server (Wine) on a Pelican panel.
+- **Modes:** co-op, plus a full **[battle royale](#8-a-second-game-mode-battle-royale)** —
+  drop selection, a closing zone, PvP, contested loot — built with no new sync primitive.
 - **Measured:** flat server cost from 1→3 players (3.3 / 2.9 / 3.3 ms per frame),
   0.1 ms/tick client sync overhead, ~7 ms snapshot jitter through the full stack.
 
@@ -200,7 +202,196 @@ armor, and effects identical to single-player.
 
 ---
 
-## 8. The engine boundary: what makes it fast
+## 8. A second game mode: Battle Royale
+
+Same world generation, same authority model, same wire — but the players are hostile, the
+map shrinks, and the match must resolve with exactly one survivor. **It needs no new sync
+primitive.** The mode composes what is already there: the terrain pipeline, the loot latch,
+the kill-credit ledger, station-unlock replication, and ship authority. Mode selection rides
+three existing messages (`StartRun`, `LobbyState`, `PartyLeaderSettings`); only ring state,
+placements, care packages and broadcast toasts have messages of their own.
+
+It is feature-flagged off by default (`EnableGameModes`). A dedicated server picks its
+ruleset in `config.cfg`; a player hosting picks it on a GAME MODE row in the lobby. Either
+way the *host* owns the ruleset for its own runs — joining someone else's BR server works
+regardless of your own setting.
+
+| | Standard | Battle Royale |
+|---|---|---|
+| Spawn | everyone at the start station | choose a biome, land on your own station there |
+| Loadout | chosen on the selector screen | everyone flies the Gunner; no selector |
+| Stations / shops | unlock by paying | all open and fully stocked from minute zero, normal prices |
+| PvP | friendly-fire toggle | always on, damage ×0.25, applied after armor |
+| Enemies | as tuned | HP ×0.5, damage to players ×0.5 |
+| Loot | instanced — everyone gets a copy | **contested** — one pile, one taker |
+| Map | trackers, scoreboard, map sharing | other players hidden until they're on your screen |
+| Hazard | as generated | a closing zone; the map's own hazards are left alone |
+| Join / rejoin | allowed | sealed — disconnecting is elimination |
+| Win | co-op survival | last ship alive |
+
+### The drop screen lives inside the go-live barrier
+
+Players pick a region before the match places them, with a heat map of where everyone else is
+heading. The choice has to resolve *before* any ship exists. The **go-live barrier is the only
+moment when the world exists and no ship does** — clients have generated and verified the
+world, the host holds every checksum, nothing is spawned — so selection is a gate inside it,
+and the host holds GO LIVE until everyone has chosen or the clock expires. Anyone who runs out
+of time is given a region: the timer is a decision, not a punishment. The screen is drawn in
+immediate mode because it appears during loading, before the game scene's canvases exist.
+
+Regions are built from the *stations* on the map, not from the biome list, so "a region you
+can't land in" is structurally impossible rather than a check someone can forget. The heat is
+a color, never a count: an exact number invites arithmetic, a color communicates the only
+thing that matters — whether you are dropping somewhere contested. Sharing a region is
+allowed, which is why the host simply decides and broadcasts `slot → station` instead of every
+machine deriving the same answer. A coordinator has no ship and never picks; its clients do.
+
+Each ship is then placed **on** its own station from the first frame and the opening cinematic
+points there, rather than spawning everyone on the shared pad and teleporting them apart.
+Players are untouchable for as long as the drop screen is up — someone reading a menu cannot
+defend themselves — and that grace extends a few seconds past landing, because you arrive
+somewhere you have never seen. Stations all unlock shortly *after* go-live: the vanilla
+cinematic identifies the station to pan to as "the one with an installed upgrade," so
+unlocking them at go-live would send the camera somewhere unstreamed. Every unlock replicates
+through the existing progression path, including each machine's shop-stock parity call.
+
+### The zone is rendered, not built
+
+Fortnite's storm and PUBG's blue zone are not level geometry, and neither is this one. The
+zone is a procedurally generated annulus mesh with a transparent hole exactly on the safe
+radius — real geometry, so the molten edge sits where the damage starts at any zoom — plus a
+radius check on each client. **No terrain, no collider, no contact damage.** Painting it as
+terrain would mean ~2.9 million `Level.SetCell` calls a match, each one an event to eight
+subscribers and a replicated diff to every client; the mesh costs none of that, and the
+harness asserts the ring paints *zero* cells. Being caught in the zone hurts only through the
+radius check, which is what guarantees a closing ring can never wall a player in — flying
+through is always available.
+
+The host owns center and radius and broadcasts both, so no client recomputes the geometry.
+The start radius is derived from the map's **playable disc** — the generator stamps everything
+past `Width/2` as void, so the world is a disc inscribed in a square array, and sizing off the
+array's corner would spend a third of the ring's travel closing through nothing. The ring
+**halves** rather than stepping evenly (100 → 80 → 40 → 20 → 10 → 5 → 0): equal radius steps
+feel slower and slower as the circle shrinks, halving keeps pressure proportional to the room
+left. Damage is a time-to-kill from full health, scaled by max health (an upgraded hull buys
+proportionally more time) and multiplied per completed stage — the first zone is an escape
+route, the last is not. Total match length is *derived* from the pacing knobs and logged at
+match start, rather than configured as a total that leaves the hold to fall out of a division.
+
+Bulk terrain change is expensive in vanilla for reasons that have nothing to do with this mode,
+and two patches carry every mode past it: tile and lightmap refresh is skipped entirely on a
+coordinator and narrowed to *visible* cells on a player's machine
+(`GroundTilemapUpdater.OnCellsChanged` is otherwise 94% of all frame time — four Unity tilemap
+calls per changed cell), and each level segment is handed only the changes inside it instead of
+vanilla's every-segment-scans-every-change (99.3% of frame time at 979 ms per call). A large
+explosion, a terrain repair chunk and a rejoining client's catch-up diff all benefit.
+
+### PvP in a game with one faction
+
+Every player ship in PUNK is on the same team, so the mode has to reach the few places that
+encode it:
+
+- `Projectile.FixedUpdate` asks `Owner.IsFriendsWith(hit)` and calls `MoveForward()` instead
+  of registering a hit when the answer is yes. In a live BR match that answer is false between
+  two different player ships — enemy AI is untouched (an `AIAgent`'s unit is never a `Ship`)
+  and self-hits stay friendly. Beams and explosions carry no such filter and always landed.
+- Projectile collision is gated on BR *or* friendly-fire co-op, because the physics matrix
+  passes bullets through the player layer in both. A shot's cast is resolved past the
+  shooter's own hull, which child colliders would otherwise return at the muzzle.
+- Damage routes to the victim's machine and applies through the vanilla pipeline exactly once,
+  so shields, armor and i-frames behave as in single-player. The ×0.25 PvP scale and the ×0.5
+  enemy-damage scale are applied *after* the victim's armor, so armor still decides whether a
+  hit lands at all rather than becoming immunity.
+- A ship's real hull is about 0.70 × 0.70 world units. A square aim-assist hitbox (1.5×
+  half-extent → a 1.05u square) slab-tests the swept shot against every *other* player ship and
+  stands down when anything real is struck first or when vanilla's own sweep already reaches
+  the hull — so it converts near-misses, never shots through cover, and never a hit that would
+  have landed anyway. No collider is added or resized: enemy fire, your shots at enemies, and
+  terrain all keep vanilla hit detection. `[PvPDiag]` reports how many hits the assist adds.
+
+### Loot is contested, not instanced
+
+Co-op instances loot: every machine drops its own copy and distant players are granted an
+equivalent outright. Here the drop *is* the contest. Replicating each coin as a networked
+entity would drag hundreds of short-lived pickups into the authority and streaming pools for
+an object whose only interesting state is *"has someone taken it yet"* — **that single bit is
+what travels.** The pile stays a local copy on every machine, named by `(group, ordinal)`:
+the dying entity's netId (or the cell index, for destroyed terrain) and the item's position in
+that drop's roll, both already deterministic and spawned through one funnel. Collecting is a
+request — the pile visibly holds, the first claim the host sees wins, losers destroy their
+copy, and the winner's pickup completes through the **untouched vanilla path**. Gating rather
+than granting is the point: coins, ingredients, consumables and modules each keep their own
+collection behavior and none needs a bespoke grant routine. Claims are idempotent, so a lost
+verdict heals on retry without ever awarding twice. The cost is one round trip of hold; the
+alternative — predicting the win — means un-granting a module or subtracting gold a player
+already saw.
+
+The economy on top is additive: no vanilla asset is edited, so co-op and single-player keep
+theirs exactly. Ordinary rooms carry no containers in vanilla (every world crate comes from a
+landmark prefab), so BR places them directly *inside the generator*, consuming its own seeded
+RNG — which makes the go-live hash barrier itself the guarantee that every machine built the
+same world. White weapons circulate through crates and the occasional kill; colored weapons
+come from boss-tier kills only, bosses detected by the game's own state activator and
+minibosses by an entity-id list. Death drops roll from `(runSeed × netId)` inside the same
+deterministic window as vanilla loot, so every machine rolls the same item and the claim then
+awards it to exactly one player.
+
+Care packages drop in waves sized to *half* the players, minimum one — fewer packages than
+players is the point, since they cannot be shared out. Each is destructible, with a screen-edge
+arrow (packages are the one thing that gets an arrow in BR; players never do), and destruction
+credit rides the existing kill pipeline so the reward materializes only on the destroyer's
+machine.
+
+### What a player is allowed to know
+
+Trackers, name tags and edge arrows for other players are off, the scoreboard drops distance
+and health, and map exploration is not shared — a BR map shows shops, the current and next
+ring, and care packages, never people. What *is* fair information is anything already on your
+screen: every remote ship carries a small health-over-fuel widget built from the game's own
+segmented enemy healthbar, drawn in the same layer and camera as those bars, hidden for dead
+ships and behind the map screen. It reads from tanks that ship sync already keeps current, so
+it costs no traffic, and it runs in **both** modes — a co-op teammate at 20% is worth knowing
+too. Kills are announced in a corner feed with the killer and the thing that killed you,
+including contact damage from an entity that fires no projectile.
+
+The loadout selector does not appear: every machine resolves the Gunner by identity (display
+name, then asset name, then a deterministic fallback — never list index, since the pool is
+hand-ordered) and stamps it in as the game controller wakes, which is the earliest point the
+loadout pool is resident and covers every launch route including the game's own restart.
+
+### Elimination and the end of a match
+
+The host tracks a sealed roster; death and disconnect are both eliminations, assigned
+placements from the bottom. The eliminated player gets a placement screen over the existing
+game-over hook, with spectate (the spectator camera already auto-follows the living) or a
+clean return to lobby or menu. Dead players seeing the living is intended; the living never
+see each other off-screen. At one alive the match ends, the winner is shown it, and the normal
+run-ended flow takes over — on a dedicated server, that is a fresh lobby plus pre-generation
+of the next world.
+
+### Verification
+
+`tools/br-test.ps1` runs a compressed match against a local coordinator and two headless bots,
+then asserts from the logs. Lifecycle checks read the timeline (station unlocks broadcast
+*and* applied, distinct spawn stations, stage announcements, packages, placements, winner).
+The behavior probes are scripted immediately after go-live because none of them are observable
+in a free-running match — the mode separates players by ~1600 units on purpose, so the block
+opens by collapsing that distance: `ring` (start radius against the measured playable disc,
+zero cells painted, and the **worst** host frame — worst, never first-vs-last, because a host
+recovers the instant a stall ends and a start/end comparison scores minutes at 0.2 fps as
+healthy), `pvp` (a projectile that collided, routed, and moved the victim's HP — the whole
+chain in one assertion), `bars`, `loot` (no `(group, ordinal)` awarded twice; zero distant
+grants), and `sync`. Two devcmds exist for it and are useful by hand: `fire <secs> player
+<slot>` (ships are keyed by slot and have no netId, so this is the only way to exercise PvP
+without a second human) and `cellfanout`, which times each subscriber of the terrain-change
+event — a level below what a per-frame profiler can attribute.
+
+Full design record, config surface and rejected alternatives:
+**[docs/BATTLE_ROYALE.md](docs/BATTLE_ROYALE.md)**.
+
+---
+
+## 9. The engine boundary: what makes it fast
 
 Two rules produced the measured numbers, both learned by profiling rather than intuition:
 
@@ -235,7 +426,7 @@ null-graphics Unity burns CPU for nothing.
 
 ---
 
-## 9. Operations and observability
+## 10. Operations and observability
 
 The system is designed to be debugged from logs and driven remotely, because most failures
 happen on someone else's machine.
@@ -255,7 +446,7 @@ happen on someone else's machine.
 
 ---
 
-## 10. Dedicated server
+## 11. Dedicated server
 
 `pelican_egg/` builds a container that runs the Windows game headless under Wine with Xvfb,
 self-updates the mod from GitHub releases at boot, and maps gameplay knobs to panel variables
@@ -266,7 +457,7 @@ no Steam involvement on the server side.
 
 ---
 
-## 11. Build and release
+## 12. Build and release
 
 One assembly is shipped: LiteNetLib is merged in and **internalized** at build time
 (`ILRepack.targets`), so installation is a single DLL and another mod shipping its own copy
@@ -282,7 +473,7 @@ powershell -File build.ps1 -Zip     # + dist\PunkMultiverse-vX.Y.Z.zip
 
 ---
 
-## 12. Repo map
+## 13. Repo map
 
 | Path | Contents |
 |---|---|
@@ -290,8 +481,9 @@ powershell -File build.ps1 -Zip     # + dist\PunkMultiverse-vX.Y.Z.zip
 | `src/Sync/` | Entity/ship/world/projectile/economy replication, puppets, adaptive timing |
 | `src/Transport/` | `ITransport` implementations (Steam, SteamServer, LiteNetLib UDP, loopback) |
 | `src/Protocol/` | Wire messages, reader/writer, channel and sequencing contracts |
+| `src/Modes/` | Battle royale: host schedule, local zone/HUD, drop selection, contested loot, loot tables |
 | `src/Patches/` | Harmony patches against the game's internals |
-| `src/UI/` | Lobby, direct connect, HUD, scoreboard, video options integration |
+| `src/UI/` | Lobby, direct connect, HUD, scoreboard, drop screen, zone visuals, kill feed, video options |
 | `pelican_egg/` | Dedicated-server image, egg definition, boot script |
 | `docs/` | Design specs, subsystem deep dives, test plans, player guide |
 
