@@ -15,6 +15,9 @@ on:
       - 'LICENSE'
       - 'server_image/**'  # server image (Dockerfile/scripts) — not part of the mod DLL
       - 'infra/**'         # AWS setup scripts / Lambda source — not part of the mod DLL
+      - 'tools/**'         # test harnesses / admin scripts — not part of the mod DLL
+      - '.githooks/**'     # local git hooks — not part of the mod DLL
+      - '.claude/**'       # agent skills/config — not part of the mod DLL
   workflow_dispatch:
 
 permissions:

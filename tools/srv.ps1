@@ -24,7 +24,11 @@ param(
     [string]$SshHost = "punkdt",          # ~/.ssh/config alias for osanchez-dt over Tailscale
     [string]$Container = "punkmv"
 )
-$ErrorActionPreference = "Stop"
+# NOT "Stop". Docker and the container both write benign text to stderr — image-pull progress, and
+# Xvfb's "X connection to :0 broken" as an OLD instance shuts down — and with Stop set, PowerShell
+# promotes any of it to a terminating error and the command dies half-done. `srv.ps1 state` failed
+# exactly this way while the server it was reporting on was perfectly healthy.
+$ErrorActionPreference = "Continue"
 
 $PluginDir = "/home/container/BepInEx/plugins/PunkMultiverse"
 $Overrides = "/home/container/server.cfg"

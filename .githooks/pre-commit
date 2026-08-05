@@ -12,8 +12,10 @@ branch=$(git symbolic-ref --short HEAD 2>/dev/null)
 csproj="PunkMultiverse.csproj"
 [ -f "$csproj" ] || exit 0
 
-# Doc-only commit? CI won't build it; don't burn a version.
-if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$|^server_image/|^infra/)'; then
+# Nothing that reaches the DLL? CI won't build it; don't burn a version. Keep this list and the
+# workflow's paths-ignore identical, or a commit bumps the version without producing a release —
+# or worse, forces every player onto a new build for a change to a test script they never run.
+if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$|^server_image/|^infra/|^tools/|^\.githooks/|^\.claude/)'; then
     exit 0
 fi
 
