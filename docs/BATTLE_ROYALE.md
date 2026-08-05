@@ -227,26 +227,114 @@ Any bulk terrain change pays this: a large explosion, a terrain repair chunk, a 
 client's catch-up diff. BR was just the first thing to change enough cells to make it
 fatal.
 
-**Timeline** (t = time since go-live, host clock):
+A stage is one **wait** (the zone sits still and is fought over) followed by one
+**closure** (the boundary draws inward to the next radius). `RingStateMsg` is re-broadcast
+at each stage boundary and periodically (~5s) for late HUD refresh.
 
-| t | Event |
-|---|---|
-| 2:00 | `AnnounceMsg` "THE LAVA RING IS CLOSING" — stage 1 begins |
-| 2:00 → 18:00 (every 2:15) | announce "THE LAVA RING IS CLOSING (n/8)" — stages 2–7 |
-| 4/8/12/16:00 | care package drops (§6) |
-| 18:00 | stage 8 completes: radius 0, whole map lethal |
+**The wait and the closure are different at every stage.** A constant hold gives the
+twelfth zone the same rhythm as the first, which is the one thing a battle royale must not
+do, and it is what produced *"the closing ring is too slow… I want to feel like I'm
+rushing to the centre"* (Omar, 2026-08-05). The schedule follows the Fortnite blueprint:
+long safe windows early, collapsing to nothing late, so the back half of the match is
+almost continuous movement.
 
-A stage is one **hold** (75s, the zone sits still and is fought over) followed by one
-**closure** (`BrRingCloseSeconds`, 45s), advancing the boundary inward by ⅛ of the start
-radius. The creep is smooth rather than a teleporting wall because painted terrain
-cannot un-burn. `RingStateMsg` is re-broadcast at each stage boundary and periodically
-(~5s) for late HUD refresh.
+Both curves are *evaluated* per stage rather than typed out as a table, so the shape holds
+for any `BrRingStages` — a 4-zone test match tightens the same way a 12-zone real one
+does, instead of a magic 12-row list silently stopping meaning anything. Only the ratios
+in the curve constants matter; the whole ladder is then scaled to hit `BrMatchMinutes`
+exactly.
+
+**Timeline** at the defaults (12 zones, 20 minutes; t = time since go-live, host clock).
+There is no separate grace period — zone 1's wait *is* the opening window, so the first
+countdown on screen is the time until the ground actually moves:
+
+| zone | wait | closure | radius (% of start) | closed by |
+|---|---|---|---|---|
+| 1 | 2:07 | 88s | 100 → 87 | 3:35 |
+| 2 | 1:40 | 83s | 87 → 75 | 6:39 |
+| 3 | 1:17 | 78s | 75 → 63 | 9:14 |
+| 4 | 57s | 73s | 63 → 52 | 11:25 |
+| 5 | 41s | 69s | 52 → 42 | 13:14 |
+| 6 | 28s | 64s | 42 → 33 | 14:46 |
+| 7 | 18s | 59s | 33 → 25 | 16:02 |
+| 8 | 10s | 54s | 25 → 17 | 17:07 |
+| 9 | 5s | 49s | 17 → 11 | 18:01 |
+| 10 | 2s | 44s | 11 → 6 | 18:46 |
+| 11 | 0s | 39s | 6 → 2 | 19:26 |
+| 12 | 0s | 34s | 2 → 0 | 20:00 |
+
+The radius follows a curve too (`ShrinkCurve`), not equal steps and no longer by halving.
+Halving was right for six closures and wrong for twelve — it reaches a pinpoint zone by
+stage 5 and leaves the rest of the match with nothing left to take. The exponent form
+trims gently while the zone still encloses most of the world (nobody has flown anywhere
+yet) and then accelerates: zone 11 → 12 gives up two thirds of what remains.
+
+Every stage is logged individually at match start (`[BR] zone n/12: wait …s, close …s, r …
+-> …`), because with a variable schedule no single averaged number describes the pacing.
 
 The original 45-minute / 120-second schedule was reported as *"the lava is going way too
-slow"* (2026-07-27): eight stages spread over 40 minutes, on a radius that was itself
-~41% too large, meant the wall was never anywhere near anyone. Defaults are now 18 / 2 /
-45. Note these are **defaults** — a server that has already written its `config.cfg`
-keeps the old values until that file is edited.
+slow"* (2026-07-27): eight stages spread over 40 minutes, on a radius that was itself ~41%
+too large, meant the wall was never anywhere near anyone. That was cut to 18 minutes, then
+to a configurable 5-minute uniform hold — which reintroduced the same complaint from the
+other direction, since a flat hold cannot tighten. Note these are **defaults** — a server
+that has already written its `config.cfg` keeps the old values until that file is edited,
+though it will now be *told* so on boot (§8b).
+
+### The zone DRIFTS, and closes on a shop (2026-08-05)
+
+A fixed centre makes the strongest play "fly to the middle in minute one and never move
+again". Every later zone is then information you acted on twenty minutes ago and the ring
+stops being a decision. So the zone walks as it shrinks, on a path that ends **on a shop**
+(Omar: *"include the off-centre drift, this makes the game more exciting — just make sure
+it's an area that's accessible, perhaps closing at one of the many shops"*).
+
+A shop is the right anchor for exactly the reasons the mode already invested in: they are
+open ground by construction, all 49 are unlocked and stocked at go-live (`OpenAllStations`),
+each has had its surrounding hazards scrubbed (`ClearHazardsAroundStations`), and they are
+landmarks players can name — so everyone can see where the match is going to end. Candidates
+are filtered to those within `AnchorMaxOffsetFraction` (55%) of the map radius, then scored
+by the same open-ground probe the opening centre uses. A shop out on the rim is a legal
+anchor and a miserable arena: half its approach angles are void. If a world has no central
+shop, the ring closes on its opening centre as before.
+
+**The invariant: every zone is entirely inside the one before it.** Break it and ground a
+player is standing on — well inside the safe zone, no warning circle near them — turns
+lethal without notice. It holds iff `|C(k+1) − C(k)| ≤ R(k) − R(k+1)`: the centre may never
+move further than the radius it gives up.
+
+`BuildRingPath` gets that for free rather than by tuning. Each centre sits as far along
+*start → anchor* as the radius is along *R₀ → 0*, so a step moves
+`|anchor − start| × (R(k) − R(k+1)) / R₀`, which is within budget whenever the anchor is
+inside the opening circle — true by construction — and lands exactly on the anchor at the
+final closure, where the radius reaches zero. Sideways jitter (`DriftJitter`, 18% of the
+*current* radius, so the path wanders while there is room to rotate and straightens once
+there is not) rides on top and is clamped against the same budget, so no amount of wander
+can break containment. `VerifyContainment` re-checks all of it at match start and logs an
+error if it ever fails; it never should, and the failure it guards against would be blamed
+on the damage code for a week.
+
+On a map of radius 1000 that is ~100 units of lateral travel per closure early, tapering to
+~10 late. The per-zone `drift` figure is in the match-start log next to the radius.
+
+**Everything reads the LIVE boundary, not the snapshot.** `RingStateMsg` arrives about every
+five seconds; drawing it raw made the wall step, and a drifting zone would *lurch*. So the
+message carries the closure's target centre as well as its target radius (protocol 20), and
+each machine interpolates from wherever the snapshot put it toward that target over the
+seconds the snapshot said remain — `BattleRoyale.RingCenter` / `.RingRadius` /
+`.RingTargetCenter`. It is self-correcting (every broadcast re-anchors on host truth, so
+error cannot accumulate) and it fails safe (if broadcasts stop, the boundary settles on the
+target and waits — it never overshoots into ground the host still considers safe). The lava
+mesh, both map overlays, the burn check and the HUD all read those accessors; nothing reads
+`Ring.CenterX` directly any more.
+
+Two consequences worth knowing:
+
+- The **amber next-zone circle is drawn on its own centre**, offset from the current one.
+  That gap is the whole message — it is what tells a player which way to cross, and drawing
+  both circles concentrically would erase it.
+- **Care packages scatter around the NEXT zone's centre**, not the current one. With a
+  drifting ring those are different places, and a crate on the old centre can be outside the
+  very closure it was placed to survive.
 
 ### The zone is RENDERED, not built (2026-07-28, Omar's call)
 
@@ -523,10 +611,8 @@ separate path.
 |---|---|---|
 | `EnableGameModes` | `false` | **Master feature flag.** Off = every run is Standard, the GAME MODE row is hidden, and a server ignores `GameMode`. Joining someone else's BR server still works — the host owns its runs' ruleset. |
 | `GameMode` | `Standard` | `Standard` \| `BattleRoyale` (dedicated server; restart-applied; requires `EnableGameModes`. Self-host uses the GAME SETTINGS row) |
-| `BrMatchMinutes` | `18` | total match length; ring reaches 0 at this time (was 45 — the ring read as scenery) |
-| `BrRingStartMinutes` | `2` | first-shrink announcement time (was 5) |
-| `BrRingStages` | `8` | discrete shrink stages |
-| `BrRingCloseSeconds` | `45` | how long ONE closure takes; the zone holds still between them (was 120) |
+| `BrMatchMinutes` | `20` | total match length; the final ring reaches 0 exactly here. The per-zone wait and closure times are derived from it on the curve above, so changing it stretches or compresses the pacing without flattening it |
+| `BrRingStages` | `12` | how many closures the ring makes. The curve is spread across whatever count is set, so short test matches keep the shape |
 | `BrZoneKillSeconds` | `60` | seconds to die from FULL health in the FIRST zone. The zone is not solid — you can always fly through — so this is the price of a crossing |
 | `BrZoneDamageStageScale` | `0.75` | damage is multiplied by (1 + stage × this) per completed shrink, so late rings are lethal and early ones are an escape route |
 | `ShowZoneVisual` | `true` | draw the molten zone (UI). Off leaves the damage untouched and simply hides it |
@@ -535,6 +621,44 @@ separate path.
 | `BrEnemyHpScale` | `0.5` | enemy HP multiplier in BR (0.5 ≈ double damage) |
 | `BrMinPlayers` | `2` | minimum connected players for START in BR (1 allowed with a logged warning, for testing) |
 | `ShipStatusBars` | `true` | draw health/fuel bars above other players' ships (BOTH modes; see 6b) |
+
+`BrRingStartMinutes`, `BrRingHoldMinutes` and `BrRingCloseSeconds` are **gone**, along with
+their `BR_RING_START_MINUTES` / `BR_RING_CLOSE_SECONDS` panel variables. Under a derived
+schedule there is nothing left for them to mean. A server whose `config.cfg` still has them
+is told so on the next boot and the lines are deleted (§8b).
+
+### 8b. The boot-time config report
+
+A config file outlives the code that reads it. A dedicated server writes `config.cfg` once
+and keeps it forever, so a retired key sits there looking authoritative — and the operator
+who set it has every reason to believe it still works. The ring schedule was tuned three
+times through knobs a later redesign stopped reading, and nothing anywhere said so.
+
+`Core/ConfigAudit.cs` runs immediately after `NetConfig.Init` and logs, under `[Config]`:
+
+- **the state** — every setting that differs from its default, one per line, so a run's
+  behaviour is explained in the log it already produces. Values of keys whose name looks
+  like a credential print as `(set)`; these logs get uploaded by `uploadlogs`.
+- **`RETIRED`** — a key we deliberately removed, named with the reason it went and what
+  replaced it. These are **deleted from `config.cfg`**, because we know for certain they do
+  nothing and leaving them is what created the problem.
+- **`WRONG SECTION`** — the key is real but filed under the wrong `[Section]`, so the
+  setting exists twice: a dead copy holding what someone meant and a live one quietly
+  holding something else. The first run of this audit found `Diag.SummaryHeal = true`
+  sitting above `Sync.SummaryHeal = false`.
+- **`UNKNOWN`** — anything else, with a nearest-key suggestion. These are **kept**: an
+  unrecognised key is usually a typo, and deleting it would throw away the value the
+  operator wanted along with the evidence of the mistake. The warning repeats each boot,
+  which is the point.
+
+The mechanism is BepInEx's own. Its `ConfigFile` reads the whole file up front and holds
+every key nobody claimed in a private `OrphanedEntries` dictionary, deleting each as a
+plugin `Bind`s it — so after `Init`, what remains is exactly the set of settings on disk
+that mean nothing. No parsing of our own, and no chance of the two disagreeing. The whole
+audit is wrapped in a catch: a config report must never be why the mod fails to load.
+
+**When you remove a config key, add a line to `ConfigAudit.Retired`.** It costs one line
+and turns a silent behaviour change into a sentence the operator reads on the next boot.
 
 ## 9. Out of scope (candidate follow-ups)
 
@@ -596,7 +720,7 @@ lands. If that ever changes, the `pvp` probe has to ungod its victim first.
 
 1. **Harness** (extend the `pregen-test.ps1` family): coordinator with
    `GameMode = BattleRoyale` (+ shortened timers: `BrMatchMinutes 6`,
-   `BrRingStartMinutes 1`, `BrCarePackageMinutes 2`) + 3 bots → assert from logs:
+   `BrRingStages 4`, `BrCarePackageMinutes 2`) + 3 bots → assert from logs:
    all stations unlocked post-golive; scattered spawns at **distinct** stations (assert
    no station id repeats across slots) with pairwise distance above threshold;
    `[BR] ring material` resolved; ring center scored open; stage

@@ -80,14 +80,17 @@ namespace PunkMultiverse.UI
         private void Draw()
         {
             var ring = Modes.BattleRoyale.Ring;
-            var center = new Vector2(ring.CenterX, ring.CenterY);
-            float safe = Mathf.Max(0f, ring.SafeRadius);
+            // The LIVE boundary. Ring itself is a ~5s snapshot, and drawing it raw made the wall
+            // step; now that the zone also travels sideways, a snapshot would make it lurch.
+            var center = Modes.BattleRoyale.RingCenter;
+            float safe = Mathf.Max(0f, Modes.BattleRoyale.RingRadius);
 
             Ensure();
             _go.SetActive(true);
 
             // Rebuild only when the hole has actually moved. The ring creeps a few units a second,
-            // so this lands a handful of times per second at most.
+            // so this lands a handful of times per second at most. Moving the centre alone does not
+            // need a rebuild — the mesh is centred on the transform, which follows below.
             if (Mathf.Abs(safe - _builtRadius) > 0.25f || (center - _builtCenter).sqrMagnitude > 0.05f)
             {
                 BuildAnnulus(safe);

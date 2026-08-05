@@ -22,7 +22,7 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 19; // 19 = DamageRequest carries PlayerShot + SourceNetId
+        public const int ProtocolVersion = 20; // 20 = RingState carries the drifting zone's TARGET centre
                                                //      + BR messages (Announce/RingState/Placement/CarePackage)
                                                // 16 = LobbyStateMsg.WorldStatus + AdminCmd.EndRun
                                                // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder

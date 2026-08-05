@@ -43,7 +43,6 @@ namespace PunkMultiverse
         public static ConfigEntry<float> CombatStateHz;
         public static ConfigEntry<float> DistantStateHz;
         public static ConfigEntry<float> ShipStateHz;
-        public static ConfigEntry<float> AuthorityRadius;
         public static ConfigEntry<float> TransferRadius;
         public static ConfigEntry<float> InterestRadius;
         public static ConfigEntry<float> ResidencyGraceSeconds;
@@ -67,10 +66,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> EnableGameModes;
         public static ConfigEntry<string> GameMode;
         public static ConfigEntry<int> BrMatchMinutes;
-        public static ConfigEntry<int> BrRingStartMinutes;
         public static ConfigEntry<int> BrRingStages;
-        public static ConfigEntry<float> BrRingCloseSeconds;
-        public static ConfigEntry<float> BrRingHoldMinutes;
         public static ConfigEntry<float> BrNextRingWarningSeconds;
         public static ConfigEntry<float> BrStationUnlockDelaySeconds;
         public static ConfigEntry<bool> BrSpawnAtStationDirectly;
@@ -314,8 +310,6 @@ namespace PunkMultiverse
                 "Snapshot send rate for player ships — the thing you watch most, and one tiny " +
                 "message per player, so it runs hotter than entities. 40 Hz halves teammate " +
                 "visual delay (~50 ms interpolation buffer) for ~2 KB/s per player.");
-            AuthorityRadius = cfg.Bind("Authority", "AuthorityRadius", 60f,
-                "Max distance (world units) at which a player can hold authority over an entity.");
             TransferRadius = cfg.Bind("Authority", "TransferRadius", 45f,
                 "Beyond this distance authority may hand off to a closer player (25% hysteresis).");
             InterestRadius = cfg.Bind("Authority", "InterestRadius", 70f,
@@ -385,42 +379,26 @@ namespace PunkMultiverse
                     "docs/BATTLE_ROYALE.md). Players hosting their own game choose the mode on the " +
                     "GAME SETTINGS screen instead — this setting does not affect them.",
                     new AcceptableValueList<string>("Standard", "BattleRoyale")));
-            BrMatchMinutes = cfg.Bind("Session", "BrMatchMinutes", 18,
-                "DEPRECATED and no longer used for the ring schedule. Match length is now DERIVED " +
-                "from BrRingStartMinutes + BrRingStages x (BrRingHoldMinutes + BrRingCloseSeconds) " +
-                "and logged at match start — set the pacing you want and read the total, rather " +
-                "than setting a total and discovering the pacing.");
-            BrRingStartMinutes = cfg.Bind("Session", "BrRingStartMinutes", 2,
-                "Battle Royale: minutes of grace before the ring starts closing. This is the WHOLE " +
-                "time until the first closure and it is what the on-screen countdown shows. There " +
-                "used to be a second, additive first-hold on top of it, which meant the timer " +
-                "reaching zero produced another timer instead of a closing ring (Omar, 2026-07-29: " +
-                "'it gives a timer for the first ring, but in reality it is just the cooldown for " +
-                "the ring closing sequence to start'). That knob is gone rather than re-defaulted, " +
-                "because a persisted config.cfg would have kept the old value forever.");
-            BrRingStages = cfg.Bind("Session", "BrRingStages", 6,
-                "Battle Royale: how many closures the ring makes. The ring HALVES rather than " +
-                "stepping evenly — from a start radius of 100 with 6 closures the ladder is " +
-                "100, 80, 40, 20, 10, 5, 0 — so the late game accelerates on its own. Equal radius " +
-                "steps feel slower and slower as the circle shrinks; halving keeps the pressure " +
-                "proportional to how much room is left.");
+            BrMatchMinutes = cfg.Bind("Session", "BrMatchMinutes", 20,
+                "Battle Royale: total match length in minutes — the final ring closes to nothing " +
+                "exactly here. This is the pacing knob again: the per-stage wait and closure times " +
+                "are DERIVED from it on a Fortnite-shaped curve (long safe windows early, almost " +
+                "none late) and logged stage by stage at match start. There is no separate hold " +
+                "setting any more because there is no longer a single hold — every zone has its " +
+                "own, and a constant one made the last zone feel exactly like the first.");
+            BrRingStages = cfg.Bind("Session", "BrRingStages", 12,
+                "Battle Royale: how many closures the ring makes. Twelve is the Fortnite shape — " +
+                "enough zones that the late game can be nearly continuous movement. The radius " +
+                "follows a curve rather than equal steps: gentle trims while the zone still " +
+                "encloses most of the world, then each closure taking a large fraction of what is " +
+                "left, so the endgame collapses instead of creeping. Wait and closure times are " +
+                "spread across whatever count is set here, so the shape survives short matches.");
             BrNextRingWarningSeconds = cfg.Bind("Session", "BrNextRingWarningSeconds", 60f,
                 "Battle Royale: how long before a closure the NEXT zone (the amber circle) appears " +
                 "on the map. It stays up through the closure and disappears once the real zone has " +
                 "caught up to it, so between closures the map shows only where you actually are — " +
                 "the amber circle means 'move', and it should not be permanent wallpaper that stops " +
                 "meaning anything.");
-            BrRingHoldMinutes = cfg.Bind("Session", "BrRingHoldMinutes", 5f,
-                "Battle Royale: minutes the ring sits still between closures. THIS is the pacing " +
-                "knob — total match length is derived from it (grace + closures x (hold + close)) " +
-                "and logged at match start, rather than being configured and leaving the hold to " +
-                "fall out of a division nobody can predict. BrMatchMinutes is no longer used for " +
-                "the schedule.");
-            BrRingCloseSeconds = cfg.Bind("Session", "BrRingCloseSeconds", 45f,
-                "Battle Royale: how long ONE ring closure takes. The zone holds still between " +
-                "closures and then draws in over this many seconds, evenly, so the pace is " +
-                "predictable and the terrain painting stays light. Automatically shortened if a " +
-                "stage is too brief to fit it (short test matches).");
             TrimTerrainPresentation = cfg.Bind("Perf", "TrimTerrainPresentation", true,
                 "Skip tile/lightmap refresh for cells nobody is looking at. A coordinator renders " +
                 "nothing, so it does none of it; a player's machine refreshes only cells the " +

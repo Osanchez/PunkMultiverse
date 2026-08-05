@@ -268,8 +268,13 @@ namespace PunkMultiverse.Protocol
     {
         public float CenterX, CenterY;
         public float SafeRadius;
-        public float TargetRadius;    // where this closure ends — drawn on the map so players can
-                                      // see the ground they need to reach
+        // Where this closure ENDS — both the radius and the centre, because the zone drifts as well
+        // as shrinks. Two jobs: the map draws it as the amber circle players must reach, and every
+        // machine interpolates its own boundary toward it between broadcasts (a ring state is sent
+        // ~every 5s, and a wall that jumped 5 seconds of travel at a time would read as teleporting
+        // — the more so now that it moves sideways too).
+        public float TargetRadius;
+        public float TargetCenterX, TargetCenterY;
         public bool Closing;          // true while the ring is actually moving
         public byte Stage;            // 0 = not started, 1..N = shrink stage in progress
         public byte TotalStages;
@@ -283,6 +288,8 @@ namespace PunkMultiverse.Protocol
             w.WriteFloat(CenterY);
             w.WriteFloat(SafeRadius);
             w.WriteFloat(TargetRadius);
+            w.WriteFloat(TargetCenterX);
+            w.WriteFloat(TargetCenterY);
             w.WriteBool(Closing);
             w.WriteByte(Stage);
             w.WriteByte(TotalStages);
@@ -296,6 +303,8 @@ namespace PunkMultiverse.Protocol
             CenterY = r.ReadFloat(),
             SafeRadius = r.ReadFloat(),
             TargetRadius = r.ReadFloat(),
+            TargetCenterX = r.ReadFloat(),
+            TargetCenterY = r.ReadFloat(),
             Closing = r.ReadBool(),
             Stage = r.ReadByte(),
             TotalStages = r.ReadByte(),

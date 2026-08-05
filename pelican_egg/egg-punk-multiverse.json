@@ -342,9 +342,9 @@
         {
             "sort": 23,
             "name": "BR: Match Minutes",
-            "description": "Battle Royale only. Total match length; the lava ring finishes closing exactly at this mark, so this is also the match timer.",
+            "description": "Battle Royale only. Total match length; the lava ring finishes closing exactly at this mark, so this is also the match timer. Together with Ring Zones this is the WHOLE ring schedule: each zone's safe window and closure time are derived from these two, on a curve that gives long windows early and almost none late.",
             "env_variable": "BR_MATCH_MINUTES",
-            "default_value": "45",
+            "default_value": "20",
             "user_viewable": true,
             "user_editable": true,
             "rules": [
@@ -355,24 +355,10 @@
         },
         {
             "sort": 24,
-            "name": "BR: Ring Start Minutes",
-            "description": "Battle Royale only. Minutes of grace before the ring's first closure.",
-            "env_variable": "BR_RING_START_MINUTES",
-            "default_value": "5",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": [
-                "required",
-                "integer",
-                "between:0,60"
-            ]
-        },
-        {
-            "sort": 25,
-            "name": "BR: Ring Stages",
-            "description": "Battle Royale only. How many closures the ring makes. The zone holds still between them.",
+            "name": "BR: Ring Zones",
+            "description": "Battle Royale only. How many closures the ring makes across the match. 12 is the Fortnite shape. The zone holds still between closures, for a length that shrinks toward zero as the match goes on.",
             "env_variable": "BR_RING_STAGES",
-            "default_value": "8",
+            "default_value": "12",
             "user_viewable": true,
             "user_editable": true,
             "rules": [
@@ -382,21 +368,7 @@
             ]
         },
         {
-            "sort": 26,
-            "name": "BR: Ring Close Seconds",
-            "description": "Battle Royale only. How long a single closure takes. Shortened automatically if a stage is too brief to fit it.",
-            "env_variable": "BR_RING_CLOSE_SECONDS",
-            "default_value": "120",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": [
-                "required",
-                "integer",
-                "between:5,600"
-            ]
-        },
-        {
-            "sort": 27,
+            "sort": 25,
             "name": "BR: Care Package Minutes",
             "description": "Battle Royale only. Minutes between supply drops (0 = none). Only the player who destroys a drop gets its loot.",
             "env_variable": "BR_CARE_PACKAGE_MINUTES",

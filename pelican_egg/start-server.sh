@@ -28,8 +28,8 @@ GAME_DIR="${GAME_DIR:-/home/container}"
 # restart (2026-07-28). Anything NOT listed as explicitly set is now left alone: the persisted
 # config.cfg wins, and failing that the mod's own defaults do.
 _EXPLICIT_VARS=""
-for _v in ENABLE_GAME_MODES GAME_MODE BR_MATCH_MINUTES BR_RING_START_MINUTES BR_RING_STAGES \
-          BR_RING_CLOSE_SECONDS BR_CARE_PACKAGE_MINUTES BR_PVP_DAMAGE_SCALE BR_ENEMY_HP_SCALE \
+for _v in ENABLE_GAME_MODES GAME_MODE BR_MATCH_MINUTES BR_RING_STAGES \
+          BR_CARE_PACKAGE_MINUTES BR_PVP_DAMAGE_SCALE BR_ENEMY_HP_SCALE \
           BR_MIN_PLAYERS; do
     eval "_isset=\${${_v}+yes}"
     [ "${_isset}" = "yes" ] && _EXPLICIT_VARS="${_EXPLICIT_VARS} ${_v}"
@@ -64,10 +64,10 @@ SERVER_FRAME_RATE_CAP="${SERVER_FRAME_RATE_CAP:-120}"            # headless fram
 # (docs/BATTLE_ROYALE.md). The BR_* knobs only matter once that is on.
 ENABLE_GAME_MODES="${ENABLE_GAME_MODES:-0}"           # 1 = allow modes other than Standard
 GAME_MODE="${GAME_MODE:-Standard}"                    # Standard | BattleRoyale
-BR_MATCH_MINUTES="${BR_MATCH_MINUTES:-45}"            # total match length; the ring closes fully at this mark
-BR_RING_START_MINUTES="${BR_RING_START_MINUTES:-5}"   # grace before the first closure
-BR_RING_STAGES="${BR_RING_STAGES:-8}"                 # how many closures the match has
-BR_RING_CLOSE_SECONDS="${BR_RING_CLOSE_SECONDS:-120}" # how long one closure takes (it holds still between)
+# These two ARE the ring schedule. Every zone's safe window and closure time are derived from them
+# on a curve (long windows early, near none late) — there is no per-zone knob to set any more.
+BR_MATCH_MINUTES="${BR_MATCH_MINUTES:-20}"            # total match length; the ring closes fully at this mark
+BR_RING_STAGES="${BR_RING_STAGES:-12}"                # how many closures the match has
 BR_CARE_PACKAGE_MINUTES="${BR_CARE_PACKAGE_MINUTES:-10}" # supply-drop interval (0 = none)
 BR_PVP_DAMAGE_SCALE="${BR_PVP_DAMAGE_SCALE:-0.25}"    # player-vs-player damage multiplier
 BR_ENEMY_HP_SCALE="${BR_ENEMY_HP_SCALE:-0.5}"         # enemy health multiplier (0.5 ~ double damage to enemies)
@@ -273,9 +273,7 @@ set_cfg "Session"   "EnableGameModes" "${GAME_MODES_CFG}" "${CFG}"
 # being silently reverted to this script's defaults.
 was_set GAME_MODE               && set_cfg "Session" "GameMode"             "${GAME_MODE}"             "${CFG}"
 was_set BR_MATCH_MINUTES        && set_cfg "Session" "BrMatchMinutes"       "${BR_MATCH_MINUTES}"      "${CFG}"
-was_set BR_RING_START_MINUTES   && set_cfg "Session" "BrRingStartMinutes"   "${BR_RING_START_MINUTES}" "${CFG}"
 was_set BR_RING_STAGES          && set_cfg "Session" "BrRingStages"         "${BR_RING_STAGES}"        "${CFG}"
-was_set BR_RING_CLOSE_SECONDS   && set_cfg "Session" "BrRingCloseSeconds"   "${BR_RING_CLOSE_SECONDS}" "${CFG}"
 was_set BR_CARE_PACKAGE_MINUTES && set_cfg "Session" "BrCarePackageMinutes" "${BR_CARE_PACKAGE_MINUTES}" "${CFG}"
 was_set BR_PVP_DAMAGE_SCALE     && set_cfg "Session" "PvPDamageScale"       "${BR_PVP_DAMAGE_SCALE}"   "${CFG}"
 was_set BR_ENEMY_HP_SCALE       && set_cfg "Session" "BrEnemyHpScale"       "${BR_ENEMY_HP_SCALE}"     "${CFG}"
@@ -326,7 +324,9 @@ fi
 
 log "config.cfg written (Transport=Udp UdpPort=${SERVER_PORT} coordinator=1 autoLaunch=$(bool "${AUTO_START_RUN}"))"
 if [ "${ENABLE_GAME_MODES}" = "1" ]; then
-    log "game mode: ${GAME_MODE} (match ${BR_MATCH_MINUTES}m, ring starts ${BR_RING_START_MINUTES}m, ${BR_RING_STAGES} stages of ${BR_RING_CLOSE_SECONDS}s, drops every ${BR_CARE_PACKAGE_MINUTES}m)"
+    log "game mode: ${GAME_MODE} (match ${BR_MATCH_MINUTES}m over ${BR_RING_STAGES} ring zones, drops every ${BR_CARE_PACKAGE_MINUTES}m)"
+    log "  the mod logs the derived per-zone wait/closure ladder at match start; it also reports"
+    log "  any retired or misspelled config.cfg key on boot — grep [Config]"
 elif [ "${GAME_MODE}" != "Standard" ]; then
     log "WARNING: GAME_MODE=${GAME_MODE} but ENABLE_GAME_MODES is not 1 - hosting Standard. Set Enable Game Modes to 1 to allow it."
 else

@@ -29,7 +29,6 @@ namespace PunkMultiverse.Modes
         private static bool _active;              // a BR match is running on this host
         private static float _matchStart;         // Time.unscaledTime at go-live
         private static float _matchSeconds;       // total match length
-        private static float _ringStartSeconds;   // grace before stage 1
         private static int _stages;               // announced shrink stages
         private static int _lastAnnouncedStage;
         private static float _nextRingBroadcastAt;
@@ -50,6 +49,48 @@ namespace PunkMultiverse.Modes
         /// HUD and for their own out-of-zone burn damage.</summary>
         public static RingStateMsg Ring { get; private set; }
         public static bool RingKnown { get; private set; }
+        private static float _ringReceivedAt;
+
+        // ---------------------------------------------------------------- the LIVE boundary
+        //
+        // Ring is a SNAPSHOT, sent about every five seconds. Reading it directly is what everything
+        // used to do, and it was survivable only while the zone shrank slowly around a fixed point:
+        // the wall jumped a few units every five seconds and mostly read as a creep. It stops being
+        // survivable once the zone DRIFTS, because then the whole circle lurches sideways.
+        //
+        // So each machine advances the snapshot itself. The rule is one line — travel from wherever
+        // the snapshot put us toward its stated target over the seconds the snapshot said remain —
+        // and it is self-correcting: every new broadcast re-anchors the interpolation on the host's
+        // truth, so error cannot accumulate. If broadcasts stop entirely the boundary settles on the
+        // target and waits, which is the right failure: it never overshoots into ground the host
+        // still considers safe.
+
+        /// <summary>How far through the current closure we are, 0..1. Zero during a hold.</summary>
+        private static float ClosureProgress
+        {
+            get
+            {
+                if (!RingKnown || !Ring.Closing || Ring.NextShrinkIn <= 0.01f) return 0f;
+                return Mathf.Clamp01((Time.unscaledTime - _ringReceivedAt) / Ring.NextShrinkIn);
+            }
+        }
+
+        /// <summary>Where the lethal boundary is RIGHT NOW. Everything that draws the zone or burns
+        /// a ship for being outside it must read this, never <see cref="Ring"/> directly.</summary>
+        public static Vector2 RingCenter => RingKnown
+            ? Vector2.Lerp(new Vector2(Ring.CenterX, Ring.CenterY), RingTargetCenter, ClosureProgress)
+            : Vector2.zero;
+
+        public static float RingRadius => RingKnown
+            ? Mathf.Max(0f, Mathf.Lerp(Ring.SafeRadius, Ring.TargetRadius, ClosureProgress))
+            : 0f;
+
+        /// <summary>Where this closure ends — the amber circle. Not the same point as the current
+        /// centre any more: the zone moves as it shrinks, so "where the ring is" and "where you
+        /// have to be" are two different places, and that difference IS the rotation pressure.</summary>
+        public static Vector2 RingTargetCenter => RingKnown
+            ? new Vector2(Ring.TargetCenterX, Ring.TargetCenterY)
+            : Vector2.zero;
 
         /// <summary>Whether the ring circles should be DRAWN yet (minimap and map screen).
         ///
@@ -120,6 +161,13 @@ namespace PunkMultiverse.Modes
             _matchStart = 0f;
             _lastAnnouncedStage = 0;
             _nextRingBroadcastAt = 0f;
+            // The per-stage schedule belongs to one match; a stale ladder would describe the last
+            // one. RingAt treats a null ladder as "the ring has not moved yet".
+            _stageWait = null;
+            _stageClose = null;
+            _stageBegin = null;
+            _stageCenter = null;   // likewise the drift path — it is plotted per match
+            _ringReceivedAt = 0f;
             _lastAliveSince = -1f;
             MatchPlayers.Clear();
             Eliminated.Clear();
@@ -167,6 +215,11 @@ namespace PunkMultiverse.Modes
         {
             Ring = msg;
             RingKnown = true;
+            // The clock the live boundary interpolates against. Stamped on ARRIVAL rather than
+            // carried in the message, so a machine measures the closure against its own clock and
+            // no cross-machine time sync is involved — the snapshot's own NextShrinkIn already
+            // accounts for however long it spent in flight.
+            _ringReceivedAt = Time.unscaledTime;
         }
 
         // ---------------------------------------------------------------- care packages

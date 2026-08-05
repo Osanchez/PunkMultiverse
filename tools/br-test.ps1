@@ -120,8 +120,11 @@ try {
     SetCfg (Join-Path $CoordPlug "config.cfg") @{
         "Transport"="Udp"; "UdpPort"="7787"; "CommandFile"="devcmd.txt"; "AutoLaunchRun"="false";
         "LogLevel"="Verbose"; "PreGenerateWorld"="true"; "EmptyServerResetSeconds"="600";
-        "EnableGameModes"="true"; "GameMode"="BattleRoyale"; "BrMatchMinutes"="6"; "BrRingStartMinutes"="1";
-        "BrRingStages"="4"; "BrRingCloseSeconds"="20"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1"
+        # BrMatchMinutes + BrRingStages are the WHOLE ring schedule now: the per-zone wait and
+        # closure times are derived from them on a curve, and there is no per-zone knob left to
+        # set. 6 min / 4 zones gives waits of 107/39/7/0s and closures of 74/59/44/29s.
+        "EnableGameModes"="true"; "GameMode"="BattleRoyale"; "BrMatchMinutes"="6";
+        "BrRingStages"="4"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1"
     }
     Remove-Item -Force -EA SilentlyContinue (Join-Path $CoordPlug "devcmd.txt"), $CoordLog
     foreach ($d in $BotDirs) {

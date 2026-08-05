@@ -70,17 +70,21 @@ namespace PunkMultiverse.UI
             // ring GEOMETRY waits for the first closure (see BattleRoyale.RingVisible).
             if (!Modes.BattleRoyale.RingVisible) { texture.Apply(); return; }
             var ring = Modes.BattleRoyale.Ring;
-            var ringCenter = new Vector2(ring.CenterX, ring.CenterY);
+            var ringCenter = Modes.BattleRoyale.RingCenter;
 
             // The lava wall is real terrain and already draws itself; this outlines the CURRENT
             // boundary so it stays legible even where the wall is thin or off-window.
-            if (ring.SafeRadius > 1f)
-                StampCircle(pixels, resolution, bottomLeft, ringCenter, ring.SafeRadius, CurrentRing, dash: 6);
+            float safe = Modes.BattleRoyale.RingRadius;
+            if (safe > 1f)
+                StampCircle(pixels, resolution, bottomLeft, ringCenter, safe, CurrentRing, dash: 6);
 
             // The ground you need to be standing on after this closure — same run-up-only rule the
             // map screen uses, so the two surfaces never disagree about whether a warning is live.
+            // Drawn on the TARGET centre, which the drift has moved: the offset between the two
+            // circles is the whole message, and stamping both on one centre would erase it.
             if (ring.TargetRadius > 1f && Modes.BattleRoyale.NextRingVisible)
-                StampCircle(pixels, resolution, bottomLeft, ringCenter, ring.TargetRadius, IncomingRing, dash: 3);
+                StampCircle(pixels, resolution, bottomLeft, Modes.BattleRoyale.RingTargetCenter,
+                    ring.TargetRadius, IncomingRing, dash: 3);
 
             foreach (var kv in Modes.BattleRoyale.CarePackages)
                 StampDiamond(pixels, resolution, bottomLeft, kv.Value, DropMarker);

@@ -270,13 +270,30 @@ through is always available.
 The host owns center and radius and broadcasts both, so no client recomputes the geometry.
 The start radius is derived from the map's **playable disc** — the generator stamps everything
 past `Width/2` as void, so the world is a disc inscribed in a square array, and sizing off the
-array's corner would spend a third of the ring's travel closing through nothing. The ring
-**halves** rather than stepping evenly (100 → 80 → 40 → 20 → 10 → 5 → 0): equal radius steps
-feel slower and slower as the circle shrinks, halving keeps pressure proportional to the room
-left. Damage is a time-to-kill from full health, scaled by max health (an upgraded hull buys
-proportionally more time) and multiplied per completed stage — the first zone is an escape
-route, the last is not. Total match length is *derived* from the pacing knobs and logged at
-match start, rather than configured as a total that leaves the hold to fall out of a division.
+array's corner would spend a third of the ring's travel closing through nothing. The schedule
+follows the **Fortnite blueprint**: twelve zones across twenty minutes, each one a wait
+followed by a closure, with the wait collapsing from over two minutes to zero and the closure
+from ~90s to ~35s — so the back half of a match is almost continuous movement. A *constant*
+hold is what made the ring read as too slow: it gives the twelfth zone the same rhythm as the
+first, and the shape of the genre is a match that tightens. Radius follows a curve for the same
+reason — gentle trims while the zone still encloses most of the world, then each closure taking
+a large fraction of what is left. Both curves are evaluated per stage rather than tabulated, so
+the shape survives any zone count, including short test matches. Damage is a time-to-kill from
+full health, scaled by max health (an upgraded hull buys proportionally more time) and
+multiplied per completed stage — the first zone is an escape route, the last is not.
+
+The zone also **drifts**, closing on a shop. A fixed centre makes the strongest play "fly to
+the middle in minute one and never move again", which turns every later zone into information
+you acted on twenty minutes ago; a walking zone makes each closure a question. A shop is the
+anchor because they are open ground, unlocked and stocked at go-live, hazard-cleared, and
+named landmarks everyone can see the match heading toward. The invariant the path must never
+break is that each zone lies entirely inside its predecessor — otherwise ground a player is
+standing on turns lethal with no warning — and the construction gets that by algebra rather
+than tuning: the centre moves along *start → anchor* in proportion to the radius it gives up,
+so a step can never exceed the radius surrendered, and it lands on the anchor exactly when
+the radius hits zero. Because a drifting circle would *lurch* if drawn from a five-second
+snapshot, every machine interpolates the boundary toward the target the message carries, and
+the lava, both map overlays and the burn check all read that live value.
 
 Bulk terrain change is expensive in vanilla for reasons that have nothing to do with this mode,
 and two patches carry every mode past it: tile and lightmap refresh is skipped entirely on a
@@ -433,6 +450,16 @@ happen on someone else's machine.
 
 - **Always-on watchdogs** (every log level): clock dilation, main-thread hitches with phase
   attribution, unbounded-collection growth, puppet jitter, go-live stalls, transport backlog.
+- **A boot-time config report.** A config file outlives the code that reads it — a dedicated
+  server writes `config.cfg` once and keeps it forever, so a retired key sits there looking
+  authoritative long after anything reads it. On startup the mod logs every setting that
+  differs from its default, then names every setting on disk that is doing nothing: keys we
+  deliberately removed (with the reason, and deleted from the file), keys filed under the
+  wrong `[Section]` so the real one quietly holds a different value, and unrecognised keys
+  with a nearest-match suggestion (kept, since a typo's value is worth more than a tidy
+  file). The mechanism is BepInEx's own orphaned-entry table, so it cannot drift out of sync
+  with what was actually bound. Its first run found six dead keys and four misfiled ones in a
+  dev config, one of which had been silently inverting a sync feature flag.
 - **Tiered logging** — `Normal` keeps events and warnings while slowing periodic
   instrumentation; `Verbose` restores full-rate telemetry for bug reports; live-switchable.
 - **One folder per run** — any player uploads a gzipped log with a keystroke; the host stamps

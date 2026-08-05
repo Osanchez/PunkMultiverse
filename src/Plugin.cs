@@ -39,6 +39,9 @@ namespace PunkMultiverse
 
             var cfg = new BepConfigFile(Path.Combine(ModFolder.Dir, "config.cfg"), saveOnInit: true);
             NetConfig.Init(cfg);
+            // Straight after Init, never before: the audit's whole method is reading what BepInEx
+            // did NOT hand to a Bind call, which is only meaningful once every Bind has run.
+            ConfigAudit.Run(cfg);
             RuntimeInstrumentation.Initialize(Thread.CurrentThread);
 
             // Growth watchdog: register the bounded-in-steady-state collections whose unbounded

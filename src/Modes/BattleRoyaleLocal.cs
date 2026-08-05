@@ -51,8 +51,12 @@ namespace PunkMultiverse.Modes
             _nextBurnAt = Time.unscaledTime + BurnInterval;
 
             Vector2 pos = ship.transform.position;
-            float dist = Vector2.Distance(pos, new Vector2(Ring.CenterX, Ring.CenterY));
-            if (dist <= Ring.SafeRadius) { StopZoneFire(); return; }
+            // The LIVE boundary, not the last snapshot: burning must agree with the lava a player
+            // can see, and the drawn zone is interpolated between broadcasts. Reading the snapshot
+            // here would put the damage edge up to five seconds behind the visible one.
+            float safe = RingRadius;
+            float dist = Vector2.Distance(pos, RingCenter);
+            if (dist <= safe) { StopZoneFire(); return; }
 
             try
             {
@@ -65,7 +69,7 @@ namespace PunkMultiverse.Modes
                 if (Time.frameCount % 120 == 0)
                 {
                     float killSeconds = Mathf.Max(1f, NetConfig.BrZoneKillSeconds.Value);
-                    Plugin.Log.LogInfo($"[BR] in the zone ({dist:0} > {Ring.SafeRadius:0}) — " +
+                    Plugin.Log.LogInfo($"[BR] in the zone ({dist:0} > {safe:0}) — " +
                         $"burning: stage {Ring.Stage}, x{ZoneDamageMultiplier:0.0} damage, " +
                         $"~{killSeconds / ZoneDamageMultiplier:0}s from full");
                 }
@@ -615,7 +619,7 @@ namespace PunkMultiverse.Modes
 
             var ship = ShipSync.LocalShip;
             bool outside = ship != null && !ship.IsDead
-                && Vector2.Distance(ship.transform.position, new Vector2(Ring.CenterX, Ring.CenterY)) > Ring.SafeRadius;
+                && Vector2.Distance(ship.transform.position, RingCenter) > RingRadius;
 
             _hudStyle.normal.textColor = outside ? new Color(1f, 0.35f, 0.25f) : Color.white;
             var rect = new Rect(Screen.width * 0.5f - 300f, 8f, 600f, 44f);

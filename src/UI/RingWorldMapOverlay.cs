@@ -77,7 +77,7 @@ namespace PunkMultiverse.UI
             float zoom = _mapMover.Zoom;
             if (zoom <= 0f) return;
             var ring = Modes.BattleRoyale.Ring;
-            var ringCenter = new Vector2(ring.CenterX, ring.CenterY);
+            var ringCenter = Modes.BattleRoyale.RingCenter;
 
             EnsureWidgets();
 
@@ -86,13 +86,17 @@ namespace PunkMultiverse.UI
             bool ringVisible = Modes.BattleRoyale.RingVisible;
             _current.gameObject.SetActive(ringVisible);
             if (ringVisible)
-                Place(_current, _currentImage, ringCenter, ring.SafeRadius, zoom, CurrentRing, dashes: 64);
+                Place(_current, _currentImage, ringCenter, Modes.BattleRoyale.RingRadius, zoom,
+                    CurrentRing, dashes: 64);
             // Where you have to be standing after this closure — shown only in the run-up to it and
             // during it (BattleRoyale.NextRingVisible), so the amber circle keeps meaning "move".
+            // On its OWN centre: the zone drifts, so the amber circle is somewhere else on the map,
+            // and the gap between the two is what tells a player which way to cross.
             bool hasTarget = ringVisible && ring.TargetRadius > 1f && Modes.BattleRoyale.NextRingVisible;
             _target.gameObject.SetActive(hasTarget);
             if (hasTarget)
-                Place(_target, _targetImage, ringCenter, ring.TargetRadius, zoom, IncomingRing, dashes: 32);
+                Place(_target, _targetImage, Modes.BattleRoyale.RingTargetCenter, ring.TargetRadius,
+                    zoom, IncomingRing, dashes: 32);
 
             DrawDrops(zoom);
         }
