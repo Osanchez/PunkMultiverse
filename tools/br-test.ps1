@@ -33,7 +33,20 @@ $BotDirs  = @(@(
 $CoordPlug = Join-Path $CoordDir "BepInEx\plugins\PunkMultiverse"
 $CoordLog  = Join-Path $CoordDir "BepInEx\LogOutput.log"
 
-$Want = @($Phases -split "," | ForEach-Object { $_.Trim().ToLower() })
+# Split on commas AND whitespace. `-Phases lifecycle,ring` without quotes is parsed by PowerShell
+# as an ARRAY, which coerces into the single string "lifecycle ring"; splitting on "," alone then
+# produced one bogus phase name, every Phase() test returned false, and the run happily printed
+# "BR SMOKE: PASS" having asserted nothing at all. A harness that can pass without testing is worse
+# than no harness, so unknown names are now a hard error rather than a silent skip.
+$KnownPhases = @("all","lifecycle","ring","sync","pvp","bars","loot","fire")
+$Want = @($Phases -split '[,\s]+' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+$bogus = @($Want | Where-Object { $KnownPhases -notcontains $_ })
+if ($bogus.Count -gt 0) {
+    "ABORT: unknown phase(s): $($bogus -join ', '). Valid: $($KnownPhases -join ', ')"
+    exit 2
+}
+if ($Want.Count -eq 0) { "ABORT: -Phases resolved to nothing"; exit 2 }
+Write-Host "phases: $($Want -join ', ')"
 function Phase($name) { return ($Want -contains "all") -or ($Want -contains $name) }
 
 function CountIn($p,$pat){ if(-not(Test-Path $p)){return 0}; return @(Select-String -Path $p -Pattern $pat -AllMatches -EA SilentlyContinue).Count }
@@ -320,9 +333,39 @@ try {
 
     # Let the match run: ring stages, care packages, eliminations.
     $profiled = $false
+    $zoneProbed = $false
     $deadline = (Get-Date).AddSeconds($WatchSeconds)
     while ((Get-Date) -lt $deadline) {
         if ((CountIn $CoordLog "\[BR\] WINNER") -ge 1) { Write-Host "match resolved early"; break }
+
+        # ZONE DAMAGE, mid-match. The endgame ungod below already proves the FINAL ring kills, but
+        # the final ring closes to radius zero — everyone is outside it, so it cannot distinguish
+        # "the zone burns you" from "the match ended". This probe puts a bot outside a real,
+        # mid-game circle on ground that exists, and asserts it starts burning there.
+        # Runs once closure 3 has begun, i.e. the ring is sitting on zone 2's radius and centre,
+        # which the match-start ladder already told us exactly.
+        if (-not $zoneProbed -and (CountIn $CoordLog "THE LAVA RING IS CLOSING \(3/") -ge 1) {
+            $zoneProbed = $true
+            $zones = @(Lines $CoordLog "zone (\d+)/(\d+): wait \d+s, close \d+s, r (\d+) -> (\d+), center \((-?\d+),(-?\d+)\)")
+            if ($zones.Count -ge 2) {
+                $g = $zones[1].Matches[0].Groups     # zone 2: its END radius + END centre
+                $r  = [double]$g[4].Value
+                $cx = [double]$g[5].Value; $cy = [double]$g[6].Value
+                # 90 units beyond the boundary: unambiguously outside, still nowhere near the void
+                # border on a ~1000-unit map once the ring has closed twice.
+                $tx = [int]($cx + $r + 90); $ty = [int]$cy
+                Write-Host "probe: zone damage - bot0 -> ($tx,$ty), outside r=$r at ($cx,$cy)"
+                Cmd $BotPlugs[0] "god off"
+                Cmd $BotPlugs[0] "tp $tx $ty"
+                Start-Sleep 12
+                $hit = CountIn $BotLogs[0] "\[BR\] (ENTERED THE ZONE|in the zone)"
+                Write-Host "  burn reports while outside: $hit"
+                # Put it back and re-arm god, so ONE probe doesn't decide the match and the
+                # remaining closures still get watched with two bots alive.
+                Cmd $BotPlugs[0] "tp $([int]$cx) $([int]$cy)"
+                Cmd $BotPlugs[0] "god"
+            } else { Write-Host "probe: zone damage SKIPPED - could not parse the zone ladder" }
+        }
         # Profile once the ring has had time to convert real ground - the cost being chased only
         # exists after a large area has been painted, so profiling at match start measures nothing.
         if ($ProfileRing -and -not $profiled -and (CountIn $CoordLog "\[BR\] ring paint") -ge 6) {
@@ -437,9 +480,45 @@ try {
             if ($ratio -gt 1.2) { $ok = $false; Write-Host "  FAIL: ring starts well outside the playable map" }
         } else { Line "ring fit" "MISSING (no playable-map / start-radius line)"; $ok = $false }
 
-        $rate = @(Lines $CoordLog "each closing (\d+)u over (\d+)s = ([0-9.]+) u/s")
-        if ($rate.Count -ge 1) { Line "closure rate" ("{0} u/s" -f $rate[0].Matches[0].Groups[3].Value) }
-        else { Line "closure rate" "MISSING"; $ok = $false }
+        # THE LADDER. Every zone has its own wait, closure and centre now, so the assertions are
+        # about the SHAPE: radii strictly shrink, the last one reaches zero, and the safe window
+        # tightens from first zone to last (a constant hold is the defect this replaced).
+        $zones = @(Lines $CoordLog "zone (\d+)/(\d+): wait (\d+)s, close (\d+)s, r (\d+) -> (\d+), center \((-?\d+),(-?\d+)\), drift (\d+)")
+        if ($zones.Count -ge 2) {
+            $radii = @(); $waits = @(); $drifts = @()
+            foreach ($z in $zones) {
+                $g = $z.Matches[0].Groups
+                $waits += [int]$g[3].Value; $radii += [int]$g[6].Value; $drifts += [int]$g[9].Value
+            }
+            $shrinks = $true
+            for ($i = 1; $i -lt $radii.Count; $i++) { if ($radii[$i] -ge $radii[$i-1]) { $shrinks = $false } }
+            Line "ring ladder" ("{0} zones, radii {1} -> 0" -f $zones.Count, ($radii[0]))
+            if (-not $shrinks) { $ok = $false; Write-Host "  FAIL: radii do not strictly decrease" }
+            if ($radii[-1] -ne 0) { $ok = $false; Write-Host "  FAIL: final zone does not close to 0 (r=$($radii[-1]))" }
+            # The whole point of the rewrite: the match must TIGHTEN.
+            Line "pacing tightens" ("first wait {0}s -> last wait {1}s" -f $waits[0], $waits[-1])
+            if ($waits[0] -le $waits[-1]) { $ok = $false; Write-Host "  FAIL: the safe window does not shrink - the ring is not tightening" }
+            Line "zone drift" ("per closure: {0}" -f ($drifts -join ", "))
+            if (($drifts | Measure-Object -Sum).Sum -le 0) { $ok = $false; Write-Host "  FAIL: the zone never moves - drift is dead" }
+        } else { Line "ring ladder" "MISSING (no per-zone ladder logged)"; $ok = $false }
+
+        # Containment + bounds: the two ways a drifting zone goes wrong. Both are asserted by the
+        # mod itself every match; here we just insist it stayed quiet and reported.
+        $bug = (CountIn $CoordLog "RING PATH BUG") + (CountIn $CoordLog "RING BOUNDS BUG")
+        if ($bug -eq 0) { Line "zone containment" "every zone inside its predecessor, every centre on real ground" }
+        else { $ok = $false; Line "zone containment" "$bug RING PATH/BOUNDS BUG report(s) - see the coordinator log" }
+
+        $bounds = @(Lines $CoordLog "ring bounds: .*fully inside the playable disc from closure (\d+) onward.*final anchor sits (\d+) units")
+        if ($bounds.Count -ge 1) {
+            $g = $bounds[0].Matches[0].Groups
+            Line "closes inside the map" ("fully inside the disc from closure {0}; anchor {1}u from map centre" -f $g[1].Value, $g[2].Value)
+        } else { Line "closes inside the map" "MISSING (no ring-bounds line)"; $ok = $false }
+
+        $anchor = @(Lines $CoordLog "final zone anchored on a shop at \((-?\d+),(-?\d+)\) openness=(\d+)")
+        if ($anchor.Count -ge 1) {
+            $g = $anchor[0].Matches[0].Groups
+            Line "endgame anchor" ("shop at ({0},{1}), {2}% open ground" -f $g[1].Value, $g[2].Value, $g[3].Value)
+        } else { Line "endgame anchor" "no central shop found - fell back to the opening centre" }
 
         # The zone is RENDERED, not built. It must not paint a single cell: that is the whole
         # reason it stopped costing 9-second frames, and the regression it must never make quietly.
@@ -456,11 +535,26 @@ try {
         # so the evidence is on the bots, not the host.
         # NOTE the log line joins with an em dash; match loosely so an ASCII-only script never
         # depends on the encoding surviving a round trip through the log file.
-        $burn = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] in the zone \((\d+) > (\d+)\).{0,4}stage (\d+), x([0-9.]+) damage, ~(\d+)s" -AllMatches -EA SilentlyContinue })
+        $burn = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] (?:ENTERED THE ZONE|in the zone) \((\d+) > (\d+)\).*?stage (\d+), x([0-9.]+) damage, ~(\d+)s from full, hp ([0-9.]+)/([0-9.]+)" -AllMatches -EA SilentlyContinue })
+        # STRICT now, not advisory. The mid-match probe parks a bot outside a real circle and the
+        # endgame ungod leaves both of them outside a ring closing to zero, so a run with no burn
+        # report at all means the zone stopped hurting — the failure that would make the whole
+        # mode cosmetic while every other assertion still passed.
         if ($burn.Count -ge 1) {
             $g = $burn[-1].Matches[0].Groups
-            Line "zone damage" ("stage {0}, x{1} damage, ~{2}s to kill from full" -f $g[3].Value, $g[4].Value, $g[5].Value)
-        } else { Line "zone damage" "no bot was ever caught outside (not a failure)" }
+            Line "zone damage" ("{0} burn reports; last: stage {1}, x{2} damage, ~{3}s to kill from full" -f
+                $burn.Count, $g[3].Value, $g[4].Value, $g[5].Value)
+        } else {
+            $ok = $false
+            Line "zone damage" "NO burn reported by any bot - the zone is not damaging players"
+        }
+
+        # And it must actually KILL: burning that never empties the tank is still a cosmetic zone.
+        # The endgame ring closes to radius 0 with both bots ungodded, so someone has to die of it.
+        $zoneKills = @($BotLogs | ForEach-Object { Select-String -Path $_ -Pattern "\[BR\] .*(eliminated|YOU PLACED)" -AllMatches -EA SilentlyContinue }).Count
+        $winner = CountIn $CoordLog "\[BR\] WINNER"
+        if ($winner -ge 1) { Line "ring resolves the match" "WINNER declared after the final closure" }
+        else { $ok = $false; Line "ring resolves the match" "no WINNER - the closing ring never finished anyone" }
 
         Line "host hitches" (CountIn $CoordLog "\[Hitch\]")
 

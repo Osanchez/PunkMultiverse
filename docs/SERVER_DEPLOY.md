@@ -5,10 +5,14 @@ The public server is a **plain `docker run` container on Omar's old desktop**, r
 is `ssh <host> docker ...`, so the only credential involved is the Tailscale SSH key already in
 `~/.ssh/config`.
 
-> This replaced a panel-managed VPS at a hosting provider. That VPS was abandoned for a measured
-> reason, not a preference: its hypervisor suspended the whole 4-vCPU VM for ~650 ms at a time
-> under load, and the guest kernel lost 31.6% of wall time. No code fix exists for that — it needed
-> a machine whose cores are actually yours.
+> **Why dedicated hardware and not a VPS.** A *shared* VPS is not reliable enough for a
+> high-throughput, UDP-reliant game server. Sharing the box means contending for it, and the
+> throttling that follows compromises network stability directly: the transport needs to send and
+> receive on a steady cadence, and a host that deschedules the guest holds packets that were
+> already late. We measured it — the hypervisor suspended the whole 4-vCPU VM for ~650 ms at a
+> time under load and the guest kernel lost 31.6% of wall time, which surfaced as position gaps in
+> PvP that looked exactly like a netcode bug. There is no code fix for time the machine never gave
+> you; it needs cores that are actually yours and no one else's.
 
 ## The machine
 

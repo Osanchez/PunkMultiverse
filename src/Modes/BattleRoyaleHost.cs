@@ -66,12 +66,15 @@ namespace PunkMultiverse.Modes
                 // player sitting on the old centre has to cover just to stay in the middle. That is
                 // the number that says whether a zone is a rotation or a nudge, so it is logged
                 // next to the radius it is paired with.
-                float drift = Vector2.Distance(CenterAfterStage(k), CenterAfterStage(k + 1));
+                var to = CenterAfterStage(k + 1);
+                float drift = Vector2.Distance(CenterAfterStage(k), to);
                 Plugin.Log.LogInfo($"[BR]   zone {k + 1}/{_stages}: wait {_stageWait[k]:0}s, " +
                     $"close {_stageClose[k]:0}s, r {RadiusAfterStage(k):0} -> {RadiusAfterStage(k + 1):0}, " +
-                    $"drift {drift:0} (closed by {(_stageBegin[k] + _stageWait[k] + _stageClose[k]) / 60f:0.0} min)");
+                    $"center ({to.x:0},{to.y:0}), drift {drift:0} " +
+                    $"(closed by {(_stageBegin[k] + _stageWait[k] + _stageClose[k]) / 60f:0.0} min)");
             }
             VerifyContainment();
+            VerifyRingBounds();
             Announce(session, $"BATTLE ROYALE — {MatchPlayers.Count} PLAYERS. LAST ONE ALIVE WINS.", 8f);
             BroadcastRing(session);
         }
@@ -525,6 +528,49 @@ namespace PunkMultiverse.Modes
                     $"only gives up {allowed:0.0} of radius — it is NOT contained in zone {k}. " +
                     "Ground inside the current safe zone will turn lethal with no warning.");
             }
+        }
+
+        /// <summary>Assert the ring closes onto the WORLD, not into the void border.
+        ///
+        /// The world is a disc inscribed in a square cell array; everything past the disc is VOID
+        /// biome that no player can stand on. Two distinct ways a zone can be wrong, and they need
+        /// separate checks because one does not imply the other:
+        ///
+        ///   * <b>the centre is in the void</b> — the endgame arena is somewhere nobody can go, so
+        ///     the last zones are unwinnable and the ring reads as "closing off the map". Fatal;
+        ///     logged as an error.
+        ///   * <b>the zone still overhangs the border</b> — legal, and unavoidable at the start,
+        ///     because the opening circle has to contain the whole disc so nobody burns at t=0.
+        ///     What matters is that it stops overhanging EARLY, so most of the match is fought on
+        ///     ground that exists. Reported as the stage from which the zone is fully inside.
+        ///
+        /// This is the check behind "make sure it's closing within the bounds of the map and not
+        /// out in the void" (Omar, 2026-08-05), kept in the code so it is answered every match
+        /// rather than once.</summary>
+        private static void VerifyRingBounds()
+        {
+            if (_stageCenter == null) return;
+            var level = LevelRef;
+            int firstInside = -1;
+            for (int k = 0; k <= _stages; k++)
+            {
+                var c = CenterAfterStage(k);
+                if (level != null && IsVoidCell(level, Mathf.RoundToInt(c.x), Mathf.RoundToInt(c.y)))
+                    Plugin.Log.LogError($"[BR] RING BOUNDS BUG: zone {k} is centred at " +
+                        $"({c.x:0},{c.y:0}), which is VOID — the ring is closing off the map.");
+                // Whole zone inside the playable disc: the furthest point of the circle from the
+                // map's centre is the centre offset plus the radius.
+                if (firstInside < 0 &&
+                    Vector2.Distance(c, _mapCenter) + RadiusAfterStage(k) <= _mapRadius)
+                    firstInside = k;
+            }
+            float anchorOffset = Vector2.Distance(_finalAnchor, _mapCenter);
+            Plugin.Log.LogInfo($"[BR] ring bounds: every centre is on real ground; " +
+                (firstInside >= 0
+                    ? $"the zone is fully inside the playable disc from closure {firstInside} onward"
+                    : "the zone never fits entirely inside the disc — CHECK THE ANCHOR") +
+                $"; final anchor sits {anchorOffset:0} units from the map centre " +
+                $"({anchorOffset / Mathf.Max(1f, _mapRadius):P0} of the map radius)");
         }
 
         /// <summary>Centre the ring holds at once <paramref name="stage"/> closures are done.</summary>

@@ -11,5 +11,6 @@ refs-staging/
 server_image/_bepinex_stage/
 server_image/_game_stage/
 
-# Local credentials (SFTP access to the dedicated server, etc.) — never commit
+# Local credentials, if any are ever needed — never commit. (Server access is Tailscale SSH with
+# the key in ~/.ssh/config; Docker Hub auth lives in ~/.docker/config.json. Neither is in here.)
 .secret/

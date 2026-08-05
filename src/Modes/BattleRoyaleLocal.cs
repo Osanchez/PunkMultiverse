@@ -19,6 +19,11 @@ namespace PunkMultiverse.Modes
 
         private static float _nextBurnAt;
         private const float BurnInterval = 0.5f;
+        // Zone-burn logging is on a WALL CLOCK, not a frame counter — see LocalTick for why the
+        // frame-modulo version could burn a ship to death in silence.
+        private static bool _zoneBurnLogged;   // are we inside a burn we have already announced?
+        private static float _nextZoneLogAt;
+        private const float ZoneLogInterval = 5f;
 
         /// <summary>Every machine: burn the local ship while it is outside the safe zone.
         ///
@@ -65,13 +70,30 @@ namespace PunkMultiverse.Modes
                 var tank = dr != null ? dr.Tank : null;
                 if (tank == null || tank.isInfinite || tank.Capacity <= 0f) return;
 
+                float hpBefore = tank.Value;
                 SetShipOnFire(unit, tank);
-                if (Time.frameCount % 120 == 0)
+
+                // Log the ENTRY, then on a clock — never on `frameCount % 120`, which is what this
+                // used to do. That test sat INSIDE the BurnInterval throttle above, so it was only
+                // ever sampled a few times a second and had to land exactly on a 120-frame
+                // boundary: roughly a 1-in-120 chance per tick. A ship could burn to death without
+                // printing a line. The zone looked untested because it was uninstrumented — the
+                // harness assertion for it was even written as "not a failure" for that reason.
+                //
+                // hp is included because "on fire" and "losing health" are different claims, and
+                // only the second one is the mode working. An infinite tank silently refuses to
+                // decrease (vanilla unlimited-resources does exactly that), so a falling number is
+                // the evidence that matters.
+                bool entered = !_zoneBurnLogged;
+                if (entered || Time.unscaledTime >= _nextZoneLogAt)
                 {
+                    _zoneBurnLogged = true;
+                    _nextZoneLogAt = Time.unscaledTime + ZoneLogInterval;
                     float killSeconds = Mathf.Max(1f, NetConfig.BrZoneKillSeconds.Value);
-                    Plugin.Log.LogInfo($"[BR] in the zone ({dist:0} > {safe:0}) — " +
-                        $"burning: stage {Ring.Stage}, x{ZoneDamageMultiplier:0.0} damage, " +
-                        $"~{killSeconds / ZoneDamageMultiplier:0}s from full");
+                    Plugin.Log.LogInfo($"[BR] {(entered ? "ENTERED THE ZONE" : "in the zone")} " +
+                        $"({dist:0} > {safe:0}) — burning: stage {Ring.Stage}, " +
+                        $"x{ZoneDamageMultiplier:0.0} damage, ~{killSeconds / ZoneDamageMultiplier:0}s " +
+                        $"from full, hp {hpBefore:0.0}/{tank.Capacity:0.0}");
                 }
             }
             catch { }
@@ -129,6 +151,13 @@ namespace PunkMultiverse.Modes
         /// right feel for having just run through a wall of fire.</summary>
         private static void StopZoneFire()
         {
+            // Announce the exit before the early-out, so "you got back inside" is logged even on a
+            // tick where there were no fire settings left to restore.
+            if (_zoneBurnLogged)
+            {
+                _zoneBurnLogged = false;
+                Plugin.Log.LogInfo("[BR] back inside the zone — the fire will die down");
+            }
             if (!_burning || !_burnSaved) return;
             _burning = false;
             try
@@ -141,7 +170,11 @@ namespace PunkMultiverse.Modes
             catch { }
         }
 
-        internal static void ResetZoneFire() { _burning = false; _burnSaved = false; }
+        internal static void ResetZoneFire()
+        {
+            _burning = false; _burnSaved = false;
+            _zoneBurnLogged = false; _nextZoneLogAt = 0f;
+        }
 
         /// <summary>How much harder the zone bites now than it did at the opening ring. Stage 0 (the
         /// grace period, before anything has closed) is always 1x.</summary>
