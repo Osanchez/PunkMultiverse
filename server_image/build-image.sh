@@ -14,7 +14,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# Default game dir: the install two levels up (…/PUNK Playtest) — pelican_egg sits in the repo,
+# Default game dir: the install two levels up (…/PUNK Playtest) — server_image sits in the repo,
 # the repo sits in the game root.
 GAME_DIR="${GAME_DIR:-$(cd "${HERE}/../.." && pwd)}"
 IMAGE="${IMAGE:-osanchezdev/punk-punkmultiverse:latest}"

@@ -17,7 +17,7 @@ namespace PunkMultiverse.Core
     ///
     ///   * CPU steal  — the host is itself a VM being descheduled by its hypervisor. Fingerprint:
     ///     the `steal` field of /proc/stat's cpu line jumps during the freeze.
-    ///   * cgroup throttling — the container has a CPU quota despite the panel saying cpu=0.
+    ///   * cgroup throttling — the container has a CPU quota despite being configured with none.
     ///     Fingerprint: nr_throttled/throttled_usec climb in /sys/fs/cgroup/cpu.stat.
     ///   * contention — co-tenant containers saturate the box. Fingerprint: /proc/pressure/cpu
     ///     "some total" climbs while steal and throttle stay flat.

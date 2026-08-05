@@ -8,8 +8,8 @@
 #   4. Derive a headless server config.cfg from the environment (port, gameplay tunables, ...).
 #   5. Prevent the base game from relaunching through Steam (steam_appid.txt).
 #   6. Boot the game headless under Wine as a coordinator on the Udp transport, streaming the
-#      BepInEx log to stdout so the panel sees the readiness line and console.
-#   7. On SIGTERM/SIGINT (panel "Stop"), drive the mod's `quit` (save + notify) then force Wine.
+#      BepInEx log to stdout so `docker logs` shows the readiness line and console.
+#   7. On SIGTERM/SIGINT (`docker stop`), drive the mod's `quit` (save + notify) then force Wine.
 #
 # Everything is driven by env vars (documented in README.md / the egg). Only the base game is
 # operator-supplied; BepInEx and the mod come from the image + GitHub. Nothing needs Steam.
@@ -45,7 +45,7 @@ was_set() {
 }
 
 STARTUP_EXE="${STARTUP_EXE:-Punk.exe}"
-SERVER_PORT="${SERVER_PORT:-7778}"                    # Pelican's primary allocation
+SERVER_PORT="${SERVER_PORT:-7778}"                    # the published UDP port
 SERVER_ADDRESS="${SERVER_ADDRESS:-0.0.0.0}"           # advertised join host (informational)
 STEAM_APPID="${STEAM_APPID:-2850470}"                 # PUNK Playtest appid (steam_appid.txt)
 
@@ -104,7 +104,7 @@ fail() { echo "[server][FATAL] $*" >&2; exit 1; }
 # --------------------------------------------------------------------- provision base game
 cd "${GAME_DIR}" || fail "GAME_DIR '${GAME_DIR}' does not exist"
 
-# The base game is baked into the image at ${GAME_STAGE}. Pelican mounts a persistent volume over
+# The base game is baked into the image at ${GAME_STAGE}. Docker mounts a persistent volume over
 # /home/container that would shadow anything COPY'd there in the image, so the game is copied in
 # here on first boot. The volume persists, so later boots find Punk.exe and skip the copy.
 if [[ ! -f "${GAME_DIR}/${STARTUP_EXE}" && -f "${GAME_STAGE}/${STARTUP_EXE}" ]]; then
@@ -258,7 +258,7 @@ set_cfg "Session"   "ServerFrameRateCap" "${SERVER_FRAME_RATE_CAP}" "${CFG}"
 if [ "${ENABLE_GAME_MODES}" = "1" ]; then GAME_MODES_CFG="true"; else GAME_MODES_CFG="false"; fi
 # Normalize GAME_MODE to the exact spelling the mod accepts. This has to happen HERE: the mod
 # binds GameMode with an AcceptableValueList, so BepInEx silently rewrites anything else to
-# Standard before the mod can see (or complain about) it. A panel typo would otherwise cost a
+# Standard before the mod can see (or complain about) it. A typo would otherwise cost a
 # whole session of the wrong ruleset with nothing in the log to explain it.
 case "$(printf '%s' "${GAME_MODE}" | tr -d '_ ' | tr '[:upper:]' '[:lower:]')" in
     battleroyale) GAME_MODE="BattleRoyale" ;;
@@ -268,9 +268,10 @@ case "$(printf '%s' "${GAME_MODE}" | tr -d '_ ' | tr '[:upper:]' '[:lower:]')" i
 esac
 set_cfg "Session"   "EnableGameModes" "${GAME_MODES_CFG}" "${CFG}"
 # Everything below is written ONLY if the operator actually set the variable. An unset knob leaves
-# whatever is already in config.cfg (see the was_set block at the top of this file): the panel stays
-# authoritative for anything it is told to control, and hand-edits survive a restart instead of
-# being silently reverted to this script's defaults.
+# whatever is already in config.cfg (see the was_set block at the top of this file): a variable the
+# operator actually set stays authoritative, and hand-edits survive a restart instead of being
+# silently reverted to this script's defaults. NOTE: server.cfg below is applied AFTER all of this
+# and beats every one of them — that is the file to reach for.
 was_set GAME_MODE               && set_cfg "Session" "GameMode"             "${GAME_MODE}"             "${CFG}"
 was_set BR_MATCH_MINUTES        && set_cfg "Session" "BrMatchMinutes"       "${BR_MATCH_MINUTES}"      "${CFG}"
 was_set BR_RING_STAGES          && set_cfg "Session" "BrRingStages"         "${BR_RING_STAGES}"        "${CFG}"
@@ -281,7 +282,7 @@ was_set BR_MIN_PLAYERS          && set_cfg "Session" "BrMinPlayers"         "${B
 
 # OPERATOR OVERRIDES FILE — the answer to "why isn't the container reading from a config file".
 # /home/container/server.cfg lives in the volume, survives restarts and image updates, and is
-# applied LAST so it beats both this script and the panel. One "Section.Key = Value" per line
+# applied LAST so it beats both this script and any -e variable. One "Section.Key = Value" per line
 # (Section defaults to Session), '#' comments ignored. Anything the mod binds can be set here,
 # including keys this script has never heard of.
 OVERRIDES_FILE="${OVERRIDES_FILE:-/home/container/server.cfg}"
@@ -370,7 +371,7 @@ env -u DOORSTOP_INITIALIZED -u DOORSTOP_INVOKE_DLL_PATH -u DOORSTOP_PROCESS_PATH
         -logFile "${GAME_DIR}/Player.log" ${EXTRA_ARGS} &
 WINE_PID=$!
 
-# Stream the BepInEx log to stdout so the panel's console + done-regex ([Udp] hosting on) work.
+# Stream the BepInEx log to stdout so `docker logs` carries the console + readiness line.
 ( tail -n +1 -F "${BEPINEX_LOG}" 2>/dev/null ) &
 TAIL_PID=$!
 

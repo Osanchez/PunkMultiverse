@@ -9,7 +9,7 @@ IP; the world, the enemies, and the destruction are shared, while loot and build
 personal.
 
 - **Scope:** ~30k lines of C#, one DLL, four transports, 4 players per session.
-- **Deployment:** Steam P2P, or a Dockerized headless server (Wine) on a Pelican panel.
+- **Deployment:** Steam P2P, or a Dockerized headless server (Wine) on a machine you own.
 - **Modes:** co-op, plus a full **[battle royale](#8-a-second-game-mode-battle-royale)** —
   drop selection, a closing zone, PvP, contested loot — built with no new sync primitive.
 - **Measured:** flat server cost from 1→3 players (3.3 / 2.9 / 3.3 ms per frame),
@@ -465,8 +465,9 @@ happen on someone else's machine.
 - **One folder per run** — any player uploads a gzipped log with a keystroke; the host stamps
   the run's date so every participant's log lands in the same S3 folder regardless of clock
   skew or when they joined.
-- **Remote administration** — a watched command file and the panel API expose server state,
-  restarts, and dev commands (`fpsbench`, `udpstats`, `sync`, `owner`, teleport helpers).
+- **Remote administration** — a watched command file, driven over SSH by `tools/srv.ps1`, exposes
+  server state, restarts, and dev commands (`fpsbench`, `udpstats`, `sync`, `owner`, teleport
+  helpers).
 - **Test harnesses** — headless bot fleets join a real or local server, drive scripted load,
   and report the same counters players produce, which is how the scaling and jitter numbers
   above were obtained.
@@ -475,9 +476,11 @@ happen on someone else's machine.
 
 ## 11. Dedicated server
 
-`pelican_egg/` builds a container that runs the Windows game headless under Wine with Xvfb,
-self-updates the mod from GitHub releases at boot, and maps gameplay knobs to panel variables
-(port, HP scaling, empty-server reset, frame cap, log level, admin commands). The first
+`server_image/` builds a container that runs the Windows game headless under Wine with Xvfb,
+self-updates the mod from GitHub releases at boot, and maps gameplay knobs to environment
+variables and an operator overrides file (port, HP scaling, empty-server reset, frame cap, log
+level, admin commands). It runs as a plain `docker run` on a machine reached over Tailscale SSH,
+driven by `tools/srv.ps1`; see `docs/SERVER_DEPLOY.md`. The first
 joining player becomes token-verified session admin and starts runs; the server resets itself
 to a fresh lobby after a wipe or an abandoned session. Players connect with DIRECT CONNECT —
 no Steam involvement on the server side.
@@ -511,7 +514,7 @@ powershell -File build.ps1 -Zip     # + dist\PunkMultiverse-vX.Y.Z.zip
 | `src/Modes/` | Battle royale: host schedule, local zone/HUD, drop selection, contested loot, loot tables |
 | `src/Patches/` | Harmony patches against the game's internals |
 | `src/UI/` | Lobby, direct connect, HUD, scoreboard, drop screen, zone visuals, kill feed, video options |
-| `pelican_egg/` | Dedicated-server image, egg definition, boot script |
+| `server_image/` | Dedicated-server Docker image, boot script, mod self-update |
 | `docs/` | Design specs, subsystem deep dives, test plans, player guide |
 
 ---

@@ -120,7 +120,7 @@ namespace PunkMultiverse
                 // disagree — which is exactly the failure that silently hosts the wrong ruleset.
                 Log.LogInfo($"{Name} v{Version} — dedicated coordinator (transport: {NetConfig.Transport.Value}, " +
                     $"game mode: {NetConfig.ConfiguredMode}, frame cap {(cap > 0 ? cap + " fps" : "none")}). " +
-                    "Admin via devcmd.txt / panel console; " +
+                    "Admin via devcmd.txt (tools/srv.ps1 cmd); " +
                     "`uploadlogs` sends this server's log for the current run id.");
                 string modeWarning = NetConfig.ModeWarning();
                 if (modeWarning != null) Log.LogWarning($"[Session] {modeWarning}");

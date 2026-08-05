@@ -7,9 +7,11 @@ description: Deploy to and test against the dedicated PunkMultiverse server (Doc
 
 The dedicated server is a Docker container running the Windows game under Wine, hosted on
 **Docker Desktop on the Windows desktop `osanchez-dt`** (Windows 11 Pro, i7-8700K, 12
-threads). This replaced the shared Pelican VPS, whose hypervisor suspended the whole VM
-~650ms every second under load — see `[[jitter-investigation]]` memory for that saga; do not
-re-diagnose it.
+threads). This replaced a rented VPS behind a control panel, whose hypervisor suspended the
+whole VM ~650ms every second under load — see `[[jitter-investigation]]` memory for that
+saga; do not re-diagnose it. **There is no panel, no SFTP and no hosting provider any more:
+everything is `ssh punkdt docker ...`.** `tools/srv.ps1` wraps the common operations and
+`docs/SERVER_DEPLOY.md` is the reference.
 
 > **Migrated off docker-in-WSL on 2026-07-27.** Everything now runs on the Docker Desktop
 > daemon (`docker context` = `desktop-linux`). Docker commands are plain `docker ...` — do

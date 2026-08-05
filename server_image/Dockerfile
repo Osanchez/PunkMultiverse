@@ -1,6 +1,6 @@
 # PUNK Multiverse dedicated coordinator — headless under Wine.
 #
-# Why a custom image instead of the stock games-steamcmd egg:
+# Why a custom image instead of a stock SteamCMD game-server image:
 #   * PUNK is a Steam *playtest* (appid 2850470). Playtest depots are NOT anonymously
 #     downloadable with `steamcmd +login anonymous` — they require an account that has been
 #     granted the playtest. So the standard "SteamCMD fetches the server" flow cannot work.
@@ -53,7 +53,7 @@ RUN dpkg --add-architecture i386 \
 COPY _bepinex_stage/ /opt/bepinex/
 
 # Baked base game (staged by build-image.sh from a local install). Copied to /home/container on
-# first boot by start-server.sh — Pelican mounts a volume over /home/container that would shadow
+# first boot by start-server.sh — a volume is mounted over /home/container that would shadow
 # anything placed there directly. This is the PUNK playtest build; keep the image appropriately
 # scoped to who should have it.
 COPY _game_stage/ /opt/game/
@@ -62,11 +62,11 @@ COPY entrypoint.sh /entrypoint.sh
 COPY start-server.sh /start-server.sh
 RUN chmod 0755 /entrypoint.sh /start-server.sh
 
-# Pelican runs game servers as an unprivileged user whose home is /home/container.
+# The server runs as an unprivileged user whose home is /home/container.
 RUN useradd -m -d /home/container -s /bin/bash container
 USER container
 ENV USER=container HOME=/home/container
 WORKDIR /home/container
 
-# tini -g forwards signals to the whole process group so a panel "Stop" reaches start-server.sh.
+# tini -g forwards signals to the whole process group so `docker stop` reaches start-server.sh.
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/entrypoint.sh"]

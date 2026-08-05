@@ -7,9 +7,9 @@ punkmultiverse-refs.zip
 refs-staging/
 
 
-# pelican_egg image build stages the BepInEx loader here (binaries, do not commit)
-pelican_egg/_bepinex_stage/
-pelican_egg/_game_stage/
+# server_image build stages the BepInEx loader and base game here (binaries, do not commit)
+server_image/_bepinex_stage/
+server_image/_game_stage/
 
 # Local credentials (SFTP access to the dedicated server, etc.) — never commit
 .secret/

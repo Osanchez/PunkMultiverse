@@ -1,8 +1,7 @@
 #!/bin/bash
-# Pelican/Pterodactyl container entrypoint. The panel injects every egg variable as an
-# environment variable and provides the parsed startup line in ${STARTUP}. We substitute any
-# {{VAR}} placeholders, print the resolved command, then exec it so the server process becomes
-# PID 1's child (tini) and receives stop signals directly.
+# Container entrypoint. Prints the environment banner, then EXECs the server script so the game
+# process becomes PID 1's (tini's) child and receives stop signals directly — `docker stop` has to
+# reach the mod for its save-and-notify shutdown to run, which it cannot do through a wrapper.
 set -euo pipefail
 cd /home/container
 
@@ -12,10 +11,10 @@ wine --version 2>/dev/null | sed 's/^/ wine:  /' || echo " wine:  (not found)"
 echo " user:  $(id -un)   home: ${HOME}"
 echo "======================================================================"
 
-# Default to the server script when launched outside the panel (e.g. `docker run` smoke tests).
+# The server script unless something overrides it — a smoke test can point STARTUP at a shell.
 STARTUP="${STARTUP:-bash /start-server.sh}"
 
-# {{SERVER_PORT}} -> ${SERVER_PORT}, then let the shell expand against the injected env.
+# {{SERVER_PORT}} -> ${SERVER_PORT}, then let the shell expand against the container env.
 MODIFIED_STARTUP="$(echo "${STARTUP}" | sed -e 's/{{/${/g' -e 's/}}/}/g')"
 MODIFIED_STARTUP="$(eval echo "${MODIFIED_STARTUP}")"
 

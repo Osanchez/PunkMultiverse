@@ -120,15 +120,15 @@ namespace PunkMultiverse
         /// the one way a dedicated server hosts the wrong ruleset for a whole session with nothing
         /// in the log to explain it. (An unrecognized mode NAME cannot be detected here: GameMode
         /// binds with an AcceptableValueList, so BepInEx rewrites a typo to the default before this
-        /// ever reads it. That check lives in pelican_egg/start-server.sh, which sees the raw
-        /// panel value.)</summary>
+        /// ever reads it. That check lives in server_image/start-server.sh, which sees the raw
+        /// operator value.)</summary>
         public static string ModeWarning()
         {
             string raw = (GameMode?.Value ?? "").Trim();
             if (raw.Length == 0 || raw.Equals("Standard", StringComparison.OrdinalIgnoreCase)) return null;
             return GameModesEnabled ? null
                 : $"GameMode is '{raw}' but EnableGameModes is false — hosting Standard. " +
-                  "Set EnableGameModes=1 (panel: Enable Game Modes) and restart to allow it.";
+                  "Set EnableGameModes=1 (ENABLE_GAME_MODES on a dedicated server) and restart to allow it.";
         }
         public static ConfigEntry<int> FpsLimit;
         public static ConfigEntry<bool> ResizableWindow;

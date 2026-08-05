@@ -475,7 +475,7 @@ namespace PunkMultiverse.Core
                     // this broadcasts SessionEnded + disconnect packets to clients and saves the
                     // economy stash synchronously), then exit after a short grace so the outgoing
                     // datagrams flush. The container stop hook writes this instead of hard-killing
-                    // Wine, so panel Stop/Restart preserves state.
+                    // Wine, so `docker stop`/`restart` preserves state.
                     Out("quit: ending session and shutting down");
                     Plugin.Log.LogInfo("[Dev] quit requested — ending session and exiting");
                     try { session.StopSession("server shutdown"); }
