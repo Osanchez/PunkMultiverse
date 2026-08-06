@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- gamescan — game-update change detector.
+
+       Reads the shipped game assembly with Mono.Cecil and records a signature hash AND a
+       normalized IL body hash for every member, then cross-references those against the
+       member set the mod actually depends on (extracted from the COMPILED mod DLL, so it
+       reflects real IL references rather than a regex over source).
+
+       This is a developer tool. It is not shipped and is not part of the mod build
+       (PunkMultiverse.csproj whitelists src/ only). -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>gamescan</AssemblyName>
+    <RootNamespace>GameScan</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- Repo root is three levels up: tools/gamescan/ -> tools/ -> repo. The repo lives inside
+         the game install, so the game's Managed dir and BepInEx core are siblings of it. -->
+    <RepoRoot>$(MSBuildProjectDirectory)\..\..</RepoRoot>
+    <GameDir Condition="'$(GameDir)' == ''">$(RepoRoot)\..</GameDir>
+    <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Mono.Cecil ships with BepInEx, which this repo already depends on. Copied local so
+         the tool runs standalone. -->
+    <Reference Include="Mono.Cecil">
+      <HintPath>$(BepInExCore)\Mono.Cecil.dll</HintPath>
+    </Reference>
+    <Reference Include="Mono.Cecil.Pdb">
+      <HintPath>$(BepInExCore)\Mono.Cecil.Pdb.dll</HintPath>
+    </Reference>
+    <Reference Include="Mono.Cecil.Rocks">
+      <HintPath>$(BepInExCore)\Mono.Cecil.Rocks.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>

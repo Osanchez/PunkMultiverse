@@ -4,10 +4,16 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>PunkMultiverse</AssemblyName>
     <RootNamespace>PunkMultiverse</RootNamespace>
-    <Version>0.1.241</Version>
+    <Version>0.1.242</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+
+    <!-- The mod's sources ALL live in src/. Default SDK globbing would compile every .cs
+         anywhere under the project dir — which silently swallowed the 776-file decompiled
+         game tree under gamescan/cache/ (424 errors). Whitelist src/ instead of blacklisting
+         each new folder, so nothing added later can poison the build. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <!-- Class libraries don't copy NuGet assemblies to bin by default; we need LiteNetLib.dll
          in the output so build.ps1 can deploy it next to the plugin. -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
@@ -17,6 +23,11 @@
     <ManagedDir>$(GameDir)\Punk_Data\Managed</ManagedDir>
     <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Paired with EnableDefaultCompileItems=false above. -->
+    <Compile Include="src/**/*.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- LiteNetLib: the "Udp" transport (Docker/LAN/no-Steam). Pure netstandard UDP with

@@ -19,6 +19,8 @@ on:
       - '.githooks/**'     # local git hooks — not part of the mod DLL
       - '.github/**'       # CI config itself — validate it with workflow_dispatch, not a release
       - '.claude/**'       # agent skills/config — not part of the mod DLL
+      - 'gamescan/**'      # game-API hashes/contract data — read by tooling, never compiled.
+                           # (The compiled-in copy is src/Core/GameBaseline.g.cs, which DOES build.)
   workflow_dispatch:
 
 permissions:

@@ -42,6 +42,9 @@ namespace PunkMultiverse
             // Straight after Init, never before: the audit's whole method is reading what BepInEx
             // did NOT hand to a Bind call, which is only meaningful once every Bind has run.
             ConfigAudit.Run(cfg);
+            // Before the first patch is applied: if Steam has moved the base game underneath us,
+            // say so by name now rather than letting it surface later as unexplained behaviour.
+            GameGuard.Run();
             RuntimeInstrumentation.Initialize(Thread.CurrentThread);
 
             // Growth watchdog: register the bounded-in-steady-state collections whose unbounded

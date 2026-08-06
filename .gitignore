@@ -11,6 +11,14 @@ refs-staging/
 server_image/_bepinex_stage/
 server_image/_game_stage/
 
+# gamescan keeps a decompiled copy of the game so it can show you the actual change behind a
+# hash mismatch. THIS REPO IS PUBLIC — game source must never be committed. Only the derived
+# hashes (baseline.json) and the mod's own dependency list (contract.json) go in.
+gamescan/cache/
+gamescan/reports/
+tools/gamescan/bin/
+tools/gamescan/obj/
+
 # Local credentials, if any are ever needed — never commit. (Server access is Tailscale SSH with
 # the key in ~/.ssh/config; Docker Hub auth lives in ~/.docker/config.json. Neither is in here.)
 .secret/

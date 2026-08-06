@@ -15,7 +15,7 @@ csproj="PunkMultiverse.csproj"
 # Nothing that reaches the DLL? CI won't build it; don't burn a version. Keep this list and the
 # workflow's paths-ignore identical, or a commit bumps the version without producing a release —
 # or worse, forces every player onto a new build for a change to a test script they never run.
-if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$|^server_image/|^infra/|^tools/|^\.githooks/|^\.github/|^\.claude/)'; then
+if ! git diff --cached --name-only | grep -qvE '(\.md$|^\.gitignore$|^LICENSE$|^server_image/|^infra/|^tools/|^\.githooks/|^\.github/|^\.claude/|^gamescan/)'; then
     exit 0
 fi
 
