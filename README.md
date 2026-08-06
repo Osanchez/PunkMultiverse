@@ -211,10 +211,9 @@ the kill-credit ledger, station-unlock replication, and ship authority. Mode sel
 three existing messages (`StartRun`, `LobbyState`, `PartyLeaderSettings`); only ring state,
 placements, care packages and broadcast toasts have messages of their own.
 
-It is feature-flagged off by default (`EnableGameModes`). A dedicated server picks its
-ruleset in `config.cfg`; a player hosting picks it on a GAME MODE row in the lobby. Either
-way the *host* owns the ruleset for its own runs — joining someone else's BR server works
-regardless of your own setting.
+A dedicated server picks its ruleset in `config.cfg` (`GameMode`); a player hosting picks it
+on a GAME MODE row in the lobby. Either way the *host* owns the ruleset for its own runs —
+joining someone else's BR server works regardless of your own setting.
 
 | | Standard | Battle Royale |
 |---|---|---|

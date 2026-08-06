@@ -1694,18 +1694,13 @@ namespace PunkMultiverse.Core
             HpScaling = _pendingHpScaling;
             // A dedicated server has no pre-lobby screen — its ruleset comes from config and
             // holds for every run it hosts (restart to change). A player-host uses their pick.
-            // Feature-flagged: with game modes off, nothing this machine hosts is anything but
-            // Standard, whatever the config or a stale menu selection says.
-            LobbyMode = !NetConfig.GameModesEnabled ? Protocol.GameMode.Standard
-                : NetConfig.IsCoordinator ? NetConfig.ConfiguredMode : _pendingMode;
+            LobbyMode = NetConfig.IsCoordinator ? NetConfig.ConfiguredMode : _pendingMode;
             // Logged for EVERY mode, not just Battle Royale: a line that appears only when the
             // alternate mode took effect means its absence proves nothing, and "we thought the
             // server was in BR" is precisely the confusion this line exists to settle.
             Plugin.Log.LogInfo($"[Session] lobby mode = {LobbyMode.ToString().ToUpperInvariant()}"
                 + (LobbyMode == Protocol.GameMode.BattleRoyale ? " (docs/BATTLE_ROYALE.md)" : "")
                 + (NetConfig.IsCoordinator ? " — from config, applies to every run until restart" : ""));
-            if (NetConfig.IsCoordinator && NetConfig.ModeWarning() is string modeWarning)
-                Plugin.Log.LogWarning($"[Session] {modeWarning}");
             _pendingHostSeed = 0;
             _pendingMode = Protocol.GameMode.Standard;
             _pendingFriendlyFire = false;

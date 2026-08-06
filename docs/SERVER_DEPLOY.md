@@ -112,7 +112,6 @@ docker run -d --name punkmv --restart unless-stopped \
   -e ENABLE_ADMIN_COMMANDS=1 \
   -e SERVER_PORT=7778 \
   -e SERVER_ADDRESS=192.168.1.226 \
-  -e ENABLE_GAME_MODES=1 \
   -e GAME_MODE=BattleRoyale \
   -e LOG_LEVEL=Verbose \
   osanchezdev/punk-punkmultiverse:latest

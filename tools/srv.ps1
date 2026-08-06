@@ -112,7 +112,7 @@ switch ($Action) {
         Write-Host "$Action`: $Container"
     }
     "recreate" {
-        # The full run line. Only these six -e vars are ours; everything else in `docker inspect`
+        # The full run line. Only these five -e vars are ours; everything else in `docker inspect`
         # (PATH, WINEPREFIX, DISPLAY, HOME, ...) comes from the image and must NOT be re-passed.
         # Deliberately no BR_* variables: match tuning lives in server.cfg, and a second source of
         # truth for it silently loses to that file.
@@ -121,7 +121,7 @@ switch ($Action) {
         RemoteRun ("docker run -d --name $Container --restart unless-stopped -p 7778:7778/udp " +
              "-v punkmv-data:/home/container " +
              "-e ENABLE_ADMIN_COMMANDS=1 -e SERVER_PORT=7778 -e SERVER_ADDRESS=192.168.1.226 " +
-             "-e ENABLE_GAME_MODES=1 -e GAME_MODE=BattleRoyale -e LOG_LEVEL=Verbose " +
+             "-e GAME_MODE=BattleRoyale -e LOG_LEVEL=Verbose " +
              "osanchezdev/punk-punkmultiverse:latest")
         Write-Host "recreated $Container on the latest image"
     }

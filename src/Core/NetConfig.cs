@@ -63,7 +63,6 @@ namespace PunkMultiverse
         public static ConfigEntry<float> EmptyServerResetSeconds;
         public static ConfigEntry<int> ServerFrameRateCap;
         public static ConfigEntry<bool> PreGenerateWorld;
-        public static ConfigEntry<bool> EnableGameModes;
         public static ConfigEntry<string> GameMode;
         public static ConfigEntry<int> BrMatchMinutes;
         public static ConfigEntry<int> BrRingStages;
@@ -98,38 +97,18 @@ namespace PunkMultiverse
         public static ConfigEntry<float> BrWinnerSelfDestructSeconds;
         public static ConfigEntry<string> InstallId;
 
-        /// <summary>Master switch for alternate game modes. While it is off, nothing can select
-        /// anything but Standard: the GAME MODE row does not appear when self-hosting and a
-        /// dedicated server ignores its GameMode value. Governs what THIS machine may host — a
-        /// client joining a server that is running Battle Royale still plays it, because the run's
-        /// ruleset is the host's to decide.</summary>
-        public static bool GameModesEnabled => EnableGameModes != null && EnableGameModes.Value;
-
-        /// <summary>Dedicated-server ruleset for every run it hosts (restart to change), or
-        /// Standard while game modes are switched off. A self-hosting player picks the mode on the
-        /// GAME SETTINGS screen instead; this value is only the server's default.
-        /// See docs/BATTLE_ROYALE.md.</summary>
+        /// <summary>Dedicated-server ruleset for every run it hosts (restart to change). A
+        /// self-hosting player picks the mode on the GAME SETTINGS screen instead; this value is
+        /// only the server's default. See docs/BATTLE_ROYALE.md.
+        /// (Battle Royale was feature-flagged behind Session.EnableGameModes through v0.1.242 —
+        /// see ConfigAudit.Retired. It is unconditional now: the mode is done, not experimental,
+        /// and the flag was one more setting standing between a player and the GAME MODE row.)</summary>
         public static Protocol.GameMode ConfiguredMode =>
-            GameModesEnabled
-            && GameMode != null && GameMode.Value != null
+            GameMode != null && GameMode.Value != null
             && GameMode.Value.Trim().Replace("_", "").Equals("BattleRoyale", StringComparison.OrdinalIgnoreCase)
                 ? Protocol.GameMode.BattleRoyale
                 : Protocol.GameMode.Standard;
 
-        /// <summary>Non-null when a mode was configured but the master switch will quietly veto it —
-        /// the one way a dedicated server hosts the wrong ruleset for a whole session with nothing
-        /// in the log to explain it. (An unrecognized mode NAME cannot be detected here: GameMode
-        /// binds with an AcceptableValueList, so BepInEx rewrites a typo to the default before this
-        /// ever reads it. That check lives in server_image/start-server.sh, which sees the raw
-        /// operator value.)</summary>
-        public static string ModeWarning()
-        {
-            string raw = (GameMode?.Value ?? "").Trim();
-            if (raw.Length == 0 || raw.Equals("Standard", StringComparison.OrdinalIgnoreCase)) return null;
-            return GameModesEnabled ? null
-                : $"GameMode is '{raw}' but EnableGameModes is false — hosting Standard. " +
-                  "Set EnableGameModes=1 (ENABLE_GAME_MODES on a dedicated server) and restart to allow it.";
-        }
         public static ConfigEntry<int> FpsLimit;
         public static ConfigEntry<bool> ResizableWindow;
         public static ConfigEntry<bool> HostViaSidecar;
@@ -364,12 +343,6 @@ namespace PunkMultiverse
                 "own ~6s. Legal because a dedicated server owns the seed (DIRECT CONNECT clients " +
                 "never send one); if a party leader supplies a different seed, the pre-built " +
                 "world is discarded and generation runs at START as before.");
-            EnableGameModes = cfg.Bind("Session", "EnableGameModes", false,
-                "Master switch for alternate game modes (currently Battle Royale). OFF means every " +
-                "run is the normal co-op game: the GAME MODE row is hidden when you host, and a " +
-                "dedicated server ignores its GameMode setting. Turn this on to make mode " +
-                "selection available. Joining someone else's Battle Royale server still works " +
-                "either way — the host decides the ruleset for its own runs.");
             GameMode = cfg.Bind("Session", "GameMode", "Standard",
                 new ConfigDescription(
                     "Ruleset for runs this DEDICATED SERVER hosts (takes effect on restart). " +

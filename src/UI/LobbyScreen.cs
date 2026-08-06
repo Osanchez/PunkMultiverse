@@ -700,17 +700,12 @@ namespace PunkMultiverse.UI
                 new Vector2(455, 0), new Vector2(150, 54), () => { if (_seedInput != null) _seedInput.text = ""; }, 16);
 
             // GAME MODE row ------------------------------------------------------------
-            // Feature-flagged: with EnableGameModes off the row is not built at all, so the panel
-            // looks exactly as it did before the mode existed.
-            if (NetConfig.GameModesEnabled)
-            {
-                var modeRow = MakeSettingsRow(_seedPanel.transform, "GAME MODE",
-                    "BATTLE ROYALE: LAST SHIP ALIVE WINS", 168);
-                _modeStandard = UiTheme.MakeButton(modeRow, "Btn_ModeStd", "STANDARD",
-                    new Vector2(235, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.Standard), 22);
-                _modeBr = UiTheme.MakeButton(modeRow, "Btn_ModeBR", "ROYALE",
-                    new Vector2(440, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.BattleRoyale), 22);
-            }
+            var modeRow = MakeSettingsRow(_seedPanel.transform, "GAME MODE",
+                "BATTLE ROYALE: LAST SHIP ALIVE WINS", 168);
+            _modeStandard = UiTheme.MakeButton(modeRow, "Btn_ModeStd", "STANDARD",
+                new Vector2(235, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.Standard), 22);
+            _modeBr = UiTheme.MakeButton(modeRow, "Btn_ModeBR", "ROYALE",
+                new Vector2(440, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.BattleRoyale), 22);
 
             // FRIENDLY FIRE row --------------------------------------------------------
             var ffRow = MakeSettingsRow(_seedPanel.transform, "FRIENDLY FIRE",
@@ -778,7 +773,6 @@ namespace PunkMultiverse.UI
         /// gates regardless of what the toggle says).</summary>
         private void SetMode(Protocol.GameMode mode, bool silent = false)
         {
-            if (!NetConfig.GameModesEnabled) mode = Protocol.GameMode.Standard;
             _mode = mode;
             bool br = mode == Protocol.GameMode.BattleRoyale;
             UiTheme.SetToggled(_modeStandard, !br);

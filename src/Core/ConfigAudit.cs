@@ -64,6 +64,9 @@ namespace PunkMultiverse.Core
                 "the log pipeline moved to presigned URLs; LogUploadUrl is the only endpoint knob",
             ["Diag.LogWebhookUrl"] =
                 "the Discord webhook path was dropped when log upload went S3-only",
+            ["Session.EnableGameModes"] =
+                "Battle Royale is no longer feature-flagged — the GAME MODE row always shows " +
+                "when self-hosting, and a dedicated server always honors GameMode",
         };
 
         private const string PaintGone =

@@ -125,8 +125,6 @@ namespace PunkMultiverse
                     $"game mode: {NetConfig.ConfiguredMode}, frame cap {(cap > 0 ? cap + " fps" : "none")}). " +
                     "Admin via devcmd.txt (tools/srv.ps1 cmd); " +
                     "`uploadlogs` sends this server's log for the current run id.");
-                string modeWarning = NetConfig.ModeWarning();
-                if (modeWarning != null) Log.LogWarning($"[Session] {modeWarning}");
             }
             else
             {

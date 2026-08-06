@@ -609,8 +609,7 @@ separate path.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `EnableGameModes` | `false` | **Master feature flag.** Off = every run is Standard, the GAME MODE row is hidden, and a server ignores `GameMode`. Joining someone else's BR server still works — the host owns its runs' ruleset. |
-| `GameMode` | `Standard` | `Standard` \| `BattleRoyale` (dedicated server; restart-applied; requires `EnableGameModes`. Self-host uses the GAME SETTINGS row) |
+| `GameMode` | `Standard` | `Standard` \| `BattleRoyale` (dedicated server; restart-applied. Self-host always has the GAME SETTINGS row instead — this key does not affect them) |
 | `BrMatchMinutes` | `20` | total match length; the final ring reaches 0 exactly here. The per-zone wait and closure times are derived from it on the curve above, so changing it stretches or compresses the pacing without flattening it |
 | `BrRingStages` | `12` | how many closures the ring makes. The curve is spread across whatever count is set, so short test matches keep the shape |
 | `BrZoneKillSeconds` | `60` | seconds to die from FULL health in the FIRST zone. The zone is not solid — you can always fly through — so this is the price of a crossing |

@@ -96,7 +96,6 @@ an unset knob never silently reverts a hand-edit.
 | `SERVER_PORT` | `7778` | UDP port to bind, mapped to the mod's `UdpPort`. |
 | `SERVER_ADDRESS` | `0.0.0.0` | Advertised join host (written into the join code). |
 | `AUTO_START_RUN` | `0` | `1` auto-launches the run; `0` waits for the admin to press START. |
-| `ENABLE_GAME_MODES` | `0` | Master flag for game modes; required before `GAME_MODE` does anything. |
 | `GAME_MODE` | `Standard` | `Standard` or `BattleRoyale`. Normalized before it is written, because the mod's value list would silently rewrite a typo to `Standard`. |
 | `HP_SCALING_PER_PLAYER` | `0.25` | Enemy HP multiplier added per player. |
 | `COIN_DESPAWN_SECONDS` | `45` | Gold-coin lifetime. |

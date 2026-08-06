@@ -28,7 +28,7 @@ GAME_DIR="${GAME_DIR:-/home/container}"
 # restart (2026-07-28). Anything NOT listed as explicitly set is now left alone: the persisted
 # config.cfg wins, and failing that the mod's own defaults do.
 _EXPLICIT_VARS=""
-for _v in ENABLE_GAME_MODES GAME_MODE BR_MATCH_MINUTES BR_RING_STAGES \
+for _v in GAME_MODE BR_MATCH_MINUTES BR_RING_STAGES \
           BR_CARE_PACKAGE_MINUTES BR_PVP_DAMAGE_SCALE BR_ENEMY_HP_SCALE \
           BR_MIN_PLAYERS; do
     eval "_isset=\${${_v}+yes}"
@@ -59,10 +59,8 @@ COIN_DESPAWN_SECONDS="${COIN_DESPAWN_SECONDS:-45}"
 EMPTY_SERVER_RESET_SECONDS="${EMPTY_SERVER_RESET_SECONDS:-120}"  # all players gone -> fresh lobby after this grace (0 = never)
 SERVER_FRAME_RATE_CAP="${SERVER_FRAME_RATE_CAP:-120}"            # headless frame cap (0 = uncapped; uncapped wastes CPU)
 
-# Game mode. OFF by default: every run is the normal co-op game and the rest of this block is
-# ignored. Set ENABLE_GAME_MODES=1 and GAME_MODE=BattleRoyale to run last-ship-standing matches
-# (docs/BATTLE_ROYALE.md). The BR_* knobs only matter once that is on.
-ENABLE_GAME_MODES="${ENABLE_GAME_MODES:-0}"           # 1 = allow modes other than Standard
+# Game mode. Defaults to the normal co-op game. Set GAME_MODE=BattleRoyale to run
+# last-ship-standing matches (docs/BATTLE_ROYALE.md); the BR_* knobs only matter once that is set.
 GAME_MODE="${GAME_MODE:-Standard}"                    # Standard | BattleRoyale
 # These two ARE the ring schedule. Every zone's safe window and closure time are derived from them
 # on a curve (long windows early, near none late) — there is no per-zone knob to set any more.
@@ -253,9 +251,6 @@ set_cfg "Session"   "EnemyHealthScalePerPlayer" "${HP_SCALING_PER_PLAYER}" "${CF
 set_cfg "Session"   "CoinDespawnSeconds" "${COIN_DESPAWN_SECONDS}" "${CFG}"
 set_cfg "Session"   "EmptyServerResetSeconds" "${EMPTY_SERVER_RESET_SECONDS}" "${CFG}"
 set_cfg "Session"   "ServerFrameRateCap" "${SERVER_FRAME_RATE_CAP}" "${CFG}"
-# Game mode (see the ENABLE_GAME_MODES block above). Written unconditionally so flipping the
-# variable back to 0 actually reverts the server to Standard on the next boot.
-if [ "${ENABLE_GAME_MODES}" = "1" ]; then GAME_MODES_CFG="true"; else GAME_MODES_CFG="false"; fi
 # Normalize GAME_MODE to the exact spelling the mod accepts. This has to happen HERE: the mod
 # binds GameMode with an AcceptableValueList, so BepInEx silently rewrites anything else to
 # Standard before the mod can see (or complain about) it. A typo would otherwise cost a
@@ -266,7 +261,6 @@ case "$(printf '%s' "${GAME_MODE}" | tr -d '_ ' | tr '[:upper:]' '[:lower:]')" i
     *)  log "WARNING: GAME_MODE='${GAME_MODE}' is not a recognized mode - falling back to Standard (valid: Standard, BattleRoyale)"
         GAME_MODE="Standard" ;;
 esac
-set_cfg "Session"   "EnableGameModes" "${GAME_MODES_CFG}" "${CFG}"
 # Everything below is written ONLY if the operator actually set the variable. An unset knob leaves
 # whatever is already in config.cfg (see the was_set block at the top of this file): a variable the
 # operator actually set stays authoritative, and hand-edits survive a restart instead of being
@@ -324,14 +318,12 @@ else
 fi
 
 log "config.cfg written (Transport=Udp UdpPort=${SERVER_PORT} coordinator=1 autoLaunch=$(bool "${AUTO_START_RUN}"))"
-if [ "${ENABLE_GAME_MODES}" = "1" ]; then
+if [ "${GAME_MODE}" != "Standard" ]; then
     log "game mode: ${GAME_MODE} (match ${BR_MATCH_MINUTES}m over ${BR_RING_STAGES} ring zones, drops every ${BR_CARE_PACKAGE_MINUTES}m)"
     log "  the mod logs the derived per-zone wait/closure ladder at match start; it also reports"
     log "  any retired or misspelled config.cfg key on boot — grep [Config]"
-elif [ "${GAME_MODE}" != "Standard" ]; then
-    log "WARNING: GAME_MODE=${GAME_MODE} but ENABLE_GAME_MODES is not 1 - hosting Standard. Set Enable Game Modes to 1 to allow it."
 else
-    log "game mode: Standard (alternate modes disabled - set ENABLE_GAME_MODES=1 to allow Battle Royale)"
+    log "game mode: Standard"
 fi
 log "the server's own banner reports the mode it actually resolved - trust that line over this one"
 
