@@ -185,6 +185,29 @@ namespace PunkMultiverse.Patches
             //     owners (UIScreen's SwitchCurrentActionMap vs ConsumableWheel's raw Enable/Disable)
             //     fight over the same action maps.
             // Skip the open body in both cases; __state carries that decision to the postfix.
+            //
+            // A redundant open that came from the PAUSE KEY ITSELF is closed instead of dropped —
+            // otherwise ESC opens the overlay and then does nothing at all, which is what a tester
+            // hit on 2026-08-07. Vanilla reaches Close() through Update's `else if (isOpen &&
+            // backAction)` branch, and only ever gets there because the pause action is DEAD while
+            // the overlay is up: UIScreen.Open switched the ship map off, and a disabled action
+            // never performs. KeepShipControllableWhilePaused (below) deliberately switches that
+            // map back on, so in a net run the pause action does perform, wins the if/else, and
+            // arrives here — where suppressing it removed vanilla's own way out. Closing restores
+            // the single-player behaviour rather than inventing a new one.
+            private static readonly FieldInfo PauseActionField = AccessTools.Field(typeof(PauseScreen), "pauseAction");
+            private static readonly FieldInfo PauseShipManagerField = AccessTools.Field(typeof(PauseScreen), "shipManager");
+
+            /// <summary>Was this open triggered by the pause key this frame, rather than by code?
+            /// Asked with the game's own query, so programmatic opens (InputSelectorPopup on device
+            /// loss) stay plain suppressions and do not toggle the menu shut under the player.</summary>
+            private static bool PausePressedThisFrame(PauseScreen screen)
+            {
+                var action = (PauseActionField?.GetValue(screen) as InputActionReference)?.action;
+                var ships = PauseShipManagerField?.GetValue(screen) as ShipManager;
+                return action != null && ships != null && ships.WasPerformedThisFrame(action);
+            }
+
             private static bool Prefix(PauseScreen __instance, out bool __state)
             {
                 __state = false;
@@ -193,6 +216,12 @@ namespace PunkMultiverse.Patches
                 if (alreadyOpen || MenuMutex.WheelOpen)
                 {
                     __state = true; // redundant/overlapping — skip body AND the postfix re-layout
+                    if (alreadyOpen && PausePressedThisFrame(__instance))
+                    {
+                        Plugin.Log.LogDebug("[Pause] pause key pressed while open — closing (net run)");
+                        __instance.Close();
+                        return false;
+                    }
                     Plugin.Log.LogDebug($"[Pause] suppressed pause open (alreadyOpen={alreadyOpen} wheelOpen={MenuMutex.WheelOpen})");
                     return false;
                 }
