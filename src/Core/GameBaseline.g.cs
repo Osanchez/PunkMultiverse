@@ -189,7 +189,7 @@ namespace PunkMultiverse.Core
             "WeaponModuleData",
         };
 
-        /// <summary>"Type|Member|Arity" the mod depends on (442).
+        /// <summary>"Type|Member|Arity" the mod depends on (450).
         /// Arity -1 means a field or property, where it does not apply.</summary>
         public static readonly string[] Members =
         {
@@ -434,6 +434,9 @@ namespace PunkMultiverse.Core
             "PauseScreen|Close|0",
             "PauseScreen|Open|0",
             "PauseScreen|Update|0",
+            "PauseScreen|isOpen|-1",
+            "PauseScreen|pauseAction|-1",
+            "PauseScreen|shipManager|-1",
             "PhysicsProjectile|Shoot|0",
             "PhysicsProjectile|SpawnExplosion|0",
             "PhysicsProjectile|set_Target|1",
@@ -505,9 +508,12 @@ namespace PunkMultiverse.Core
             "ShipHud|get_Ship|0",
             "ShipInput|get_AimDirection|0",
             "ShipInput|get_ShipControlActionMap|0",
+            "ShipInput|primaryShooter|-1",
+            "ShipInput|secondaryShooter|-1",
             "ShipManager|AssignTheme|2",
             "ShipManager|OnUpgradeInstalled|2",
             "ShipManager|SpawnShipGameObjects|2",
+            "ShipManager|WasPerformedThisFrame|1",
             "ShipManager|entityManager|-1",
             "ShipManager|get_Ships|0",
             "ShipManager|ships|-1",
@@ -549,12 +555,14 @@ namespace PunkMultiverse.Core
             "Ship|get_SecondaryWeapon|0",
             "Ship|get_Unit|0",
             "Ship|shipInput|-1",
+            "Shooter|Block|1",
             "Shooter|OnShoot|-1",
             "Shooter|PlayContinousSound|0",
             "Shooter|PlayWarmupSound|0",
             "Shooter|SetShooting|1",
             "Shooter|StopContinousSound|0",
             "Shooter|StopWarmupSound|0",
+            "Shooter|Unblock|1",
             "Shooter|get_Weapon|0",
             "Shooter|weaponHolder|-1",
             "ShopItemList|get_Items|0",
