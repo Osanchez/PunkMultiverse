@@ -10,7 +10,10 @@ SavableEntity (root)
 ├── Unit                : SavableComponent<Unit.Data>       — the "alive thing" aspect
 │     Data: resourceTanks (Dictionary<Resource,ResourceTank> — HP IS a tank),
 │           resourceRechargers, shields (List<ShieldData>: resource+effectiveness),
-│           burnProperties + _burnLevel (IsOnFire above threshold), minions (HashSet)
+│           burnProperties + _burnLevel (IsOnFire above threshold), minions (HashSet),
+│           hasInfiniteResource  <-- see below,
+│           Owner (EntityData), ConnectionToOwner (OwnerConnectionType),
+│           IsInvisible, SpawnRoomIndex
 ├── Enemy               : SavableComponent<Enemy.Data>      — enemy-specific metadata
 │     Data: coopResourceMultiplier, countsAsKill
 │     also: embeddedModule (ModuleData), primaryWeapon (WeaponModuleData)
@@ -40,6 +43,13 @@ StopAction, WaitForTargetAction, ForgetTargetAction, ChangeAnimatorParamAction,
 RepeateChildrenAction` — gated by `TargetVisibleCondition, TargetIsCloseCondition,
 TargetIsAheadCondition, EnemyVisibleCondition, GotAttackedCondition, TimeoutCondition,
 IsInLightCondition, HasOwnerCondition, OwnerIsWithinRangeCondition, HasLessMinionCondition`.
+
+**`hasInfiniteResource` makes a unit unkillable.** `Unit.Data.HasInfiniteResource` is a single
+flag that sets `isInfinite` on *every* tank the unit owns — and HP is a tank. Its setter flips
+all existing tanks, and `InstallNewTank` makes every future tank inherit it, so clearing it once
+does not stick. An infinite tank silently refuses to decrease, which reads downstream as a
+damage pipeline that applies hits and changes nothing. See
+[`VANILLA_GOTCHAS.md`](VANILLA_GOTCHAS.md#an-infinite-tank-silently-refuses-to-decrease).
 
 **Articulated bodies:** some enemies (`Enemy_Fish`, worm types) carry jointed child
 Rigidbody2Ds (tails/segments) that only local physics moves. All hard teleports must go

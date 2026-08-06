@@ -48,14 +48,42 @@ Terrain cells are **not** entities — they're a separate grid system ([terrain]
 - **LOCAL** — intentionally per-machine (cosmetics, instanced loot).
 - **GAP?** — not synced and it's unclear whether that's fine; verify in playtest.
 
-## Files
+## Read first
+
+- **[VANILLA_GOTCHAS.md](VANILLA_GOTCHAS.md)** — where the base game does something surprising,
+  and what it already cost. Read before changing anything that touches game code.
+- [GAMESCAN.md](GAMESCAN.md) — how to tell what a game update changed, and whether it can break us.
+- **[api/](api/)** — mechanically generated API index for all 1201 game types. Complete and never
+  stale, but it explains nothing. Use it for signatures; use the files below for meaning.
+
+## World & entities
 
 - [enemies.md](enemies.md) — enemy anatomy, behavior composition, full observed roster
 - [bosses.md](bosses.md) — boss state machinery, minibosses
-- [containers.md](containers.md) — crates/boxes and destructible props
+- [players-and-projectiles.md](players-and-projectiles.md) — ships, minions, weapons, projectiles
 - [plants.md](plants.md) — plants, branches, fruits
-- [terrain.md](terrain.md) — the cell grid, destruction, regrowth, burning
-- [environment.md](environment.md) — fog, light, background, hazards, ambient
+- [containers.md](containers.md) — crates/boxes and destructible props
 - [interactables.md](interactables.md) — stations, scanners, instruments
 - [pickups-and-loot.md](pickups-and-loot.md) — loot pipeline and pickups
-- [players-and-projectiles.md](players-and-projectiles.md) — ships, minions, weapons, projectiles
+
+## World construction
+
+- [level-generation.md](level-generation.md) — graph → biomes → heightmap → rasterization, and determinism
+- [terrain.md](terrain.md) — the cell grid, destruction, regrowth, burning
+- [environment.md](environment.md) — background, hazards, ambient
+- [fog-and-lighting.md](fog-and-lighting.md) — fog is a gas simulation; light is baked and gameplay-relevant
+
+## Progression & build
+
+- [modules-and-ship-building.md](modules-and-ship-building.md) — the grid, clusters, and the power cap
+- [shops-and-economy.md](shops-and-economy.md) — currencies, purchase flow, re-rolling repeat items
+
+## Presentation & framework
+
+- [game-state-flow.md](game-state-flow.md) — boot order, the four static events, owner-keyed pause
+- [save-and-serialization.md](save-and-serialization.md) — entity/data split, mementos, Odin + LZF
+- [ui-and-screens.md](ui-and-screens.md) — two UI stacks, screens own pause and input mode
+- [map-and-minimap.md](map-and-minimap.md) — and the information-leak surface
+- [input.md](input.md) — action maps are the state
+- [camera.md](camera.md) — ProCamera2D targets; the camera is off during the pre-start hold
+- [audio.md](audio.md) — string-named sfx, handle-based playback
