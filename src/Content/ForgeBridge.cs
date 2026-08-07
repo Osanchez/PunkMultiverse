@@ -40,9 +40,12 @@ namespace PunkMultiverse.Content
         internal static bool Present { get; private set; }
 
         /// <summary>What this build can drive: "none" | "observe" | "reflection" | "api-1".
-        /// Phase 0 ships "observe" — detect, report, and hold its loot injection off during a
-        /// run. Redirecting its content root needs either the upstream hook or a transpiler
-        /// into its LoadAll bodies, and neither is in this build.</summary>
+        ///
+        /// "observe" is detect, report, and hold its loot injection off during a run.
+        /// "reflection" adds redirecting its content roots — which turned out NOT to need the
+        /// upstream hook or a transpiler, because all three roots are public static methods with
+        /// a single call site each. See <see cref="ForgeContentSwap"/>; it decides which of the
+        /// two applies by whether those members are actually there.</summary>
         internal static string Tier { get; private set; } = "none";
 
         /// <summary>True while a net run should keep WeaponForge out of the vanilla loot tables.
@@ -72,7 +75,9 @@ namespace PunkMultiverse.Content
                 _lootPrefix = _lootPatchType != null ? AccessTools.Method(_lootPatchType, "Prefix") : null;
                 _lootDone = _lootPatchType != null ? AccessTools.Field(_lootPatchType, "_done") : null;
 
-                Tier = _registryType != null ? "observe" : "none";
+                ForgeContentSwap.Probe();
+                Tier = _registryType == null ? "none"
+                     : ForgeContentSwap.Available ? "reflection" : "observe";
                 Plugin.Log.LogInfo($"[Forge] WeaponForge detected (tier {Tier}) — " +
                     $"registry={(_registryType != null ? "ok" : "MISSING")} " +
                     $"lootPrefix={(_lootPrefix != null ? "ok" : "MISSING")} " +

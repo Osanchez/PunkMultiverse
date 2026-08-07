@@ -72,6 +72,7 @@ Start with the area doc, then the API index for exact signatures.
 - [`ENTITY_SYNC_ARCHITECTURE.md`](docs/ENTITY_SYNC_ARCHITECTURE.md) — residency/authority contract, the design of record
 - [`BATTLE_ROYALE.md`](docs/BATTLE_ROYALE.md) — ring schedule, drop, contested loot, PvP
 - [`GAMESCAN.md`](docs/GAMESCAN.md) — detecting what a game update changed
+- [`CONTENT_SYNC.md`](docs/CONTENT_SYNC.md) — serving the host's custom content to joiners, and why the drop table depends on it
 
 **Game systems** (what the game does, independent of this mod)
 - [`enemies.md`](docs/enemies.md) · [`players-and-projectiles.md`](docs/players-and-projectiles.md) · [`plants.md`](docs/plants.md) · [`bosses.md`](docs/bosses.md)

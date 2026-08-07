@@ -56,6 +56,10 @@ namespace PunkMultiverse.Content
         private static List<ContentHash.Entry> _hostEntries;      // host: what we serve
         private static byte[] _hostSetHash;
         private static bool _hostReady;
+        // The folder the host serves, kept so WeaponForge can be pointed at the same set the
+        // clients are being given. Without this the host would keep its OWN weapons while
+        // everyone else switched to the served ones -- and the digest would refuse the run.
+        private static string _hostRoot;
 
         private static readonly Dictionary<byte, ContentState> PeerState = new Dictionary<byte, ContentState>();
         private static readonly Dictionary<byte, byte> PeerPercent = new Dictionary<byte, byte>();
@@ -126,8 +130,11 @@ namespace PunkMultiverse.Content
                     {
                         case ScanJob s:
                         {
-                            var entries = ContentStore.ScanDirectory(s.Root, s.MaxFile, out var skipped);
-                            var problems = ContentHash.Validate(entries);
+                            var scanned = ContentStore.ScanDirectory(s.Root, s.MaxFile, out var skipped);
+                            // Drop what cannot be published rather than offering it: a set with
+                            // one bad path is refused by every client IN FULL, so a single stray
+                            // file in ContentRoot would otherwise take the whole session down.
+                            var entries = ContentHash.Publishable(scanned, out var problems);
                             problems.AddRange(skipped);
                             // Host side: its own files become blobs, so serving reads the cache
                             // exactly the way a client's install does. One path, not two.
@@ -191,6 +198,10 @@ namespace PunkMultiverse.Content
             LocalState = ContentState.Idle;
             LocalFailure = null;
             HostSetHash = null;
+            _hostRoot = null;
+            // Whatever the session swapped in, the player gets their own content back. A no-op
+            // when nothing was ever swapped, which is the common case.
+            ForgeContentSwap.Restore();
         }
 
         internal static void CancelFor(ulong peer)
@@ -218,9 +229,10 @@ namespace PunkMultiverse.Content
             }
             ContentStore.EnsureDirectories();
             StartWorker();
+            _hostRoot = Path.IsPathRooted(root) ? root : Path.Combine(ModFolder.Dir, root);
             Jobs.Enqueue(new ScanJob
             {
-                Root = Path.IsPathRooted(root) ? root : Path.Combine(ModFolder.Dir, root),
+                Root = _hostRoot,
                 MaxFile = (long)NetConfig.ContentMaxFileMB.Value * 1024 * 1024,
             });
             Wake.Set();
@@ -481,12 +493,17 @@ namespace PunkMultiverse.Content
                         LocalState = ContentState.Satisfied;
                         if (s.Problems.Count > 0)
                         {
-                            Plugin.Log.LogWarning($"[Content] {s.Problems.Count} file(s) cannot be published:");
+                            Plugin.Log.LogWarning($"[Content] {s.Problems.Count} file(s) skipped, not served:");
                             for (int i = 0; i < Math.Min(6, s.Problems.Count); i++)
                                 Plugin.Log.LogWarning($"[Content]   {s.Problems[i]}");
                         }
                         Plugin.Log.LogInfo($"[Content] serving {s.Entries.Count} file(s), " +
                             $"set {ContentHash.ToHex(s.Hash).Substring(0, 12)}");
+                        // The host runs the set it serves. Only meaningful when ContentRoot is
+                        // NOT already WeaponForge's own folder -- but that is the case worth
+                        // supporting, because it lets a host curate what it serves without
+                        // disturbing what it plays with solo.
+                        if (s.Entries.Count > 0) ForgeContentSwap.SwapTo(_hostRoot);
                         break;
 
                     case Committed c:
@@ -512,6 +529,10 @@ namespace PunkMultiverse.Content
                             ActiveContentPath = i.Path;
                             Plugin.Log.LogInfo($"[Content] set {ContentHash.ToHex(i.SetHash).Substring(0, 12)} " +
                                 $"installed at {i.Path}");
+                            // Apply it before telling the host we have it: Done is what releases
+                            // the go-live gate, and the gate must not open on content that is on
+                            // disk but not loaded.
+                            ForgeContentSwap.SwapTo(i.Path);
                             SendDone(session, i.SetHash, true, "");
                             Jobs.Enqueue(new SweepJob
                             {

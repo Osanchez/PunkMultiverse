@@ -1591,6 +1591,12 @@ namespace PunkMultiverse.Core
         /// silent loss. Non-bulk content messages are small and rare, so they take the ordered
         /// outbox like any other reliable message.
         /// </summary>
+        /// <summary>The five content-transfer messages, which are lobby-time by design and so are
+        /// exempt from the "no gameplay traffic without a world" guard in Dispatch.</summary>
+        private static bool IsContentMsg(MsgType t) =>
+            t == MsgType.ContentOffer || t == MsgType.ContentNeed || t == MsgType.ContentChunk
+            || t == MsgType.ContentDone || t == MsgType.ContentStatus;
+
         internal bool SendContent<T>(ulong peer, T msg, bool bulk = false, bool toHost = false)
             where T : struct
         {
@@ -2919,7 +2925,16 @@ namespace PunkMultiverse.Core
             // Gameplay traffic can only be applied while a world exists (Loading covers rejoin
             // catch-up). After a run ends, in-flight kills/fire/cells from peers would land on
             // a destroyed level — drop them. Ping/Pong keep the lobby RTT alive.
+            //
+            // Content transfers are exempt for the same reason Ping/Pong are: they are LOBBY work
+            // by design. The whole point is that a joiner downloads while reading the lobby rather
+            // than after pressing START, and they ride Events because Control has to stay clear for
+            // the Welcome. Without this exemption every content message is dropped here, before
+            // the dispatch below ever sees it — the host logs a perfectly healthy "offering set
+            // ... to peer N" and the client logs absolutely nothing, forever. (Found by
+            // tools/content-test.ps1 on its first run, 2026-08-07.)
             if (channel != NetChannel.Control && type != MsgType.Ping && type != MsgType.Pong
+                && !IsContentMsg(type)
                 && State < SessionState.Loading)
                 return;
 

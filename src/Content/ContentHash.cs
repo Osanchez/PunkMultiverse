@@ -65,6 +65,31 @@ namespace PunkMultiverse.Content
         };
 
         /// <summary>
+        /// Never transferred, in either direction. Two separate reasons, and either alone would
+        /// be enough:
+        ///
+        /// A content channel that carries executables is a code-delivery channel. Joining a
+        /// stranger's server must not be a way to receive a DLL. Today nothing loads out of the
+        /// materialised tree except WeaponForge's own JSON/PNG/WAV readers — but that is a
+        /// property of today's code, and this feature deliberately points another plugin's
+        /// loader at that tree.
+        ///
+        /// And the obvious thing for a host to set ContentRoot to is WeaponForge's own plugin
+        /// folder, which contains WeaponForge.dll. Publishing that would redistribute a
+        /// third-party binary that carries no licence granting it, to every player who joins.
+        ///
+        /// This is a denylist rather than an allowlist on purpose: an allowlist would have to
+        /// guess which formats a content mod we do not control considers valid, and would refuse
+        /// legitimate content the first time one added a format. A denylist only has to know what
+        /// is dangerous, which is a much smaller and more stable set.
+        /// </summary>
+        private static readonly string[] ExecutableExtensions =
+        {
+            ".dll", ".exe", ".so", ".dylib", ".msi", ".com", ".scr", ".jar",
+            ".bat", ".cmd", ".ps1", ".psm1", ".sh", ".vbs", ".js", ".lnk",
+        };
+
+        /// <summary>
         /// Why a path cannot be published, or null if it is fine. The host refuses a set that
         /// contains one of these instead of handing every client something it cannot materialise
         /// — and a receiver applies the same rules to bytes it was sent, because the transfer
@@ -74,6 +99,9 @@ namespace PunkMultiverse.Content
         {
             if (string.IsNullOrEmpty(canonical)) return "empty path";
             if (canonical.Length > 200) return "path longer than 200 characters";
+            foreach (var ext in ExecutableExtensions)
+                if (canonical.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
+                    return $"'{ext}' files are never transferred";
             if (canonical.StartsWith("/", StringComparison.Ordinal)) return "absolute path";
             if (canonical.IndexOf(':') >= 0) return "drive or stream separator";
             foreach (var segment in canonical.Split('/'))
@@ -105,18 +133,46 @@ namespace PunkMultiverse.Content
         /// Windows — exactly the asymmetry that would make a dedicated server serve a set no
         /// player could ever install.
         /// </summary>
-        internal static List<string> Validate(IEnumerable<Entry> entries)
+        /// <summary>
+        /// Host side: split a scanned folder into what will actually be published and the reasons
+        /// the rest will not be.
+        ///
+        /// The host must DROP what it cannot publish, not merely report it. <see cref="Validate"/>
+        /// on its own is advisory, and a set that carries one bad path is refused by every client
+        /// in full — so a single stray file in ContentRoot would take the whole session down with
+        /// a message about the file rather than about the run. Dropping it means the set the host
+        /// offers is always installable, and the client-side Validate is what it is documented to
+        /// be: defence in depth against a hand-crafted offer, not the primary check.
+        /// </summary>
+        internal static List<Entry> Publishable(IEnumerable<Entry> entries, out List<string> problems)
         {
-            var problems = new List<string>();
+            problems = new List<string>();
+            var kept = new List<Entry>();
             var byFolded = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var e in entries)
             {
                 var why = Reject(e.Path);
                 if (why != null) { problems.Add($"{e.Path}: {why}"); continue; }
                 if (byFolded.TryGetValue(e.Path, out var other) && !string.Equals(other, e.Path, StringComparison.Ordinal))
+                {
                     problems.Add($"{e.Path}: differs from '{other}' only by case");
-                else byFolded[e.Path] = e.Path;
+                    continue;
+                }
+                byFolded[e.Path] = e.Path;
+                kept.Add(e);
             }
+            return kept;
+        }
+
+        /// <summary>
+        /// Receive side: is this offer installable, in full? A client does not get to drop the
+        /// parts it dislikes — the set hash covers every file, so an offer with a bad path is
+        /// refused whole. The host has already dropped anything unpublishable
+        /// (<see cref="Publishable"/>), so reaching here means a hand-crafted or corrupted offer.
+        /// </summary>
+        internal static List<string> Validate(IEnumerable<Entry> entries)
+        {
+            Publishable(entries, out var problems);
             return problems;
         }
 

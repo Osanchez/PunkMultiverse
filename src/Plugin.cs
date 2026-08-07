@@ -80,6 +80,9 @@ namespace PunkMultiverse
             // chainload on a machine where WeaponForge is absent or has been refactored, and take
             // the whole mod down with it. Absent is the common case.
             Content.ForgeBridge.ApplySuppressionPatch(_harmony);
+            // Same hand-application, same reason: three postfixes that let a session point
+            // WeaponForge at the host's content instead of the player's (Content/ForgeContentSwap).
+            Content.ForgeContentSwap.ApplyRootPatches(_harmony);
             // Clear crash debris from the content cache before anything can read it. Listings
             // only, no hashing, so it is cheap enough to run unconditionally.
             Content.ContentStore.BootSweep();
