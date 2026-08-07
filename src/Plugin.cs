@@ -94,6 +94,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<ClockGuard>();
             _runtime.AddComponent<NetHud>();
             _runtime.AddComponent<LobbyScreen>();
+            _runtime.AddComponent<ContentDownloadScreen>(); // draws above the lobby while syncing
             _runtime.AddComponent<MainMenuInjection>();
             _runtime.AddComponent<PlayerTracker>();
             _runtime.AddComponent<RingLavaVisual>();

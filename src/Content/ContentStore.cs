@@ -89,8 +89,25 @@ namespace PunkMultiverse.Content
                 long have = File.Exists(part) ? new FileInfo(part).Length : 0;
                 if (offset != have)
                 {
-                    error = $"chunk at {offset} but the file holds {have}";
-                    return false;
+                    // SELF-HEAL rather than refuse. A sender that restarts a blob from 0 (or from
+                    // any earlier point) is not an error to argue with -- it is the authority on
+                    // what it is about to send, and the bytes it sends are verified against the
+                    // digest before anything is committed, so accepting them is safe.
+                    //
+                    // Refusing instead is how this wedged a client permanently: every chunk was
+                    // rejected, the blob never completed, and the go-live gate held that player
+                    // out of every future session until they deleted the cache by hand. A
+                    // transfer that cannot recover from a disagreement about its own offset is
+                    // worse than one that simply re-sends.
+                    if (offset > have)
+                    {
+                        // A gap would leave a file whose length lies about its contents.
+                        error = $"chunk at {offset} leaves a gap (the file holds {have})";
+                        return false;
+                    }
+                    using (var trunc = new FileStream(part, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+                        trunc.SetLength(offset);
+                    have = offset;
                 }
                 using (var fs = new FileStream(part, FileMode.Append, FileAccess.Write, FileShare.None))
                     fs.Write(data, 0, count);

@@ -103,9 +103,14 @@ namespace PunkMultiverse.Content
         private static float _nextStatusAt;
 
         // host: per-peer send queues
+        /// <summary>A blob a peer asked for, and where it wants the stream to START. The offset
+        /// was previously dropped on the floor here, which meant resume never worked: the client
+        /// asked to continue from N, the host sent from 0, and the client rejected every chunk.</summary>
+        private struct Want { internal byte[] Digest; internal long From; }
+
         private sealed class Stream
         {
-            internal readonly Queue<byte[]> Wanted = new Queue<byte[]>();
+            internal readonly Queue<Want> Wanted = new Queue<Want>();
             internal byte[] Current;
             internal long Offset;
             internal FileStream Open;
@@ -332,13 +337,17 @@ namespace PunkMultiverse.Content
         {
             if (!_hostReady) return;
             if (!Streams.TryGetValue(peer, out var s)) Streams[peer] = s = new Stream();
-            int queued = 0;
+            int queued = 0, resumed = 0;
             for (int i = 0; i < msg.Digests.Length; i++)
             {
-                s.Wanted.Enqueue(msg.Digests[i]);
+                long from = i < msg.HaveBytes.Length ? (long)msg.HaveBytes[i] : 0;
+                if (from < 0) from = 0;
+                if (from > 0) resumed++;
+                s.Wanted.Enqueue(new Want { Digest = msg.Digests[i], From = from });
                 queued++;
             }
-            Plugin.Log.LogInfo($"[Content] peer {peer} needs {queued} blob(s)");
+            Plugin.Log.LogInfo($"[Content] peer {peer} needs {queued} blob(s)" +
+                (resumed > 0 ? $" ({resumed} resuming)" : ""));
         }
 
         // ---- host: streaming -------------------------------------------------------------------
@@ -365,13 +374,28 @@ namespace PunkMultiverse.Content
                     if (s.Current == null)
                     {
                         if (s.Wanted.Count == 0) { done.Add(peer); break; }
-                        s.Current = s.Wanted.Dequeue();
+                        var want = s.Wanted.Dequeue();
+                        s.Current = want.Digest;
                         s.Offset = 0;
-                        try { s.Open = (FileStream)ContentStore.OpenBlob(s.Current); }
+                        try
+                        {
+                            s.Open = (FileStream)ContentStore.OpenBlob(s.Current);
+                            // Honour the resume point. Clamped to the real length: a peer claiming
+                            // to hold more than exists gets the whole blob rather than an
+                            // exception, and the digest check at commit still has the last word.
+                            if (want.From > 0)
+                            {
+                                s.Offset = Math.Min(want.From, s.Open.Length);
+                                s.Open.Seek(s.Offset, SeekOrigin.Begin);
+                            }
+                        }
                         catch (Exception e)
                         {
                             Plugin.Log.LogWarning($"[Content] cannot serve a blob: {e.Message}");
-                            s.Current = null; continue;
+                            s.Current = null;
+                            try { s.Open?.Dispose(); } catch { }
+                            s.Open = null;
+                            continue;
                         }
                     }
 

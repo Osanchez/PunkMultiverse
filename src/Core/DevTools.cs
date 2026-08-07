@@ -1268,6 +1268,37 @@ namespace PunkMultiverse.Core
                     foreach (var sk in skippedFiles) Out($"contenthash:   skipped {sk}");
                     return;
                 }
+                case "screenshot":
+                {
+                    // The game photographs its own frame. Every Win32 route to this either reads a
+                    // screen REGION (which captures whatever else is on the desktop -- once, a
+                    // Zoom call) or asks a D3D window to redraw into a DC, which Unity answers
+                    // with black. ScreenCapture has neither problem: it is the framebuffer, so it
+                    // contains the game and nothing else, needs no focus, and includes the IMGUI
+                    // layer our modals draw in.
+                    string shotDir = Path.Combine(ModFolder.Dir, "screenshots");
+                    Directory.CreateDirectory(shotDir);
+                    string name = parts.Length > 1 ? parts[1] : "shot";
+                    foreach (var bad in Path.GetInvalidFileNameChars()) name = name.Replace(bad, '_');
+                    string file = Path.Combine(shotDir, name + ".png");
+                    try { if (File.Exists(file)) File.Delete(file); } catch { }
+                    // Written asynchronously, at the end of the current frame — the caller has to
+                    // wait for the file to appear rather than assume it is there on return.
+                    ScreenCapture.CaptureScreenshot(file);
+                    Out($"screenshot: capturing to {file}");
+                    return;
+                }
+                case "brpools":
+                {
+                    // The BR drop pools, ordered-fingerprinted. This is the instrument for the
+                    // claim the whole content feature exists to protect: every machine must roll
+                    // from the SAME ordered pool, since selection is by index and contested loot
+                    // is matched by ordinal. Asking directly beats inferring it from drop logs,
+                    // which only appear if something dropped -- a short match proved nothing.
+                    var fp = Modes.BattleRoyaleLootTables.PoolFingerprint(out int w, out int c);
+                    Out($"brpools: white={w} coloured={c} fingerprint={fp}");
+                    return;
+                }
                 case "contentcancel":
                 {
                     // Exactly what the modal's CANCEL AND LEAVE button does, so the headless

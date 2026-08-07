@@ -264,6 +264,22 @@ try {
     $seq = (CountIn $HostLog "\[Seq\]") + (CountIn $ClientLog "\[Seq\]") + $c1Seq
     Gate "sequencer clean (zero [Seq] gaps)" ($seq -eq 0) "total=$seq"
 
+    # --- content sync -------------------------------------------------------------------------
+    # A soak with no ContentRoot set does no content work at all, and these gates are then
+    # vacuously green. That is correct: they exist to catch the feature MISBEHAVING, not to
+    # require it. What must never happen is a failure passing unnoticed.
+    $cf = (CountIn $HostLog "\[Content\] failed:") + (CountIn $ClientLog "\[Content\] failed:")
+    $cv = (CountIn $HostLog "blob failed verification") + (CountIn $ClientLog "blob failed verification")
+    Gate "content sync: no failures" (($cf + $cv) -eq 0) "failed=$cf verifyRetries=$cv"
+
+    # The content worker is a BACKGROUND THREAD, and a background thread that does not stop is an
+    # already-observed class of bug on this project (the windowless zombie Punk.exe). It only logs
+    # a stop if it was ever started, so the gate is "no complaint", not "a stop happened" --
+    # requiring the stop line would fail every soak that never synced anything.
+    $cw = (CountIn $HostLog "\[Content\] worker did not stop") + (CountIn $ClientLog "\[Content\] worker did not stop")
+    $cwOk = (CountIn $HostLog "\[Content\] worker stopped") + (CountIn $ClientLog "\[Content\] worker stopped")
+    Gate "content worker stopped cleanly" ($cw -eq 0) "didNotStop=$cw stopped=$cwOk"
+
     # SummaryHeal is ON by default since WS9.1 v2: an occasional [Heal] is the system working
     # (a transient real divergence detected + repaired). The failure mode is a STORM — the same
     # segment re-healing forever (false-positive predicate or an un-healable divergence). A

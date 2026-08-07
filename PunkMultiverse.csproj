@@ -70,6 +70,9 @@
     <!-- Texture2D.EncodeToPNG, for the `dumpsprites` devcmd: exporting the game's own sprites so
          custom art can be authored against the real palette rather than an approximation. -->
     <Reference Include="UnityEngine.ImageConversionModule"><HintPath>$(ManagedDir)\UnityEngine.ImageConversionModule.dll</HintPath><Private>false</Private></Reference>
+    <!-- ScreenCapture, for the `screenshot` devcmd: the game photographs its own framebuffer, which
+         is the only capture route that cannot pick up anything else on the desktop. -->
+    <Reference Include="UnityEngine.ScreenCaptureModule"><HintPath>$(ManagedDir)\UnityEngine.ScreenCaptureModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.AudioModule">   <HintPath>$(ManagedDir)\UnityEngine.AudioModule.dll</HintPath>    <Private>false</Private></Reference>
     <Reference Include="UnityEngine.Physics2DModule"><HintPath>$(ManagedDir)\UnityEngine.Physics2DModule.dll</HintPath> <Private>false</Private></Reference>
     <Reference Include="UnityEngine.AnimationModule"><HintPath>$(ManagedDir)\UnityEngine.AnimationModule.dll</HintPath> <Private>false</Private></Reference>

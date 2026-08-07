@@ -1,5 +1,8 @@
 using PunkMultiverse.Core;
+using TMPro;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.UI;
 
 namespace PunkMultiverse.UI
 {
@@ -13,157 +16,184 @@ namespace PunkMultiverse.UI
     ///
     /// WHEN. Whenever this machine is downloading or installing — which is from the moment it
     /// joins, not from the moment the host presses START. The transfer is deliberately kicked off
-    /// straight after the Welcome so it runs while the player reads the lobby, and on a small pack
-    /// or a warm cache it finishes before anyone could have pressed anything. So the common case
-    /// is that this screen never appears at all, and when it does appear it is because there was
-    /// genuinely something to wait for. Either way it is always gone before ship selection in
-    /// co-op and before drop selection in Battle Royale, because neither can begin until the run
-    /// starts and the run cannot start while it is up.
+    /// straight after the Welcome so it runs while the player reads the lobby, so on a small pack
+    /// or a warm cache it finishes before anyone could have pressed anything and this never
+    /// appears at all. Either way it is gone before ship selection in co-op and drop selection in
+    /// Battle Royale, because neither can begin until the run starts and the run cannot start
+    /// while it is up. The gate is the mechanism; this only explains it.
     ///
-    /// IMGUI, drawn from Toast.OnGUI, for the same reason the drop screen is: it has to be able to
-    /// come up during Lobby AND Loading, and IMGUI needs no canvas to attach to.
+    /// uGUI, not IMGUI. The first version drew with GUI.skin and looked like a debug overlay
+    /// bolted onto the game — because it was. IMGUI cannot use the game's font at all: GUIStyle
+    /// takes a legacy UnityEngine.Font and PUNK's is a TMP_FontAsset, so there is no amount of
+    /// styling that would have fixed it. UiTheme exists precisely so injected UI is built from
+    /// the vanilla assets (prompt frame, Font_Minimum, the 8-bit hud SDF font, the real button
+    /// prefab) rather than approximating them.
     ///
     /// CANCEL leaves. Not "cancel and keep waiting" — there is nothing to wait for once you have
     /// refused the content, since the run cannot start without you and you cannot play with a
-    /// weapon set that differs from everyone else's. So the button says what it does: LEAVE.
-    /// Partial downloads stay on disk as digest-keyed .part files, so coming back later resumes.
+    /// weapon set that differs from everyone else's. Partial downloads stay on disk as
+    /// digest-keyed .part files, so coming back later resumes.
     /// </summary>
-    internal static class ContentDownloadScreen
+    internal sealed class ContentDownloadScreen : MonoBehaviour
     {
-        private static GUIStyle _title, _sub, _pct, _button, _hint;
-        private static bool _focused = true;     // the one button; keyboard/gamepad Submit fires it
-        private static float _shownAt;
+        private const float PanelW = 780f, PanelH = 380f;
+        private const float BarW = 620f, BarH = 26f;
 
-        private static readonly Color Barrel = new Color(0.13f, 0.13f, 0.15f);
+        private GameObject _canvasGo;
+        private GameObject _panel;
+        private TMP_Text _title, _sub, _pct, _bytes, _hint;
+        private RectTransform _barFill;
+        private byte _shownPct = 255;      // force the first refresh
 
-        internal static void Draw()
+        private void Update()
         {
             var session = NetSession.Instance;
-            if (session == null || !Content.ContentSync.Busy) { _shownAt = 0f; return; }
-            // Never over a live game. Content is lobby work, and if this somehow ran mid-match the
-            // right answer is to be invisible rather than to blind the player.
-            if (session.State >= SessionState.InGame) return;
+            bool want = session != null
+                        && Content.ContentSync.Busy
+                        && session.State < SessionState.InGame;
 
-            if (_shownAt <= 0f) _shownAt = Time.unscaledTime;
-            EnsureStyles();
+            if (!want)
+            {
+                if (_canvasGo != null && _canvasGo.activeSelf) _canvasGo.SetActive(false);
+                return;
+            }
 
-            int w = Mathf.Min(560, Screen.width - 80);
-            int h = 250;
-            var panel = new Rect((Screen.width - w) / 2f, (Screen.height - h) / 2f, w, h);
+            if (_canvasGo == null) Build();
+            if (_canvasGo == null) return;               // theme not harvested yet; try next frame
+            if (!_canvasGo.activeSelf) { _canvasGo.SetActive(true); _shownPct = 255; }
 
-            // Dimmed, not opaque: the player IS in the lobby and should keep seeing it. This is a
-            // wait, not a separate place — the opposite of the drop screen, where a solid backdrop
-            // is honest because the player genuinely is not in the game yet.
-            var prev = GUI.color;
-            GUI.color = new Color(0f, 0f, 0f, 0.78f);
-            GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.whiteTexture);
-            GUI.color = new Color(0.07f, 0.07f, 0.08f, 0.98f);
-            GUI.DrawTexture(panel, Texture2D.whiteTexture);
-            GUI.color = UiTheme.Accent;
-            DrawBorder(panel, 2);
-            GUI.color = prev;
+            Refresh();
 
-            float x = panel.x + 28, iw = panel.width - 56;
-            GUI.Label(new Rect(x, panel.y + 24, iw, 30), "DOWNLOADING CUSTOM CONTENT", _title);
-            GUI.Label(new Rect(x, panel.y + 58, iw, 22),
-                "This server uses custom weapons. Getting them now.", _sub);
-
-            // ---- the bar ----------------------------------------------------------------------
-            byte pct = Content.ContentSync.LocalPercent;
-            var bar = new Rect(x, panel.y + 100, iw, 22);
-            GUI.color = Barrel;
-            GUI.DrawTexture(bar, Texture2D.whiteTexture);
-            GUI.color = UiTheme.Accent;
-            GUI.DrawTexture(new Rect(bar.x, bar.y, bar.width * (pct / 100f), bar.height), Texture2D.whiteTexture);
-            GUI.color = new Color(1f, 1f, 1f, 0.18f);
-            DrawBorder(bar, 1);
-            GUI.color = prev;
-
-            GUI.Label(new Rect(x, bar.y + 30, iw, 24), $"{pct}%", _pct);
-            GUI.Label(new Rect(x, bar.y + 56, iw, 20), StatusLine(), _sub);
-
-            // ---- leave -------------------------------------------------------------------------
-            var btn = new Rect(panel.x + (panel.width - 220) / 2f, panel.y + panel.height - 62, 220, 34);
-            bool hover = btn.Contains(Event.current.mousePosition);
-            GUI.color = hover || _focused ? UiTheme.Accent : new Color(0.35f, 0.35f, 0.38f);
-            DrawBorder(btn, 2);
-            GUI.color = prev;
-            GUI.Label(btn, "CANCEL AND LEAVE", _button);
-
-            GUI.Label(new Rect(x, panel.y + panel.height - 26, iw, 18),
-                "Cancelling returns you to the main menu.", _hint);
-
-            bool clicked = GUI.Button(btn, GUIContent.none);
-            if (clicked || SubmitPressed() || CancelPressed()) Leave(session);
+            // A modal you cannot dismiss with Escape is a stuck lobby. Gamepad B as well —
+            // the drop screen had to be made navigable after the fact, and a modal with one
+            // button should be operable without a mouse from the start.
+            var kb = Keyboard.current; var pad = Gamepad.current;
+            if ((kb != null && kb.escapeKey.wasPressedThisFrame)
+                || (pad != null && pad.buttonEast.wasPressedThisFrame))
+            {
+                UiTheme.PlayClick();
+                Leave();
+            }
         }
 
-        /// <summary>What is actually happening, in bytes. A percentage alone cannot distinguish
-        /// "slow" from "stuck", and this is the line a player screenshots when it IS stuck.</summary>
-        private static string StatusLine()
+        private void Refresh()
         {
-            if (Content.ContentSync.LocalState == Content.ContentState.Installing)
-                return "Installing…";
+            byte pct = Content.ContentSync.LocalPercent;
+            bool installing = Content.ContentSync.LocalState == Content.ContentState.Installing;
+
+            if (pct != _shownPct)
+            {
+                _shownPct = pct;
+                _pct.text = pct + "%";
+                if (_barFill != null) _barFill.sizeDelta = new Vector2(BarW * (pct / 100f), BarH);
+            }
+
+            // Bytes, every frame: a percentage alone cannot tell "slow" from "stuck", and this is
+            // the line a player screenshots when it IS stuck.
             long done = Content.ContentSync.BytesDone, need = Content.ContentSync.BytesNeeded;
-            if (need <= 0) return "Starting…";
-            return $"{Mb(done)} of {Mb(need)}";
+            _bytes.text = installing ? "INSTALLING…"
+                : need <= 0 ? "STARTING…"
+                : $"{Mb(done)} OF {Mb(need)}";
         }
 
         private static string Mb(long bytes) =>
             bytes >= 1024 * 1024 ? $"{bytes / 1048576.0:0.0} MB" : $"{Mathf.Max(1, (int)(bytes / 1024))} KB";
 
-        private static void Leave(NetSession session)
+        private void Leave()
         {
-            Content.ContentSync.CancelLocal(session);
-            _shownAt = 0f;
+            Content.ContentSync.CancelLocal(NetSession.Instance);
+            if (_canvasGo != null) _canvasGo.SetActive(false);
             Toast.Show("LEFT — CUSTOM CONTENT NOT DOWNLOADED", 5f);
-            // Same exit the pause menu uses, so the disconnect-on-menu patch and every teardown it
-            // drives run exactly as they do for a normal leave. Reimplementing the exit here is how
-            // you end up with a half-torn-down session.
+            // The same exit the pause menu uses, so the disconnect-on-menu patch and every
+            // teardown it drives run exactly as they do for a normal leave. Reimplementing the
+            // exit here is how you end up with a half-torn-down session.
             MainMenuScene.Load();
         }
 
-        // Keyboard/gamepad. The drop screen had to be made navigable after the fact; a modal with
-        // one button should be operable without a mouse from the start. Escape/B also leaves,
-        // because a modal you cannot dismiss with Escape is the definition of a stuck lobby.
-        private static bool SubmitPressed()
+        private void Build()
         {
-            if (Event.current.type != EventType.KeyDown) return false;
-            var k = Event.current.keyCode;
-            return k == KeyCode.Return || k == KeyCode.KeypadEnter || k == KeyCode.Space;
+            // Its own canvas, ABOVE the lobby's 5000. The lobby is what this is explaining, so it
+            // has to stay visible underneath rather than be replaced.
+            _canvasGo = new GameObject("PunkMV_ContentScreen");
+            _canvasGo.transform.SetParent(transform, false);
+            var canvas = _canvasGo.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.sortingOrder = 5100;
+            var scaler = _canvasGo.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920, 1080);
+            scaler.matchWidthOrHeight = 1f;   // match height, same as the lobby
+            _canvasGo.AddComponent<GraphicRaycaster>();
+
+            // Dimmed rather than opaque: the player IS in the lobby and should keep seeing it.
+            // This is a wait, not a separate place — the opposite of the drop screen, where a
+            // solid backdrop is honest because the player genuinely is not in the game yet.
+            var dim = UiTheme.MakeImage(_canvasGo.transform, "Dim", new Color(0, 0, 0, 0.72f));
+            UiTheme.Stretch(dim.rectTransform);
+
+            var panel = UiTheme.MakeImage(_canvasGo.transform, "Panel",
+                UiTheme.PromptSprite != null ? new Color(0.34f, 0.34f, 0.34f, 1f)
+                                             : new Color(0.06f, 0.07f, 0.10f, 0.98f),
+                UiTheme.PromptSprite);
+            var prt = panel.rectTransform;
+            prt.anchorMin = prt.anchorMax = prt.pivot = new Vector2(0.5f, 0.5f);
+            prt.anchoredPosition = Vector2.zero;
+            prt.sizeDelta = new Vector2(PanelW, PanelH);
+            _panel = panel.gameObject;
+
+            _title = UiTheme.MakeText(_panel.transform, "Title", "DOWNLOADING CUSTOM CONTENT",
+                34, UiTheme.TextBright, UiTheme.PixelFont);
+            Place(_title.rectTransform, 0, PanelH / 2 - 52, PanelW - 60, 46);
+
+            _sub = UiTheme.MakeText(_panel.transform, "Sub",
+                "THIS SERVER USES CUSTOM WEAPONS", 17, UiTheme.TextBody);
+            Place(_sub.rectTransform, 0, PanelH / 2 - 92, PanelW - 60, 26);
+            // Layout below is spaced so nothing overlaps the button. The first version put the
+            // byte counts where the button lands and the button simply covered them -- invisible
+            // in code, obvious the moment anyone looked at the screen.
+
+            // Bar: a dark track with an accent fill whose WIDTH is the progress. Two images and
+            // a sizeDelta — no shader, no sprite, nothing that can fail to load.
+            var track = UiTheme.MakeImage(_panel.transform, "BarTrack", new Color(0.13f, 0.13f, 0.15f, 1f));
+            Place(track.rectTransform, 0, 30, BarW, BarH);
+
+            var fill = UiTheme.MakeImage(_panel.transform, "BarFill", UiTheme.Accent);
+            var frt = fill.rectTransform;
+            // Pinned to the track's LEFT edge so growing the width grows it rightwards.
+            frt.anchorMin = frt.anchorMax = new Vector2(0.5f, 0.5f);
+            frt.pivot = new Vector2(0f, 0.5f);
+            frt.anchoredPosition = new Vector2(-BarW / 2f, 30);
+            frt.sizeDelta = new Vector2(0, BarH);
+            _barFill = frt;
+
+            // HudFont, NOT PixelFont. Font_Minimum is a bitmap asset that mangles glyphs at small
+            // sizes -- UiTheme.MakeButton documents the same trap and auto-switches below size 30.
+            // At 30 this rendered "7%" as "*%": a progress readout that cannot be trusted to show
+            // a digit is worse than no readout. Letters-only text (the title) is fine in it.
+            _pct = UiTheme.MakeText(_panel.transform, "Pct", "0%", 26, UiTheme.Accent);
+            Place(_pct.rectTransform, 0, -14, PanelW - 60, 40);
+
+            _bytes = UiTheme.MakeText(_panel.transform, "Bytes", "", 16, UiTheme.TextBody);
+            Place(_bytes.rectTransform, 0, -50, PanelW - 60, 24);
+
+            UiTheme.MakeButton(_panel.transform, "Btn_Cancel", "CANCEL AND LEAVE",
+                new Vector2(0, -PanelH / 2 + 80), new Vector2(360, 66), Leave, 26);
+
+            _hint = UiTheme.MakeText(_panel.transform, "Hint",
+                "CANCELLING RETURNS YOU TO THE MAIN MENU", 13, UiTheme.TextDim);
+            Place(_hint.rectTransform, 0, -PanelH / 2 + 30, PanelW - 60, 20);
         }
 
-        private static bool CancelPressed()
+        private static void Place(RectTransform rt, float x, float y, float w, float h)
         {
-            if (Event.current.type != EventType.KeyDown) return false;
-            return Event.current.keyCode == KeyCode.Escape;
+            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = new Vector2(x, y);
+            rt.sizeDelta = new Vector2(w, h);
         }
 
-        private static void DrawBorder(Rect r, int t)
+        private void OnDestroy()
         {
-            GUI.DrawTexture(new Rect(r.x, r.y, r.width, t), Texture2D.whiteTexture);
-            GUI.DrawTexture(new Rect(r.x, r.yMax - t, r.width, t), Texture2D.whiteTexture);
-            GUI.DrawTexture(new Rect(r.x, r.y, t, r.height), Texture2D.whiteTexture);
-            GUI.DrawTexture(new Rect(r.xMax - t, r.y, t, r.height), Texture2D.whiteTexture);
-        }
-
-        private static void EnsureStyles()
-        {
-            if (_title != null) return;
-            _title = new GUIStyle(GUI.skin.label)
-            { alignment = TextAnchor.MiddleCenter, fontSize = 20, fontStyle = FontStyle.Bold };
-            _title.normal.textColor = UiTheme.TextBright;
-            _sub = new GUIStyle(GUI.skin.label)
-            { alignment = TextAnchor.MiddleCenter, fontSize = 13 };
-            _sub.normal.textColor = UiTheme.TextBody;
-            _pct = new GUIStyle(GUI.skin.label)
-            { alignment = TextAnchor.MiddleCenter, fontSize = 18, fontStyle = FontStyle.Bold };
-            _pct.normal.textColor = UiTheme.Accent;
-            _button = new GUIStyle(GUI.skin.label)
-            { alignment = TextAnchor.MiddleCenter, fontSize = 15, fontStyle = FontStyle.Bold };
-            _button.normal.textColor = UiTheme.TextBright;
-            _hint = new GUIStyle(GUI.skin.label)
-            { alignment = TextAnchor.MiddleCenter, fontSize = 11 };
-            _hint.normal.textColor = UiTheme.TextDim;
+            if (_canvasGo != null) Destroy(_canvasGo);
         }
     }
 }

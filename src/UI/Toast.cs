@@ -38,10 +38,6 @@ namespace PunkMultiverse.UI
             // the same top-center strip as toasts and needs no separate component.
             Modes.BattleRoyale.DrawHud();
             SpawnSelectScreen.Draw(); // pre-run drop selection; no-ops outside that window
-            // Above the drop screen on purpose: content has to be in place BEFORE either
-            // selection screen, so if both ever wanted the screen at once this is the one that
-            // must win. No-ops unless this machine is actually downloading.
-            ContentDownloadScreen.Draw();
             if (string.IsNullOrEmpty(_text) || Time.unscaledTime > _until) return;
             if (_style == null)
                 _style = new GUIStyle(GUI.skin.label)

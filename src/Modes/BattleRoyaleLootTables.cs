@@ -228,6 +228,38 @@ namespace PunkMultiverse.Modes
 
         internal static void Reset() { _whiteWeapons = null; _colouredWeapons = null; AugmentBattleRoyaleDrops.ResetLatch(); }
 
+        /// <summary>
+        /// The drop pools as an ORDERED fingerprint, built on demand.
+        ///
+        /// Determinism here is not "the same modules exist" but "the same modules are in the same
+        /// ORDER", because a drop is pool[rnd.Next(pool.Count)] rolled independently per machine
+        /// and matched by ordinal. Two machines with identical sets in different orders would pass
+        /// a set-based check and still hand two players different items from the same crate.
+        ///
+        /// Exposed because the harness previously had to infer this from drop LOG lines, which
+        /// only appear if something actually dropped — so a short match asserted nothing at all
+        /// and said so. This can be asked at any moment, drops or no drops.
+        /// </summary>
+        internal static string PoolFingerprint(out int white, out int coloured)
+        {
+            if (_whiteWeapons == null) BuildWeaponPools();
+            white = _whiteWeapons?.Count ?? 0;
+            coloured = _colouredWeapons?.Count ?? 0;
+            ulong h = 1469598103934665603UL;
+            foreach (var list in new[] { _whiteWeapons, _colouredWeapons })
+            {
+                if (list == null) continue;
+                foreach (var m in list)
+                {
+                    var id = m != null ? m.Id : "<null>";
+                    foreach (var ch in id ?? "") { h ^= ch; h *= 1099511628211UL; }
+                    h ^= 0x1F; h *= 1099511628211UL;      // separator: "ab","c" must not hash as "a","bc"
+                }
+                h ^= 0x1E; h *= 1099511628211UL;          // and the two pools stay distinguishable
+            }
+            return h.ToString("X16");
+        }
+
         private static void BuildWeaponPools()
         {
             _whiteWeapons = new List<ModuleData>();

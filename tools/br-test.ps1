@@ -11,7 +11,7 @@
 param(
     [int]$Bots = 2,
     [int]$WatchSeconds = 420,
-    # lifecycle | ring | sync | pvp | bars | loot | fire | all. Comma-separated.
+    # lifecycle | ring | sync | pvp | bars | loot | fire | content | all. Comma-separated.
     [string]$Phases = "all",
     # Fire simprof at the coordinator while the ring is mid-closure and print the attribution.
     # The ring phase measures what PAINTING costs; this answers what the painted WORLD costs,
@@ -22,7 +22,13 @@ param(
     # manual-test-only, which is how "deploy drops you through terrain that has not streamed in"
     # reached a live match: no automated run could reach Deploy at all. Implies its own assertions
     # and skips the other probes, which all need ships already placed.
-    [switch]$DropScreen
+    [switch]$DropScreen,
+    # What the coordinator SERVES. Empty (the default) means the content feature stands down
+    # entirely and every machine plays its own weapons -- which is what most phases want.
+    #
+    # The `content` phase sets this for itself: proving the drop table matches requires every
+    # machine to hold the same modules, and serving them is how that happens in production.
+    [string]$ServeContent = ""
 )
 $ErrorActionPreference = "Stop"
 $CoordDir = "C:\Program Files (x86)\Steam\steamapps\common\PUNK Playtest - OD Test2"
@@ -38,7 +44,7 @@ $CoordLog  = Join-Path $CoordDir "BepInEx\LogOutput.log"
 # produced one bogus phase name, every Phase() test returned false, and the run happily printed
 # "BR SMOKE: PASS" having asserted nothing at all. A harness that can pass without testing is worse
 # than no harness, so unknown names are now a hard error rather than a silent skip.
-$KnownPhases = @("all","lifecycle","ring","sync","pvp","bars","loot","fire")
+$KnownPhases = @("all","lifecycle","ring","sync","pvp","bars","loot","fire","content")
 $Want = @($Phases -split '[,\s]+' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
 $bogus = @($Want | Where-Object { $KnownPhases -notcontains $_ })
 if ($bogus.Count -gt 0) {
@@ -130,6 +136,25 @@ if (Get-Process Punk -EA SilentlyContinue | Where-Object { $devRoots -contains (
 
 $pids = @()
 try {
+    # The content phase is about the drop table matching ACROSS machines, and that requires every
+    # machine to hold the same modules. Serving the coordinator's own WeaponForge content is how
+    # that happens in production, so it is how the test arranges it too -- rather than hoping the
+    # three installs happen to be identical, which they are not.
+    if ((Phase "content") -and -not $ServeContent) {
+        $served = Join-Path $CoordPlug "brcontent"
+        if (Test-Path $served) { Remove-Item -Recurse -Force $served }
+        New-Item -ItemType Directory -Force -Path $served | Out-Null
+        $n = 0
+        foreach ($d in @("weapons","sprites","sounds")) {
+            $src = Join-Path (Join-Path $CoordDir "BepInEx\plugins") $d
+            if (-not (Test-Path $src)) { continue }
+            Copy-Item -Recurse -Path $src -Destination (Join-Path $served $d)
+            $n += @(Get-ChildItem -Recurse -File $src).Count
+        }
+        if ($n -gt 0) { $ServeContent = "brcontent"; Write-Host "serving $n content file(s) so every machine converges" }
+        else { Write-Host "no WeaponForge content to serve - the content phase will test the vanilla module set" }
+    }
+
     SetCfg (Join-Path $CoordPlug "config.cfg") @{
         "Transport"="Udp"; "UdpPort"="7787"; "CommandFile"="devcmd.txt"; "AutoLaunchRun"="false";
         "LogLevel"="Verbose"; "PreGenerateWorld"="true"; "EmptyServerResetSeconds"="600";
@@ -137,7 +162,12 @@ try {
         # closure times are derived from them on a curve, and there is no per-zone knob left to
         # set. 6 min / 4 zones gives waits of 107/39/7/0s and closures of 74/59/44/29s.
         "GameMode"="BattleRoyale"; "BrMatchMinutes"="6";
-        "BrRingStages"="4"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1"
+        "BrRingStages"="4"; "BrCarePackageMinutes"="2"; "BrMinPlayers"="1";
+        # ALWAYS explicit, never inherited. config.cfg persists, so a run killed before its
+        # finally block leaves ContentRoot set -- and the next run silently becomes a content
+        # test it was never meant to be. That happened: a leftover key made this harness sync 8 MB
+        # and then hang on a gate it knew nothing about.
+        "ContentRoot"=$ServeContent
     }
     Remove-Item -Force -EA SilentlyContinue (Join-Path $CoordPlug "devcmd.txt"), $CoordLog
     foreach ($d in $BotDirs) {
@@ -195,7 +225,7 @@ try {
     }
 
     $probed = $false
-    if ($BotDirs.Count -ge 2 -and ((Phase "sync") -or (Phase "pvp") -or (Phase "bars") -or (Phase "loot") -or (Phase "fire"))) {
+    if ($BotDirs.Count -ge 2 -and ((Phase "sync") -or (Phase "pvp") -or (Phase "bars") -or (Phase "loot") -or (Phase "fire") -or (Phase "content"))) {
         $probed = $true
         Cmd $BotPlugs[0] ("tpplayer {0}" -f $BotSlots[1])
         Start-Sleep 5
@@ -736,6 +766,95 @@ try {
         foreach ($d in ($drops | Select-Object -First 4)) { Write-Host ("        " + $d.Matches[0].Value) }
         $pool = @(Lines $BotLogs[0] "\[BRLoot\] weapon pools: (\d+) white, (\d+) coloured")
         if ($pool.Count -ge 1) { Line "weapon pools" $pool[-1].Matches[0].Value.Replace("[BRLoot] weapon pools: ","") }
+    }
+
+    # -------------------------------------------------------------------------------------------
+    # DROP-TABLE DETERMINISM. This is the assertion the whole content feature exists to protect,
+    # and until now nothing made it.
+    #
+    # BattleRoyaleLootTables builds its pools from ModuleRegistry.AllItems ordered by Id and picks
+    # pool[rnd.Next(pool.Count)] with rnd seeded PER ENTITY and rolled INDEPENDENTLY on every
+    # machine. Contested loot then matches by (Group, Ordinal). So a registry that differs by even
+    # one module does not merely add an item -- it shifts every index after the insertion point,
+    # and both players are looking at a different world with nothing to tell them.
+    #
+    # Three claims, weakest to strongest:
+    #   digest   every machine holds the same module set at all
+    #   pools    the same set produced the same pool SIZES (an ordered pool of equal size, built
+    #            from an equal set, is the same ordered pool)
+    #   drops    the same ENTITY produced the same WEAPON on both machines -- the actual roll,
+    #            not the inputs to it. `id` is the stable instance id, so the lines pair up.
+    # -------------------------------------------------------------------------------------------
+    if ($probed -and (Phase "content")) {
+        Write-Host "--- drop-table determinism ---"
+        Cmd $CoordPlug "moduledigest"
+        foreach ($p in $BotPlugs) { Cmd $p "moduledigest" }
+        Start-Sleep 5
+        $digests = @()
+        foreach ($p in @($CoordPlug) + $BotPlugs) {
+            $m = @(Lines (Join-Path $p "devout.txt") "moduledigest: modules=(\d+) digest=([0-9A-F]+)")
+            if ($m.Count -gt 0) { $digests += ("{0}/{1}" -f $m[0].Matches[0].Groups[1].Value, $m[0].Matches[0].Groups[2].Value) }
+        }
+        Line "module digests" (($digests | Select-Object -Unique) -join "  ")
+        if ($digests.Count -lt (1 + $BotPlugs.Count)) {
+            Line "module digests" "MISSING - only $($digests.Count) machine(s) answered"; $ok = $false
+        } elseif (($digests | Select-Object -Unique).Count -ne 1) {
+            Write-Host "  FAIL: the machines hold DIFFERENT module sets - every drop ordinal after the difference names a different item"
+            $ok = $false
+        }
+
+        # ASKED, not inferred. The first version of this read the "[BRLoot] weapon pools:" log
+        # line -- which is only emitted when the pools are lazily built on the first drop. A short
+        # match produced no drop, so the line was absent and the check reported MISSING for a
+        # system that was working fine. `brpools` builds them on demand and fingerprints them.
+        #
+        # The fingerprint covers ORDER, not just membership: a drop is pool[rnd.Next(Count)] and
+        # contested loot matches by ordinal, so two machines holding identical sets in different
+        # orders would pass a count check and still hand two players different items.
+        foreach ($p in $BotPlugs) { Cmd $p "brpools" }
+        Start-Sleep 5
+        $fps = @()
+        foreach ($p in $BotPlugs) {
+            $m = @(Lines (Join-Path $p "devout.txt") "brpools: white=(\d+) coloured=(\d+) fingerprint=([0-9A-F]+)")
+            if ($m.Count -gt 0) {
+                $fps += ("{0}w/{1}c/{2}" -f $m[-1].Matches[0].Groups[1].Value, $m[-1].Matches[0].Groups[2].Value, $m[-1].Matches[0].Groups[3].Value)
+            }
+        }
+        Line "pool fingerprints" (($fps | Select-Object -Unique) -join "  ")
+        if ($fps.Count -lt $BotPlugs.Count) {
+            Write-Host "  FAIL: only $($fps.Count)/$($BotPlugs.Count) bot(s) answered brpools"; $ok = $false
+        } elseif (($fps | Select-Object -Unique).Count -ne 1) {
+            Write-Host "  FAIL: the bots roll from DIFFERENT ordered pools - the same crate gives them different items"
+            $ok = $false
+        } else { Line "pool agreement" "identical ordered pool on every bot" }
+
+        # The roll itself. Pair drop lines by source id across the two bots and compare the weapon.
+        # Only entities BOTH machines rolled for can be compared; a machine that never streamed a
+        # container simply has no line for it, which is not a disagreement.
+        $maps = @()
+        foreach ($lg in $BotLogs) {
+            $h = @{}
+            foreach ($m in (Lines $lg "\[BRLoot\] (container|enemy|miniboss|boss) '([^']+)' dropped (WHITE|COLOURED) weapon '([^']+)'")) {
+                $h[$m.Matches[0].Groups[1].Value + ":" + $m.Matches[0].Groups[2].Value] = $m.Matches[0].Groups[4].Value
+            }
+            $maps += ,$h
+        }
+        if ($maps.Count -ge 2) {
+            $shared = @($maps[0].Keys | Where-Object { $maps[1].ContainsKey($_) })
+            $bad = @($shared | Where-Object { $maps[0][$_] -ne $maps[1][$_] })
+            Line "comparable drops" ("{0} entity(s) rolled on both bots" -f $shared.Count)
+            if ($shared.Count -eq 0) {
+                # Not a failure: a short match may produce no drop either bot witnessed. Say so
+                # rather than reporting a pass that compared nothing.
+                Line "drop agreement" "NOT PROVEN - no entity dropped on both bots this run"
+            } elseif ($bad.Count -gt 0) {
+                Write-Host "  FAIL: $($bad.Count) entity(s) dropped a DIFFERENT weapon on each bot:"
+                foreach ($k in ($bad | Select-Object -First 4)) {
+                    Write-Host ("        {0}: bot0='{1}' bot1='{2}'" -f $k, $maps[0][$k], $maps[1][$k])
+                }
+                $ok = $false
+            } else { Line "drop agreement" ("{0}/{0} identical" -f $shared.Count) }
+        }
     }
 
     if ($probed -and (Phase "bars")) {

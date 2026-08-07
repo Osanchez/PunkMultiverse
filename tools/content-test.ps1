@@ -17,6 +17,12 @@
 #              climb, the host receives them, and CANCEL leaves the gate shut rather than letting
 #              the run start without that player. The modal's appearance needs a windowed game and
 #              a human; everything driving it is asserted here.
+#   resume     a client killed MID-DOWNLOAD picks up where it left off instead of starting over
+#              -- and, far more importantly, is not wedged forever by the partial file it left
+#              behind. This is not hypothetical: the host used to discard the resume offset
+#              entirely, so the client asked to continue from N, the host sent from 0, and the
+#              client rejected every chunk for the rest of time. That player could never become
+#              ready in ANY future session until they deleted the cache by hand.
 #   nocontent  a host serving nothing must not gate anybody. The feature has to be invisible
 #              when it is not in use -- otherwise every vanilla session pays for it.
 #
@@ -25,7 +31,7 @@
 #
 # DEV installs only. ASCII only. BOM-free configs.
 param(
-    [ValidateSet("all", "coldsync", "gate", "warmsync", "nocontent", "progress")]
+    [ValidateSet("all", "coldsync", "gate", "warmsync", "nocontent", "progress", "resume")]
     [string]$Phase = "all",
     [int]$RateKBps = 256
 )
@@ -384,6 +390,56 @@ try {
         if ((CountIn $CoordLog "GO LIVE") -gt 0) {
             Fail "the run went live after a player cancelled - they would be on different content"
         } else { Line "gate after cancel" "START still refused" }
+
+        StopAll $pids; $pids = @()
+    }
+
+    # ---------------------------------------------------------------------------------------
+    # RESUME. Kill a client mid-transfer, restart it, and require that the partial file it left
+    # is an ASSET rather than a trap.
+    # ---------------------------------------------------------------------------------------
+    if ($Phase -eq "resume") {
+        Write-Host "--- RESUME ---"
+        CleanLogs
+        ClearCache $BotPlugs[0]
+
+        $pids += StartGame $CoordDir $true
+        if (-not (WaitFor $CoordLog "\[Udp\] hosting" 120 "coordinator hosting")) { throw "no host" }
+        if (-not (WaitFor $CoordLog "\[PreGen\] world ready" 220 "pre-build")) { throw "no pre-build" }
+
+        $botPid = StartGame $BotDirs[0] $false
+        $pids += $botPid
+        if (-not (WaitFor $BotLogs[0] "\[Content\] need \d+/\d+ blob" 150 "download start")) {
+            Fail "bot0 never started downloading"
+        }
+        Start-Sleep 10                       # throttled, so this is a genuinely partial transfer
+        Stop-Process -Id $botPid -Force -EA SilentlyContinue
+        Start-Sleep 4
+
+        $parts = @(Get-ChildItem -Recurse -File (Join-Path $BotPlugs[0] "content") -Filter *.part -EA SilentlyContinue)
+        Line "partials left" ("{0} .part file(s)" -f $parts.Count)
+        if ($parts.Count -lt 1) {
+            Fail "no partial file survived the kill - this phase cannot test what it exists to test"
+        }
+        $partBytes = ($parts | Measure-Object -Property Length -Sum).Sum
+
+        # Back it comes, with that partial still on disk.
+        $pids += StartGame $BotDirs[0] $false
+        if (-not (WaitFor $BotLogs[0] "\[Content\] set [0-9a-f]+ installed at" 300 "resumed install")) {
+            Fail "bot0 never finished after resuming - a partial download wedged it"
+        } else { Line "resumed install" "completed" }
+
+        # The host must have been TOLD to resume, or it is silently re-sending from zero and the
+        # only reason this passes is that the client tolerates it.
+        $res = @(Lines $CoordLog "\[Content\] peer \d+ needs \d+ blob\(s\) \((\d+) resuming\)")
+        if ($res.Count -lt 1) {
+            Fail "the host was never asked to resume - the offset is being dropped again"
+        } else { Line "host resumed" ("{0} blob(s), {1:N0} bytes already held" -f $res[-1].Matches[0].Groups[1].Value, $partBytes) }
+
+        # And no rejection storm. One rejected chunk is a self-heal; hundreds is the old wedge.
+        $rej = CountIn $BotLogs[0] "chunk rejected"
+        Line "chunks rejected" "$rej"
+        if ($rej -gt 4) { Fail "$rej chunks rejected - the resume offset is not being honoured" }
 
         StopAll $pids; $pids = @()
     }
