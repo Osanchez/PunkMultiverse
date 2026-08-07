@@ -62,18 +62,38 @@ namespace PunkMultiverse.Content
             _nextRefreshAt = 0f;
         }
 
-        private static string WeaponIdOf(WeaponBase weapon)
+        /// <summary>
+        /// Identify a shot by the MODULE in the firing slot, not by the weapon asset.
+        ///
+        /// WeaponForge builds a custom weapon by cloning a stock one and overriding fields — and
+        /// the clone keeps the template's id. A PLASMA LANCE therefore reports its WeaponData.Id
+        /// as "Weapon White Popper", identical to the stock Popper it came from, so matching on
+        /// weapon id cannot tell them apart and would label every stock Popper shot as custom.
+        /// The module id is the half that IS unique ("FORGE-MVPLASMALANCE"), because that is what
+        /// gets registered in ModuleRegistry and what travels in ModuleGridSync — which makes it
+        /// both the correct discriminator and the one whose cross-machine agreement actually
+        /// matters.
+        /// </summary>
+        private static string ModuleIdInSlot(Ship ship, int holder)
         {
-            var data = weapon?.TemplateData;
-            if (data == null) return null;
-            string id = null;
-            try { id = data.Id; } catch { }
-            if (string.IsNullOrEmpty(id)) id = data.name;
-            return id;
+            try
+            {
+                // IModuleGrid has no indexer; the concrete ModuleGrid does. Same cast DevTools
+                // uses to reach the grid for `equip`.
+                var grid = ship?.ModuleGridOwner?.ModuleGrid as ModuleGrid;
+                if (grid == null) return null;
+                var pos = holder == 1 ? ModuleGrid.SecondaryWeaponGridPosition
+                                      : ModuleGrid.PrimaryWeaponGridPosition;
+                var module = grid[pos];
+                string id = null;
+                try { id = module?.Data?.Id; } catch { }
+                return id;
+            }
+            catch { return null; }
         }
 
-        private static bool IsForgeWeapon(string id) =>
-            !string.IsNullOrEmpty(id) && ForgeWeaponIds.Contains(id);
+        private static bool IsForgeModule(string id) =>
+            !string.IsNullOrEmpty(id) && ForgeModuleIds.Contains(id);
 
         private static Counter CounterFor(string id)
         {
@@ -102,12 +122,12 @@ namespace PunkMultiverse.Content
 
         /// <summary>A ship fired. `replayed` distinguishes the shooter's own shot from a peer
         /// reproducing it, which is the whole comparison.</summary>
-        internal static void NoteShot(int slot, WeaponBase weapon, bool replayed, uint shotId = 0)
+        internal static void NoteShot(int slot, Ship ship, int holder, bool replayed, uint shotId = 0)
         {
             Refresh();
             if (!_any) return;
-            var id = WeaponIdOf(weapon);
-            if (!IsForgeWeapon(id)) return;
+            var id = ModuleIdInSlot(ship, holder);
+            if (!IsForgeModule(id)) return;
             RememberShot(shotId, id);
 
             var c = CounterFor(id);
@@ -130,7 +150,9 @@ namespace PunkMultiverse.Content
         internal static void NoteDamage(string weaponId, float amount, int victimSlot, bool remote)
         {
             Refresh();
-            if (!_any || !IsForgeWeapon(weaponId)) return;
+            // weaponId here is whatever RememberShot stored — a module id — so it is already
+            // known-custom by construction; no second filter.
+            if (!_any || string.IsNullOrEmpty(weaponId)) return;
             var c = CounterFor(weaponId);
             bool first = c.Damage == 0;
             c.Damage++;

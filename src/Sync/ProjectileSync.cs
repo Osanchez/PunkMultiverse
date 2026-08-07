@@ -343,6 +343,12 @@ namespace PunkMultiverse.Sync
 
                 var session = NetSession.Instance;
                 if (session == null || session.State != SessionState.InGame || _replayDepth > 0) return;
+                // Ahead of the holder branch on purpose: a shot that fails to resolve a local
+                // holder takes the entity path and would never be traced, which is exactly the
+                // case worth seeing. NoteShot is a no-op unless the slot holds a custom module.
+                if (state.Holder >= 0)
+                    Content.ForgeDiag.NoteShot(session.LocalSlot, ShipSync.LocalShip, state.Holder,
+                        replayed: false, state.ShotId);
                 try
                 {
                     if (state.Holder >= 0)
@@ -361,10 +367,6 @@ namespace PunkMultiverse.Sync
                         Writer.Reset();
                         msg.Write(Writer);
                         session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
-                        // Note the weapon by id on the SHOOTER. Nothing in this message identifies
-                        // it — peers resolve it from the puppet's own grid — so this line is the
-                        // only half of the comparison that comes from the machine that knows.
-                        Content.ForgeDiag.NoteShot(session.LocalSlot, __instance, replayed: false, state.ShotId);
                         return;
                     }
                     TryCaptureEntityFire(session, __instance, __0, state.Entity, state.NetId, state.ShotId);
@@ -641,8 +643,19 @@ namespace PunkMultiverse.Sync
             if (data == null) return 0;
             string id = null;
             try { id = data.Id; } catch { }
-            if (string.IsNullOrEmpty(id)) id = data.name;
-            return string.IsNullOrEmpty(id) ? 0 : DamageSync.HashName(id);
+
+            // BOTH halves, not id-or-name. A content mod builds a custom weapon by cloning a
+            // stock one, and the clone inherits the template's private id — WeaponForge's
+            // PLASMA LANCE reports Id "Weapon White Popper", exactly what the stock Popper
+            // reports. Hashing the id alone therefore cannot tell a custom weapon from the one
+            // it was cloned from, so an entity firing one (their turret and minion weapons do)
+            // would pass the replay's identity check while the peer rebuilt the wrong weapon.
+            // The asset NAME is unique in that case ("Forge Weapon MvPlasmaLance"), and both
+            // fields are deterministic per asset, so combining them is strictly more
+            // discriminating than either and still agrees on every machine.
+            string name = data.name;
+            if (string.IsNullOrEmpty(id) && string.IsNullOrEmpty(name)) return 0;
+            return DamageSync.HashName((id ?? "") + "\u001F" + (name ?? ""));
         }
 
         private static (SavableEntity, int) ResolveEntityWeapon(WeaponBase weapon, IBarrel barrel)
@@ -936,7 +949,7 @@ namespace PunkMultiverse.Sync
             // The other half of the comparison: which weapon THIS machine resolved for that
             // shot. Same id as the shooter logged = the module grid carried the custom weapon
             // across intact; a different id (or no line at all) is the bug.
-            Content.ForgeDiag.NoteShot(msg.Slot, weapon, replayed: true, msg.ShotId);
+            Content.ForgeDiag.NoteShot(msg.Slot, ship, msg.Holder, replayed: true, msg.ShotId);
             // Active-slot weapons are only Equip()ed inside Activate() on the owner — the
             // puppet's instance has no Owner until we mirror that here, and ownerless
             // projectiles lose their faction/attribution.

@@ -1240,6 +1240,54 @@ namespace PunkMultiverse.Core
                         $"{(EnemySync.OwnerOf(netId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(netId) + 1))})");
                     return;
                 }
+                case "dumpsprites":
+                {
+                    // Write real PUNK sprites out as PNG, so custom art can be generated against
+                    // the game's actual palette and line weight instead of a guess at its style.
+                    //
+                    // The textures are in memory but not readable — Unity uploads sprite atlases
+                    // to the GPU with CPU access stripped, so texture.GetPixels() throws. The way
+                    // round it is a Blit into a temporary RenderTexture and a ReadPixels back,
+                    // which is how any runtime sprite export has to work.
+                    //
+                    // `dumpsprites [filter] [max]` — filter matches the sprite name, default 40.
+                    string filter = parts.Length > 1 ? parts[1] : "";
+                    int max = parts.Length > 2 && int.TryParse(parts[2], out var m) ? m : 40;
+                    string dir = Path.Combine(ModFolder.Dir, "spritedump");
+                    Directory.CreateDirectory(dir);
+                    int written = 0, skipped = 0;
+                    var seen = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+                    foreach (var sp in Resources.FindObjectsOfTypeAll<Sprite>())
+                    {
+                        if (written >= max) break;
+                        if (sp == null || sp.texture == null) continue;
+                        if (filter.Length > 0 && sp.name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        if (!seen.Add(sp.name)) continue;
+                        try
+                        {
+                            var r = sp.textureRect;
+                            int w = Mathf.Max(1, (int)r.width), h = Mathf.Max(1, (int)r.height);
+                            if (w > 512 || h > 512) { skipped++; continue; }   // atlases, not sprites
+                            var rt = RenderTexture.GetTemporary(sp.texture.width, sp.texture.height,
+                                0, RenderTextureFormat.ARGB32);
+                            Graphics.Blit(sp.texture, rt);
+                            var prev = RenderTexture.active;
+                            RenderTexture.active = rt;
+                            var tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+                            tex.ReadPixels(new Rect(r.x, r.y, w, h), 0, 0);
+                            tex.Apply();
+                            RenderTexture.active = prev;
+                            RenderTexture.ReleaseTemporary(rt);
+                            var safe = string.Join("_", sp.name.Split(Path.GetInvalidFileNameChars()));
+                            File.WriteAllBytes(Path.Combine(dir, safe + ".png"), tex.EncodeToPNG());
+                            UnityEngine.Object.Destroy(tex);
+                            written++;
+                        }
+                        catch { skipped++; }
+                    }
+                    Out($"dumpsprites: wrote {written} sprite(s) to {dir} (skipped {skipped})");
+                    return;
+                }
                 case "forgeids":
                 {
                     // What ForgeDiag believes is a custom weapon, and what the ship is actually
@@ -1254,13 +1302,27 @@ namespace PunkMultiverse.Core
                     foreach (var w in weps) Out($"forgeids:   weapon  {w}");
                     var s = ShipSync.LocalShip;
                     if (s == null) { Out("forgeids: no local ship"); return; }
-                    foreach (var (label, w) in new[] { ("primary", s.PrimaryWeapon), ("secondary", s.SecondaryWeapon) })
+                    var fgrid = s.ModuleGridOwner != null ? s.ModuleGridOwner.ModuleGrid as ModuleGrid : null;
+                    foreach (var (label, w, pos) in new[]
+                             {
+                                 ("primary", s.PrimaryWeapon, ModuleGrid.PrimaryWeaponGridPosition),
+                                 ("secondary", s.SecondaryWeapon, ModuleGrid.SecondaryWeaponGridPosition),
+                             })
                     {
-                        if (w == null) { Out($"forgeids: {label} = none"); continue; }
-                        string id = null;
-                        try { id = w.TemplateData?.Id; } catch { }
-                        if (string.IsNullOrEmpty(id)) id = w.TemplateData?.name;
-                        Out($"forgeids: {label} = '{id}' known={(id != null && weps.Contains(id))}");
+                        // Weapon id AND module id. They disagree for a content-mod weapon: the
+                        // clone keeps the template's weapon id while the module id is namespaced,
+                        // and the module id is the one that is actually unique and that travels
+                        // in ModuleGridSync — so it is the one worth trusting.
+                        string wid = null;
+                        if (w != null)
+                        {
+                            try { wid = w.TemplateData?.Id; } catch { }
+                            if (string.IsNullOrEmpty(wid)) wid = w.TemplateData?.name;
+                        }
+                        string mid = null;
+                        try { mid = fgrid?[pos]?.Data?.Id; } catch { }
+                        Out($"forgeids: {label} weapon='{wid ?? "none"}' module='{mid ?? "none"}' " +
+                            $"custom={(mid != null && mods.Contains(mid))}");
                     }
                     return;
                 }

@@ -156,7 +156,7 @@ try {
     # that says whether the id sets were empty or the equipped weapon simply was not in them.
     Cmd $BotPlugs[0] "forgeids"
     Start-Sleep 3
-    foreach ($l in @(Lines (Join-Path $BotPlugs[0] "devout.txt") "forgeids: (modules=.*|primary = .*|secondary = .*)")) {
+    foreach ($l in @(Lines (Join-Path $BotPlugs[0] "devout.txt") "forgeids: (modules=.*|primary .*|secondary .*)")) {
         Line "forgeids" $l.Matches[0].Groups[1].Value
     }
 
