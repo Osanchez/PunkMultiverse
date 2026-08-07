@@ -135,6 +135,9 @@ A version mismatch of the form **`0.12.x` is the base game, not the mod.**
   `ConfigAudit.Retired`, or the boot-time audit will not report it. Changing a *default* needs a
   key rename, since existing users have the old value persisted.
 - **PowerShell** is 5.1 here: no `&&`, no ternary, no `??`. Scripts with non-ASCII inside
-  strings need a UTF-8 BOM or 5.1 reads them as ANSI and mis-parses.
+  strings need a UTF-8 BOM or 5.1 reads them as ANSI and mis-parses. And in **argument** position
+  a method call is not evaluated — `CountIn $log [regex]::Escape($w)` passes a literal string, so
+  the search matches nothing and the assertion false-FAILs while the code under test is fine.
+  Wrap it: `CountIn $log ([regex]::Escape($w))`. Cost a green run of `forge-swap-test.ps1` once.
 - **Diagnostics before conclusions.** Several long hunts on this project were extended by a
   diagnostic that lied. If a probe and reality disagree repeatedly, suspect the probe.

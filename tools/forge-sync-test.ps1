@@ -148,7 +148,7 @@ try {
     Cmd $BotPlugs[0] "equip $Weapon"
     Start-Sleep 10                     # ModuleGridSync compares every 5s
     if ((CountIn $BotLogs[0] "equip: .*$([regex]::Escape($Weapon))") -lt 1 -and
-        (CountIn $BotLogs[0] [regex]::Escape($Weapon)) -lt 1) {
+        (CountIn $BotLogs[0] ([regex]::Escape($Weapon))) -lt 1) {   # parens required - see below
         Write-Host "  FAIL: bot0 never equipped $Weapon"; $ok = $false
     } else { Line "equip" "$Weapon installed on bot0" }
 

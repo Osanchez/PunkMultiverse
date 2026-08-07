@@ -225,7 +225,11 @@ try {
     # bot1 -- the machine that had NOTHING -- is the shooter. That is the whole point.
     Cmd $BotPlugs[1] "equip $Weapon"
     Start-Sleep 10
-    if ((CountIn $BotLogs[1] [regex]::Escape($Weapon)) -lt 1) {
+    # The parentheses are load-bearing. In ARGUMENT position PowerShell does not evaluate
+    # [regex]::Escape($Weapon) as an expression -- it passes it as a literal string, so the search
+    # is for a pattern that matches nothing and the assertion false-FAILs while the feature works
+    # perfectly. That is exactly what this test did on its first green run.
+    if ((CountIn $BotLogs[1] ([regex]::Escape($Weapon))) -lt 1) {
         Fail "bot1 could not equip $Weapon - the downloaded content did not reach the registry"
     } else { Line "bot1 equipped" $Weapon }
 
