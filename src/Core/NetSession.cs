@@ -3500,8 +3500,22 @@ namespace PunkMultiverse.Core
                 return;
             }
 
+            // ORDER MATTERS, and the version gates come first on purpose. This mod is itself in
+            // the manifest (the "Punk." skip prefix does not match "PunkMultiverse"), so a mod
+            // VERSION mismatch always shows up as a mod-SET difference too. "Update the mod" is
+            // the actionable message; "your installed mods differ" is the vague restatement of
+            // it. Reporting the vague one first would be a worse rejection for the commonest
+            // case there is, so the specific reason is established before the general one and
+            // the general one never overwrites it.
+            if (hello.ProtocolVersion != ProtocolVersion || hello.ModVersion != Plugin.Version)
+                reject = $"Version mismatch: host has mod {Plugin.Version} (protocol {ProtocolVersion}), you have {hello.ModVersion} (protocol {hello.ProtocolVersion}).";
+            else if (hello.GameVersion != Application.version)
+                reject = $"Game version mismatch: host {Application.version}, you {hello.GameVersion}.";
+
             // Other installed mods can change gameplay rules or conflict with the netcode's
-            // patches — the host's ModManifestPolicy decides how strict to be.
+            // patches — the host's ModManifestPolicy decides how strict to be. Always evaluated
+            // (the roster marker and the log line are wanted either way), but it only supplies
+            // the rejection REASON when the version gates above found nothing.
             bool modsMismatch = false;
             if (!ModManifest.Matches(hello.Mods)
                 && !NetConfig.ModManifestPolicy.Value.Equals("Ignore", StringComparison.OrdinalIgnoreCase))
@@ -3509,16 +3523,13 @@ namespace PunkMultiverse.Core
                 modsMismatch = true;
                 string diff = ModManifest.Describe(hello.Mods);
                 Plugin.Log.LogWarning($"[Mods] '{hello.Name}' mod set differs — {diff}");
-                if (NetConfig.ModManifestPolicy.Value.Equals("Reject", StringComparison.OrdinalIgnoreCase))
+                if (reject == null
+                    && NetConfig.ModManifestPolicy.Value.Equals("Reject", StringComparison.OrdinalIgnoreCase))
                     reject = $"Installed mods differ from the host's ({diff}). " +
                              "Match the host's mod set, or the host can set ModManifestPolicy=Warn.";
             }
 
-            if (hello.ProtocolVersion != ProtocolVersion || hello.ModVersion != Plugin.Version)
-                reject = $"Version mismatch: host has mod {Plugin.Version} (protocol {ProtocolVersion}), you have {hello.ModVersion} (protocol {hello.ProtocolVersion}).";
-            else if (hello.GameVersion != Application.version)
-                reject = $"Game version mismatch: host {Application.version}, you {hello.GameVersion}.";
-            else if (reject == null && midRun)
+            if (reject == null && midRun)
             {
                 // Mid-run: a slot matching (SteamID, else name) is a rejoin/resume; anyone else
                 // is a late joiner and takes a free slot below. The match deliberately includes
