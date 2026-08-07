@@ -162,6 +162,34 @@ namespace PunkMultiverse.Content
             }
         }
 
+        /// <summary>
+        /// The LOADOUT names WeaponForge contributed — the selectable classes, which are a
+        /// different thing from the module ids in <see cref="CollectForgeIds"/>.
+        ///
+        /// Asked rather than guessed. A forge class is named by whatever the pack author put in
+        /// its JSON, NOT by any prefix this mod controls: a diagnostic that matched on "FORGE-"
+        /// reported zero custom classes for a pack whose classes were all present and working.
+        /// </summary>
+        internal static void CollectForgeLoadoutNames(HashSet<string> names)
+        {
+            if (!Present || _registryType == null) return;
+            try
+            {
+                var entries = AccessTools.Property(_registryType, "Entries")?.GetValue(null) as System.Collections.IEnumerable;
+                if (entries == null) return;
+                foreach (var entry in entries)
+                {
+                    if (entry == null) continue;
+                    var n = AccessTools.Field(entry.GetType(), "loadoutName")?.GetValue(entry) as string;
+                    if (!string.IsNullOrEmpty(n)) names.Add(n);
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Forge] could not enumerate custom classes: {e.Message}");
+            }
+        }
+
         /// <summary>Let WeaponForge re-augment the vanilla tables for solo play after a session
         /// has restored them, by clearing the "already done these groups" cache it keeps.</summary>
         internal static void ClearLootCache()

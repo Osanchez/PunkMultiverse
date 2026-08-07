@@ -815,9 +815,10 @@ try {
         Start-Sleep 5
         $fps = @()
         foreach ($p in $BotPlugs) {
-            $m = @(Lines (Join-Path $p "devout.txt") "brpools: white=(\d+) coloured=(\d+) fingerprint=([0-9A-F]+)")
+            $m = @(Lines (Join-Path $p "devout.txt") "brpools: white=(\d+) coloured=(\d+) custom=(\d+) fingerprint=([0-9A-F]+)")
             if ($m.Count -gt 0) {
-                $fps += ("{0}w/{1}c/{2}" -f $m[-1].Matches[0].Groups[1].Value, $m[-1].Matches[0].Groups[2].Value, $m[-1].Matches[0].Groups[3].Value)
+                $fps += ("{0}w/{1}c/{2}cust/{3}" -f $m[-1].Matches[0].Groups[1].Value, $m[-1].Matches[0].Groups[2].Value, $m[-1].Matches[0].Groups[3].Value, $m[-1].Matches[0].Groups[4].Value)
+                $customInPool = [int]$m[-1].Matches[0].Groups[3].Value
             }
         }
         Line "pool fingerprints" (($fps | Select-Object -Unique) -join "  ")
@@ -827,6 +828,14 @@ try {
             Write-Host "  FAIL: the bots roll from DIFFERENT ordered pools - the same crate gives them different items"
             $ok = $false
         } else { Line "pool agreement" "identical ordered pool on every bot" }
+
+        # Membership, not just agreement. A pool holding ZERO custom weapons is identical on every
+        # machine and passes everything above -- while no player ever sees a custom weapon drop,
+        # which is the entire BR half of the content feature.
+        if ($ServeContent) {
+            if ($customInPool -ge 1) { Line "custom in pool" "$customInPool custom weapon(s) can drop" }
+            else { Write-Host "  FAIL: the host served content but NO custom weapon is in the BR drop pool"; $ok = $false }
+        }
 
         # The roll itself. Pair drop lines by source id across the two bots and compare the weapon.
         # Only entities BOTH machines rolled for can be compared; a machine that never streamed a

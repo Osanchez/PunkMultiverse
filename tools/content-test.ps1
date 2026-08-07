@@ -23,6 +23,11 @@
 #              entirely, so the client asked to continue from N, the host sent from 0, and the
 #              client rejected every chunk for the rest of time. That player could never become
 #              ready in ANY future session until they deleted the cache by hand.
+#   coop       THE SAME THING IN STANDARD MODE. Every other phase here, and every forge test,
+#              ran GameMode=BattleRoyale -- so co-op online play, which is the mode most people
+#              actually play, had never once been exercised with content sync. Different mode,
+#              different run-start path, different loot behaviour, and in co-op the custom
+#              weapons are meant to reach players through CLASS SELECTION rather than drops.
 #   nocontent  a host serving nothing must not gate anybody. The feature has to be invisible
 #              when it is not in use -- otherwise every vanilla session pays for it.
 #
@@ -31,7 +36,7 @@
 #
 # DEV installs only. ASCII only. BOM-free configs.
 param(
-    [ValidateSet("all", "coldsync", "gate", "warmsync", "nocontent", "progress", "resume")]
+    [ValidateSet("all", "coldsync", "gate", "warmsync", "nocontent", "progress", "resume", "coop")]
     [string]$Phase = "all",
     [int]$RateKBps = 256
 )
@@ -440,6 +445,82 @@ try {
         $rej = CountIn $BotLogs[0] "chunk rejected"
         Line "chunks rejected" "$rej"
         if ($rej -gt 4) { Fail "$rej chunks rejected - the resume offset is not being honoured" }
+
+        StopAll $pids; $pids = @()
+    }
+
+    # ---------------------------------------------------------------------------------------
+    # CO-OP. Standard mode, same transfer, plus the two things co-op specifically needs:
+    # the classes are there to pick, and the BR pools are NOT the delivery mechanism here.
+    # ---------------------------------------------------------------------------------------
+    if ($Phase -eq "coop") {
+        Write-Host "--- CO-OP (Standard mode) ---"
+        CleanLogs
+        foreach ($plug in $BotPlugs) { ClearCache $plug }
+
+        # Serve the real WeaponForge content, not the synthetic fixture: this phase is about
+        # custom CLASSES being selectable, and random bytes register no modules at all.
+        $forgeRoot = Join-Path $CoordPlug "coopcontent"
+        if (Test-Path $forgeRoot) { Remove-Item -Recurse -Force $forgeRoot }
+        New-Item -ItemType Directory -Force -Path $forgeRoot | Out-Null
+        $n = 0
+        foreach ($d in @("weapons","sprites","sounds")) {
+            $src = Join-Path (Join-Path $CoordDir "BepInEx\plugins") $d
+            if (-not (Test-Path $src)) { continue }
+            Copy-Item -Recurse -Path $src -Destination (Join-Path $forgeRoot $d)
+            $n += @(Get-ChildItem -Recurse -File $src).Count
+        }
+        if ($n -eq 0) { throw "the host has no WeaponForge content - this phase cannot test classes" }
+        Line "host serves" "$n real content file(s)"
+        SetCfg (Join-Path $CoordPlug "config.cfg") @{ "GameMode"="Standard"; "ContentRoot"="coopcontent" }
+
+        $pids += StartGame $CoordDir $true
+        if (-not (WaitFor $CoordLog "\[Udp\] hosting" 120 "coordinator hosting")) { throw "no host" }
+        if (-not (WaitFor $CoordLog "\[Content\] serving \d+ file" 90 "content hashed")) { Fail "host never published" }
+        if (-not (WaitFor $CoordLog "\[PreGen\] world ready" 220 "pre-build")) { throw "no pre-build" }
+        foreach ($d in $BotDirs) { $pids += StartGame $d $false; Start-Sleep 2 }
+        if (-not (WaitFor $CoordLog "joined" 150 "bot joins" $BotDirs.Count)) { throw "bots did not all join" }
+
+        foreach ($i in 0,1) {
+            if (-not (WaitFor $BotLogs[$i] "\[Content\] set [0-9a-f]+ installed at" 300 "bot$i install")) {
+                Fail "bot$i never installed the host's content in Standard mode"
+            }
+        }
+        Line "co-op sync" "both clients installed"
+
+        # Everyone must agree, exactly as in BR - the barrier is mode-independent.
+        Cmd $CoordPlug "moduledigest"; foreach ($p in $BotPlugs) { Cmd $p "moduledigest" }
+        Start-Sleep 5
+        $dg = @()
+        foreach ($p in @($CoordPlug) + $BotPlugs) {
+            $m = @(Lines (Join-Path $p "devout.txt") "moduledigest: modules=(\d+) digest=([0-9A-F]+)")
+            if ($m.Count -gt 0) { $dg += $m[0].Matches[0].Groups[2].Value }
+        }
+        if (($dg | Select-Object -Unique).Count -ne 1 -or $dg.Count -lt 3) {
+            Fail "module digests disagree in Standard mode ($($dg -join ', '))"
+        } else { Line "module digests" ("{0} on all 3" -f $dg[0]) }
+
+        Cmd $BotPlugs[0] "start"
+        if (-not (WaitFor $CoordLog "GO LIVE" 240 "co-op go-live")) { Fail "the co-op run never went live" }
+        else { Line "co-op go-live" "OK" }
+        Start-Sleep 12
+
+        # THE CO-OP DELIVERY MECHANISM: can the player actually pick a custom class?
+        #
+        # Asked AFTER go-live, deliberately. Resources.FindObjectsOfTypeAll only returns LOADED
+        # assets, and a bot idling in the lobby has never opened the class screen -- so the first
+        # version of this asked before the pools existed, got zero, and read as a broken feature.
+        foreach ($p in $BotPlugs) { Cmd $p "classes" }
+        Start-Sleep 6
+        for ($i = 0; $i -lt $BotPlugs.Count; $i++) {
+            $c = @(Lines (Join-Path $BotPlugs[$i] "devout.txt") "classes: pools=(\d+) loadouts=(\d+) custom=(\d+)")
+            if ($c.Count -lt 1) { Fail "bot$i did not answer the classes command"; continue }
+            $tot = [int]$c[-1].Matches[0].Groups[2].Value
+            $cus = [int]$c[-1].Matches[0].Groups[3].Value
+            Line "bot$i classes" "$tot selectable, $cus custom"
+            if ($tot -lt 1) { Fail "bot$i has NO selectable classes at all" }
+            if ($cus -lt 1) { Fail "bot$i sees no CUSTOM class - the host's weapons are registered but unreachable in co-op" }
+        }
 
         StopAll $pids; $pids = @()
     }

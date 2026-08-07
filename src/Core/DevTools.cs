@@ -1288,6 +1288,39 @@ namespace PunkMultiverse.Core
                     Out($"screenshot: capturing to {file}");
                     return;
                 }
+                case "classes":
+                {
+                    // The selectable ship classes, as the loadout screen would offer them. This is
+                    // the co-op half of the content feature: a joiner must be able to CHOOSE the
+                    // host's custom classes, which is a different claim from "the modules are
+                    // registered" and was never checked by anything.
+                    int pools = 0, total = 0, custom = 0;
+                    // Match on the names WEAPONFORGE gave its classes, not on a prefix we assume.
+                    // A forge class is named by the pack author; the first version of this matched
+                    // "FORGE-" and reported 0 custom for a pack whose classes were all present.
+                    var forgeClasses = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    Content.ForgeBridge.CollectForgeLoadoutNames(forgeClasses);
+                    foreach (var pool in Resources.FindObjectsOfTypeAll<LoadoutPool>())
+                    {
+                        if (pool == null || pool.loadouts == null) continue;
+                        pools++;
+                        foreach (var lt in pool.loadouts)
+                        {
+                            if (lt == null) continue;
+                            total++;
+                            // A class is "custom" when any module it installs came from the
+                            // content mod -- the class itself carries no marker.
+                            bool isCustom = false;
+                            try { isCustom = lt.name != null && forgeClasses.Contains(lt.name); }
+                            catch { }
+                            if (isCustom) custom++;
+                            Out($"classes:   {(isCustom ? "*" : " ")} {lt.name}");
+                        }
+                    }
+                    Out($"classes: pools={pools} loadouts={total} custom={custom} " +
+                        $"(WeaponForge offers {forgeClasses.Count})");
+                    return;
+                }
                 case "brpools":
                 {
                     // The BR drop pools, ordered-fingerprinted. This is the instrument for the
@@ -1295,8 +1328,8 @@ namespace PunkMultiverse.Core
                     // from the SAME ordered pool, since selection is by index and contested loot
                     // is matched by ordinal. Asking directly beats inferring it from drop logs,
                     // which only appear if something dropped -- a short match proved nothing.
-                    var fp = Modes.BattleRoyaleLootTables.PoolFingerprint(out int w, out int c);
-                    Out($"brpools: white={w} coloured={c} fingerprint={fp}");
+                    var fp = Modes.BattleRoyaleLootTables.PoolFingerprint(out int w, out int c, out int custom);
+                    Out($"brpools: white={w} coloured={c} custom={custom} fingerprint={fp}");
                     return;
                 }
                 case "contentcancel":

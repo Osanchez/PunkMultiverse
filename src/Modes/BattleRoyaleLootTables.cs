@@ -242,9 +242,28 @@ namespace PunkMultiverse.Modes
         /// </summary>
         internal static string PoolFingerprint(out int white, out int coloured)
         {
+            return PoolFingerprint(out white, out coloured, out _);
+        }
+
+        /// <summary>As above, plus how many pool entries came from a content mod. A BR pool that
+        /// contains ZERO custom weapons means custom weapons can never drop, however perfectly
+        /// the content synced -- and the sync tests cannot see that.</summary>
+        internal static string PoolFingerprint(out int white, out int coloured, out int custom)
+        {
             if (_whiteWeapons == null) BuildWeaponPools();
             white = _whiteWeapons?.Count ?? 0;
             coloured = _colouredWeapons?.Count ?? 0;
+
+            var forgeModules = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            var forgeWeapons = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            Content.ForgeBridge.CollectForgeIds(forgeModules, forgeWeapons);
+            custom = 0;
+            foreach (var list in new[] { _whiteWeapons, _colouredWeapons })
+            {
+                if (list == null) continue;
+                foreach (var m in list)
+                    if (m != null && m.Id != null && forgeModules.Contains(m.Id)) custom++;
+            }
             ulong h = 1469598103934665603UL;
             foreach (var list in new[] { _whiteWeapons, _colouredWeapons })
             {
