@@ -1,0 +1,25 @@
+{
+  "name": "MvArcBeam",
+  "displayName": "ARC BEAM",
+  "description": "Multiverse sync test: a HELD beam with a looping custom sound. The loop is started and stopped by handle, so a remote client that never stops it is immediately audible.",
+  "template": "Module Weapon Caps Laser",
+  "baseLoadout": "Starter_Popper",
+  "slot": "primary",
+  "source": "starterAndLoot",
+  "lootWeight": 10,
+  "target": "enemies",
+  "weapon": {
+    "resourceUsed": "Resource White",
+    "damage": { "amount": 1.2, "damageType": "Resource White" },
+    "cost": 0.6,
+    "fireRate": 10,
+    "range": 18,
+    "warmupTime": 0.25,
+    "continousShootSfx": "mv_arc_loop",
+    "projectileColor": "#aa88ff"
+  },
+  "module": {
+    "color": "ColorPurple",
+    "resourceGain": { "resource": "Resource White", "amount": 12 }
+  }
+}

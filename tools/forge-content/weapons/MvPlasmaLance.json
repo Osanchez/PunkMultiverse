@@ -1,0 +1,27 @@
+{
+  "name": "MvPlasmaLance",
+  "displayName": "PLASMA LANCE",
+  "description": "Multiverse sync test: animated custom sprite, custom shot sound, fast enough to keep several projectiles in flight at once.",
+  "template": "Module Weapon White Popper",
+  "baseLoadout": "Starter_Popper",
+  "slot": "primary",
+  "source": "starterAndLoot",
+  "lootWeight": 14,
+  "weapon": {
+    "fireRate": 6,
+    "cost": 0.4,
+    "damage": { "amount": 2.0, "damageType": "Resource White" },
+    "projectileCount": 1,
+    "spread": 0,
+    "angleVariance": 1.5,
+    "projectileSpeed": 22,
+    "projectileScale": 1.4,
+    "projectileSprite": "mvPlasmaAnim",
+    "projectileColor": "#66ddff",
+    "shootSfx": "mv_plasma_shot"
+  },
+  "module": {
+    "color": "ColorBlue",
+    "resourceGain": { "resource": "Resource White", "amount": 12 }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "MvShardLobber",
+  "displayName": "SHARD LOBBER",
+  "description": "Multiverse sync test: a PHYSICS projectile, so its path is simulated rather than straight. Loot-only, so it exercises the Battle Royale drop path rather than class selection.",
+  "template": "Module Weapon White Derbis",
+  "baseLoadout": "Starter_Popper",
+  "slot": "secondary",
+  "source": "loot",
+  "lootWeight": 18,
+  "weapon": {
+    "fireRate": 1.6,
+    "cost": 1.0,
+    "damage": { "amount": 4.5, "damageType": "Resource White" },
+    "projectileCount": 3,
+    "spread": 18,
+    "projectileSpeed": 16,
+    "projectileScale": 1.3,
+    "projectileSprite": "mvShardAnim",
+    "projectileColor": "#ffaa55",
+    "shootSfx": "mv_shard_shot",
+    "usePhysics": true
+  },
+  "module": {
+    "color": "ColorOrange",
+    "resourceGain": { "resource": "Resource White", "amount": 12 }
+  }
+}

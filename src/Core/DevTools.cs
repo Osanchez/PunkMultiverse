@@ -1240,6 +1240,30 @@ namespace PunkMultiverse.Core
                         $"{(EnemySync.OwnerOf(netId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(netId) + 1))})");
                     return;
                 }
+                case "forgeids":
+                {
+                    // What ForgeDiag believes is a custom weapon, and what the ship is actually
+                    // holding. A shot that logs nothing is either "the id sets are empty" or
+                    // "the weapon we fired is not in them", and those have opposite fixes —
+                    // this prints both sides so it is one look rather than a guess.
+                    var mods = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+                    var weps = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+                    Content.ForgeBridge.CollectForgeIds(mods, weps);
+                    Out($"forgeids: modules={mods.Count} weapons={weps.Count}");
+                    foreach (var m in mods) Out($"forgeids:   module  {m}");
+                    foreach (var w in weps) Out($"forgeids:   weapon  {w}");
+                    var s = ShipSync.LocalShip;
+                    if (s == null) { Out("forgeids: no local ship"); return; }
+                    foreach (var (label, w) in new[] { ("primary", s.PrimaryWeapon), ("secondary", s.SecondaryWeapon) })
+                    {
+                        if (w == null) { Out($"forgeids: {label} = none"); continue; }
+                        string id = null;
+                        try { id = w.TemplateData?.Id; } catch { }
+                        if (string.IsNullOrEmpty(id)) id = w.TemplateData?.name;
+                        Out($"forgeids: {label} = '{id}' known={(id != null && weps.Contains(id))}");
+                    }
+                    return;
+                }
                 case "moduledigest":
                 {
                     // The fingerprint the go-live barrier compares. Printing it on demand turns

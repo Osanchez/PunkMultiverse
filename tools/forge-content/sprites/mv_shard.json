@@ -1,0 +1,48 @@
+{
+  "sheet": "mv_shard.png",
+  "pixelsPerUnit": 20,
+  "sprites": [
+    {
+      "name": "mvShard0",
+      "x": 0,
+      "y": 0,
+      "w": 14,
+      "h": 14
+    },
+    {
+      "name": "mvShard1",
+      "x": 14,
+      "y": 0,
+      "w": 14,
+      "h": 14
+    },
+    {
+      "name": "mvShard2",
+      "x": 28,
+      "y": 0,
+      "w": 14,
+      "h": 14
+    },
+    {
+      "name": "mvShard3",
+      "x": 42,
+      "y": 0,
+      "w": 14,
+      "h": 14
+    }
+  ],
+  "animations": [
+    {
+      "name": "mvShardAnim",
+      "fps": 14,
+      "loop": "loop",
+      "randomStart": true,
+      "frames": [
+        "mvShard0",
+        "mvShard1",
+        "mvShard2",
+        "mvShard3"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "sheet": "mv_plasma.png",
+  "pixelsPerUnit": 20,
+  "sprites": [
+    {
+      "name": "mvPlasma0",
+      "x": 0,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "mvPlasma1",
+      "x": 16,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "mvPlasma2",
+      "x": 32,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "mvPlasma3",
+      "x": 48,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "mvPlasma4",
+      "x": 64,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    },
+    {
+      "name": "mvPlasma5",
+      "x": 80,
+      "y": 0,
+      "w": 16,
+      "h": 16
+    }
+  ],
+  "animations": [
+    {
+      "name": "mvPlasmaAnim",
+      "fps": 18,
+      "loop": "loop",
+      "randomStart": true,
+      "frames": [
+        "mvPlasma0",
+        "mvPlasma1",
+        "mvPlasma2",
+        "mvPlasma3",
+        "mvPlasma4",
+        "mvPlasma5"
+      ]
+    }
+  ]
+}
