@@ -1240,6 +1240,47 @@ namespace PunkMultiverse.Core
                         $"{(EnemySync.OwnerOf(netId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(netId) + 1))})");
                     return;
                 }
+                case "contenthash":
+                {
+                    // Hash a directory and print the set digest plus every per-file digest.
+                    //
+                    // This is the highest-value check in the whole content feature and it needs no
+                    // session at all: run it over the SAME files on a Windows client and on the
+                    // Wine/Linux server and the two outputs must be byte-identical strings. That
+                    // proves the separator, case, ordering and encoding rules agree across
+                    // platforms in seconds, which is the one thing that, if wrong, makes clients
+                    // re-download forever or accept content that does not match.
+                    string dir = parts.Length > 1
+                        ? string.Join(" ", parts, 1, parts.Length - 1)
+                        : (NetConfig.ContentRoot != null ? NetConfig.ContentRoot.Value : "");
+                    if (string.IsNullOrWhiteSpace(dir)) { Out("contenthash: usage `contenthash <dir>`"); return; }
+                    if (!Path.IsPathRooted(dir)) dir = Path.Combine(ModFolder.Dir, dir);
+                    if (!Directory.Exists(dir)) { Out($"contenthash: no such directory: {dir}"); return; }
+
+                    var list = Content.ContentStore.ScanDirectory(
+                        dir, (long)NetConfig.ContentMaxFileMB.Value * 1024 * 1024, out var skippedFiles);
+                    var setHash = Content.ContentHash.SetDigest(list);
+                    Out($"contenthash: files={list.Count} set={Content.ContentHash.ToHex(setHash)}");
+                    foreach (var e in list)
+                        Out($"contenthash:   {Content.ContentHash.ToHex(e.Digest)} {e.Length} {e.Path}");
+                    foreach (var problem in Content.ContentHash.Validate(list))
+                        Out($"contenthash:   UNPUBLISHABLE {problem}");
+                    foreach (var sk in skippedFiles) Out($"contenthash:   skipped {sk}");
+                    return;
+                }
+                case "contentstat":
+                {
+                    Out($"contentstat: local={Content.ContentSync.LocalState} " +
+                        $"set={Content.ContentHash.ToHex(Content.ContentSync.LocalSetHash)} " +
+                        $"active={Content.ContentSync.ActiveContentPath ?? "none"}");
+                    var host = NetSession.Instance;
+                    if (host != null && host.IsHost)
+                        for (byte i = 0; i < 4; i++)
+                            if (host.Players[i] != null && !host.Players[i].IsLocal)
+                                Out($"contentstat:   P{i + 1} {Content.ContentSync.StateOf(i)} " +
+                                    $"{Content.ContentSync.PercentOf(i)}%");
+                    return;
+                }
                 case "dumpsprites":
                 {
                     // Write real PUNK sprites out as PNG, so custom art can be generated against

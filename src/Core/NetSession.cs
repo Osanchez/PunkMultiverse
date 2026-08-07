@@ -22,7 +22,11 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 21; // 21 = LevelReadyMsg carries the installed module set
+        public const int ProtocolVersion = 22; // 22 = host-served content: ContentOffer/Need/Chunk/
+                                               //      Done/Status (101-105) on the Events lane, so a
+                                               //      joiner is given the host's custom content
+                                               //      instead of merely being refused for lacking it
+                                               // 21 = LevelReadyMsg carries the installed module set
                                                //      (ModuleCount/ModuleDigest) so content mods that
                                                //      differ between players are refused at go-live
                                                //      instead of silently desyncing BR's drop table
@@ -1579,6 +1583,40 @@ namespace PunkMultiverse.Core
             else ForEachRemotePeer(peer => _transport.Send(peer, channel, data, reliable: false));
         }
 
+        /// <summary>
+        /// Send a content message. Bulk traffic goes STRAIGHT through the transport rather than
+        /// through SendReliable, and returns the transport's own accepted/refused answer so the
+        /// streamer can pace itself — SendReliable copies every payload into a fresh array and
+        /// caps its outbox at 8192 with drop-oldest, which at a few MB/s is a GC storm plus
+        /// silent loss. Non-bulk content messages are small and rare, so they take the ordered
+        /// outbox like any other reliable message.
+        /// </summary>
+        internal bool SendContent<T>(ulong peer, T msg, bool bulk = false, bool toHost = false)
+            where T : struct
+        {
+            if (_transport == null || !_transport.IsRunning) return false;
+            ulong target = peer;
+            if (toHost)
+            {
+                var host = _players[HostSlot];
+                if (host == null) return false;
+                target = host.PeerId;
+            }
+            _writer.Reset();
+            switch (msg)
+            {
+                case Protocol.ContentOfferMsg m: m.Write(_writer); break;
+                case Protocol.ContentNeedMsg m: m.Write(_writer); break;
+                case Protocol.ContentChunkMsg m: m.Write(_writer); break;
+                case Protocol.ContentDoneMsg m: m.Write(_writer); break;
+                case Protocol.ContentStatusMsg m: m.Write(_writer); break;
+                default: return false;
+            }
+            if (bulk) return _transport.Send(target, NetChannel.Events, _writer.ToSegment(), reliable: true);
+            SendReliable(target, NetChannel.Events, _writer.ToSegment());
+            return true;
+        }
+
         /// <summary>Host: relay the message currently being handled to every client except the sender.</summary>
         private void RelayToOthers(ulong senderPeer, NetChannel channel, bool reliable)
         {
@@ -1709,7 +1747,13 @@ namespace PunkMultiverse.Core
             var player = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
             if (player == null) return;
             player.ColorIndex = prefs.ColorIndex;
-            player.Ready = prefs.Ready;
+            // The gate is this one line. A player still receiving the host's content cannot be
+            // Ready, so AllReady stays false and the START button stays disabled — no new gating
+            // machinery, and it is enforced HOST-side, which a client that force-enables its own
+            // button cannot get around.
+            player.Ready = prefs.Ready && Content.ContentSync.Satisfied(player.Slot);
+            if (prefs.Ready && !player.Ready)
+                Plugin.Log.LogInfo($"[Content] {player} is still syncing content — not ready yet");
             BroadcastLobbyState();
             RosterChanged?.Invoke();
         }
@@ -1752,6 +1796,9 @@ namespace PunkMultiverse.Core
                 IsCoordinator = NetConfig.IsCoordinator, // shipless server slot — clients spawn no puppet
             };
             HostSlot = (byte)LocalSlot;
+            // Hash whatever we are going to serve now, while the lobby is empty, so the first
+            // joiner is offered a set that is already computed rather than waiting on a scan.
+            Content.ContentSync.BeginHosting();
             ChosenSeed = _pendingHostSeed; // settings picked on the pre-lobby screen
             FriendlyFire = _pendingFriendlyFire;
             HpScaling = _pendingHpScaling;
@@ -1887,6 +1934,7 @@ namespace PunkMultiverse.Core
             // this the weapons from this session stay in the player's SOLO game for the rest of
             // the process. See Content/VanillaContentGuard.cs.
             Content.VanillaContentGuard.RestorePristine("session ended");
+            Content.ContentSync.Reset();
             // Solo play gets its content mods back: stop holding the injection off, and clear the
             // "already did these groups" cache so they can re-inject into the tables we just
             // restored. Without the second half, crates would stay vanilla until the game restarts.
@@ -2060,6 +2108,9 @@ namespace PunkMultiverse.Core
                 RuntimeInstrumentation.SetPhase(PerfPhase.TransportDrain);
                 DrainOutbox();
                 if (profiling) NetProfiler.Mark("Transport.Drain");
+                // Above the InGame branch on purpose: content moves while the lobby is open,
+                // which is the whole point of gating on it before anyone reaches ship selection.
+                Content.ContentSync.Tick(this);
                 // Lease commits applied during the dispatch above (client lease waves, host
                 // handoff completions) flip their entities in one batched pass, same frame.
                 Sync.EnemySync.FlushSegmentOwnership();
@@ -2781,6 +2832,7 @@ namespace PunkMultiverse.Core
         private void OnPeerDisconnected(ulong peer)
         {
             Sync.WorldSync.CancelStream(peer); // a rejoin restarts it from scratch
+            Content.ContentSync.CancelFor(peer); // the .part files survive; a rejoin resumes
             ClearOutboxFor(peer);              // rejoin catch-up re-serves everything anyway
             NetSeq.ResetPeer(peer);            // WS8.2: counts are per-connection
             ResetSeqBaselines();
@@ -2893,6 +2945,31 @@ namespace PunkMultiverse.Core
 
             switch (type)
             {
+                // Content. The offer and chunks only ever come FROM the host, so they sit on the
+                // client side of the guard; need/done/status only ever travel TO it.
+                case MsgType.ContentOffer when !IsHost:
+                    Content.ContentSync.HandleOffer(this, Protocol.ContentOfferMsg.Read(_reader));
+                    break;
+                case MsgType.ContentChunk when !IsHost:
+                    Content.ContentSync.HandleChunk(this, Protocol.ContentChunkMsg.Read(_reader));
+                    break;
+                case MsgType.ContentNeed when IsHost:
+                    Content.ContentSync.HandleNeed(this, peer, Protocol.ContentNeedMsg.Read(_reader));
+                    break;
+                case MsgType.ContentDone when IsHost:
+                {
+                    var doneMsg = Protocol.ContentDoneMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+                    if (sender != null) Content.ContentSync.HandleDone(sender.Slot, doneMsg);
+                    break;
+                }
+                case MsgType.ContentStatus when IsHost:
+                {
+                    var statusMsg = Protocol.ContentStatusMsg.Read(_reader);
+                    var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
+                    if (sender != null) Content.ContentSync.HandleStatus(sender.Slot, statusMsg);
+                    break;
+                }
                 case MsgType.Hello when IsHost: HandleHello(peer); break;
                 case MsgType.SetLobbyPrefs when IsHost: HandleSetLobbyPrefs(peer); break;
                 case MsgType.Welcome when !IsHost: HandleWelcome(); break;
@@ -3687,6 +3764,9 @@ namespace PunkMultiverse.Core
             // three-day dedicated-server "client never goes live" hunt ends here.
             new WelcomeMsg { Slot = (byte)slot, HostSlot = HostSlot, HostModVersion = Plugin.Version, Roster = BuildRoster() }.Write(_writer);
             SendReliable(peer, NetChannel.Control, _writer.ToSegment());
+            // Offer the host's content immediately after the Welcome, so the transfer runs while
+            // the player is reading the lobby rather than after they press START.
+            Content.ContentSync.OfferTo(this, peer);
             BroadcastLobbyState();
             RosterChanged?.Invoke();
 

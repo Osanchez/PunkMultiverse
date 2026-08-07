@@ -63,6 +63,10 @@ namespace PunkMultiverse
         public static ConfigEntry<float> EmptyServerResetSeconds;
         public static ConfigEntry<int> ServerFrameRateCap;
         public static ConfigEntry<bool> PreGenerateWorld;
+        public static ConfigEntry<string> ContentRoot;
+        public static ConfigEntry<int> ContentRateKBps;
+        public static ConfigEntry<int> ContentCacheMaxMB;
+        public static ConfigEntry<int> ContentMaxFileMB;
         public static ConfigEntry<string> GameMode;
         public static ConfigEntry<int> BrMatchMinutes;
         public static ConfigEntry<int> BrRingStages;
@@ -343,6 +347,24 @@ namespace PunkMultiverse
                 "own ~6s. Legal because a dedicated server owns the seed (DIRECT CONNECT clients " +
                 "never send one); if a party leader supplies a different seed, the pre-built " +
                 "world is discarded and generation runs at START as before.");
+            ContentRoot = cfg.Bind("Session", "ContentRoot", "",
+                "Folder of custom content this machine SERVES to everyone who joins it (weapon " +
+                "definitions, sprites, sounds). Relative paths are resolved against this plugin " +
+                "folder. Empty = serve nothing, which is the default and means joiners keep " +
+                "whatever they already had. Only the HOST's value matters: clients receive the " +
+                "host's set, verify it by hash, and cache it for next time.");
+            ContentRateKBps = cfg.Bind("Session", "ContentRateKBps", 4096,
+                "Per-joiner transfer ceiling in KB/s while serving content. Deliberately a rate " +
+                "per SECOND rather than per frame: a dedicated server caps its own frame rate " +
+                "(ServerFrameRateCap), so a per-frame budget would silently halve its throughput.");
+            ContentCacheMaxMB = cfg.Bind("Session", "ContentCacheMaxMB", 512,
+                "Budget for the downloaded-content cache. Eviction drops whole sets, oldest first, " +
+                "never individual files — a set's manifest is only valid while every file it " +
+                "names is present. A single set larger than this is kept and warned about rather " +
+                "than making the game unplayable.");
+            ContentMaxFileMB = cfg.Bind("Session", "ContentMaxFileMB", 16,
+                "Largest single file that will be published. Guards against pointing ContentRoot " +
+                "at something enormous by accident; over-limit files are skipped and named in the log.");
             GameMode = cfg.Bind("Session", "GameMode", "Standard",
                 new ConfigDescription(
                     "Ruleset for runs this DEDICATED SERVER hosts (takes effect on restart). " +

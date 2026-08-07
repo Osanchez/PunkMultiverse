@@ -67,6 +67,7 @@ namespace PunkMultiverse
             // Before anything else can fail: quitting must always end the process, even when a
             // native library deadlocks the shutdown. See Core/ExitWatchdog.cs.
             Core.ExitWatchdog.Install();
+            UnityEngine.Application.quitting += Content.ContentSync.StopWorker;
 
             _harmony = new Harmony(Guid);
             _harmony.PatchAll(typeof(Plugin).Assembly);
@@ -79,6 +80,9 @@ namespace PunkMultiverse
             // chainload on a machine where WeaponForge is absent or has been refactored, and take
             // the whole mod down with it. Absent is the common case.
             Content.ForgeBridge.ApplySuppressionPatch(_harmony);
+            // Clear crash debris from the content cache before anything can read it. Listings
+            // only, no hashing, so it is cheap enough to run unconditionally.
+            Content.ContentStore.BootSweep();
 
             _runtime = new GameObject("PunkMultiverse");
             Object.DontDestroyOnLoad(_runtime);

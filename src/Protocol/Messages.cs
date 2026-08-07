@@ -2259,4 +2259,184 @@ namespace PunkMultiverse.Protocol
 
         public static PingMsg Read(NetReader r) => new PingMsg { TimeMs = r.ReadUInt() };
     }
+
+    /// <summary>
+    /// Host -> client: the content set this session runs, as a file list. Chunked, because a
+    /// pack of a few hundred files is far past a datagram.
+    ///
+    /// The client recomputes the set hash from the entries it receives and compares it to
+    /// SetHash before a single content byte moves. That validates the two machines' hash
+    /// implementations against each other on EVERY join, which is worth more than any unit test
+    /// — a disagreement there is caught at the offer instead of after a download.
+    /// </summary>
+    public struct ContentOfferMsg
+    {
+        public byte[] SetHash;       // ContentHash.DigestBytes
+        public bool Empty;           // host serves no content; the client needs nothing
+        public uint TotalFiles;
+        public ulong TotalBytes;
+        public uint StartIndex;      // this chunk covers [StartIndex, StartIndex + Count)
+        public string[] Paths;
+        public ulong[] Lengths;
+        public byte[][] Digests;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ContentOffer);
+            w.WriteBytes(SetHash, 0, SetHash.Length);
+            w.WriteBool(Empty);
+            w.WriteVarUInt(TotalFiles);
+            w.WriteVarUInt((uint)TotalBytes);
+            w.WriteVarUInt(StartIndex);
+            int count = Paths != null ? Paths.Length : 0;
+            w.WriteVarUInt((uint)count);
+            for (int i = 0; i < count; i++)
+            {
+                w.WriteString(Paths[i]);
+                w.WriteVarUInt((uint)Lengths[i]);
+                w.WriteBytes(Digests[i], 0, Digests[i].Length);
+            }
+        }
+
+        public static ContentOfferMsg Read(NetReader r)
+        {
+            var m = new ContentOfferMsg
+            {
+                SetHash = r.ReadBytes(),
+                Empty = r.ReadBool(),
+                TotalFiles = r.ReadVarUInt(),
+                TotalBytes = r.ReadVarUInt(),
+                StartIndex = r.ReadVarUInt(),
+            };
+            int count = (int)r.ReadVarUInt();
+            m.Paths = new string[count];
+            m.Lengths = new ulong[count];
+            m.Digests = new byte[count][];
+            for (int i = 0; i < count; i++)
+            {
+                m.Paths[i] = r.ReadString();
+                m.Lengths[i] = r.ReadVarUInt();
+                m.Digests[i] = r.ReadBytes();
+            }
+            return m;
+        }
+    }
+
+    /// <summary>
+    /// Client -> host: the blobs I do not have, deduplicated BY DIGEST — two identical sprites at
+    /// different paths are one download. HaveBytes is the resume point, which is only safe
+    /// because a blob is content-addressed and verified on commit.
+    /// </summary>
+    public struct ContentNeedMsg
+    {
+        public byte[] SetHash;
+        public byte[][] Digests;
+        public ulong[] HaveBytes;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ContentNeed);
+            w.WriteBytes(SetHash, 0, SetHash.Length);
+            int count = Digests != null ? Digests.Length : 0;
+            w.WriteVarUInt((uint)count);
+            for (int i = 0; i < count; i++)
+            {
+                w.WriteBytes(Digests[i], 0, Digests[i].Length);
+                w.WriteVarUInt((uint)HaveBytes[i]);
+            }
+        }
+
+        public static ContentNeedMsg Read(NetReader r)
+        {
+            var m = new ContentNeedMsg { SetHash = r.ReadBytes() };
+            int count = (int)r.ReadVarUInt();
+            m.Digests = new byte[count][];
+            m.HaveBytes = new ulong[count];
+            for (int i = 0; i < count; i++)
+            {
+                m.Digests[i] = r.ReadBytes();
+                m.HaveBytes[i] = r.ReadVarUInt();
+            }
+            return m;
+        }
+    }
+
+    /// <summary>Host -> client: one slice of one blob. Offset is carried so the receiver can
+    /// reject an out-of-order or duplicated chunk instead of corrupting the file.</summary>
+    public struct ContentChunkMsg
+    {
+        public byte[] Digest;
+        public ulong Offset;
+        public bool Last;
+        public byte[] Data;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ContentChunk);
+            w.WriteBytes(Digest, 0, Digest.Length);
+            w.WriteVarUInt((uint)Offset);
+            w.WriteBool(Last);
+            w.WriteBytes(Data, 0, Data.Length);
+        }
+
+        public static ContentChunkMsg Read(NetReader r) => new ContentChunkMsg
+        {
+            Digest = r.ReadBytes(),
+            Offset = r.ReadVarUInt(),
+            Last = r.ReadBool(),
+            Data = r.ReadBytes(),
+        };
+    }
+
+    /// <summary>Client -> host: this set is installed and verified, or it failed and why. The
+    /// reason travels because "it did not work" with no cause is what turns a five-minute fix
+    /// into a support thread.</summary>
+    public struct ContentDoneMsg
+    {
+        public byte[] SetHash;
+        public bool Ok;
+        public string Reason;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ContentDone);
+            w.WriteBytes(SetHash, 0, SetHash.Length);
+            w.WriteBool(Ok);
+            w.WriteString(Reason ?? "");
+        }
+
+        public static ContentDoneMsg Read(NetReader r) => new ContentDoneMsg
+        {
+            SetHash = r.ReadBytes(),
+            Ok = r.ReadBool(),
+            Reason = r.ReadString(),
+        };
+    }
+
+    /// <summary>Client -> host: progress, so the lobby can say who everyone is waiting for.
+    /// A hang and a wait look identical without this.</summary>
+    public struct ContentStatusMsg
+    {
+        public byte State;      // 0 idle, 1 downloading, 2 installing, 3 satisfied, 4 failed
+        public byte Percent;
+        public ulong BytesDone;
+        public ulong BytesTotal;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.ContentStatus);
+            w.WriteByte(State);
+            w.WriteByte(Percent);
+            w.WriteVarUInt((uint)BytesDone);
+            w.WriteVarUInt((uint)BytesTotal);
+        }
+
+        public static ContentStatusMsg Read(NetReader r) => new ContentStatusMsg
+        {
+            State = r.ReadByte(),
+            Percent = r.ReadByte(),
+            BytesDone = r.ReadVarUInt(),
+            BytesTotal = r.ReadVarUInt(),
+        };
+    }
 }

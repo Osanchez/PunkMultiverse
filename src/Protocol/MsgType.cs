@@ -147,5 +147,16 @@
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match
         IdResolveReply = 58,   // host -> client: their entity type + position, for
                                // type+nearest-position matching against local orphans
+
+        // ---- Channel 2 (events): host-served content ----
+        // Bulk on purpose. Control must stay clear of anything a transfer can queue behind — a
+        // content message must never be able to delay a Welcome or a StartRun — and Events is
+        // the lane already documented as reliable and bulk-tolerant, whose backpressure contract
+        // (Send returning false) the terrain streamer already relies on.
+        ContentOffer = 101,  // host -> client: set hash + the file list, chunked
+        ContentNeed = 102,   // client -> host: the digests I lack, with resume offsets, chunked
+        ContentChunk = 103,  // host -> client: (digest, offset, bytes, last)
+        ContentDone = 104,   // client -> host: installed and verified, or failed with a reason
+        ContentStatus = 105, // client -> host: progress, for the host's lobby roster
     }
 }
