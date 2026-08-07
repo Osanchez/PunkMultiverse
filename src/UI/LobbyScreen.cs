@@ -1130,8 +1130,13 @@ namespace PunkMultiverse.UI
                 ? session.ServerWorldStatus == 1 ? "SERVER IS PREPARING THE NEXT WORLD…"
                 : session.ServerWorldStatus == 2 ? "WORLD READY — START WHEN EVERYONE IS" : ""
                 : "";
+            // Who START is actually waiting on. This line is read by the one person who can press
+            // it, and "the button is grey" is not an explanation — especially when the reason is a
+            // download nobody but that player can see the progress of.
+            string syncing = SyncingSummary(session);
             _statusText.text = session.LastError
-                ?? (session.State == SessionState.Connecting ? "CONNECTING…" : worldStatus);
+                ?? (session.State == SessionState.Connecting ? "CONNECTING…"
+                    : syncing ?? worldStatus);
             _statusText.color = session.LastError != null ? UiTheme.Bad : UiTheme.Accent;
 
             if (inLobby) RefreshLobby(session);
@@ -1206,9 +1211,57 @@ namespace PunkMultiverse.UI
                 if (p.ModsMismatch) tags += "  <color=#ffb84d>[!] MODS</color>";
                 row.Name.text = p.Name + tags;
                 string rtt = p.IsLocal || p.RttMs < 0 ? "" : $"<color=#717171>{p.RttMs} MS</color>  ";
+                // A player fetching the host's custom content is NOT ready, but "NOT READY" is a
+                // lie by omission: it reads as someone idling in a slot everyone else is waiting
+                // on. Their seat is already reserved (it is taken at Hello, before any transfer),
+                // so the only thing missing was saying so.
+                string sync = ContentTag(p);
                 row.Status.text = !p.Connected
                     ? "<color=#ff7070>OFFLINE</color>"
+                    : sync != null ? rtt + sync
                     : rtt + (p.Ready ? "<color=#50d878>READY</color>" : "<color=#717171>NOT READY</color>");
+            }
+        }
+
+        /// <summary>"WAITING FOR ALEX — DOWNLOADING CUSTOM CONTENT (42%)", or null when nobody is.
+        /// Names one player rather than counting them: with a four-slot lobby the name is more
+        /// useful than a tally, and it is the thing the person holding START needs to know.</summary>
+        private static string SyncingSummary(Core.NetSession session)
+        {
+            if (session.State != SessionState.Lobby) return null;
+            Core.NetPlayer worst = null;
+            int others = 0;
+            foreach (var p in session.Players)
+            {
+                if (p == null || !p.Connected) continue;
+                var st = (Content.ContentState)p.ContentState;
+                if (st != Content.ContentState.Downloading && st != Content.ContentState.Installing) continue;
+                if (worst == null || p.ContentPercent < worst.ContentPercent) { if (worst != null) others++; worst = p; }
+                else others++;
+            }
+            if (worst == null) return null;
+            string who = worst.IsLocal ? "YOU ARE" : worst.Name.ToUpperInvariant() + " IS";
+            string more = others > 0 ? $" (+{others})" : "";
+            return $"{who} DOWNLOADING CUSTOM CONTENT — {worst.ContentPercent}%{more}";
+        }
+
+        /// <summary>The content-sync tag for a lobby row, or null when there is nothing to say.
+        /// Null for Idle and Satisfied — the overwhelmingly common case is a session with no
+        /// custom content at all, and it must look exactly like it always did.</summary>
+        private static string ContentTag(Core.NetPlayer p)
+        {
+            switch ((Content.ContentState)p.ContentState)
+            {
+                case Content.ContentState.Downloading:
+                    return $"<color=#f08c2e>SYNCING {p.ContentPercent}%</color>";
+                case Content.ContentState.Installing:
+                    return "<color=#f08c2e>INSTALLING</color>";
+                case Content.ContentState.Failed:
+                    // Distinct from OFFLINE and from NOT READY: this player is present, holding
+                    // their slot, and cannot become ready without doing something about it.
+                    return "<color=#ff7070>NO CONTENT</color>";
+                default:
+                    return null;
             }
         }
 

@@ -19,6 +19,10 @@
         public bool IsCoordinator; // dedicated shipless server slot: no ship, no puppet, plays nobody
         public bool IsAdmin;       // session admin of a coordinator session: gets the host-like UI
         public int RttMs = -1;     // -1 = unknown
+        // Mirrored from the roster so the lobby can say WHY someone is not ready. On the host
+        // these are the authority; on a client they are whatever the last LobbyState carried.
+        public byte ContentState;   // Content.ContentState
+        public byte ContentPercent;
 
         /// <summary>Set once in-game: the Ship this player controls (local) or their puppet (remote).</summary>
         public Ship Ship;

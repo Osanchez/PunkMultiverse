@@ -1291,6 +1291,18 @@ namespace PunkMultiverse.Core
                             if (host.Players[i] != null && !host.Players[i].IsLocal)
                                 Out($"contentstat:   P{i + 1} {Content.ContentSync.StateOf(i)} " +
                                     $"{Content.ContentSync.PercentOf(i)}%");
+                    // The ROSTER view — what this machine would draw in the lobby for everyone
+                    // else. On a client this is the only source there is, and it is the thing
+                    // that turns "NOT READY" into "SYNCING 42%". Printed on the host too, so the
+                    // two views can be compared when they disagree.
+                    if (host != null)
+                        for (byte i = 0; i < 4; i++)
+                        {
+                            var pl = host.Players[i];
+                            if (pl == null) continue;
+                            Out($"contentstat: roster P{i + 1} {(Content.ContentState)pl.ContentState} " +
+                                $"{pl.ContentPercent}%{(pl.IsLocal ? " (me)" : "")}");
+                        }
                     return;
                 }
                 case "dumpsprites":

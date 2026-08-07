@@ -53,6 +53,12 @@ namespace PunkMultiverse.Protocol
         public bool ModsMismatch; // joiner's plugin set differs from the host's (Warn policy)
         public bool IsCoordinator; // dedicated shipless server slot: clients spawn no puppet for it
         public bool IsAdmin;       // session admin (first joiner of a coordinator session): host-like UI
+        // Why this rides the ROSTER rather than staying host-side: the host already knows who is
+        // syncing, but every other client sees only "not ready" -- indistinguishable from someone
+        // who simply has not pressed READY. A player who cannot tell the difference concludes the
+        // lobby is broken, or worse, that their slot is being held by someone idle.
+        public byte ContentState;    // 0 idle, 1 downloading, 2 installing, 3 satisfied, 4 failed
+        public byte ContentPercent;
 
         public void Write(NetWriter w)
         {
@@ -68,6 +74,8 @@ namespace PunkMultiverse.Protocol
             w.WriteBool(ModsMismatch);
             w.WriteBool(IsCoordinator);
             w.WriteBool(IsAdmin);
+            w.WriteByte(ContentState);
+            w.WriteByte(ContentPercent);
         }
 
         public static RosterEntry Read(NetReader r) => new RosterEntry
@@ -84,6 +92,8 @@ namespace PunkMultiverse.Protocol
             ModsMismatch = r.ReadBool(),
             IsCoordinator = r.ReadBool(),
             IsAdmin = r.ReadBool(),
+            ContentState = r.ReadByte(),
+            ContentPercent = r.ReadByte(),
         };
     }
 

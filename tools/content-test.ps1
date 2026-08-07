@@ -252,6 +252,20 @@ try {
                     $seen += [int]$m.Matches[0].Groups[2].Value
                 }
             }
+            # THE ROSTER VIEW. The host knowing a percentage is not the feature -- every OTHER
+            # client has to know it too, or a downloading player still reads as somebody idling in
+            # a slot. bot0 must see bot1 mid-transfer, from the roster alone.
+            $peerSeen = @()
+            for ($b = 0; $b -lt $BotPlugs.Count; $b++) {
+                foreach ($m in (Lines (Join-Path $BotPlugs[$b] "devout.txt") "contentstat: roster P(\d) (\w+) (\d+)%$")) {
+                    $peerSeen += [int]$m.Matches[0].Groups[3].Value      # rows WITHOUT "(me)"
+                }
+            }
+            $peerMid = @($peerSeen | Where-Object { $_ -gt 0 -and $_ -lt 100 } | Select-Object -Unique)
+            if ($peerMid.Count -lt 1) {
+                Fail "no client ever saw ANOTHER player mid-sync on the roster - the lobby would still say NOT READY"
+            } else { Line "peer sees peer" "$($peerMid.Count) distinct mid-sync value(s) on the roster" }
+
             $mid = @($seen | Where-Object { $_ -gt 0 -and $_ -lt 100 } | Select-Object -Unique | Sort-Object)
             Line "progress samples" (($seen | Select-Object -Unique | Sort-Object) -join ", ")
             if ($mid.Count -lt 2) {

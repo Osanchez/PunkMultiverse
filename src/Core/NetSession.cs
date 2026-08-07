@@ -22,7 +22,12 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 22; // 22 = host-served content: ContentOffer/Need/Chunk/
+        public const int ProtocolVersion = 23; // 23 = RosterEntry carries ContentState/ContentPercent,
+                                               //      so every client can see WHY a player is not
+                                               //      ready ("SYNCING 42%") rather than reading a
+                                               //      held slot as somebody idling. Changes both
+                                               //      LobbyState and Welcome layout.
+                                               // 22 = host-served content: ContentOffer/Need/Chunk/
                                                //      Done/Status (101-105) on the Events lane, so a
                                                //      joiner is given the host's custom content
                                                //      instead of merely being refused for lacking it
@@ -2982,7 +2987,8 @@ namespace PunkMultiverse.Core
                 {
                     var statusMsg = Protocol.ContentStatusMsg.Read(_reader);
                     var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
-                    if (sender != null) Content.ContentSync.HandleStatus(sender.Slot, statusMsg);
+                    if (sender != null && Content.ContentSync.HandleStatus(sender.Slot, statusMsg))
+                        BroadcastLobbyState();   // so every client's row moves, not just the host's
                     break;
                 }
                 case MsgType.Hello when IsHost: HandleHello(peer); break;
@@ -4053,6 +4059,15 @@ namespace PunkMultiverse.Core
                         ModsMismatch = p.ModsMismatch,
                         IsCoordinator = p.IsCoordinator,
                         IsAdmin = p.IsAdmin,
+                        // The host's own row reads its local state; everyone else's comes from the
+                        // ContentStatus they report while downloading. Only the host has either,
+                        // which is exactly why this has to travel on the roster.
+                        ContentState = (byte)(p.IsLocal
+                            ? Content.ContentSync.LocalState
+                            : Content.ContentSync.StateOf(p.Slot)),
+                        ContentPercent = p.IsLocal
+                            ? Content.ContentSync.LocalPercent
+                            : Content.ContentSync.PercentOf(p.Slot),
                     });
             return roster;
         }
@@ -4176,6 +4191,8 @@ namespace PunkMultiverse.Core
                     ModsMismatch = e.ModsMismatch,
                     IsCoordinator = e.IsCoordinator,
                     IsAdmin = e.IsAdmin,
+                    ContentState = e.ContentState,
+                    ContentPercent = e.ContentPercent,
                     RttMs = oldRtt.TryGetValue(e.IdentityId, out var rtt) ? rtt : -1,
                 };
             }

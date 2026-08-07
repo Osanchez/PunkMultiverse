@@ -671,10 +671,22 @@ namespace PunkMultiverse.Content
             else Plugin.Log.LogWarning($"[Content] P{slot + 1} could not install the content: {msg.Reason}");
         }
 
-        internal static void HandleStatus(byte slot, ContentStatusMsg msg)
+        /// <summary>
+        /// Returns true when the lobby should be rebroadcast. Not on every status: clients report
+        /// twice a second each, and re-sending the whole roster to everyone six times a second so
+        /// a number can tick by one is a poor trade. A 5% step is well under one bar-width and
+        /// the state change itself is always sent.
+        /// </summary>
+        internal static bool HandleStatus(byte slot, ContentStatusMsg msg)
         {
-            PeerState[slot] = (ContentState)msg.State;
+            var state = (ContentState)msg.State;
+            bool changed = !PeerState.TryGetValue(slot, out var was) || was != state;
+            if (!changed && PeerPercent.TryGetValue(slot, out var pct))
+                changed = msg.Percent >= pct + 5 || msg.Percent < pct;   // < = a restart or resume
+            else changed = true;
+            PeerState[slot] = state;
             PeerPercent[slot] = msg.Percent;
+            return changed;
         }
     }
 }
