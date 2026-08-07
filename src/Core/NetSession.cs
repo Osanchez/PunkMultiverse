@@ -22,7 +22,11 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 20; // 20 = RingState carries the drifting zone's TARGET centre
+        public const int ProtocolVersion = 21; // 21 = LevelReadyMsg carries the installed module set
+                                               //      (ModuleCount/ModuleDigest) so content mods that
+                                               //      differ between players are refused at go-live
+                                               //      instead of silently desyncing BR's drop table
+                                               // 20 = RingState carries the drifting zone's TARGET centre
                                                //      + BR messages (Announce/RingState/Placement/CarePackage)
                                                // 16 = LobbyStateMsg.WorldStatus + AdminCmd.EndRun
                                                // 15 = StartRunMsg.RunDateUtc (shared S3 run-folder
@@ -875,6 +879,14 @@ namespace PunkMultiverse.Core
             // Every machine records the ruleset it is about to play, host and client alike — the
             // host's mode is authoritative, so this is also the line that proves it arrived.
             Plugin.Log.LogInfo($"[Run] starting seed {seed} in {CurrentMode.ToString().ToUpperInvariant()} mode");
+            // Start every net run from the game's own loot tables. A content mod appends into
+            // those shared assets during solo play and never removes, so a player who forged some
+            // weapons and then joined would otherwise carry them into the session's drop pools —
+            // which the host may not have at all. BR rolls its loot independently on every machine
+            // and matches the results by ordinal, so tables that differ do not merely give someone
+            // an extra item, they desync the whole drop table.
+            Content.VanillaContentGuard.RestorePristine("net run starting");
+            Content.ForgeBridge.SuppressLootInjection = true;
             CurrentRunSeed = seed;
             _levelChecksums.Clear();
             _levelFingerprints.Clear();
@@ -1151,6 +1163,9 @@ namespace PunkMultiverse.Core
                 _levelReadyVisualPending = false;
                 _localLevelReady.VisualVariantCount = 0;
                 _localLevelReady.VisualVariantDigest = 0;
+                // Modules ARE audited here, unlike visuals: a shipless coordinator still rolls
+                // BR loot from this registry, so its module set has to match the players'.
+                CaptureLocalModuleFingerprint();
                 _levelChecksums[HostSlot] = _localLevelChecksum;
                 _levelFingerprints[HostSlot] = _localLevelReady;
                 Plugin.Log.LogInfo("[Determinism] coordinator: data fingerprint only (headless, no visual audit)");
@@ -1170,6 +1185,7 @@ namespace PunkMultiverse.Core
             _levelReadyVisualPending = false;
             _localLevelReady.VisualVariantCount = visual.VariantCount;
             _localLevelReady.VisualVariantDigest = visual.Digest;
+            CaptureLocalModuleFingerprint();
             Plugin.Log.LogInfo($"[Determinism] visuals={visual.VariantCount}/{visual.Digest:X16} " +
                 $"renderers={visual.RendererCount}");
             if (IsHost)
@@ -1184,6 +1200,21 @@ namespace PunkMultiverse.Core
                 _goLiveDeadline = Time.unscaledTime + GoLiveTimeout;
                 SendLevelReady();
             }
+        }
+
+        /// <summary>
+        /// Captured as late as possible — here rather than at OnLevelGenerated — because content
+        /// mods keep registering after generation starts. WeaponForge, for one, re-runs its
+        /// build+register on every LoadoutSelector.Populate, so an earlier capture would
+        /// fingerprint a registry that is still growing and report a mismatch against a peer who
+        /// simply sampled at a different moment.
+        /// </summary>
+        private void CaptureLocalModuleFingerprint()
+        {
+            var modules = DeterminismAudit.CaptureModules(log: false);
+            _localLevelReady.ModuleCount = modules.Count;
+            _localLevelReady.ModuleDigest = modules.Digest;
+            Plugin.Log.LogInfo($"[Determinism] modules={modules.Count}/{modules.Digest:X16}");
         }
 
         // Field reports (tester, 2026-07-20): a rejoiner can end up on a permanent black screen —
@@ -1302,11 +1333,36 @@ namespace PunkMultiverse.Core
                 if (_levelFingerprints.Values.Any(value => !SameVisualGeneration(host, value)))
                     InstrumentationCounters.VisualGenerationMismatch();
                 var detail = string.Join(", ", _levelFingerprints.Select(kv => $"P{kv.Key + 1}={DescribeGeneration(kv.Value)}"));
-                Plugin.Log.LogError($"[Determinism] GENERATION MISMATCH — aborting net run ({detail})");
+
+                // Name the dimension that actually diverged. A module mismatch means "someone's
+                // weapon mods differ from the host's" and is fixed by matching the mod set;
+                // telling that player their world generation diverged sends them after an
+                // entirely different, imaginary problem.
+                bool modulesDiffer = _levelFingerprints.Values.Any(value => !SameModuleGeneration(host, value));
+                bool worldDiffers = _levelFingerprints.Values.Any(value =>
+                    value.Checksum != host.Checksum
+                    || value.EntityCount != host.EntityCount || value.EntityDigest != host.EntityDigest
+                    || value.PlantCount != host.PlantCount || value.PlantDigest != host.PlantDigest
+                    || (value.VisualVariantCount != 0 && host.VisualVariantCount != 0
+                        && !SameVisualGeneration(host, value)));
+
+                string reason;
+                if (modulesDiffer && !worldDiffers)
+                    reason = "Installed weapon/module content differs between players. Everyone must " +
+                             "have the same content mods (e.g. WeaponForge) with the same weapons " +
+                             "installed as the host.";
+                else if (modulesDiffer)
+                    reason = "World generation AND installed weapon/module content diverged between players.";
+                else
+                    reason = "World generation diverged between players (terrain/entity/plant/visual fingerprint mismatch).";
+
+                Plugin.Log.LogError($"[Determinism] GENERATION MISMATCH — aborting net run " +
+                    $"(modules={modulesDiffer} world={worldDiffers}; {detail})");
                 _writer.Reset();
-                new RejectMsg { Reason = "World generation diverged between players (terrain/entity/plant/visual fingerprint mismatch)." }.Write(_writer);
+                new RejectMsg { Reason = reason }.Write(_writer);
                 ForEachRemotePeer(peer => SendReliable(peer, NetChannel.Control, _writer.ToSegment()));
-                StopSession("generation fingerprint mismatch");
+                StopSession(modulesDiffer && !worldDiffers
+                    ? "module content mismatch" : "generation fingerprint mismatch");
                 return;
             }
 
@@ -1342,6 +1398,7 @@ namespace PunkMultiverse.Core
         private static bool SameGeneration(LevelReadyMsg a, LevelReadyMsg b) =>
             a.Checksum == b.Checksum && a.EntityCount == b.EntityCount && a.EntityDigest == b.EntityDigest &&
             a.PlantCount == b.PlantCount && a.PlantDigest == b.PlantDigest &&
+            SameModuleGeneration(a, b) &&
             // Visual (tile-variant) hashes are only comparable when BOTH machines rendered; a
             // headless coordinator reports VisualVariantCount 0 and sits out the visual check.
             (a.VisualVariantCount == 0 || b.VisualVariantCount == 0 || SameVisualGeneration(a, b));
@@ -1349,10 +1406,16 @@ namespace PunkMultiverse.Core
         private static bool SameVisualGeneration(LevelReadyMsg a, LevelReadyMsg b) =>
             a.VisualVariantCount == b.VisualVariantCount && a.VisualVariantDigest == b.VisualVariantDigest;
 
+        /// <summary>No headless exemption: module ids exist without a graphics device, and the
+        /// coordinator rolls BR loot from the same registry.</summary>
+        private static bool SameModuleGeneration(LevelReadyMsg a, LevelReadyMsg b) =>
+            a.ModuleCount == b.ModuleCount && a.ModuleDigest == b.ModuleDigest;
+
         private static string DescribeGeneration(LevelReadyMsg value) =>
             $"terrain={value.Checksum:X16} entities={value.EntityCount}/{value.EntityDigest:X16} " +
             $"plants={value.PlantCount}/{value.PlantDigest:X16} " +
-            $"visuals={value.VisualVariantCount}/{value.VisualVariantDigest:X16}";
+            $"visuals={value.VisualVariantCount}/{value.VisualVariantDigest:X16} " +
+            $"modules={value.ModuleCount}/{value.ModuleDigest:X16}";
 
         private float _autoFlyUntil;
         private float _orbitUntil, _orbitStart, _orbitPeriod;
@@ -1819,6 +1882,16 @@ namespace PunkMultiverse.Core
             ClockSync.Reset();
             EconomyStash.Reset();
             Sync.HookSync.Reset();
+            // Hand the vanilla loot tables and loadout pool back exactly as the game shipped
+            // them. A content mod appends into those shared assets and never removes, so without
+            // this the weapons from this session stay in the player's SOLO game for the rest of
+            // the process. See Content/VanillaContentGuard.cs.
+            Content.VanillaContentGuard.RestorePristine("session ended");
+            // Solo play gets its content mods back: stop holding the injection off, and clear the
+            // "already did these groups" cache so they can re-inject into the tables we just
+            // restored. Without the second half, crates would stay vanilla until the game restarts.
+            Content.ForgeBridge.SuppressLootInjection = false;
+            Content.ForgeBridge.ClearLootCache();
             if (State != SessionState.Offline)
             {
                 Plugin.Log.LogInfo($"[Session] stopped ({reason})");

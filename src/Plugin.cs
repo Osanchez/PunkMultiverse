@@ -75,6 +75,10 @@ namespace PunkMultiverse
             // Same generic-method corner, same hand-application: a pickup may never outlive its
             // own grant (Patches/PickupGrantGuard.cs — the infinite-item faucet).
             Patches.PickupGrantGuard.ApplyGenericPatches(_harmony);
+            // Third-party target, so hand-applied for the same reason: PatchAll would throw at
+            // chainload on a machine where WeaponForge is absent or has been refactored, and take
+            // the whole mod down with it. Absent is the common case.
+            Content.ForgeBridge.ApplySuppressionPatch(_harmony);
 
             _runtime = new GameObject("PunkMultiverse");
             Object.DontDestroyOnLoad(_runtime);

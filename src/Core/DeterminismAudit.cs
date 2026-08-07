@@ -23,6 +23,12 @@ namespace PunkMultiverse.Core
             internal ulong Digest;
         }
 
+        internal struct ModuleSnapshot
+        {
+            internal int Count;
+            internal ulong Digest;
+        }
+
         private const ulong Offset = 14695981039346656037UL;
         private const ulong Prime = 1099511628211UL;
         private static readonly FieldInfo CellVariantsField = typeof(UnityTilemapRenderer)
@@ -127,6 +133,53 @@ namespace PunkMultiverse.Core
             if (log)
                 Plugin.Log.LogInfo($"[Determinism] visuals={snapshot.VariantCount}/{snapshot.Digest:X16} " +
                     $"renderers={snapshot.RendererCount}");
+            return snapshot;
+        }
+
+        /// <summary>
+        /// Fingerprint of the installed module set, by id. This is the invariant that
+        /// content-adding mods (WeaponForge and friends) can break, and breaking it is not
+        /// merely "someone is missing an item":
+        ///
+        /// Modes/BattleRoyaleLootTables builds its drop pools from this same registry ordered
+        /// by id and then picks pool[rnd.Next(pool.Count)] with a per-entity seed rolled
+        /// INDEPENDENTLY on every machine. One extra module on one machine shifts every index,
+        /// so the whole BR drop table diverges — and BR's contested-loot identity is
+        /// (Group, Ordinal), which assumes those parallel rolls agree. The same ids are what
+        /// ModuleGridSync puts on the wire, where an id the receiver cannot resolve NREs
+        /// inside the game's own Restore().
+        ///
+        /// Digested by ID rather than by any mod's own notion of its content, because ids are
+        /// what every consumer above actually keys on, they exist on a headless coordinator
+        /// with no graphics device, and this then catches ANY mod that mutates the registry —
+        /// not just the one we happen to know about.
+        /// </summary>
+        internal static ModuleSnapshot CaptureModules(bool log = true)
+        {
+            var snapshot = new ModuleSnapshot { Digest = Offset };
+            IRegistry<ModuleData, string> registry;
+            // No registry at all is reported as count 0 / offset digest, which still compares
+            // equal across machines that are equally without one. Refusing to answer would
+            // abort runs on a build where the service simply is not installed yet.
+            try { registry = ServiceLocator.Get<IRegistry<ModuleData, string>>(); }
+            catch { return snapshot; }
+            if (registry == null) return snapshot;
+
+            var ids = new List<string>();
+            foreach (var module in registry.AllItems)
+            {
+                if (module == null) continue;
+                string id = null;
+                try { id = module.Id; } catch { }
+                ids.Add(string.IsNullOrEmpty(id) ? module.name ?? "" : id);
+            }
+            // Ordinal sort: enumeration order of the backing list is not a cross-machine
+            // guarantee, and a mod that appends is exactly the case being defended against.
+            ids.Sort(System.StringComparer.Ordinal);
+            snapshot.Count = ids.Count;
+            foreach (var id in ids) Add(ref snapshot.Digest, id);
+
+            if (log) Plugin.Log.LogInfo($"[Determinism] modules={snapshot.Count}/{snapshot.Digest:X16}");
             return snapshot;
         }
 

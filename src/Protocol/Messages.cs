@@ -494,6 +494,10 @@ namespace PunkMultiverse.Protocol
         public ulong PlantDigest;
         public int VisualVariantCount;
         public ulong VisualVariantDigest;
+        // The installed module set, by id. Unlike the visual digest this one IS comparable on a
+        // headless coordinator — ids exist without a graphics device — so it is never exempted.
+        public int ModuleCount;
+        public ulong ModuleDigest;
 
         public void Write(NetWriter w)
         {
@@ -505,6 +509,8 @@ namespace PunkMultiverse.Protocol
             w.WriteULong(PlantDigest);
             w.WriteVarUInt((uint)VisualVariantCount);
             w.WriteULong(VisualVariantDigest);
+            w.WriteVarUInt((uint)ModuleCount);
+            w.WriteULong(ModuleDigest);
         }
 
         public static LevelReadyMsg Read(NetReader r) => new LevelReadyMsg
@@ -516,6 +522,8 @@ namespace PunkMultiverse.Protocol
             PlantDigest = r.ReadULong(),
             VisualVariantCount = (int)r.ReadVarUInt(),
             VisualVariantDigest = r.ReadULong(),
+            ModuleCount = (int)r.ReadVarUInt(),
+            ModuleDigest = r.ReadULong(),
         };
     }
 

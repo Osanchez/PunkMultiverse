@@ -1240,6 +1240,48 @@ namespace PunkMultiverse.Core
                         $"{(EnemySync.OwnerOf(netId) == 255 ? "dormant" : "P" + (EnemySync.OwnerOf(netId) + 1))})");
                     return;
                 }
+                case "moduledigest":
+                {
+                    // The fingerprint the go-live barrier compares. Printing it on demand turns
+                    // "why was my run refused" into a one-line diff between two machines.
+                    var snap = DeterminismAudit.CaptureModules(log: false);
+                    Out($"moduledigest: modules={snap.Count} digest={snap.Digest:X16}");
+                    return;
+                }
+                case "modulefake":
+                {
+                    // Register a module that exists on THIS machine only, which is precisely what
+                    // a content mod does when its weapon set differs from the host's. Exists so
+                    // the go-live barrier's refusal path can be tested without installing a
+                    // content mod on one machine and not another — the barrier is the one thing
+                    // here that must never silently pass.
+                    if (parts.Length < 2) { Out("modulefake: usage `modulefake <id>`"); return; }
+                    var reg = ServiceLocator.Get<ModuleRegistry>();
+                    if (reg == null) { Out("modulefake: no ModuleRegistry"); return; }
+                    var listField = AccessTools.Field(
+                        typeof(ScriptableObjectRegistry<ModuleData, string>), "itemList");
+                    var list = listField?.GetValue(reg) as System.Collections.IList;
+                    if (list == null) { Out("modulefake: itemList not reachable"); return; }
+                    // CLONE a registered module rather than CreateInstance a blank one. A blank
+                    // ModuleData has a null connectionCountDistribution, and Distribution.Draw
+                    // throws UnityException("Can't draw an item from an empty distribution!") the
+                    // moment anything deep-copies it — which took the client out of the run
+                    // entirely and back to the menu, so the test proved nothing. Cloning also
+                    // matches what a content mod actually does (WeaponForge instantiates existing
+                    // assets and overrides fields), so the divergence being staged is a faithful one.
+                    ModuleData template = null;
+                    foreach (var m in reg.AllItems) { if (m != null) { template = m; break; } }
+                    if (template == null) { Out("modulefake: registry is empty, nothing to clone"); return; }
+                    var fake = ScriptableObject.Instantiate(template);
+                    fake.name = "Module_" + parts[1];
+                    fake.hideFlags = HideFlags.HideAndDontSave;
+                    AccessTools.Field(typeof(ModuleData), "id")?.SetValue(fake, parts[1]);
+                    list.Add(fake);
+                    reg.Initialize();   // rebuild id -> module, same as the game does after a load
+                    var after = DeterminismAudit.CaptureModules(log: false);
+                    Out($"modulefake: added '{parts[1]}' — modules={after.Count} digest={after.Digest:X16}");
+                    return;
+                }
                 case "loadout":
                 {
                     // Weapon-sync diagnostics: every ship's holder weapons + what its module
