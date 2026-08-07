@@ -914,6 +914,10 @@ namespace PunkMultiverse.Core
             _levelReadyVisualPending = false;
             _levelReadyVisualStartedAt = 0f;
             Patches.StartSequenceWatchdog.Reset(); // re-armed at the next go-live
+            // Puts back the Physics2D layer pairs the PvP patches opened for physics projectiles.
+            // That matrix is GLOBAL and outlives the session, so leaving it open would change how
+            // single-player behaves after someone plays online once.
+            Patches.BattleRoyalePvP.Reset();
             Sync.ShipSync.ResetStartGate();
             Sync.ShipSync.Reset();
             Sync.ProjectileSync.Reset();

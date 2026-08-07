@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 
@@ -132,6 +134,75 @@ namespace PunkMultiverse.Patches
         /// <c>LayerMask</c> from the weapon's data asset rather than the physics matrix, so they are
         /// a second, independent way for a shot to miss a player — and the GUNNER loadout every
         /// Battle Royale player flies is exactly the kind of weapon that uses one.</summary>
+        /// <summary>
+        /// Hide the SHOOTER'S OWN hull from its own hitscan cast, for the duration of that cast.
+        ///
+        /// FireSingle is a single Physics2D.CircleCast that acts on the FIRST collider it finds and
+        /// then returns. Once the mask above includes ship layers, the first collider is the hull
+        /// the muzzle is sitting inside — so the beam stopped dead at its own ship: it damaged the
+        /// owner, and it drew no line, because a beam's visual length IS the hit distance. Both of
+        /// Omar's beam symptoms, one cause.
+        ///
+        /// Making IsFriendsWith self-aware (above) stops the damage but not the stop: the cast
+        /// still terminates on its own hull and nothing reaches the target. The projectile path
+        /// solves this by discarding the muzzle hit and flying ON (MoveForward); a hitscan has no
+        /// "on" to fly, so the hull must not be castable in the first place.
+        ///
+        /// Moving the owner's colliders to the ignore-raycast layer around the call does exactly
+        /// that, and leaves every line of vanilla's damage, force, listener and cell-convert logic
+        /// untouched — which is the rule here. A Finalizer restores them even if FireSingle throws;
+        /// a ship left on the wrong layer would be invisible to every other weapon in the game.
+        /// </summary>
+        [HarmonyPatch(typeof(HitscanWeapon), "FireSingle")]
+        internal static class HitscanSkipsOwnHull
+        {
+            private const int IgnoreRaycastLayer = 2;   // Unity built-in, never in a weapon mask
+            [ThreadStatic] private static List<(Collider2D col, int layer)> _hidden;
+
+            private static void Prefix(HitscanWeapon __instance)
+            {
+                if (__instance == null || !PlayersCanHitPlayers) return;
+                try
+                {
+                    var ownerShip = OwnerShipOf(__instance);
+                    if (ownerShip == null) return;
+                    _hidden = new List<(Collider2D, int)>();
+                    foreach (var col in ownerShip.GetComponentsInChildren<Collider2D>(true))
+                    {
+                        if (col == null) continue;
+                        _hidden.Add((col, col.gameObject.layer));
+                        col.gameObject.layer = IgnoreRaycastLayer;
+                    }
+                }
+                catch { _hidden = null; }
+            }
+
+            // Finalizer, not Postfix: it runs even when FireSingle throws. Leaving a player's hull
+            // on the ignore-raycast layer would make that ship unhittable by everything, which is
+            // a far worse bug than the one being fixed.
+            private static void Finalizer()
+            {
+                var hidden = _hidden;
+                _hidden = null;
+                if (hidden == null) return;
+                foreach (var (col, layer) in hidden)
+                    if (col != null) col.gameObject.layer = layer;
+            }
+        }
+
+        /// <summary>The ship holding this weapon. WeaponBase is a plain object, not a Component --
+        /// it reaches the world through its Owner Unit, the same handle the projectile path uses.</summary>
+        private static Ship OwnerShipOf(HitscanWeapon w)
+        {
+            try
+            {
+                var owner = w.Owner;
+                if (owner == null) return null;
+                return owner.GetComponentInParent<Ship>() ?? owner.GetComponentInChildren<Ship>();
+            }
+            catch { return null; }
+        }
+
         [HarmonyPatch(typeof(HitscanWeapon), "FireSingle")]
         internal static class HitscanCanReachOtherShips
         {
@@ -156,6 +227,74 @@ namespace PunkMultiverse.Patches
                 }
                 catch { }
             }
+        }
+
+
+        /// <summary>
+        /// PHYSICS projectiles are a third path, and they were never covered.
+        ///
+        /// Projectile sweeps a cast it owns, and HitscanWeapon carries a LayerMask from its data
+        /// asset -- both are widened above. PhysicsProjectile has NEITHER. It is a rigidbody that
+        /// learns about hits only through OnTriggerEnter2D / OnCollisionEnter2D, so whether it can
+        /// touch a player ship at all is decided by the PROJECT-WIDE Physics2D layer matrix, which
+        /// says a player's bullet passes through a player's ship. A lobbed weapon therefore flew
+        /// straight through the other player as if they had no hitbox (Omar, 2026-08-07) and
+        /// nothing in the mask work could ever have changed that.
+        ///
+        /// So open the pair in the matrix instead, lazily: only for layers a player's physics
+        /// projectile has actually been fired on, and only while PvP is allowed. Every pair opened
+        /// is recorded so RestoreLayerMatrix can put the matrix back exactly as it was -- this is
+        /// global state shared with single-player, and leaving it open would change how the game
+        /// behaves after the session ends.
+        ///
+        /// Self-hits need no extra guard here: vanilla's ImpactBehaviour.safetyDistance already
+        /// refuses to detonate a physics projectile that has not travelled clear of its shooter,
+        /// which is why these never needed the muzzle rejection the direct-fire path does.
+        /// </summary>
+        [HarmonyPatch(typeof(PhysicsProjectile), nameof(PhysicsProjectile.Shoot))]
+        internal static class PhysicsProjectilesCanReachOtherShips
+        {
+            private static void Postfix(PhysicsProjectile __instance)
+            {
+                if (__instance == null || !PlayersCanHitPlayers) return;
+                try
+                {
+                    var owner = __instance.Owner;
+                    if (owner == null) return;
+                    if (owner.GetComponentInParent<Ship>() == null
+                        && owner.GetComponentInChildren<Ship>() == null) return;   // not a player's shot
+
+                    int projLayer = __instance.gameObject.layer;
+                    int shipMask = ShipLayers();
+                    if (shipMask == 0) return;
+
+                    for (int layer = 0; layer < 32; layer++)
+                    {
+                        if ((shipMask & (1 << layer)) == 0) continue;
+                        if (!Physics2D.GetIgnoreLayerCollision(projLayer, layer)) continue;
+                        Physics2D.IgnoreLayerCollision(projLayer, layer, false);
+                        _openedPairs.Add((projLayer, layer));
+                        Plugin.Log.LogInfo($"[BR] physics projectile layer {projLayer} can now hit " +
+                            $"ship layer {layer} (was blocked by the collision matrix)");
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private static readonly List<(int a, int b)> _openedPairs = new List<(int, int)>();
+
+        /// <summary>Put every layer pair this mod opened back. Global physics state outlives the
+        /// session, so a pair left open would quietly change single-player.</summary>
+        internal static void RestoreLayerMatrix()
+        {
+            if (_openedPairs.Count == 0) return;
+            foreach (var (a, b) in _openedPairs)
+            {
+                try { Physics2D.IgnoreLayerCollision(a, b, true); } catch { }
+            }
+            Plugin.Log.LogInfo($"[BR] restored {_openedPairs.Count} collision-matrix pair(s)");
+            _openedPairs.Clear();
         }
 
         private static bool _loggedOnce;
@@ -204,7 +343,11 @@ namespace PunkMultiverse.Patches
             return _shipLayers;
         }
 
-        internal static void Reset() { _loggedOnce = false; _loggedHitscan = false; _shipLayers = 0; _shipLayersAt = -999f; }
+        internal static void Reset()
+        {
+            _loggedOnce = false; _loggedHitscan = false; _shipLayers = 0; _shipLayersAt = -999f;
+            RestoreLayerMatrix();
+        }
 
         [HarmonyPatch(typeof(Unit), nameof(Unit.IsFriendsWith))]
         internal static class ShipsAreNotFriendsInBattleRoyale
@@ -226,6 +369,14 @@ namespace PunkMultiverse.Patches
                 var a = __instance.GetComponentInParent<Ship>() ?? __instance.GetComponentInChildren<Ship>();
                 var b = __0.GetComponentInParent<Ship>() ?? __0.GetComponentInChildren<Ship>();
                 if (a == null || b == null) return;
+                // SAME SHIP stays friendly. The ReferenceEquals check above only catches one Unit
+                // compared with itself, and a ship carries SEVERAL Units -- the hull root and its
+                // modules. So a weapon's owner Unit and the hull Unit it is standing inside are
+                // different objects on the same ship, and this happily declared them enemies.
+                // Direct-fire projectiles survived that because RejectSelfHullAtMuzzle throws the
+                // muzzle hit away; hitscan had no such guard and shot its own owner (Omar,
+                // 2026-08-07: "the beam is self-inflicting damage to the shooter").
+                if (a == b) return;
                 __result = false;
                 PvPDiag.NoteFriendFlip();
             }
