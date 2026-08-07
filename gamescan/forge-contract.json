@@ -1,0 +1,160 @@
+{
+  "FormatVersion": 1,
+  "ModAssembly": "PunkMultiverse",
+  "ModVersion": "hand-authored",
+  "CapturedAtUtc": "2026-08-07T14:03:02.320419+00:00",
+  "Uses": {
+    "WeaponForge.ForgeRegistry": [
+      {
+        "Via": "accesstools-typebyname",
+        "FromMember": "PunkMultiverse.Content.ForgeBridge.Probe",
+        "SourceFile": "src/Content/ForgeBridge.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeRegistry::System.Collections.Generic.IEnumerable`1<WeaponForge.ForgeEntry> Entries": [
+      {
+        "Via": "accesstools-property",
+        "FromMember": "PunkMultiverse.Content.ForgeBridge.CollectForgeIds",
+        "SourceFile": "src/Content/ForgeBridge.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeEntry::ModuleData module": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeBridge.CollectForgeIds",
+        "SourceFile": "src/Content/ForgeBridge.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeLootPatch": [
+      {
+        "Via": "accesstools-typebyname",
+        "FromMember": "PunkMultiverse.Content.ForgeBridge.Probe",
+        "SourceFile": "src/Content/ForgeBridge.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeLootPatch::System.Void Prefix(DropTable)": [
+      {
+        "Via": "harmony-patch",
+        "FromMember": "PunkMultiverse.Content.ForgeBridge.ApplySuppressionPatch",
+        "SourceFile": "src/Content/ForgeBridge.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeLootPatch::System.Collections.Generic.HashSet`1<DropTableWeightedGroup> _done": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeBridge.ClearLootCache",
+        "SourceFile": "src/Content/ForgeBridge.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeRegistry::System.String WeaponsFolder()": [
+      {
+        "Via": "harmony-postfix",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ApplyRootPatches",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSpriteLibrary::System.String SpritesFolder()": [
+      {
+        "Via": "harmony-postfix",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ApplyRootPatches",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSoundLibrary::System.String SoundsFolder()": [
+      {
+        "Via": "harmony-postfix",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ApplyRootPatches",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeRegistry::System.Void BuildAll()": [
+      {
+        "Via": "accesstools-method",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.Reload",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeRegistry::System.Void RegisterInto(ModuleRegistry)": [
+      {
+        "Via": "accesstools-method",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.Reload",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeRegistry::System.Collections.Generic.List`1<WeaponForge.ForgeEntry> _entries": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.Reload",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeRegistry::System.Collections.Generic.HashSet`1<System.String> _builtNames": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.Reload",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSpriteLibrary::System.Boolean _loaded": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ResetLoader",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSpriteLibrary::System.Collections.Generic.Dictionary`2<System.String,UnityEngine.Sprite> _sprites": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ResetLoader",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSpriteLibrary::System.Collections.Generic.Dictionary`2<System.String,WeaponForge.ForgeSpriteLibrary/SpriteAnim> _anims": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ResetLoader",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSpriteLibrary::System.Collections.Generic.Dictionary`2<System.String,UnityEngine.Texture2D> _sheets": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ResetLoader",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSoundLibrary::System.Boolean _loaded": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ResetLoader",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ],
+    "WeaponForge.ForgeSoundLibrary::System.Collections.Generic.Dictionary`2<System.String,WeaponForge.ForgeSoundLibrary/Entry> _entries": [
+      {
+        "Via": "accesstools-field",
+        "FromMember": "PunkMultiverse.Content.ForgeContentSwap.ResetLoader",
+        "SourceFile": "src/Content/ForgeContentSwap.cs",
+        "SourceLine": 0
+      }
+    ]
+  }
+}

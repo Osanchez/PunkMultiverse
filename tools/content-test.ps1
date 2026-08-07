@@ -13,6 +13,10 @@
 #              silently. Asserted by making the transfer SLOW on purpose, not by timing luck.
 #   warmsync   a restarted client with a warm cache logs a cache hit and requests zero blobs.
 #              This is the whole "rejoin re-downloads nothing" requirement.
+#   progress   the modal's numbers are REAL: the client reports intermediate percentages that
+#              climb, the host receives them, and CANCEL leaves the gate shut rather than letting
+#              the run start without that player. The modal's appearance needs a windowed game and
+#              a human; everything driving it is asserted here.
 #   nocontent  a host serving nothing must not gate anybody. The feature has to be invisible
 #              when it is not in use -- otherwise every vanilla session pays for it.
 #
@@ -21,7 +25,7 @@
 #
 # DEV installs only. ASCII only. BOM-free configs.
 param(
-    [ValidateSet("all", "coldsync", "gate", "warmsync", "nocontent")]
+    [ValidateSet("all", "coldsync", "gate", "warmsync", "nocontent", "progress")]
     [string]$Phase = "all",
     [int]$RateKBps = 256
 )
@@ -233,6 +237,42 @@ try {
             elseif ($ignored -lt 1) { Fail "START was neither refused nor honoured -- the gate is not observable" }
             else { Line "gate while syncing" "START refused (allReady=False)" }
 
+            # --- the numbers behind the modal ---------------------------------------------
+            # Sampled WHILE the throttle is still in effect, so these are genuine mid-transfer
+            # readings. A bar that only ever shows 0 and 100 is not a progress bar, and blob
+            # counting (rather than bytes) is the usual reason one behaves that way.
+            $seen = @()
+            for ($t = 0; $t -lt 8; $t++) {
+                foreach ($p in $BotPlugs) { Cmd $p "contentstat" }
+                Cmd $CoordPlug "contentstat"     # the HOST's view, sampled mid-transfer too
+                Start-Sleep 3
+            }
+            foreach ($plug in $BotPlugs) {
+                foreach ($m in (Lines (Join-Path $plug "devout.txt") "contentstat: local=(\w+) pct=(\d+) bytes=(\d+)/(\d+)")) {
+                    $seen += [int]$m.Matches[0].Groups[2].Value
+                }
+            }
+            $mid = @($seen | Where-Object { $_ -gt 0 -and $_ -lt 100 } | Select-Object -Unique | Sort-Object)
+            Line "progress samples" (($seen | Select-Object -Unique | Sort-Object) -join ", ")
+            if ($mid.Count -lt 2) {
+                Fail "the client never reported two distinct mid-transfer percentages - the bar would jump 0 to 100"
+            } else { Line "progress climbs" "$($mid.Count) distinct mid-transfer values" }
+
+            # And the host must RECEIVE them, or the lobby cannot show a per-player figure. Read
+            # from the samples taken during the loop above: a reading taken after the transfer
+            # finished would say 100% and prove nothing, which is what the first version of this
+            # assertion did.
+            $peerRows = @(Lines (Join-Path $CoordPlug "devout.txt") "contentstat:   P(\d) (\w+) (\d+)%")
+            if ($peerRows.Count -lt 1) { Fail "the host has no per-peer content state to show in the lobby" }
+            else {
+                $hostPct = @($peerRows | ForEach-Object { [int]$_.Matches[0].Groups[3].Value })
+                $hostMid = @($hostPct | Where-Object { $_ -gt 0 -and $_ -lt 100 } | Select-Object -Unique)
+                Line "host peer view" (($hostPct | Select-Object -Unique | Sort-Object) -join ", ")
+                if ($hostMid.Count -lt 1) {
+                    Fail "the host only ever saw 0% or 100% - ContentStatus is not reaching it, so a lobby percentage would be fiction"
+                } else { Line "host mid-transfer" "$($hostMid.Count) distinct value(s) received" }
+            }
+
             # ...and it must not be a permanent block. Once the content lands the same command works.
             foreach ($lg in $BotLogs) {
                 if (-not (WaitFor $lg "\[Content\] set [0-9a-f]+ installed at" 300 "client install")) {
@@ -290,6 +330,48 @@ try {
 
             StopAll $pids; $pids = @()
         }
+    }
+
+    # ---------------------------------------------------------------------------------------
+    # CANCEL. The modal's button, driven through the same method it calls. What must NOT happen
+    # is the run starting without that player: they would be holding a different weapon set, which
+    # is the exact divergence this whole feature exists to prevent. Cancelling has to leave the
+    # gate SHUT, not open it by removing the thing being waited on.
+    # ---------------------------------------------------------------------------------------
+    if ($Phase -eq "progress") {
+        Write-Host "--- CANCEL ---"
+        CleanLogs
+        foreach ($plug in $BotPlugs) { ClearCache $plug }
+
+        $pids += StartGame $CoordDir $true
+        if (-not (WaitFor $CoordLog "\[Udp\] hosting" 120 "coordinator hosting")) { throw "no host" }
+        if (-not (WaitFor $CoordLog "\[PreGen\] world ready" 220 "pre-build")) { throw "no pre-build" }
+        foreach ($d in $BotDirs) { $pids += StartGame $d $false; Start-Sleep 2 }
+        if (-not (WaitFor $CoordLog "joined" 150 "bot joins" $BotDirs.Count)) { throw "bots did not all join" }
+
+        # Cancel bot1 mid-transfer; bot0 is left to finish so the ONLY reason the run cannot start
+        # is the player who refused.
+        if (-not (WaitFor $BotLogs[1] "\[Content\] need \d+/\d+ blob" 90 "bot1 download start")) {
+            Fail "bot1 never started downloading, so there was nothing to cancel"
+        }
+        Cmd $BotPlugs[1] "contentcancel"
+        Start-Sleep 6
+        $c = @(Lines $BotLogs[1] "\[Content\] cancelled by the player at (\d+)%")
+        if ($c.Count -lt 1) { Fail "bot1 did not register the cancel" }
+        else { Line "bot1 cancelled" ("at {0}%" -f $c[0].Matches[0].Groups[1].Value) }
+
+        if ((CountIn $CoordLog "could not install the content: cancelled by the player") -lt 1) {
+            Fail "the host was never told the player cancelled"
+        } else { Line "host told" "cancel reported" }
+
+        # The gate must stay shut. This is the assertion with teeth.
+        Cmd $BotPlugs[0] "start"
+        Start-Sleep 8
+        if ((CountIn $CoordLog "GO LIVE") -gt 0) {
+            Fail "the run went live after a player cancelled - they would be on different content"
+        } else { Line "gate after cancel" "START still refused" }
+
+        StopAll $pids; $pids = @()
     }
 
     # ---------------------------------------------------------------------------------------

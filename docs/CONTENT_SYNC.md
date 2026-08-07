@@ -185,6 +185,48 @@ finished hashing yet, or the host serves nothing at all.
 
 ---
 
+## What the player sees
+
+`UI/ContentDownloadScreen.cs` — a modal with a progress bar, a percentage, the byte counts, and
+one button: **CANCEL AND LEAVE**.
+
+**When it appears.** Whenever this machine is downloading or installing — which is from the moment
+it *joins*, not from the moment the host presses START. The transfer is kicked off straight after
+the `Welcome` so it runs while the player reads the lobby, so on a small pack or a warm cache it
+finishes before anyone could have pressed anything and **the screen never appears at all**. When
+it does appear, it is because there was genuinely something to wait for.
+
+Either way it is always gone before ship selection in co-op and before drop selection in Battle
+Royale — not by a check in either screen, but because neither can begin until the run starts and
+the run cannot start while this is up. The gate is the mechanism; the modal only explains it.
+
+**Why a modal at all.** The go-live gate already refuses to start a run for anyone still syncing.
+Without this screen that refusal is *silent*, and a silent refusal reads as a broken lobby with a
+greyed-out START button.
+
+**Progress is measured in bytes, not files.** A ten-file set where one is 2 MB and the rest are
+2 KB would make a file-counting bar sit at 90% for the whole download and then jump. The
+denominator is what *this machine still needs*, not what the set weighs, so a player who already
+has nine of ten files sees a bar that fills rather than one that stops at 10%. Resume subtracts
+what the `.part` already holds. The bar caps at 99% while installing — 100% belongs to "you can
+play".
+
+Clients report progress to the host every 0.5s (`ContentStatusMsg`), so the lobby can show a
+per-player figure instead of a binary not-ready.
+
+**Cancel leaves.** Not "cancel and keep waiting" — once you have refused the content there is
+nothing to wait for: the run cannot start without you, and you cannot play with a weapon set that
+differs from everyone else's. So the button says what it does. Escape does the same, because a
+modal you cannot dismiss with Escape *is* a stuck lobby.
+
+Cancelling must **not** open the gate. The host marks that slot failed and START stays refused —
+removing the player being waited on is not the same as satisfying them, and getting this backwards
+would start a run with someone on different content, which is the exact divergence the feature
+exists to prevent. Partial downloads stay on disk as digest-keyed `.part` files, so coming back
+later resumes.
+
+---
+
 ## Applying it — the swap
 
 Having the bytes on disk is not the same as playing with them. `ForgeContentSwap` points

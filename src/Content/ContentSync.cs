@@ -53,6 +53,32 @@ namespace PunkMultiverse.Content
         /// <summary>Where the active set was laid out, for whoever consumes it.</summary>
         internal static string ActiveContentPath { get; private set; }
 
+        /// <summary>Bytes fetched / bytes this machine actually has to fetch. The denominator is
+        /// what we NEED, not what the set weighs: a player who already has nine of ten files
+        /// should see a bar that fills, not one that stops at 10%.</summary>
+        internal static long BytesDone => _gotBytes;
+        internal static long BytesNeeded => _wantedBytes;
+        /// <summary>The whole set's size, for "of a 7.9 MB pack" context.</summary>
+        internal static long BytesInSet => _incomingBytes;
+
+        internal static byte LocalPercent
+        {
+            get
+            {
+                if (LocalState == ContentState.Satisfied) return 100;
+                if (_wantedBytes <= 0) return LocalState == ContentState.Installing ? (byte)99 : (byte)0;
+                // Capped at 99 while installing: 100 belongs to "you can play", and a bar that
+                // reads 100% while the game is still busy is the other classic progress-bar lie.
+                var pct = (int)(_gotBytes * 100 / _wantedBytes);
+                return (byte)Mathf.Clamp(pct, 0, 99);
+            }
+        }
+
+        /// <summary>True when this machine is holding the player up. The UI shows a modal for
+        /// exactly this condition and nothing else.</summary>
+        internal static bool Busy =>
+            LocalState == ContentState.Downloading || LocalState == ContentState.Installing;
+
         private static List<ContentHash.Entry> _hostEntries;      // host: what we serve
         private static byte[] _hostSetHash;
         private static bool _hostReady;
@@ -68,6 +94,13 @@ namespace PunkMultiverse.Content
         private static List<ContentHash.Entry> _incoming;
         private static uint _incomingTotal;
         private static byte[] _incomingHash;
+        // Progress is measured in BYTES, not blobs. A ten-blob set where one file is 2 MB and the
+        // rest are 2 KB would make a blob-counting bar sit at 90% for the entire download and then
+        // jump -- the single most common way a progress bar lies.
+        private static long _incomingBytes;     // what the whole set weighs
+        private static long _wantedBytes;       // what WE still had to fetch (cache hits excluded)
+        private static long _gotBytes;          // fetched so far this session
+        private static float _nextStatusAt;
 
         // host: per-peer send queues
         private sealed class Stream
@@ -313,6 +346,9 @@ namespace PunkMultiverse.Content
         internal static void Tick(NetSession session)
         {
             DrainResults(session);
+            // Before the Streams early-out: a CLIENT has no streams (those are the host's send
+            // queues), and the client is the only machine with progress worth reporting.
+            ReportProgress(session);
             if (session == null || Streams.Count == 0) return;
 
             double perPeer = Math.Max(16, NetConfig.ContentRateKBps.Value) * 1024.0;
@@ -375,6 +411,9 @@ namespace PunkMultiverse.Content
                 _incomingTotal = msg.TotalFiles;
                 _incomingHash = msg.SetHash;
                 HostSetHash = msg.SetHash;
+                _incomingBytes = (long)msg.TotalBytes;
+                _wantedBytes = 0;
+                _gotBytes = 0;
             }
             if (_incoming == null) return;
             for (int i = 0; i < msg.Paths.Length; i++)
@@ -445,6 +484,16 @@ namespace PunkMultiverse.Content
             LocalState = ContentState.Downloading;
             _expected = wanted.Count;
             _received = 0;
+            // Resume means part of a blob is already on disk, so the work remaining is the blob
+            // sizes MINUS what each .part already holds -- otherwise a resumed download shows a
+            // bar that starts at zero and finishes early.
+            _wantedBytes = 0;
+            for (int i = 0; i < wanted.Count; i++)
+            {
+                long len = LengthOf(wanted[i]);
+                _wantedBytes += Math.Max(0, len - (long)haves[i]);
+            }
+            if (_wantedBytes <= 0) _wantedBytes = 1;   // never divide by zero
             Plugin.Log.LogInfo($"[Content] need {wanted.Count}/{_incoming.Count} blob(s) from the host");
             UI.Toast.Show("DOWNLOADING CUSTOM CONTENT", 4f);
 
@@ -468,9 +517,60 @@ namespace PunkMultiverse.Content
                 Plugin.Log.LogWarning($"[Content] chunk rejected: {err}");
                 return;
             }
+            _gotBytes += msg.Data.Length;
             if (!msg.Last) return;
             Jobs.Enqueue(new CommitJob { Digest = msg.Digest });
             Wake.Set();
+        }
+
+        private static long LengthOf(byte[] digest)
+        {
+            if (_incoming == null) return 0;
+            foreach (var e in _incoming)
+                if (ContentHash.SameDigest(e.Digest, digest)) return e.Length;
+            return 0;
+        }
+
+        /// <summary>
+        /// Tell the host how far along we are, so the lobby can show a per-player figure instead
+        /// of a binary "not ready". Rate-limited: this is cosmetic traffic and must never compete
+        /// with the transfer it is describing.
+        /// </summary>
+        private static void ReportProgress(NetSession session)
+        {
+            if (session == null || session.IsHost || !Busy) return;
+            if (Time.unscaledTime < _nextStatusAt) return;
+            _nextStatusAt = Time.unscaledTime + 0.5f;
+            session.SendContent(0, new ContentStatusMsg
+            {
+                State = (byte)LocalState,
+                Percent = LocalPercent,
+                BytesDone = (ulong)Math.Max(0, _gotBytes),
+                BytesTotal = (ulong)Math.Max(0, _wantedBytes),
+            }, toHost: true);
+        }
+
+        /// <summary>
+        /// The player pressed CANCEL. Stop wanting the host's content and say so — the host marks
+        /// the slot failed, which keeps the go-live gate shut rather than letting a run start
+        /// without them. The caller then leaves the session; this method deliberately does NOT,
+        /// because "abandon the download" and "leave the lobby" are separate decisions and only
+        /// the UI knows the player made both.
+        /// </summary>
+        internal static void CancelLocal(NetSession session)
+        {
+            if (!Busy) return;
+            Plugin.Log.LogInfo($"[Content] cancelled by the player at {LocalPercent}%");
+            _incoming = null;
+            _expected = 0;
+            _received = 0;
+            _wantedBytes = 0;
+            _gotBytes = 0;
+            LocalState = ContentState.Failed;
+            LocalFailure = "cancelled";
+            // Partial blobs stay on disk on purpose: they are .part files keyed by digest, so
+            // rejoining later resumes from where this left off instead of starting again.
+            SendDone(session, _incomingHash ?? ContentHash.EmptySet(), false, "cancelled by the player");
         }
 
         // ---- results ---------------------------------------------------------------------------

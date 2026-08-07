@@ -46,6 +46,17 @@ param(
     # Skip the decompile step (faster; the report loses its ready-to-run git diff commands).
     [switch]$NoDecompile,
 
+    # Also scan WeaponForge.dll and report changes to the members this mod reaches into.
+    # WARN-ONLY: it never changes the exit code, because CI's verdict is about the base game and
+    # a third-party mod's version is not something this repo controls.
+    [switch]$Forge,
+
+    # Promote the scanned WeaponForge manifest to gamescan/forge-baseline.json.
+    [switch]$AcceptForge,
+
+    # Where WeaponForge.dll lives. Defaults to a search of the usual plugin folders.
+    [string]$ForgeDll,
+
     # Game install to scan. Defaults to the install this repo lives inside.
     [string]$GameDir
 )
@@ -230,5 +241,88 @@ if ($Accept) {
 elseif ($verdict -ne 0) {
     Write-Host 'once the mod is updated for the above, re-run with -Accept to move the baseline.'
 }
+
+
+# --- WeaponForge -----------------------------------------------------------------------------
+# A second contract owner, and a more urgent one than the game in one specific way: a game update
+# lands when Steam decides, on a machine we can scan. A WeaponForge update lands on PLAYERS'
+# machines, and the first symptom is a swap that silently stops applying the host's content.
+#
+# Warn-only by design. It never touches the verdict variable: CI gates on Punk.Main, and a
+# third-party mod moving is not a reason to fail this repo's build.
+if ($Forge -or $AcceptForge) {
+    Write-Host ''
+    Write-Step 'WeaponForge'
+    if (-not $ForgeDll) {
+        # This install first, then any sibling PUNK install. The main install often does not have
+        # WeaponForge while a dev install does, and scanning the copy that is actually used to
+        # test the swap is more useful than scanning none at all.
+        $ForgeDll = (Join-Path $GameDir 'BepInEx\plugins\WeaponForge.dll')
+        if (-not (Test-Path $ForgeDll)) {
+            $common = Split-Path -Parent $GameDir
+            $ForgeDll = Get-ChildItem -Path $common -Directory -Filter 'PUNK*' -EA SilentlyContinue |
+                ForEach-Object { Join-Path $_.FullName 'BepInEx\plugins\WeaponForge.dll' } |
+                Where-Object { Test-Path $_ } | Select-Object -First 1
+        }
+    }
+
+    if (-not $ForgeDll -or -not (Test-Path $ForgeDll)) {
+        # Absent is normal, not a problem: the mod runs fine without WeaponForge and this whole
+        # section exists only for machines that have it.
+        Write-Warn 'no WeaponForge.dll found - skipping (this is fine; it is an optional mod)'
+    }
+    else {
+        $forgeBaseline = Join-Path $scanDir 'forge-baseline.json'
+        $forgeContract = Join-Path $scanDir 'forge-contract.json'
+        $forgeScanned  = Join-Path $reportsRoot 'forge-manifest.json'
+        $forgeReport   = Join-Path $reportsRoot 'forge-report.md'
+        New-Item -ItemType Directory -Force -Path $reportsRoot | Out-Null
+
+        $forgeVer = 'wf-' + (Get-FileHash -Path $ForgeDll -Algorithm SHA256).Hash.Substring(0, 12).ToLower()
+        Write-Host ('    build: ' + $forgeVer)
+        & $toolExe manifest --dll $ForgeDll --out $forgeScanned --game-version $forgeVer
+        if ($LASTEXITCODE -ne 0) { throw 'WeaponForge manifest extraction failed' }
+
+        # The contract is hand-authored and re-verified against THIS build on every scan. See
+        # tools/forge-contract.py for why it cannot be extracted from the mod's IL the way the
+        # game's contract is.
+        $py = Get-Command python -EA SilentlyContinue
+        if (-not $py) { $py = Get-Command py -EA SilentlyContinue }
+        if (-not $py) {
+            Write-Warn 'python not found - cannot verify the WeaponForge contract'
+        }
+        else {
+            & $py.Source (Join-Path $repo 'tools\forge-contract.py') $forgeScanned $forgeContract
+            $contractOk = ($LASTEXITCODE -eq 0)
+            if (-not $contractOk) {
+                Write-Host ''
+                Write-Host 'WEAPONFORGE MOVED - the swap will stop applying host content.' -ForegroundColor Red
+                Write-Host 'The members named above are gone. src/Content/ForgeContentSwap.cs needs' -ForegroundColor Red
+                Write-Host 'updating; until it is, sessions fall back to the module-digest barrier,' -ForegroundColor Red
+                Write-Host 'which REFUSES a divergent run rather than fixing it. Nothing desyncs -' -ForegroundColor Red
+                Write-Host 'players just have to install the same weapons by hand.' -ForegroundColor Red
+            }
+            elseif (Test-Path $forgeBaseline) {
+                & $toolExe diff --before $forgeBaseline --after $forgeScanned --contract $forgeContract --out-md $forgeReport
+                switch ($LASTEXITCODE) {
+                    0 { Write-Host '    CLEAN - nothing this mod uses in WeaponForge changed.' -ForegroundColor Green }
+                    3 { Write-Host '    BEHAVIOUR CHANGED in WeaponForge members this mod uses.' -ForegroundColor Yellow }
+                    4 { Write-Host '    BREAKING - WeaponForge members this mod patches changed shape.' -ForegroundColor Yellow }
+                    default { Write-Warn 'WeaponForge diff failed' }
+                }
+                Write-Host ('    report: ' + $forgeReport)
+            }
+            else {
+                Write-Warn 'no forge-baseline.json yet - re-run with -AcceptForge to record this build'
+            }
+
+            if ($AcceptForge -and $contractOk) {
+                Copy-Item $forgeScanned $forgeBaseline -Force
+                Write-Host ('    baseline promoted to ' + $forgeVer + ' - commit gamescan/forge-baseline.json') -ForegroundColor Green
+            }
+        }
+    }
+}
+
 
 exit $verdict

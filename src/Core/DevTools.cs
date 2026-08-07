@@ -1268,9 +1268,21 @@ namespace PunkMultiverse.Core
                     foreach (var sk in skippedFiles) Out($"contenthash:   skipped {sk}");
                     return;
                 }
+                case "contentcancel":
+                {
+                    // Exactly what the modal's CANCEL AND LEAVE button does, so the headless
+                    // harness exercises the real path rather than a parallel one — and so a
+                    // player on a support call can be walked through it without a mouse.
+                    var s = NetSession.Instance;
+                    Out($"contentcancel: state={Content.ContentSync.LocalState} pct={Content.ContentSync.LocalPercent}");
+                    Content.ContentSync.CancelLocal(s);
+                    return;
+                }
                 case "contentstat":
                 {
                     Out($"contentstat: local={Content.ContentSync.LocalState} " +
+                        $"pct={Content.ContentSync.LocalPercent} " +
+                        $"bytes={Content.ContentSync.BytesDone}/{Content.ContentSync.BytesNeeded} " +
                         $"set={Content.ContentHash.ToHex(Content.ContentSync.LocalSetHash)} " +
                         $"active={Content.ContentSync.ActiveContentPath ?? "none"}");
                     var host = NetSession.Instance;

@@ -171,7 +171,56 @@ to compare across versions rather than producing a meaningless diff — regenera
 
 ---
 
+## WeaponForge — the second contract owner
+
+```powershell
+tools\gamescan.ps1 -Forge          # report changes; never changes the exit code
+tools\gamescan.ps1 -AcceptForge    # record this WeaponForge build as the baseline
+tools\gamescan.ps1 -Forge -ForgeDll <path>
+```
+
+The content swap ([`CONTENT_SYNC.md`](CONTENT_SYNC.md)) redirects three of WeaponForge's methods
+and clears several of its **private** fields. That works, and nothing obliges them to keep any of
+it. This is the early warning.
+
+It matters more than the game's scan in one specific way. A game update lands when Steam decides,
+on a machine we can scan before shipping. **A WeaponForge update lands on players' machines** —
+and the first symptom of the swap breaking is not a crash. It is host content silently not being
+applied, which the module digest then correctly refuses as a divergent run. Nothing desyncs; the
+session simply stops working for a reason nobody can see.
+
+**Warn-only, always.** It never changes gamescan's exit code: CI's verdict is about `Punk.Main`,
+and a third-party mod moving is not a reason to fail this repo's build.
+
+### Why the contract is hand-written
+
+`gamescan/contract.json` is extracted from the mod's compiled IL. `gamescan/forge-contract.json`
+is not, and cannot be. The extractor resolves `AccessTools.Method(AccessTools.TypeByName("T"), "M")`
+because both halves are literals in one expression; this mod caches the `Type` in a static field
+first and passes the *field*, which is a field load with no string to recover. Extraction would
+report **zero** WeaponForge dependencies — and a contract that silently finds nothing is worse
+than no contract, because it looks like coverage.
+
+So the list lives in [`tools/forge-contract.py`](../tools/forge-contract.py) and is re-validated
+against the scanned build on **every** run. A key that no longer exists is a hard failure naming
+the member, not a silently dropped check:
+
+```
+forge-contract: 2 declared member(s) are NOT in this WeaponForge build:
+  WeaponForge.ForgeSoundLibrary::System.String SoundsFolder()
+  WeaponForge.ForgeSpriteLibrary::System.Boolean _loaded
+```
+
+That output is from a deliberately mutated manifest — the alarm is tested, not assumed.
+
+There is a second, independent warning that reaches players rather than us: `ForgeContentSwap`
+resolves every member at boot and logs which ones are `MISSING`. Gamescan tells *us* before we
+ship; that log tells a player's log why their session refused.
+
+---
+
 ## See also
 
 - [`VANILLA_GOTCHAS.md`](VANILLA_GOTCHAS.md) — read before changing anything touching game code
+- [`CONTENT_SYNC.md`](CONTENT_SYNC.md) — what depends on the WeaponForge contract above
 - [`api/`](api/) — the generated API index this tool also produces
