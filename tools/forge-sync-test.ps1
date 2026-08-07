@@ -160,16 +160,45 @@ try {
         Line "forgeids" $l.Matches[0].Groups[1].Value
     }
 
-    # --- put them together and fire -----------------------------------------------------------
-    Cmd $BotPlugs[0] ("tpplayer {0}" -f $BotSlots[1])
-    Start-Sleep 4
-    Cmd $BotPlugs[0] ("fire player {0} {1}" -f $BotSlots[1], $FireSeconds)
+    # --- stage the two ships and fire -----------------------------------------------------------
+    # Ported from br-test.ps1's PvP probe, which is the only sequence known to actually land
+    # player-to-player shots. Every step here exists because of a specific measured failure:
+    #
+    #   autofly off  - otherwise the two ships fly apart; the probe once caught them 38 units
+    #                  apart moments after being staged 8 units apart.
+    #   pvpstage     - a ship FALLS after a teleport, so a pocket cleared on arrival is above it
+    #                  by the time it shoots; pvpstage clears the pocket AND pins gravity to zero.
+    #                  The target is lifted clear of the station FIRST, because a station's Hatch
+    #                  and Platform are prefab colliders on the Ground layer that clearterrain
+    #                  cannot delete and which blocked the line.
+    #
+    # And the argument order is `fire <seconds> player <slot>`, NOT `fire player <slot> <seconds>`:
+    # parts[1] is parsed as the DURATION, so putting "player" there makes float.TryParse fail,
+    # leaves the duration at 0, and hits the "fire 0 = stop" branch. That silently turned this
+    # whole test into "stop firing" and produced a log with a lone `fire: stopped` in it.
+    foreach ($p in $BotPlugs) { Cmd $p "autofly 0" }
+    Start-Sleep 2
+    Cmd $BotPlugs[1] "pvpstage 30 45"
+    Start-Sleep 2
+    Cmd $BotPlugs[0] ("tpplayer {0} 5" -f $BotSlots[1])
+    Start-Sleep 1
+    Cmd $BotPlugs[0] "pvpstage 30"
+    Start-Sleep 2
+    Cmd $BotPlugs[0] ("fire {0} player {1}" -f $FireSeconds, $BotSlots[1])
     Start-Sleep ($FireSeconds + 10)
 
     # --- the assertions -------------------------------------------------------------------------
     Write-Host "--- custom weapon sync ---"
     $localLines  = @(Lines $BotLogs[0] "\[ForgeDiag\] shot LOCAL '([^']+)'")
     $replayLines = @(Lines $BotLogs[1] "\[ForgeDiag\] shot REPLAYED '([^']+)'")
+
+    # Distinguish "the weapon never fired" from "it fired and was not traced" - they have
+    # completely different causes and the first one is usually the harness's own fault.
+    # "fire: 8.0s via weapon trigger at P2" - no text between the duration and "via" in the
+    # common case, so the pattern must not require a separator there.
+    $armed = CountIn $BotLogs[0] "fire: [0-9.]+s.*via weapon trigger"
+    Line "fire armed" $(if ($armed -gt 0) { "yes" } else { "NO - the fire command never armed" })
+    if ($armed -lt 1) { Write-Host "  FAIL: fire never armed; nothing below is meaningful"; $ok = $false }
 
     if ($localLines.Count -lt 1) {
         Write-Host "  FAIL: the shooter never logged a custom-weapon shot (is $Weapon a Forge weapon?)"

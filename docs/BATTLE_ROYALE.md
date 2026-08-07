@@ -437,6 +437,12 @@ from `RingStateMsg` + `ClockSync`-aligned time.
   with resistances. Enemy→player damage unchanged. (The per-player co-op HP scaling is
   inherently replaced — BR sets the multiplier absolutely.)
 
+> **Custom weapons.** When a content mod (WeaponForge) is installed, its weapons enter the
+> same pools below — and because those pools are index-picked from an id-ordered list by a seed
+> rolled independently on every machine, a module set that differs between players desyncs the
+> whole drop table rather than just that item. The go-live barrier refuses such a run; see
+> [`WEAPONFORGE.md`](WEAPONFORGE.md).
+
 ## 5b. Loot is CONTESTED, not instanced
 
 Standard co-op instances loot: every machine drops its own copy and a player too far to
