@@ -937,6 +937,13 @@ namespace PunkMultiverse.Sync
                     // previous killer note alone rather than blaming the router.
                     float shieldAfter = ShipSync.LocalShip != null ? UnitStatus.ReadShieldFraction(ShipSync.LocalShip) : -1f;
                     Plugin.Log.LogInfo($"[CombatHit] remote-request={msg.RequestId} attacker=P{msg.AttackerSlot + 1} playerShot={msg.PlayerShot} source={(msg.SourceNetId >= 0 ? "#" + msg.SourceNetId : "none")} shot={msg.ShotId} pellet={msg.ProjectileOrdinal} amount={msg.Amount:0.###}{(pvpScaled ? $" (pvp x{pvpScale:0.##})" : "")} typeHash={msg.TypeHash:X8} applied=True hp={hpBefore:0.###}->{dr.CurrentHealth:0.###} shield={shieldBefore:0.###}->{shieldAfter:0.###}");
+                    // The wire carries a ShotId but never a weapon, so name the custom weapon by
+                    // correlating against the shot this machine replayed. That closes the loop:
+                    // the victim proves the damage came from the same custom weapon the peer
+                    // reproduced, not merely that some damage arrived.
+                    var forgeWeapon = Content.ForgeDiag.WeaponForShot(msg.ShotId);
+                    if (forgeWeapon != null)
+                        Content.ForgeDiag.NoteDamage(forgeWeapon, msg.Amount, msg.TargetSlot, remote: true);
                 }
             }
         }

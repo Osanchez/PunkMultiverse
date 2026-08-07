@@ -361,6 +361,10 @@ namespace PunkMultiverse.Sync
                         Writer.Reset();
                         msg.Write(Writer);
                         session.SendToAll(NetChannel.State, Writer.ToSegment(), reliable: false);
+                        // Note the weapon by id on the SHOOTER. Nothing in this message identifies
+                        // it — peers resolve it from the puppet's own grid — so this line is the
+                        // only half of the comparison that comes from the machine that knows.
+                        Content.ForgeDiag.NoteShot(session.LocalSlot, __instance, replayed: false, state.ShotId);
                         return;
                     }
                     TryCaptureEntityFire(session, __instance, __0, state.Entity, state.NetId, state.ShotId);
@@ -929,6 +933,10 @@ namespace PunkMultiverse.Sync
                 }
                 return;
             }
+            // The other half of the comparison: which weapon THIS machine resolved for that
+            // shot. Same id as the shooter logged = the module grid carried the custom weapon
+            // across intact; a different id (or no line at all) is the bug.
+            Content.ForgeDiag.NoteShot(msg.Slot, weapon, replayed: true, msg.ShotId);
             // Active-slot weapons are only Equip()ed inside Activate() on the owner — the
             // puppet's instance has no Owner until we mirror that here, and ownerless
             // projectiles lose their faction/attribution.

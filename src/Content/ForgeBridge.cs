@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 
@@ -123,6 +124,38 @@ namespace PunkMultiverse.Content
         }
 
         private static bool SkipWhileSuppressed() => !SuppressLootInjection;
+
+        /// <summary>
+        /// The module and weapon ids that came from WeaponForge, so diagnostics can tell a custom
+        /// weapon from a stock one. Rebuilt on each call — WeaponForge keeps registering as its
+        /// loadout screen re-runs, and a cached set would go stale exactly when a new weapon
+        /// appeared. Empty when WeaponForge is absent, which makes every caller a no-op.
+        /// </summary>
+        internal static void CollectForgeIds(HashSet<string> moduleIds, HashSet<string> weaponIds)
+        {
+            if (!Present || _registryType == null) return;
+            try
+            {
+                var entries = AccessTools.Property(_registryType, "Entries")?.GetValue(null) as System.Collections.IEnumerable;
+                if (entries == null) return;
+                foreach (var entry in entries)
+                {
+                    if (entry == null) continue;
+                    var module = AccessTools.Field(entry.GetType(), "module")?.GetValue(entry) as ModuleData;
+                    if (module == null) continue;
+                    try { if (!string.IsNullOrEmpty(module.Id)) moduleIds.Add(module.Id); } catch { }
+                    if (module is WeaponModuleData wm && wm.weapon != null)
+                    {
+                        try { if (!string.IsNullOrEmpty(wm.weapon.Id)) weaponIds.Add(wm.weapon.Id); } catch { }
+                        if (!string.IsNullOrEmpty(wm.weapon.name)) weaponIds.Add(wm.weapon.name);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Forge] could not enumerate custom weapons: {e.Message}");
+            }
+        }
 
         /// <summary>Let WeaponForge re-augment the vanilla tables for solo play after a session
         /// has restored them, by clearing the "already done these groups" cache it keeps.</summary>
