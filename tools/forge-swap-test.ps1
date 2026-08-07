@@ -119,6 +119,11 @@ function RestoreForgeContent() {
 }
 
 $devRoots = @($CoordDir) + $BotDirs
+
+# A test against the wrong game build produces evidence about a game nobody plays. The dev
+# installs are copies and only Steam's is patched -- that gap reached five weeks once.
+. (Join-Path $PSScriptRoot "lib-preflight.ps1")
+Assert-GameBuild -Installs $devRoots
 if (Get-Process Punk -EA SilentlyContinue | Where-Object { $devRoots -contains (Split-Path $_.Path -Parent) }) {
     "ABORT: a DEV-install Punk.exe is already running."; exit 2
 }

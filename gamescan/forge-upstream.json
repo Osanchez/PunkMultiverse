@@ -1,0 +1,7 @@
+{
+  "_comment": "Last WeaponForge upstream state this repo validated against. tools/gamescan.ps1 -Forge compares HEAD to Commit and prints a compare URL when it moves.",
+  "Commit": "9f08eb9ed555c1daae40be96cf7281a021de6ce2",
+  "Release": "V4.0",
+  "DllSha256": "bbf86231873b91fec11767a4fc234b0149665a081ba7b5a4f4cef4748df24e4e",
+  "CheckedAtUtc": "2026-08-07T18:30:23Z"
+}

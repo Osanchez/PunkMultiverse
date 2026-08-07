@@ -316,6 +316,67 @@ if ($Forge -or $AcceptForge) {
                 Write-Warn 'no forge-baseline.json yet - re-run with -AcceptForge to record this build'
             }
 
+
+        # ---- upstream watch ------------------------------------------------------------------
+        # The DLL hash tells us THAT WeaponForge changed. This tells us WHAT changed: the last
+        # commit we validated against, so the next scan can hand over a compare URL instead of
+        # leaving someone to scroll their history guessing which push broke the swap.
+        #
+        # Recorded separately from the manifest baseline on purpose. A release can be re-uploaded
+        # from the same commit, and commits can land with no release -- neither is a reliable
+        # stand-in for the other, so both are kept.
+        $watchFile = Join-Path $scanDir 'forge-upstream.json'
+        $gh = Get-Command gh -EA SilentlyContinue
+        if (-not $gh) {
+            Write-Warn 'gh not found - skipping the upstream commit check'
+        }
+        else {
+            $headSha = (& gh api repos/Sugarheady/WeaponForge/commits/master --jq .sha 2>$null)
+            if (-not $headSha) { Write-Warn 'could not reach the WeaponForge repo' }
+            else {
+                $headSha = $headSha.Trim()
+                $known = $null
+                if (Test-Path $watchFile) {
+                    $m = Select-String -Path $watchFile -Pattern '"Commit"\s*:\s*"([0-9a-f]{7,40})"' | Select-Object -First 1
+                    if ($m) { $known = $m.Matches[0].Groups[1].Value }
+                }
+
+                if (-not $known) {
+                    Write-Warn "no upstream commit recorded yet - re-run with -AcceptForge to pin $($headSha.Substring(0,7))"
+                }
+                elseif ($known -eq $headSha) {
+                    Write-Host ("    upstream unchanged since {0}" -f $headSha.Substring(0, 7))
+                }
+                else {
+                    Write-Host ''
+                    Write-Host ("    WEAPONFORGE HAS NEW COMMITS: {0} -> {1}" -f $known.Substring(0,7), $headSha.Substring(0,7)) -ForegroundColor Yellow
+                    Write-Host ("    https://github.com/Sugarheady/WeaponForge/compare/{0}...{1}" -f $known, $headSha) -ForegroundColor Yellow
+                    Write-Host '    Read that diff before trusting the swap: it reaches their private' -ForegroundColor Yellow
+                    Write-Host '    _loaded latches and _entries collections, which no contract obliges them to keep.' -ForegroundColor Yellow
+                    & gh api "repos/Sugarheady/WeaponForge/commits?sha=$headSha&per_page=10" --jq '.[] | "      " + .sha[0:7] + "  " + (.commit.committer.date | split("T")[0]) + "  " + (.commit.message | split("
+")[0])' 2>$null |
+                        Select-Object -First 10
+                }
+
+                if ($AcceptForge) {
+                    $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                    $rel = (& gh api repos/Sugarheady/WeaponForge/releases/latest --jq .tag_name 2>$null)
+                    $dllSha = (Get-FileHash -Algorithm SHA256 $ForgeDll).Hash.ToLower()
+                    $json = @"
+{
+  "_comment": "Last WeaponForge upstream state this repo validated against. tools/gamescan.ps1 -Forge compares HEAD to Commit and prints a compare URL when it moves.",
+  "Commit": "$headSha",
+  "Release": "$rel",
+  "DllSha256": "$dllSha",
+  "CheckedAtUtc": "$stamp"
+}
+"@
+                    [System.IO.File]::WriteAllText($watchFile, $json)
+                    Write-Host ("    upstream pinned at {0} ({1}) - commit gamescan/forge-upstream.json" -f $headSha.Substring(0,7), $rel) -ForegroundColor Green
+                }
+            }
+        }
+
             if ($AcceptForge -and $contractOk) {
                 Copy-Item $forgeScanned $forgeBaseline -Force
                 Write-Host ('    baseline promoted to ' + $forgeVer + ' - commit gamescan/forge-baseline.json') -ForegroundColor Green

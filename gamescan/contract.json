@@ -2,14 +2,14 @@
   "FormatVersion": 1,
   "ModAssembly": "PunkMultiverse",
   "ModVersion": "0.1.244.0",
-  "CapturedAtUtc": "2026-08-07T14:03:01.5080226Z",
+  "CapturedAtUtc": "2026-08-07T18:30:22.2597405Z",
   "Uses": {
     "MainMenuScene::System.Void Load()": [
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.UI.ContentDownloadScreen::Leave",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\UI\\ContentDownloadScreen.cs",
-        "SourceLine": 122
+        "SourceLine": 110
       },
       {
         "Via": "call",
@@ -199,7 +199,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.NetSession::CheckPartyWipe",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\NetSession.cs",
-        "SourceLine": 2428
+        "SourceLine": 2433
       }
     ],
     "Level::System.Int32 get_Width()": [
@@ -1347,7 +1347,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1772
+        "SourceLine": 1848
       },
       {
         "Via": "call",
@@ -2211,7 +2211,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1719
+        "SourceLine": 1795
       },
       {
         "Via": "call",
@@ -2979,13 +2979,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1549
+        "SourceLine": 1625
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1719
+        "SourceLine": 1795
       }
     ],
     "AIAgent::System.Void SetTarget(Unit)": [
@@ -3311,7 +3311,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1719
+        "SourceLine": 1795
       },
       {
         "Via": "call",
@@ -3859,25 +3859,25 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1358
+        "SourceLine": 1434
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1441
+        "SourceLine": 1517
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1513
+        "SourceLine": 1589
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1543
+        "SourceLine": 1619
       },
       {
         "Via": "call",
@@ -4311,7 +4311,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1719
+        "SourceLine": 1795
       }
     ],
     "ShipManager::#OnUpgradeInstalled": [
@@ -4387,7 +4387,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::FindShooter",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1837
+        "SourceLine": 1913
       }
     ],
     "StaticWeaponHolder": [
@@ -4507,25 +4507,25 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1358
+        "SourceLine": 1434
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1441
+        "SourceLine": 1517
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1513
+        "SourceLine": 1589
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1543
+        "SourceLine": 1619
       },
       {
         "Via": "call",
@@ -4551,13 +4551,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1544
+        "SourceLine": 1620
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::ClusterMain",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1848
+        "SourceLine": 1924
       }
     ],
     "IModuleCluster::System.Boolean get_HasMainModule()": [
@@ -4577,13 +4577,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1547
+        "SourceLine": 1623
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::ClusterMain",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1849
+        "SourceLine": 1925
       }
     ],
     "IModuleCluster::Module get_MainModule()": [
@@ -4603,13 +4603,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1547
+        "SourceLine": 1623
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::ClusterMain",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1849
+        "SourceLine": 1925
       }
     ],
     "WeaponModule": [
@@ -4743,7 +4743,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::FindShooter",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1837
+        "SourceLine": 1913
       }
     ],
     "ModuleSlotWeaponHolder::#OnGridOwnerBound": [
@@ -4899,19 +4899,19 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1372
+        "SourceLine": 1448
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1373
+        "SourceLine": 1449
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::WeaponName",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1844
+        "SourceLine": 1920
       }
     ],
     "WeaponData::System.String get_Id()": [
@@ -4925,7 +4925,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1372
+        "SourceLine": 1448
       },
       {
         "Via": "call",
@@ -5879,25 +5879,25 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::ReconcileClosedElsewhere",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1934
+        "SourceLine": 2010
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::CloseMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1953
+        "SourceLine": 2029
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1997
+        "SourceLine": 2073
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1883
+        "SourceLine": 1959
       }
     ],
     "UIScreen::System.Void Close()": [
@@ -5917,7 +5917,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::CloseMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1953
+        "SourceLine": 2029
       }
     ],
     "GameController::#huds": [
@@ -7443,19 +7443,19 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::RestoreLocalShipControl",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1974
+        "SourceLine": 2050
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1991
+        "SourceLine": 2067
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 2006
+        "SourceLine": 2082
       }
     ],
     "ShipActionMap::System.Boolean get_Enabled()": [
@@ -7483,13 +7483,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::RestoreLocalShipControl",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1974
+        "SourceLine": 2050
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 2006
+        "SourceLine": 2082
       }
     ],
     "PauseScreen": [
@@ -7591,13 +7591,13 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::RestoreLocalShipControl",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1973
+        "SourceLine": 2049
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1990
+        "SourceLine": 2066
       }
     ],
     "ShipActionMap::System.Void Disable()": [
@@ -7611,7 +7611,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1991
+        "SourceLine": 2067
       }
     ],
     "LightmapGenerator::#Update": [
@@ -7829,13 +7829,13 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropWeapon",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 264
+        "SourceLine": 315
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropConsumable",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 283
+        "SourceLine": 334
       }
     ],
     "DroppabbleItem::Ingredient ingredient": [
@@ -7877,7 +7877,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropConsumable",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 283
+        "SourceLine": 334
       }
     ],
     "Consumable::System.String id": [
@@ -7905,7 +7905,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropWeapon",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 264
+        "SourceLine": 315
       }
     ],
     "ModuleData::System.String get_Id()": [
@@ -7923,15 +7923,27 @@
       },
       {
         "Via": "call",
-        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropWeapon",
+        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::PoolFingerprint",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
         "SourceLine": 265
       },
       {
         "Via": "call",
-        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables/\u003C\u003Ec::\u003CBuildWeaponPools\u003Eb__9_0",
+        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::PoolFingerprint",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 239
+        "SourceLine": 273
+      },
+      {
+        "Via": "call",
+        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropWeapon",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
+        "SourceLine": 316
+      },
+      {
+        "Via": "call",
+        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables/\u003C\u003Ec::\u003CBuildWeaponPools\u003Eb__11_0",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
+        "SourceLine": 290
       },
       {
         "Via": "call",
@@ -7943,49 +7955,49 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1376
+        "SourceLine": 1452
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1476
+        "SourceLine": 1552
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1478
+        "SourceLine": 1554
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1480
+        "SourceLine": 1556
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1505
+        "SourceLine": 1581
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1523
+        "SourceLine": 1599
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1550
+        "SourceLine": 1626
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::ClusterMain",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1849
+        "SourceLine": 1925
       },
       {
         "Via": "call",
@@ -8279,49 +8291,49 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1875
+        "SourceLine": 1951
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1876
+        "SourceLine": 1952
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1877
+        "SourceLine": 1953
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1878
+        "SourceLine": 1954
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1879
+        "SourceLine": 1955
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1880
+        "SourceLine": 1956
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1881
+        "SourceLine": 1957
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1882
+        "SourceLine": 1958
       }
     ],
     "TimeManager": [
@@ -8335,7 +8347,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1884
+        "SourceLine": 1960
       }
     ],
     "ShipMenuToggler::#EnterShowcaseMode": [
@@ -8829,13 +8841,13 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1740
+        "SourceLine": 1816
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1745
+        "SourceLine": 1821
       }
     ],
     "EntityGameObjectManager::SavableEntity CreateEntity(SavableEntity,UnityEngine.Vector2)": [
@@ -8849,7 +8861,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1750
+        "SourceLine": 1826
       }
     ],
     "SavablesCollection::System.Collections.Generic.List\u00601\u003CSavablesCollection/EntityPrefab\u003E savableObjectInfos": [
@@ -8869,7 +8881,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1745
+        "SourceLine": 1821
       }
     ],
     "SavablesCollection/EntityPrefab::System.String entityId": [
@@ -8895,13 +8907,13 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1747
+        "SourceLine": 1823
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1752
+        "SourceLine": 1828
       }
     ],
     "SavablesCollection/EntityPrefab::SavableEntity prefab": [
@@ -8927,7 +8939,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1750
+        "SourceLine": 1826
       }
     ],
     "Unit/Data::Unit/Data/BurnProperties burnProperties": [
@@ -9101,31 +9113,31 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::BuildWeaponPools",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 239
+        "SourceLine": 290
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropConsumable",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 275
+        "SourceLine": 326
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1412
+        "SourceLine": 1488
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1473
+        "SourceLine": 1549
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1498
+        "SourceLine": 1574
       }
     ],
     "WeaponModuleData": [
@@ -9133,19 +9145,19 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::BuildWeaponPools",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 241
+        "SourceLine": 292
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1475
+        "SourceLine": 1551
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1500
+        "SourceLine": 1576
       },
       {
         "Via": "type-ref",
@@ -9159,13 +9171,13 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::BuildWeaponPools",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 241
+        "SourceLine": 292
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::BuildWeaponPools",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 242
+        "SourceLine": 293
       },
       {
         "Via": "field",
@@ -9191,7 +9203,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::BuildWeaponPools",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 241
+        "SourceLine": 292
       }
     ],
     "WeaponData::Resource resourceUsed": [
@@ -9199,7 +9211,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::BuildWeaponPools",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 242
+        "SourceLine": 293
       }
     ],
     "DroppabbleItem": [
@@ -9207,13 +9219,13 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropWeapon",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 264
+        "SourceLine": 315
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropConsumable",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 283
+        "SourceLine": 334
       }
     ],
     "LootFactory::UnityEngine.GameObject Create(DroppabbleItem,UnityEngine.Vector2)": [
@@ -9221,13 +9233,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropWeapon",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 264
+        "SourceLine": 315
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropConsumable",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 283
+        "SourceLine": 334
       }
     ],
     "ModuleData::System.String displayName": [
@@ -9235,31 +9247,31 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropWeapon",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 265
+        "SourceLine": 316
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1476
+        "SourceLine": 1552
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1478
+        "SourceLine": 1554
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1480
+        "SourceLine": 1556
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1505
+        "SourceLine": 1581
       },
       {
         "Via": "field",
@@ -9273,7 +9285,7 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropConsumable",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 284
+        "SourceLine": 335
       }
     ],
     "Consumable::System.String get_Id()": [
@@ -9281,13 +9293,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables::DropConsumable",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 284
+        "SourceLine": 335
       },
       {
         "Via": "call",
-        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables/\u003C\u003Ec::\u003CDropConsumable\u003Eb__11_1",
+        "FromMember": "PunkMultiverse.Modes.BattleRoyaleLootTables/\u003C\u003Ec::\u003CDropConsumable\u003Eb__13_1",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Modes\\BattleRoyaleLootTables.cs",
-        "SourceLine": 277
+        "SourceLine": 328
       }
     ],
     "EntityGenerator::#PlaceObjects": [
@@ -9691,19 +9703,19 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1359
+        "SourceLine": 1435
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1436
+        "SourceLine": 1512
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::FindShooter",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1832
+        "SourceLine": 1908
       }
     ],
     "Ship::WeaponBase get_SecondaryWeapon()": [
@@ -9717,19 +9729,19 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1359
+        "SourceLine": 1435
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1437
+        "SourceLine": 1513
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::FindShooter",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1832
+        "SourceLine": 1908
       }
     ],
     "AIAgent::System.Boolean get_IsTargetVisible()": [
@@ -9818,24 +9830,74 @@
         "SourceLine": 1192
       }
     ],
+    "LoadoutPool::System.Collections.Generic.List\u00601\u003CLoadoutTemplate\u003E loadouts": [
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Core.DevTools::Execute",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
+        "SourceLine": 1305
+      },
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Core.DevTools::Execute",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
+        "SourceLine": 1307
+      },
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
+        "SourceLine": 83
+      },
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
+        "SourceLine": 84
+      },
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
+        "SourceLine": 86
+      },
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
+        "SourceLine": 87
+      },
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Content.VanillaContentGuard/SnapshotLoadoutPool::Prefix",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
+        "SourceLine": 140
+      },
+      {
+        "Via": "field",
+        "FromMember": "PunkMultiverse.Content.VanillaContentGuard/SnapshotLoadoutPool::Prefix",
+        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
+        "SourceLine": 141
+      }
+    ],
     "ModuleGrid": [
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1358
+        "SourceLine": 1434
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1449
+        "SourceLine": 1525
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1513
+        "SourceLine": 1589
       },
       {
         "Via": "type-ref",
@@ -9849,13 +9911,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1359
+        "SourceLine": 1435
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1515
+        "SourceLine": 1591
       },
       {
         "Via": "call",
@@ -9869,13 +9931,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1359
+        "SourceLine": 1435
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1515
+        "SourceLine": 1591
       },
       {
         "Via": "call",
@@ -9889,13 +9951,13 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1376
+        "SourceLine": 1452
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1520
+        "SourceLine": 1596
       },
       {
         "Via": "call",
@@ -9909,19 +9971,19 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1376
+        "SourceLine": 1452
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1550
+        "SourceLine": 1626
       },
       {
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::ClusterMain",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1849
+        "SourceLine": 1925
       },
       {
         "Via": "call",
@@ -9947,7 +10009,7 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1400
+        "SourceLine": 1476
       },
       {
         "Via": "type-ref",
@@ -9961,7 +10023,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1400
+        "SourceLine": 1476
       },
       {
         "Via": "accesstools",
@@ -9975,7 +10037,7 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1417
+        "SourceLine": 1493
       },
       {
         "Via": "type-ref",
@@ -9995,7 +10057,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1417
+        "SourceLine": 1493
       }
     ],
     "ScriptableObjectRegistry\u00602::System.Void Initialize()": [
@@ -10003,7 +10065,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1419
+        "SourceLine": 1495
       },
       {
         "Via": "call",
@@ -10017,7 +10079,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1450
+        "SourceLine": 1526
       }
     ],
     "WeaponBasedActiveModuleData": [
@@ -10025,13 +10087,13 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1477
+        "SourceLine": 1553
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1500
+        "SourceLine": 1576
       }
     ],
     "SpawnMinionModuleData": [
@@ -10039,13 +10101,13 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1479
+        "SourceLine": 1555
       },
       {
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1500
+        "SourceLine": 1576
       }
     ],
     "ModuleGrid::UnityEngine.Vector2Int get_Active3GridPosition()": [
@@ -10053,7 +10115,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1515
+        "SourceLine": 1591
       }
     ],
     "ModuleGrid::UnityEngine.Vector2Int get_Active2GridPosition()": [
@@ -10061,7 +10123,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1515
+        "SourceLine": 1591
       }
     ],
     "ModuleGrid::UnityEngine.Vector2Int get_Active1GridPosition()": [
@@ -10069,7 +10131,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1515
+        "SourceLine": 1591
       }
     ],
     "ModuleData::Module DeepCopy()": [
@@ -10077,7 +10139,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1519
+        "SourceLine": 1595
       }
     ],
     "Module::System.Void CopyConnectionsFrom(Module)": [
@@ -10085,7 +10147,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1521
+        "SourceLine": 1597
       }
     ],
     "ModuleGrid::System.Void Install(UnityEngine.Vector2Int,Module)": [
@@ -10093,7 +10155,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1522
+        "SourceLine": 1598
       }
     ],
     "ActiveModule": [
@@ -10101,7 +10163,7 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1547
+        "SourceLine": 1623
       }
     ],
     "ActiveModule::System.Void Activate(Unit)": [
@@ -10109,7 +10171,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools::Execute",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1549
+        "SourceLine": 1625
       }
     ],
     "Projectile::#CanKnockBack": [
@@ -10117,7 +10179,7 @@
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/SuppressKnockback::Prefix",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1863
+        "SourceLine": 1939
       }
     ],
     "DebugMenu::#Update": [
@@ -10125,43 +10187,43 @@
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::Prefix",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1898
+        "SourceLine": 1974
       },
       {
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::Postfix",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1910
+        "SourceLine": 1986
       },
       {
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::ReconcileClosedElsewhere",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1933
+        "SourceLine": 2009
       },
       {
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::CloseMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1951
+        "SourceLine": 2027
       },
       {
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::RestoreLocalShipControl",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1973
+        "SourceLine": 2049
       },
       {
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1990
+        "SourceLine": 2066
       },
       {
         "Via": "harmony-target-string",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1875
+        "SourceLine": 1951
       }
     ],
     "SecondaryDebugMenu": [
@@ -10169,7 +10231,7 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::CloseMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1951
+        "SourceLine": 2027
       }
     ],
     "SecondaryDebugMenu::System.Void Hide()": [
@@ -10177,7 +10239,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::CloseMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1951
+        "SourceLine": 2027
       }
     ],
     "UIScreen::System.Void Open()": [
@@ -10185,7 +10247,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1997
+        "SourceLine": 2073
       }
     ],
     "WeaponDropdown": [
@@ -10193,7 +10255,7 @@
         "Via": "type-ref",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1998
+        "SourceLine": 2074
       }
     ],
     "WeaponDropdown::System.Void Refresh()": [
@@ -10201,7 +10263,7 @@
         "Via": "call",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::OpenMenu",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1998
+        "SourceLine": 2074
       }
     ],
     "DebugMenu::#isOpened": [
@@ -10209,7 +10271,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1875
+        "SourceLine": 1951
       }
     ],
     "DebugMenu::#screen": [
@@ -10217,7 +10279,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1876
+        "SourceLine": 1952
       }
     ],
     "DebugMenu::#weaponDropdown": [
@@ -10225,7 +10287,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1877
+        "SourceLine": 1953
       }
     ],
     "DebugMenu::#showDebugInputAction": [
@@ -10233,7 +10295,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1878
+        "SourceLine": 1954
       }
     ],
     "DebugMenu::#SetShipsHovering": [
@@ -10241,7 +10303,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1879
+        "SourceLine": 1955
       }
     ],
     "DebugMenu::#secondaryMenu": [
@@ -10249,7 +10311,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1880
+        "SourceLine": 1956
       }
     ],
     "DebugMenu::#enemyList": [
@@ -10257,7 +10319,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1881
+        "SourceLine": 1957
       }
     ],
     "DebugMenu::#timeManager": [
@@ -10265,7 +10327,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1882
+        "SourceLine": 1958
       }
     ],
     "UIScreen::#canvas": [
@@ -10273,7 +10335,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1883
+        "SourceLine": 1959
       }
     ],
     "TimeManager::#RemoveAllModifiers": [
@@ -10281,7 +10343,7 @@
         "Via": "accesstools",
         "FromMember": "PunkMultiverse.Core.DevTools/OpenDebugMenuKey::.cctor",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\DevTools.cs",
-        "SourceLine": 1884
+        "SourceLine": 1960
       }
     ],
     "PauseScreen::System.Void Open()": [
@@ -10319,13 +10381,13 @@
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.NetSession::Awake",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\NetSession.cs",
-        "SourceLine": 193
+        "SourceLine": 198
       },
       {
         "Via": "field",
         "FromMember": "PunkMultiverse.Core.NetSession::OnDestroy",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Core\\NetSession.cs",
-        "SourceLine": 1769
+        "SourceLine": 1774
       }
     ],
     "RunArguments::RunArguments NewRun(System.Boolean)": [
@@ -10610,44 +10672,6 @@
         "FromMember": "PunkMultiverse.Content.VanillaContentGuard::SnapshotGroup",
         "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
         "SourceLine": 101
-      }
-    ],
-    "LoadoutPool::System.Collections.Generic.List\u00601\u003CLoadoutTemplate\u003E loadouts": [
-      {
-        "Via": "field",
-        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
-        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
-        "SourceLine": 83
-      },
-      {
-        "Via": "field",
-        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
-        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
-        "SourceLine": 84
-      },
-      {
-        "Via": "field",
-        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
-        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
-        "SourceLine": 86
-      },
-      {
-        "Via": "field",
-        "FromMember": "PunkMultiverse.Content.VanillaContentGuard::RestorePristine",
-        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
-        "SourceLine": 87
-      },
-      {
-        "Via": "field",
-        "FromMember": "PunkMultiverse.Content.VanillaContentGuard/SnapshotLoadoutPool::Prefix",
-        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
-        "SourceLine": 140
-      },
-      {
-        "Via": "field",
-        "FromMember": "PunkMultiverse.Content.VanillaContentGuard/SnapshotLoadoutPool::Prefix",
-        "SourceFile": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PUNK Playtest\\PunkMultiverse\\src\\Content\\VanillaContentGuard.cs",
-        "SourceLine": 141
       }
     ],
     "DropTableItem": [
