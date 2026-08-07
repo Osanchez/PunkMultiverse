@@ -1321,6 +1321,155 @@ namespace PunkMultiverse.Core
                         $"(WeaponForge offers {forgeClasses.Count})");
                     return;
                 }
+                case "shipcolliders":
+                {
+                    // Exactly what a ship presents to a physics cast: layer, trigger flag, size.
+                    // Written because three separate "fixes" to beam-vs-ship were reasoned out
+                    // from assumptions about this and every one of them was wrong -- a hull
+                    // measured 20.39u, a hiding layer turned out to be inside the search mask, and
+                    // a filter that looked correct silently disabled the whole guard.
+                    //
+                    // Physics2D.queriesHitTriggers matters as much as the colliders: if it is
+                    // false, a cast cannot hit a trigger collider AT ALL, so a ship whose
+                    // damageable surface is a trigger is unhittable by any hitscan weapon no
+                    // matter what the layer mask says.
+                    Out($"shipcolliders: queriesHitTriggers={Physics2D.queriesHitTriggers}");
+                    foreach (var kv in ShipSync.ShipsBySlot)
+                    {
+                        var sh = kv.Value;
+                        if (sh == null) continue;
+                        bool pup = sh.GetComponent<RemotePuppet>() != null;
+                        Vector2 centre = sh.transform.position;
+                        int n = 0;
+                        foreach (var col in sh.GetComponentsInChildren<Collider2D>(true))
+                        {
+                            if (col == null) continue;
+                            var b = col.bounds;
+                            float d = Vector2.Distance(centre, new Vector2(b.max.x, b.max.y));
+                            Out($"shipcolliders:   P{kv.Key + 1}{(pup ? "(puppet)" : "(local)")} " +
+                                $"{col.GetType().Name} '{col.name}' layer={col.gameObject.layer} " +
+                                $"trigger={col.isTrigger} enabled={col.enabled} " +
+                                $"size={b.size.x:0.##}x{b.size.y:0.##} distFromCentre={d:0.##}");
+                            n++;
+                        }
+                        Out($"shipcolliders: P{kv.Key + 1} has {n} collider(s)");
+                    }
+                    if (ShipSync.ShipsBySlot.Count == 0) Out("shipcolliders: no ships");
+                    return;
+                }
+                case "clearmobs":
+                {
+                    // Empty a radius of HOSTILES around the local ship, so a weapon test measures
+                    // the weapon and nothing else. `pvpstage` clears terrain; it does not clear
+                    // the things that shoot back, and open ground is full of them -- a staged run
+                    // died to `Floater SoldierPurple` before a single shot was fired.
+                    //
+                    // Reuses BattleRoyale.IsHostileEntityId rather than inventing a second
+                    // opinion about what counts as hostile: two definitions would drift and the
+                    // harness would quietly stop clearing something that still shoots.
+                    float radius = 120f;
+                    if (parts.Length > 1) float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out radius);
+                    var myShip = ShipSync.LocalShip;
+                    if (myShip == null) { Out("clearmobs: no local ship"); return; }
+                    var em = ServiceLocator.Get<EntityManager>();
+                    if (em == null) { Out("clearmobs: no EntityManager"); return; }
+
+                    Vector2 centre = myShip.transform.position;
+                    float r2 = radius * radius;
+
+                    // Never remove a SHIP. Collect first, remove second: removal destroys entity
+                    // data, and mutating the manager's collection mid-enumeration throws halfway.
+                    var shipInstances = new System.Collections.Generic.HashSet<int>();
+                    foreach (var kv in ShipSync.ShipsBySlot)
+                    {
+                        var se = kv.Value != null ? kv.Value.GetComponentInChildren<SavableEntity>() : null;
+                        if (se != null && se.EntityData != null) shipInstances.Add(se.EntityData.instanceId);
+                    }
+
+                    var doomed = new System.Collections.Generic.List<int>();
+                    foreach (var data in em.GetAllEntities())
+                    {
+                        if (data == null || shipInstances.Contains(data.instanceId)) continue;
+                        if (!Modes.BattleRoyale.IsHostileEntityId(data.entityId)) continue;
+                        if (((Vector2)data.position - centre).sqrMagnitude > r2) continue;
+                        if (NetIds.TryGetNetId(data.instanceId, out int netId)) doomed.Add(netId);
+                    }
+                    foreach (int netId in doomed) Sync.EnemySync.RemoveSilently(netId);
+                    Out($"clearmobs: removed {doomed.Count} hostile(s) within {radius:0} units");
+                    return;
+                }
+                case "hpsnap":
+                {
+                    // Per-ship health, for a harness that needs to know WHO took damage rather
+                    // than merely that damage happened. Deliberately reads the same tank
+                    // UI/ShipStatusBars binds, so a number here is the number a player sees.
+                    //
+                    // Every ship is listed, but only the LOCAL line is authoritative: a puppet's
+                    // tank is whatever the last snapshot carried, which lags. A harness should ask
+                    // each machine about itself.
+                    foreach (var kv in ShipSync.ShipsBySlot)
+                    {
+                        var sh = kv.Value;
+                        if (sh == null) continue;
+                        ReadBarTanks(sh, out float hp, out float hpMax, out _, out _);
+                        bool puppet = sh.GetComponent<RemotePuppet>() != null;
+                        Out($"hpsnap: P{kv.Key + 1} hp={hp:0.###}/{hpMax:0.###} {(puppet ? "puppet" : "local")}");
+                    }
+                    if (ShipSync.ShipsBySlot.Count == 0) Out("hpsnap: no ships");
+                    return;
+                }
+                case "hpfull":
+                {
+                    // Refill the LOCAL ship's health so a weapon matrix can start each weapon from
+                    // a known state. Without it the second weapon in a run measures damage against
+                    // whatever the first one left behind, and the fourth kills the target outright.
+                    int healed = 0;
+                    foreach (var kv in ShipSync.ShipsBySlot)
+                    {
+                        var sh = kv.Value;
+                        if (sh == null || sh.GetComponent<RemotePuppet>() != null) continue;
+                        try
+                        {
+                            var unit = sh.GetComponentInParent<Unit>() ?? sh.GetComponent<Unit>();
+                            var dr = unit != null ? unit.GetComponent<DamagableResource>() : null;
+                            if (dr?.Tank == null) continue;
+                            float missing = dr.Tank.Capacity - dr.Tank.Value;
+                            if (missing > 0f) dr.Tank.Charge(missing);
+                            healed++;
+                            Out($"hpfull: P{kv.Key + 1} hp={dr.Tank.Value:0.###}/{dr.Tank.Capacity:0.###}");
+                        }
+                        catch (Exception e) { Out($"hpfull: P{kv.Key + 1} FAILED: {e.Message}"); }
+                    }
+                    if (healed == 0) Out("hpfull: no local ship");
+                    return;
+                }
+                case "weaponlist":
+                {
+                    // Every equippable weapon module, so a harness can iterate them instead of
+                    // being handed a hardcoded list that goes stale the moment content changes.
+                    // `weaponlist forge` narrows it to content-mod weapons.
+                    bool forgeOnly = parts.Length > 1 && parts[1].Equals("forge", StringComparison.OrdinalIgnoreCase);
+                    var forgeIds = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var forgeWeapons = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    Content.ForgeBridge.CollectForgeIds(forgeIds, forgeWeapons);
+
+                    var reg = ServiceLocator.Get<ModuleRegistry>();
+                    if (reg == null) { Out("weaponlist: no ModuleRegistry"); return; }
+                    int n = 0;
+                    foreach (var m in reg.AllItems)
+                    {
+                        if (!(m is WeaponModuleData)) continue;
+                        string id = null;
+                        try { id = m.Id; } catch { }
+                        if (id == null) continue;
+                        bool custom = forgeIds.Contains(id);
+                        if (forgeOnly && !custom) continue;
+                        Out($"weaponlist:   {(custom ? "*" : " ")} {id} | {m.displayName}");
+                        n++;
+                    }
+                    Out($"weaponlist: {n} weapon module(s){(forgeOnly ? " (custom only)" : "")}");
+                    return;
+                }
                 case "brpools":
                 {
                     // The BR drop pools, ordered-fingerprinted. This is the instrument for the

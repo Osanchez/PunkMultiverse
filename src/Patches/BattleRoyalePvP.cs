@@ -135,58 +135,84 @@ namespace PunkMultiverse.Patches
         /// a second, independent way for a shot to miss a player — and the GUNNER loadout every
         /// Battle Royale player flies is exactly the kind of weapon that uses one.</summary>
         /// <summary>
-        /// Hide the SHOOTER'S OWN hull from its own hitscan cast, for the duration of that cast.
+        /// Start the shooter's own hitscan cast OUTSIDE its own hull.
         ///
-        /// FireSingle is a single Physics2D.CircleCast that acts on the FIRST collider it finds and
-        /// then returns. Once the mask above includes ship layers, the first collider is the hull
-        /// the muzzle is sitting inside — so the beam stopped dead at its own ship: it damaged the
-        /// owner, and it drew no line, because a beam's visual length IS the hit distance. Both of
-        /// Omar's beam symptoms, one cause.
+        /// FireSingle is a single Physics2D.CircleCast that acts on the FIRST collider and returns.
+        /// Once the mask above includes ship layers, that first collider is the hull the muzzle
+        /// sits inside, so the beam stopped dead on its owner: it damaged the shooter and drew no
+        /// line, because a beam's visual length IS its hit distance.
         ///
-        /// Making IsFriendsWith self-aware (above) stops the damage but not the stop: the cast
-        /// still terminates on its own hull and nothing reaches the target. The projectile path
-        /// solves this by discarding the muzzle hit and flying ON (MoveForward); a hitscan has no
-        /// "on" to fly, so the hull must not be castable in the first place.
+        /// This moves the cast's ORIGIN, and nothing else. Two earlier attempts changed physics
+        /// state instead and both were worse than the bug:
         ///
-        /// Moving the owner's colliders to the ignore-raycast layer around the call does exactly
-        /// that, and leaves every line of vanilla's damage, force, listener and cell-convert logic
-        /// untouched — which is the rule here. A Finalizer restores them even if FireSingle throws;
-        /// a ship left on the wrong layer would be invisible to every other weapon in the game.
+        ///   relayering the hull  moved it to layer 2, which ShipLayers() had already put INSIDE
+        ///                        the widened mask on that machine. The hiding place was inside
+        ///                        the search, so nothing was hidden.
+        ///   disabling the hull   worked once and then destroyed the ship. A held beam re-enters
+        ///                        FireSingle, the second prefix overwrote _hidden with an EMPTY
+        ///                        list (already-disabled colliders are skipped), the inner
+        ///                        finalizer restored nothing and the outer's list was gone. The
+        ///                        ship was left permanently without colliders, fell out of the
+        ///                        world and died -- while the beam, now somewhere else entirely,
+        ///                        reached nothing at all.
+        ///
+        /// An origin offset has no such failure mode: it is a local edit to one argument, it
+        /// cannot leak, and re-entrancy is harmless because there is no state to restore. The push
+        /// is only ever as far as the hull actually extends, and only when the muzzle is not
+        /// already clear of it, so a target at point-blank range is not skipped.
         /// </summary>
         [HarmonyPatch(typeof(HitscanWeapon), "FireSingle")]
-        internal static class HitscanSkipsOwnHull
+        internal static class HitscanStartsOutsideOwnHull
         {
-            private const int IgnoreRaycastLayer = 2;   // Unity built-in, never in a weapon mask
-            [ThreadStatic] private static List<(Collider2D col, int layer)> _hidden;
+            private static bool _logged;
 
-            private static void Prefix(HitscanWeapon __instance)
+            private static void Prefix(HitscanWeapon __instance, ref Vector2 __0, Vector2 __1)
             {
                 if (__instance == null || !PlayersCanHitPlayers) return;
                 try
                 {
                     var ownerShip = OwnerShipOf(__instance);
                     if (ownerShip == null) return;
-                    _hidden = new List<(Collider2D, int)>();
+
+                    var dir = __1.sqrMagnitude > 1e-6f ? __1.normalized : Vector2.right;
+                    Vector2 centre = ownerShip.transform.position;
+
+                    // How far the hull actually reaches, measured rather than assumed -- a ship's
+                    // hull is about 0.70u but modules extend it and an upgrade changes it.
+                    float reach = 0f;
                     foreach (var col in ownerShip.GetComponentsInChildren<Collider2D>(true))
                     {
-                        if (col == null) continue;
-                        _hidden.Add((col, col.gameObject.layer));
-                        col.gameObject.layer = IgnoreRaycastLayer;
+                        if (col == null || !col.enabled) continue;
+                        // SOLID colliders only. A ship also carries large TRIGGER volumes -- aim
+                        // assist, sensors -- and including them measured a "hull" of 20.39u on a
+                        // ship whose hull is about 0.7u. The cast then started 20 units downrange,
+                        // past a target 5 units away, and the beam hit nothing at all: the
+                        // self-damage was gone because the weapon had been blinded.
+                        if (col.isTrigger) continue;
+                        var b = col.bounds;
+                        Vector3 far = new Vector3(centre.x + dir.x * 1000f, centre.y + dir.y * 1000f, 0f);
+                        Vector3 near = b.ClosestPoint(far);
+                        float d = Vector2.Distance(centre, new Vector2(near.x, near.y));
+                        if (d > reach) reach = d;
+                    }
+                    if (reach <= 0f) return;
+                    // Hard ceiling. The push exists to clear a hull, and no hull is metres across;
+                    // if the measurement ever goes wrong again it must fail SAFE (a weapon that
+                    // can still hurt its owner) rather than silently blind the weapon entirely.
+                    float need = Mathf.Min(reach, 3f) + 0.15f;
+
+                    float along = Vector2.Dot(__0 - centre, dir);
+                    if (along >= need) return;              // muzzle is already clear of the hull
+                    __0 += dir * (need - along);
+
+                    if (!_logged)
+                    {
+                        _logged = true;
+                        Plugin.Log.LogInfo($"[BR] hitscan origin pushed clear of its own hull " +
+                            $"(reach {reach:0.##}u, muzzle was {along:0.##}u along the ray)");
                     }
                 }
-                catch { _hidden = null; }
-            }
-
-            // Finalizer, not Postfix: it runs even when FireSingle throws. Leaving a player's hull
-            // on the ignore-raycast layer would make that ship unhittable by everything, which is
-            // a far worse bug than the one being fixed.
-            private static void Finalizer()
-            {
-                var hidden = _hidden;
-                _hidden = null;
-                if (hidden == null) return;
-                foreach (var (col, layer) in hidden)
-                    if (col != null) col.gameObject.layer = layer;
+                catch { }
             }
         }
 
@@ -247,9 +273,16 @@ namespace PunkMultiverse.Patches
         /// global state shared with single-player, and leaving it open would change how the game
         /// behaves after the session ends.
         ///
-        /// Self-hits need no extra guard here: vanilla's ImpactBehaviour.safetyDistance already
-        /// refuses to detonate a physics projectile that has not travelled clear of its shooter,
-        /// which is why these never needed the muzzle rejection the direct-fire path does.
+        /// Opening the matrix is necessary but NOT sufficient, and assuming otherwise cost a
+        /// round: the matrix is layer-based, so the same pair that lets a shard reach another
+        /// player also lets it reach its OWN. I claimed ImpactBehaviour.safetyDistance would cover
+        /// that. It does not — a lobbed shot arcs back down onto the ship that fired it, well past
+        /// any muzzle-proximity guard, and Omar killed himself with his own shards.
+        ///
+        /// So each projectile is additionally made to ignore its OWN ship's colliders, pair by
+        /// pair, via Physics2D.IgnoreCollision. That is per-collider rather than per-layer, so it
+        /// removes the self-hit without touching anyone else's — and unlike a damage-side guard it
+        /// also stops the shard bouncing off its owner's hull, which would still have been wrong.
         /// </summary>
         [HarmonyPatch(typeof(PhysicsProjectile), nameof(PhysicsProjectile.Shoot))]
         internal static class PhysicsProjectilesCanReachOtherShips
@@ -263,6 +296,21 @@ namespace PunkMultiverse.Patches
                     if (owner == null) return;
                     if (owner.GetComponentInParent<Ship>() == null
                         && owner.GetComponentInChildren<Ship>() == null) return;   // not a player's shot
+
+                    // The shot must never touch the ship that fired it. Done first: if the
+                    // matrix opens below and this has not run, the projectile is briefly able to
+                    // hit its owner.
+                    var ownerShip = owner.GetComponentInParent<Ship>() ?? owner.GetComponentInChildren<Ship>();
+                    var mine = __instance.GetComponentsInChildren<Collider2D>(true);
+                    foreach (var ownCol in ownerShip.GetComponentsInChildren<Collider2D>(true))
+                    {
+                        if (ownCol == null) continue;
+                        foreach (var projCol in mine)
+                        {
+                            if (projCol == null) continue;
+                            try { Physics2D.IgnoreCollision(projCol, ownCol, true); } catch { }
+                        }
+                    }
 
                     int projLayer = __instance.gameObject.layer;
                     int shipMask = ShipLayers();
@@ -279,6 +327,58 @@ namespace PunkMultiverse.Patches
                     }
                 }
                 catch { }
+            }
+        }
+
+
+        /// <summary>
+        /// A physics projectile must not detonate on the ship that fired it.
+        ///
+        /// Opening the layer matrix (above) is what lets a lobbed shot reach another player at
+        /// all, and it is layer-based, so it equally lets the shot reach its OWN ship. The first
+        /// attempt at this called Physics2D.IgnoreCollision between the projectile's colliders and
+        /// the owner's at Shoot time; measurement says that is not holding -- the shard still
+        /// killed its own shooter for full health.
+        ///
+        /// So refuse it where the decision is actually made. Both of PhysicsProjectile's entry
+        /// points are guarded, because a shard arcs: it can arrive as a trigger overlap or as a
+        /// solid collision depending on what it grazes on the way back down.
+        ///
+        /// Vanilla's ImpactBehaviour.safetyDistance does NOT cover this, whatever its name
+        /// suggests -- it is a muzzle-proximity guard, and a lobbed shot comes back to its owner
+        /// from a long way away. Assuming otherwise is what let this ship.
+        /// </summary>
+        [HarmonyPatch(typeof(PhysicsProjectile))]
+        internal static class PhysicsProjectilesSpareTheirOwner
+        {
+            private static bool _logged;
+
+            [HarmonyPrefix, HarmonyPatch("OnCollisionEnter2D")]
+            private static bool OnCollision(PhysicsProjectile __instance, Collision2D __0)
+                => !IsOwnShip(__instance, __0 != null ? __0.collider : null);
+
+            [HarmonyPrefix, HarmonyPatch("OnTriggerEnter2D")]
+            private static bool OnTrigger(PhysicsProjectile __instance, Collider2D __0)
+                => !IsOwnShip(__instance, __0);
+
+            private static bool IsOwnShip(PhysicsProjectile proj, Collider2D other)
+            {
+                if (proj == null || other == null || !PlayersCanHitPlayers) return false;
+                try
+                {
+                    var owner = proj.Owner;
+                    if (owner == null) return false;
+                    var ownerShip = owner.GetComponentInParent<Ship>() ?? owner.GetComponentInChildren<Ship>();
+                    if (ownerShip == null) return false;
+                    if (other.GetComponentInParent<Ship>() != ownerShip) return false;
+                    if (!_logged)
+                    {
+                        _logged = true;
+                        Plugin.Log.LogInfo("[BR] a physics projectile was refused a hit on the ship that fired it");
+                    }
+                    return true;
+                }
+                catch { return false; }
             }
         }
 
