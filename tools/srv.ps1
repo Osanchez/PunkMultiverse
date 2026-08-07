@@ -10,7 +10,16 @@
 #   ./srv.ps1 log -Follow               # live tail (Ctrl-C to stop)
 #   ./srv.ps1 cmd "simprof 30"          # queue a devcmd (the mod polls devcmd.txt twice a second)
 #   ./srv.ps1 get <remote> [local]      # copy a file OUT of the container (paths are container-side)
-#   ./srv.ps1 put <local> <remote>      # copy a file IN, CRLF-stripped (scp from Windows adds them)
+#   ./srv.ps1 put <local> <remote>      # copy a TEXT file IN, CRLF-stripped (scp from Windows adds them)
+#   ./srv.ps1 putbin <local> <remote>   # copy a BINARY file IN, byte-for-byte (DLLs, images, archives)
+#
+# DEPLOYING THE MOD: the artifact is BepInEx/plugins/PunkMultiverse/PunkMultiverse.dll in a
+# BUILT INSTALL -- NOT bin/Release/PunkMultiverse.dll. LiteNetLib is merged and internalized by
+# ILRepack on the way to the former; the latter still references it externally, and on a server
+# with no LiteNetLib.dll the failure is quiet and misleading: the plugin loads, patches apply,
+# the banner prints, and only CreateTransport() throws -- so the server sits Offline having never
+# hosted, and everything downstream (content publishing included) simply never runs. The two
+# files differ by ~130 KB; if what you are about to upload is the smaller one, it is the wrong one.
 #   ./srv.ps1 config                    # show the operator overrides file that actually wins
 #   ./srv.ps1 restart | stop | start
 #   ./srv.ps1 recreate                  # pull the latest image and rebuild the container
@@ -86,6 +95,28 @@ switch ($Action) {
         RemoteRun "cmd /c del `"$($staging -replace '/','\')`"" | Out-Null
         Write-Host "got: $remote -> $local"
     }
+    # Byte-for-byte. `put` runs sed on arrival to strip the CRLFs Windows scp introduces, which is
+    # right for config files and CORRUPTS anything binary -- a DLL that has been through it loads
+    # as a garbage assembly and the mod simply does not appear. Use this for DLLs.
+    "putbin" {
+        if (-not $Rest -or $Rest.Count -lt 2) { Write-Host "usage: srv.ps1 putbin <local> <remote>"; exit 2 }
+        $local = $Rest[0]; $remote = $Rest[1]
+        if (-not (Test-Path $local)) { Write-Host "no such file: $local"; exit 2 }
+        $staging = "C:/Users/omar/_srvput_" + (Split-Path -Leaf $local)
+        & scp.exe $local "${SshHost}:$staging" 2>&1 |
+            Where-Object { $_ -notmatch "post-quantum|store now|openssh\.com/pq|^\s*\*\*" }
+        RemoteRun "docker cp `"$staging`" ${Container}:$remote"
+        $localHash = (Get-FileHash -Algorithm SHA256 $local).Hash.ToLower()
+        $remoteHash = (RemoteRun "docker exec $Container sha256sum $remote") -join " "
+        Write-Host "putbin: $local -> $remote"
+        Write-Host "  local  $localHash"
+        Write-Host "  remote $remoteHash"
+        if ($remoteHash -notmatch [regex]::Escape($localHash)) {
+            Write-Host "  MISMATCH - the file did not arrive intact" -ForegroundColor Red
+        } else { Write-Host "  verified identical" -ForegroundColor Green }
+        RemoteRun "cmd /c del `"$($staging -replace '/','')`"" | Out-Null
+    }
+
     "put" {
         if (-not $Rest -or $Rest.Count -lt 2) { Write-Host "usage: srv.ps1 put <local> <remote>"; exit 2 }
         $local = $Rest[0]; $remote = $Rest[1]
