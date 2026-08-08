@@ -237,6 +237,19 @@ namespace PunkMultiverse.Content
             LocalFailure = null;
             HostSetHash = null;
             _hostRoot = null;
+            // The progress counters, which used to survive a session and lie about the next one.
+            // LocalPercent is _gotBytes/_wantedBytes clamped to 99, so a second join in the SAME
+            // process opened the modal already reading "99%" with the PREVIOUS transfer's byte
+            // totals under it -- before a single byte of this session had moved. A cache hit then
+            // finishes in milliseconds and the modal vanishes, which is why it reads as a flicker
+            // for most people and as "stuck at 99%" for anyone whose install is a few frames
+            // slower. Stale _expected/_received are worse than cosmetic: a late Committed result
+            // from the old session can push _received past _expected and enqueue an InstallJob for
+            // content this session never asked for.
+            _expected = 0;
+            _received = 0;
+            _wantedBytes = 0;
+            _gotBytes = 0;
             // Whatever the session swapped in, the player gets their own content back. A no-op
             // when nothing was ever swapped, which is the common case.
             ForgeContentSwap.Restore();
@@ -478,6 +491,13 @@ namespace PunkMultiverse.Content
             // else. That IS the "rejoin re-downloads nothing" requirement.
             if (ContentStore.HasSet(_incomingHash))
             {
+                // Nothing to transfer, so the byte counters must read empty rather than carry
+                // whatever the last offer left behind -- the modal derives its percentage from
+                // them and would otherwise show a number describing a different download.
+                _expected = 0;
+                _received = 0;
+                _wantedBytes = 0;
+                _gotBytes = 0;
                 LocalState = ContentState.Installing;
                 Jobs.Enqueue(new InstallJob { SetHash = _incomingHash, Entries = _incoming });
                 Wake.Set();
@@ -499,6 +519,10 @@ namespace PunkMultiverse.Content
 
             if (wanted.Count == 0)
             {
+                _expected = 0;
+                _received = 0;
+                _wantedBytes = 0;
+                _gotBytes = 0;
                 LocalState = ContentState.Installing;
                 Jobs.Enqueue(new InstallJob { SetHash = _incomingHash, Entries = _incoming });
                 Wake.Set();
