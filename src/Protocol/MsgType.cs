@@ -158,5 +158,14 @@
         ContentChunk = 103,  // host -> client: (digest, offset, bytes, last)
         ContentDone = 104,   // client -> host: installed and verified, or failed with a reason
         ContentStatus = 105, // client -> host: progress, for the host's lobby roster
+
+        // A HELD weapon's trigger state. FireEvent replicates discrete SHOTS, which is right for a
+        // projectile -- the replay spawns one and it flies on carrying its own visual. A beam has
+        // no such object: HitscanWeapon.OnBarrelMoved draws it every frame ONLY while
+        // IsTriggerPulled, and a puppet's trigger is never pulled, so the else branch actively
+        // switches the beam off. The owner fired 196 casts and the observer replayed 152 of them
+        // and drew nothing at all, which is not a delivery problem -- it is the wrong thing being
+        // delivered.
+        HeldFire = 106,      // owner -> peers: trigger down/up plus aim, for continuous weapons
     }
 }

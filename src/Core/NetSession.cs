@@ -22,7 +22,12 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 23; // 23 = RosterEntry carries ContentState/ContentPercent,
+        public const int ProtocolVersion = 24; // 24 = HeldFire (106): the trigger state of a held
+                                               //      weapon, so a beam is drawn on other players'
+                                               //      screens. Shot events replicate a projectile
+                                               //      fine but a hitscan beam only exists while
+                                               //      IsTriggerPulled, which nothing sent.
+                                               // 23 = RosterEntry carries ContentState/ContentPercent,
                                                //      so every client can see WHY a player is not
                                                //      ready ("SYNCING 42%") rather than reading a
                                                //      held slot as somebody idling. Changes both
@@ -921,6 +926,7 @@ namespace PunkMultiverse.Core
             Sync.ShipSync.ResetStartGate();
             Sync.ShipSync.Reset();
             Sync.ProjectileSync.Reset();
+            Sync.HeldFireSync.Reset();
             Sync.DamageSync.Reset();
             Sync.WorldSync.Reset();
             Sync.EnemySync.Reset();
@@ -1773,6 +1779,18 @@ namespace PunkMultiverse.Core
             RosterChanged?.Invoke();
         }
 
+        /// <summary>Held remote beams are redrawn here, every frame.
+        ///
+        /// LateUpdate rather than Update on purpose: a puppet's transform is moved by
+        /// interpolation during Update, and a beam anchored to the pre-move position would trail
+        /// the ship it is supposed to be leaving by exactly one frame of motion -- the sort of
+        /// visual lag that reads as a netcode bug.</summary>
+        private void LateUpdate()
+        {
+            if (State != SessionState.InGame) return;
+            try { Sync.HeldFireSync.LateTick(); } catch { }
+        }
+
         private void OnDestroy()
         {
             GameController.LevelGenerated -= OnLevelGenerated;
@@ -2129,6 +2147,9 @@ namespace PunkMultiverse.Core
                 // Lease commits applied during the dispatch above (client lease waves, host
                 // handoff completions) flip their entities in one batched pass, same frame.
                 Sync.EnemySync.FlushSegmentOwnership();
+            // Held-weapon trigger state. Owner side announces changes; the puppet side is driven
+            // in LateTick below, every frame, because that is how often the beam is redrawn.
+            Sync.HeldFireSync.Tick(this);
                 DevTools.Tick(this);
 
                 // LevelGenerated subscribers finish in engine-defined order. Finalizing here
@@ -2985,6 +3006,15 @@ namespace PunkMultiverse.Core
                     var doneMsg = Protocol.ContentDoneMsg.Read(_reader);
                     var sender = _players.FirstOrDefault(p => p != null && p.PeerId == peer);
                     if (sender != null) Content.ContentSync.HandleDone(sender.Slot, doneMsg);
+                    break;
+                }
+                // Everyone applies this, host and client alike: a beam has to be visible to every
+                // machine that is not the one holding the trigger.
+                case MsgType.HeldFire:
+                {
+                    var hf = Protocol.HeldFireMsg.Read(_reader);
+                    // A machine never draws its OWN beam from the wire -- it has a real trigger.
+                    if (hf.Slot != LocalSlot) Sync.HeldFireSync.Apply(hf);
                     break;
                 }
                 case MsgType.ContentStatus when IsHost:

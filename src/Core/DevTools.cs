@@ -1321,6 +1321,58 @@ namespace PunkMultiverse.Core
                         $"(WeaponForge offers {forgeClasses.Count})");
                     return;
                 }
+                case "tpshop":
+                {
+                    // Land on a SHOP, because a shop is the one place in the world the mode itself
+                    // guarantees is survivable: BattleRoyaleHost.ClearHazardsAroundStations already
+                    // scrubs damaging terrain around every station, precisely so a spawn is not a
+                    // coin toss.
+                    //
+                    // Written after a long run of tests staged in "open ground" chosen by
+                    // arithmetic -- the midpoint between two spawns -- which turned out to contain,
+                    // in successive runs, a station turret, a Floater, and a hazard cell that
+                    // killed the ship before a shot was fired. Every one of those was read as a
+                    // weapon result first. A known-good landing pad removes the entire class.
+                    //
+                    // `tpshop [index] [offset]` -- index picks among the shops (default nearest),
+                    // offset nudges sideways so two ships do not land inside each other.
+                    var myShip = ShipSync.LocalShip;
+                    if (myShip == null) { Out("tpshop: no local ship"); return; }
+                    var em = ServiceLocator.Get<EntityManager>();
+                    if (em == null) { Out("tpshop: no EntityManager"); return; }
+
+                    var pads = new System.Collections.Generic.List<Vector2>();
+                    foreach (var st in em.GetEntitiesWithComponent<Station.Data>())
+                        if (st?.entity != null) pads.Add((Vector2)st.entity.position);
+                    if (pads.Count == 0) { Out("tpshop: no stations in this world"); return; }
+
+                    int idx = -1;
+                    if (parts.Length > 1) int.TryParse(parts[1], out idx);
+                    float off = 0f;
+                    if (parts.Length > 2) float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out off);
+
+                    Vector2 here = myShip.transform.position;
+                    Vector2 pad;
+                    if (idx >= 0 && idx < pads.Count) pad = pads[idx];
+                    else
+                    {
+                        pad = pads[0];
+                        float best = float.MaxValue;
+                        for (int i = 0; i < pads.Count; i++)
+                        {
+                            float d = (pads[i] - here).sqrMagnitude;
+                            if (d < best) { best = d; pad = pads[i]; }
+                        }
+                    }
+
+                    Vector2 dest = pad + new Vector2(off, 0f);
+                    myShip.Unit.ComponentData.entity.MoveTo(dest);
+                    var rb2 = myShip.GetComponent<Rigidbody2D>();
+                    if (rb2 != null) { RemoteEntityPuppet.TeleportWithChildren(rb2, dest); rb2.linearVelocity = Vector2.zero; }
+                    myShip.transform.position = dest;
+                    Out($"tpshop: -> shop at {dest.x:0.0},{dest.y:0.0} (of {pads.Count} station(s))");
+                    return;
+                }
                 case "shipcolliders":
                 {
                     // Exactly what a ship presents to a physics cast: layer, trigger flag, size.

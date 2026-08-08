@@ -535,6 +535,19 @@ namespace PunkMultiverse.Sync
             return -1;
         }
 
+        /// <summary>The weapon in a holder. Exposed for HeldFireSync, which needs the SAME
+        /// resolution the shot replay uses -- two ways of finding "the weapon in holder N" would
+        /// eventually disagree and a beam would replicate against a different weapon than its
+        /// damage did.</summary>
+        internal static WeaponBase HolderWeaponOf(Ship ship, int holder) => GetHolderWeapon(ship, holder);
+
+        /// <summary>The live barrel of a weapon, for reading the current muzzle and aim.</summary>
+        internal static IBarrel BarrelOf(WeaponBase weapon)
+        {
+            try { return HarmonyLib.Traverse.Create(weapon).Field("barrel").GetValue() as IBarrel; }
+            catch { return null; }
+        }
+
         private static WeaponBase GetHolderWeapon(Ship ship, int holder)
         {
             if (holder >= 2) return GetActiveSlotWeapon(ship, holder - 2);

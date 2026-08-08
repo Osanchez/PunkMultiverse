@@ -169,6 +169,7 @@ namespace PunkMultiverse.Patches
             private static void Prefix(HitscanWeapon __instance, ref Vector2 __0, Vector2 __1)
             {
                 if (__instance == null || !PlayersCanHitPlayers) return;
+                if (Disabled("PUNKMV_PVP_NO_ORIGIN_PUSH")) return;
                 try
                 {
                     var ownerShip = OwnerShipOf(__instance);
@@ -235,6 +236,7 @@ namespace PunkMultiverse.Patches
             private static void Prefix(HitscanWeapon __instance)
             {
                 if (__instance == null || !PlayersCanHitPlayers) return;
+                if (Disabled("PUNKMV_PVP_NO_HITSCAN_MASK")) return;
                 try
                 {
                     Patches.PvPDiag.NotePlayerHitscan();
@@ -395,6 +397,29 @@ namespace PunkMultiverse.Patches
             }
             Plugin.Log.LogInfo($"[BR] restored {_openedPairs.Count} collision-matrix pair(s)");
             _openedPairs.Clear();
+        }
+
+        /// <summary>
+        /// Environment kill-switches, for BISECTING which patch causes a symptom.
+        ///
+        /// The beam has now been "fixed" four times into four different failures, because each
+        /// attempt changed how the cast works and then checked only the damage number -- while the
+        /// beam's VISUAL is derived from the same values. Toggling one patch at a time and looking
+        /// at a screenshot answers in one run what four rounds of reasoning did not.
+        ///
+        /// Environment, not config: it dies with the process, so a bisect cannot leak into a
+        /// player's install the way a config key would. Logged once each so a run that used one is
+        /// self-documenting -- a capture taken with a patch disabled must never be mistaken later
+        /// for a capture of the shipping build.
+        /// </summary>
+        private static readonly HashSet<string> _announcedKills = new HashSet<string>();
+        private static bool Disabled(string envVar)
+        {
+            var v = Environment.GetEnvironmentVariable(envVar);
+            bool off = !string.IsNullOrEmpty(v) && v != "0";
+            if (off && _announcedKills.Add(envVar))
+                Plugin.Log.LogWarning($"[BR] {envVar} is set - that PvP patch is DISABLED for this run (bisect mode)");
+            return off;
         }
 
         private static bool _loggedOnce;

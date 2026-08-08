@@ -658,6 +658,44 @@ namespace PunkMultiverse.Protocol
         }
     }
 
+    /// <summary>
+    /// The trigger state of a HELD weapon, so a puppet can draw a continuous beam.
+    ///
+    /// Sent on every transition and then at a modest rate while held -- not per damage tick. The
+    /// aim has to keep arriving because a beam tracks where its owner is pointing, and a beam
+    /// frozen at the angle it started is worse than none: it reads as a bug rather than as lag.
+    /// </summary>
+    public struct HeldFireMsg
+    {
+        public byte Slot;
+        public byte Holder;
+        public bool Active;      // trigger down (true) or released (false)
+        public UnityEngine.Vector2 BodyPos;  // owner's ship position, so the muzzle can be re-based
+        public UnityEngine.Vector2 Pos;      // muzzle
+        public UnityEngine.Vector2 Dir;
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.HeldFire);
+            w.WriteByte(Slot);
+            w.WriteByte(Holder);
+            w.WriteBool(Active);
+            w.WritePosition(BodyPos);
+            w.WritePosition(Pos);
+            w.WriteVector2Half(Dir);
+        }
+
+        public static HeldFireMsg Read(NetReader r) => new HeldFireMsg
+        {
+            Slot = r.ReadByte(),
+            Holder = r.ReadByte(),
+            Active = r.ReadBool(),
+            BodyPos = r.ReadPosition(),
+            Pos = r.ReadPosition(),
+            Dir = r.ReadVector2Half(),
+        };
+    }
+
     public struct FireEventMsg
     {
         public byte Slot;

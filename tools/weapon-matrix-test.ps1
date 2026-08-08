@@ -309,14 +309,24 @@ try {
         # is lifted clear of station colliders that clearterrain cannot delete.
         foreach ($p in $BotPlugs) { Cmd $p "autofly 0" }
         Start-Sleep 2
-        # Out to open ground first, THEN close the distance. Doing it the other way round is what
-        # parked both ships under a station turret.
-        Cmd $BotPlugs[1] ("tp {0} {1}" -f $midX, $midY)
-        Start-Sleep 2
+        # STAGE ON A SHOP. Omar, 2026-08-07: "why don't you ever just spawn on top of a shop. I
+        # always see you testing in random locations where an enemy is more likely to be."
+        #
+        # He is right, and the cost of the old approach was most of a day. Staging at a computed
+        # midpoint between spawns put the ships, in successive runs, next to a station Turret
+        # Laser, inside a Floater's patrol, and on a hazard cell -- and each death was read as a
+        # weapon result before it was read as an environment. A shop is the one place the mode
+        # itself guarantees survivable: BR scrubs damaging terrain around every station on purpose.
+        #
+        # Land on the shop, NUKE what is nearby, then measure. Anything that needs enemies can
+        # spawn them deliberately with `spawn`, which is a test that controls its own inputs
+        # rather than one that hopes the world is empty.
+        Cmd $BotPlugs[1] "tpshop"
+        Start-Sleep 3
+        Cmd $BotPlugs[1] "clearmobs 250"      # the nuke
+        Start-Sleep 3
         Cmd $BotPlugs[1] "pvpstage $Range 20"
         Start-Sleep 2
-        Cmd $BotPlugs[1] "clearmobs 200"
-        Start-Sleep 3
         Cmd $BotPlugs[0] ("tpplayer {0} 5" -f $BotSlots[1])
         Start-Sleep 1
         Cmd $BotPlugs[0] "pvpstage $Range"
