@@ -30,8 +30,36 @@ Before answering "what is the signature of X" from memory — don't. Look it up:
 |---|---|
 | A signature, a member list, what type something is | [`docs/api/`](docs/api/) — generated, complete, 1201 types |
 | How a system actually works, and why | the curated docs below |
+| **How a GAME system works, in depth** | **`../Mods/docs/00-overview.md` … `15-*.md`** — the decompile analysis, sibling checkout, see below |
 | What a method *does* | `gamescan/cache/<build>/Type.cs` — full decompiled source, local only |
 | A type not in the cache | `ilspycmd -t <TypeName> "../Punk_Data/Managed/Punk.Main.dll"` |
+
+### Read the real game logic before changing behaviour that touches it
+
+`../Mods/docs/` (separate repo, [Osanchez/PunkMods](https://github.com/Osanchez/PunkMods)) is a
+16-part analysis of the decompiled game: core architecture, ship, weapons/projectiles, modules,
+enemies, combat/damage, cells, worldgen, stations, loot, shop, UI, save/load, audio/camera,
+minions. It answers *"how does the game actually do this, and where does it decide"* — the level
+of detail `docs/api/` cannot give you, because a signature does not tell you who calls it.
+
+This is not optional reading when you are about to work around a game system. Concretely, what
+it has already been worth:
+
+- **Beam audio.** The plan was to call `Shooter.PlayContinousSound()` on puppets. The audio doc
+  says `AudioManager.PlaySfx` returns an `int` handle, has a `Transform`-following overload, and
+  that `Stop(handle)` is safe with no manager. That turned a design that would have fought
+  `Shooter.Update` for the handle every frame — a buzz, not a beam — into one that owns its own
+  handle and cannot collide. **Half an hour of reading replaced a subtle audio bug.**
+
+The habit: before patching around a system, read its chapter, then confirm the exact signature in
+`docs/api/`, then read the method in `gamescan/cache/` if behaviour is what matters. Prose for
+intent, generated index for shape, decompiled source for truth.
+
+**Keep it current.** Those docs describe a build, and Steam updates the game silently, so they rot
+without anything saying so. `tools\gamescan.ps1 -DocCheck` now runs its identifier check over that
+folder too when the sibling checkout exists (warn-only, absent-tolerant — CI has no `Mods`). After
+a game update that changes a system, update the chapter **in that repo** and commit it there. A
+stale chapter is worse than a missing one: it is read months later, confidently, as fact.
 
 `ilspycmd` is required (`dotnet tool install -g ilspycmd`). **Reflection-only assembly load
 fails on this DLL** — use `ilspycmd`, not `Assembly.ReflectionOnlyLoad`.
@@ -123,6 +151,29 @@ throw), behavioural (nothing will warn you), and irrelevant. See
 no longer matches its baseline.
 
 A version mismatch of the form **`0.12.x` is the base game, not the mod.**
+
+**Then update the documentation the change invalidated** — it is part of absorbing a game update,
+not a follow-up someone gets to later:
+
+```powershell
+tools\gamescan.ps1 -Index -DocCheck    # regenerate docs/api/, then check both docs sets
+```
+
+`-Index` regenerates `docs/api/` from the new assembly. `-DocCheck` reports identifiers the prose
+still claims that the assembly no longer declares — for this repo's `docs/` **and** for
+`../Mods/docs/`, the decompile analysis in [Osanchez/PunkMods](https://github.com/Osanchez/PunkMods),
+when that sibling checkout exists.
+
+Calibrate your expectations: on the current build it flags **17 of 17** PunkMods files, against
+23 of 37 of ours. That is not rot — those chapters quote Unity, URP and Steamworks types that were
+never in `Punk.Main`, and the checker only knows about `Punk.Main`. Diff the flagged identifier
+list against the previous run and look at what is *new*; the absolute count carries no signal for
+this docs set.
+
+And it only sees renamed or deleted *identifiers*, so a method that kept its name and changed its
+behaviour passes silently. That kind of change is what the behavioural section of the report is
+for — when it names a system, re-read that system's chapter and fix what the update made untrue.
+**Commit those edits in the PunkMods repo**, not here.
 
 ---
 

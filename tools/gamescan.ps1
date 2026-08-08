@@ -174,6 +174,28 @@ if ($Index) {
 if ($DocCheck) {
     Write-Step 'checking docs against the game assembly'
     & $toolExe doccheck --manifest $scanned --docs-dir (Join-Path $repo 'docs') --src-dir (Join-Path $repo 'src')
+
+    # The PunkMods decompile analysis (Osanchez/PunkMods, docs/00-overview.md .. 15-*.md) is the
+    # deep reference for how the GAME works -- what a system does and why, at a level this repo's
+    # docs deliberately do not repeat. It is a sibling checkout rather than part of this repo, so
+    # it is absent-tolerant: CI has no Mods folder and must not fail for it.
+    #
+    # It rots the same way ours does and, being outside the repo, nothing else would ever notice.
+    # That matters more here than for our own docs: those get read while editing the code next to
+    # them, whereas this set gets consulted months apart, which is exactly when a stale claim is
+    # believed. Warn-only for the same reason the WeaponForge contract is -- a verdict about a
+    # neighbouring repo must never gate this one's build.
+    $modsDocs = Join-Path (Split-Path $repo -Parent) 'Mods\docs'
+    if (Test-Path $modsDocs) {
+        Write-Step 'checking the PunkMods decompile analysis against the game assembly'
+        & $toolExe doccheck --manifest $scanned --docs-dir $modsDocs --src-dir (Join-Path $repo 'src')
+        Write-Warn "the above covers $modsDocs (separate repo: Osanchez/PunkMods)."
+        Write-Warn 'if the game changed a system, update those docs there and commit them, or the'
+        Write-Warn 'next person reads a confident description of a build that no longer exists.'
+    }
+    else {
+        Write-Host "  (no sibling Mods\docs checkout - skipping the PunkMods analysis)" -ForegroundColor DarkGray
+    }
 }
 
 # --- runtime guard ------------------------------------------------------------------------
