@@ -58,6 +58,7 @@ namespace PunkMultiverse.Core
             Patches.ShipMenuGuards.Reset(); // ...and the close stamp, so it can't block a fresh run
             Patches.ShopWalletGuard.Reset();
             Patches.WeaponVisualGuard.Reset();
+            Patches.VaultDuplicateGuard.Reset();
         }
 
         /// <summary>Runs at the poll cadence while god is armed: re-assert infinite weapon
