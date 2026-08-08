@@ -142,7 +142,7 @@ try {
     $copied = 0
     if (-not $NoServe) {
         foreach ($d in @("weapons","sprites","sounds")) {
-            $src = Join-Path (Join-Path $ShootDir "BepInEx\plugins") $d
+            $src = Join-Path (Join-Path $ShootDir "BepInEx\plugins\WeaponForge") $d
             if (-not (Test-Path $src)) { continue }
             Copy-Item -Recurse -Path $src -Destination (Join-Path $served $d)
             $copied += @(Get-ChildItem -Recurse -File $src).Count

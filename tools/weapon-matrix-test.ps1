@@ -192,7 +192,7 @@ try {
     New-Item -ItemType Directory -Force -Path $served | Out-Null
     $copied = 0
     foreach ($d in @("weapons","sprites","sounds")) {
-        $src = Join-Path (Join-Path $BotDirs[0] "BepInEx\plugins") $d
+        $src = Join-Path (Join-Path $BotDirs[0] "BepInEx\plugins\WeaponForge") $d
         if (-not (Test-Path $src)) { continue }
         Copy-Item -Recurse -Path $src -Destination (Join-Path $served $d)
         $copied += @(Get-ChildItem -Recurse -File $src).Count

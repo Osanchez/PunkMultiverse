@@ -470,7 +470,7 @@ try {
         New-Item -ItemType Directory -Force -Path $forgeRoot | Out-Null
         $n = 0
         foreach ($d in @("weapons","sprites","sounds")) {
-            $src = Join-Path (Join-Path $CoordDir "BepInEx\plugins") $d
+            $src = Join-Path (Join-Path $CoordDir "BepInEx\plugins\WeaponForge") $d
             if (-not (Test-Path $src)) { continue }
             Copy-Item -Recurse -Path $src -Destination (Join-Path $forgeRoot $d)
             $n += @(Get-ChildItem -Recurse -File $src).Count

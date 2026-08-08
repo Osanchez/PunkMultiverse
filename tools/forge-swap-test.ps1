@@ -132,7 +132,10 @@ $script:ok = $true
 $pids = @()
 $BotPlugs = @($BotDirs | ForEach-Object { Join-Path $_ "BepInEx\plugins\PunkMultiverse" })
 $BotLogs  = @($BotDirs | ForEach-Object { Join-Path $_ "BepInEx\LogOutput.log" })
-$VictimPlugins = Join-Path $BotDirs[1] "BepInEx\plugins"
+# WeaponForge's own folder, not the shared plugins folder. If a legacy flat copy of weapons/ is
+# ever left behind in plugins/, a forked WeaponForge falls back to it and this strip silently does
+# nothing -- the victim boots WITH content and the test passes without testing anything.
+$VictimPlugins = Join-Path $BotDirs[1] "BepInEx\plugins\WeaponForge"
 
 try {
     # --- what the host will serve: its own WeaponForge content, copied into a served folder ----
@@ -143,7 +146,7 @@ try {
     New-Item -ItemType Directory -Force -Path $fixtureRoot | Out-Null
     $served = 0
     foreach ($d in $ForgeDirs) {
-        $src = Join-Path (Join-Path $CoordDir "BepInEx\plugins") $d
+        $src = Join-Path (Join-Path $CoordDir "BepInEx\plugins\WeaponForge") $d
         if (-not (Test-Path $src)) { continue }
         Copy-Item -Recurse -Path $src -Destination (Join-Path $fixtureRoot $d)
         $served += @(Get-ChildItem -Recurse -File $src).Count
