@@ -3712,7 +3712,16 @@ namespace PunkMultiverse.Core
             // it. Reporting the vague one first would be a worse rejection for the commonest
             // case there is, so the specific reason is established before the general one and
             // the general one never overwrites it.
-            if (hello.ProtocolVersion != ProtocolVersion || hello.ModVersion != Plugin.Version)
+            // Same version string, different protocol: two builds of the same nominal version.
+            // The generic wording is actively harmful here — it prints the two versions, they read
+            // as identical, and the player concludes there is nothing to update. That is a
+            // developer's mistake (src/Protocol/protocol.lock now fails the build on it), so say so
+            // plainly rather than sending someone to a releases page that cannot help them.
+            if (hello.ProtocolVersion != ProtocolVersion && hello.ModVersion == Plugin.Version)
+                reject = $"Build mismatch: both sides say mod {Plugin.Version}, but the host speaks " +
+                         $"protocol {ProtocolVersion} and you speak {hello.ProtocolVersion}. One of " +
+                         "these is an unreleased dev build — the two are not the same DLL.";
+            else if (hello.ProtocolVersion != ProtocolVersion || hello.ModVersion != Plugin.Version)
                 reject = $"Version mismatch: host has mod {Plugin.Version} (protocol {ProtocolVersion}), you have {hello.ModVersion} (protocol {hello.ProtocolVersion}).";
             else if (hello.GameVersion != Application.version)
                 reject = $"Game version mismatch: host {Application.version}, you {hello.GameVersion}.";
@@ -4157,6 +4166,9 @@ namespace PunkMultiverse.Core
         private void HandleReject()
         {
             var reject = RejectMsg.Read(_reader);
+            // Deliberately matches "Version mismatch" only, not the "Build mismatch" wording for two
+            // dev builds at one version: that one is not on the releases page, so pointing there
+            // would send the player somewhere that cannot help. Do not broaden this.
             var hint = reject.Reason.Contains("Version mismatch")
                 ? $" Restart your game to apply an auto-downloaded update, or get it manually: {UpdateCheck.ReleasesUrl}"
                 : "";

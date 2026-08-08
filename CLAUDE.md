@@ -139,5 +139,12 @@ A version mismatch of the form **`0.12.x` is the base game, not the mod.**
   a method call is not evaluated — `CountIn $log [regex]::Escape($w)` passes a literal string, so
   the search matches nothing and the assertion false-FAILs while the code under test is fine.
   Wrap it: `CountIn $log ([regex]::Escape($w))`. Cost a green run of `forge-swap-test.ps1` once.
+- **Never round-trip a source file through `Get-Content -Raw` + `WriteAllText`.** 5.1's
+  `Get-Content` decodes a BOM-less file as ANSI, so every `—` comes back as `â€"` and gets
+  re-encoded — 206 corrupted comments in `NetSession.cs`, in a build that shipped to five installs
+  and the server before `git diff` caught it. This is the same ANSI trap as the line above, but it
+  bites *sources*, not just scripts, and the usual reason to touch one from PowerShell is a
+  save/restore around a test. Use `git checkout --` to restore instead, or read and write with an
+  explicit `[System.Text.UTF8Encoding]::new($false)`.
 - **Diagnostics before conclusions.** Several long hunts on this project were extended by a
   diagnostic that lied. If a probe and reality disagree repeatedly, suspect the probe.

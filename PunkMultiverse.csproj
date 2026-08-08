@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>PunkMultiverse</AssemblyName>
     <RootNamespace>PunkMultiverse</RootNamespace>
-    <Version>0.1.244</Version>
+    <Version>0.1.245</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -78,6 +78,13 @@
     <Reference Include="UnityEngine.AnimationModule"><HintPath>$(ManagedDir)\UnityEngine.AnimationModule.dll</HintPath> <Private>false</Private></Reference>
     <Reference Include="ProCamera2D.Runtime">       <HintPath>$(ManagedDir)\ProCamera2D.Runtime.dll</HintPath>          <Private>false</Private></Reference>
   </ItemGroup>
+
+  <!-- A protocol bump must move the version with it. Before CoreCompile so it fails fast, and
+       on the MSBuild side rather than inside build.ps1 so a bare `dotnet build` is covered too.
+       See src/Protocol/protocol.lock for what it enforces and why. -->
+  <Target Name="CheckProtocolLock" BeforeTargets="CoreCompile">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\tools\protocol-lock.ps1&quot; -Version $(Version)" />
+  </Target>
 
   <!-- Plugin.Version (and the BepInPlugin attribute) must be a compile-time const, so the
        csproj <Version> is baked into a generated source file. Single source of truth: the

@@ -1,0 +1,43 @@
+# Protocol history: which mod version each wire protocol was introduced at.
+#
+# WHY THIS FILE EXISTS
+# Two builds that speak different protocols must never introduce themselves with the same
+# version string. That state is not merely confusing, it is actively misleading: the rejected
+# player reads "host has mod 0.1.244, you have 0.1.244" and concludes they are up to date, so
+# the one action that would fix it -- get the newer build -- is the one the message argues
+# against. It cost an evening of chasing a phantom identity collision that was never there.
+#
+# It happened because the pre-commit hook only bumps the version on main. On a feature branch
+# the version is frozen, so a protocol bump during development silently produced two
+# incompatible DLLs both calling themselves 0.1.244.
+#
+# HOW IT IS ENFORCED
+# tools/protocol-lock.ps1 runs on every build (MSBuild CheckProtocolLock target, so a bare
+# `dotnet build` is covered too, not just build.ps1). It requires:
+#
+#   - the last entry below matches `ProtocolVersion` in src/Core/NetSession.cs
+#   - protocol numbers and versions both increase down the file
+#   - the csproj <Version> is at or past the last entry's version
+#
+# So raising the protocol means adding a line here, and the new line cannot reuse the previous
+# version -- the version has to move. The check needs no git history: the previous entry is
+# right there on the line above.
+#
+# WHEN YOU BUMP THE PROTOCOL
+#   1. bump <Version> in PunkMultiverse.csproj (by hand -- the hook will not do it off main)
+#   2. add `<new protocol> = <that version>` below
+#
+# Format: <protocol> = <mod version>. Append only; never edit or remove a line.
+#
+# History starts at 24 because there is no honest earlier entry to write. Protocols 22, 23 and
+# 24 were all introduced on this feature branch at <Version>0.1.244</Version> -- three wire
+# changes under one version string, none of them ever released. That is the incident, measured:
+#
+#   git log -S"ProtocolVersion = 22;" ... -> 9c5a853, csproj 0.1.244
+#   git log -S"ProtocolVersion = 23;" ... -> ea648f1, csproj 0.1.244
+#   git log -S"ProtocolVersion = 24;" ... -> de00175, csproj 0.1.244
+#
+# Backfilling them with plausible-looking versions would put fiction in the one file whose
+# entire job is to be trusted. Enforcement starts here instead.
+
+24 = 0.1.245
