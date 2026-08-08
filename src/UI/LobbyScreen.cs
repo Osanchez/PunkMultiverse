@@ -690,9 +690,22 @@ namespace PunkMultiverse.UI
             _seedPanel = MakeGroup(parent, "GameSettings");
             MakeHeader(_seedPanel.transform, "GAME SETTINGS — NEW ONLINE RUN");
 
+            // Rows are laid out from a CURSOR, not from hand-written Y values. WORLD SEED and
+            // GAME MODE were both written as 168 and drew exactly on top of each other -- two
+            // labels superimposed into "GAMEMGBED" and two descriptions into an unreadable smear
+            // (Omar, screenshot 2026-08-08). Hand-placed coordinates in a vertical list will
+            // collide again the moment a row is inserted; a cursor cannot.
+            float rowY = 210f;            // first row's centre, just under the header
+            const float RowStep = 112f;   // rows are 100 tall, so this leaves a real gap
+            System.Func<string, string, Transform> row = (label, note) =>
+            {
+                var t = MakeSettingsRow(_seedPanel.transform, label, note, rowY);
+                rowY -= RowStep;
+                return t;
+            };
+
             // WORLD SEED row -----------------------------------------------------------
-            var seedRow = MakeSettingsRow(_seedPanel.transform, "WORLD SEED",
-                "TYPE ONE, PASTE, OR LEAVE ON RANDOM", 168);
+            var seedRow = row("WORLD SEED", "TYPE ONE, PASTE, OR LEAVE ON RANDOM");
             _seedInput = MakeSeedInput(seedRow, new Vector2(42, 0), new Vector2(320, 58));
             _pasteLabel = UiTheme.MakeButton(seedRow, "Btn_Paste", "PASTE",
                 new Vector2(291, 0), new Vector2(150, 54), PasteSeedIntoInput, 16);
@@ -700,31 +713,28 @@ namespace PunkMultiverse.UI
                 new Vector2(455, 0), new Vector2(150, 54), () => { if (_seedInput != null) _seedInput.text = ""; }, 16);
 
             // GAME MODE row ------------------------------------------------------------
-            var modeRow = MakeSettingsRow(_seedPanel.transform, "GAME MODE",
-                "BATTLE ROYALE: LAST SHIP ALIVE WINS", 168);
+            var modeRow = row("GAME MODE", "BATTLE ROYALE: LAST SHIP ALIVE WINS");
             _modeStandard = UiTheme.MakeButton(modeRow, "Btn_ModeStd", "STANDARD",
                 new Vector2(235, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.Standard), 22);
             _modeBr = UiTheme.MakeButton(modeRow, "Btn_ModeBR", "ROYALE",
                 new Vector2(440, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.BattleRoyale), 22);
 
             // FRIENDLY FIRE row --------------------------------------------------------
-            var ffRow = MakeSettingsRow(_seedPanel.transform, "FRIENDLY FIRE",
-                "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS", 42);
+            var ffRow = row("FRIENDLY FIRE", "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS");
             _ffOff = UiTheme.MakeButton(ffRow, "Btn_FFOff", "OFF",
                 new Vector2(235, 0), new Vector2(190, 60), () => SetFriendlyFire(false), 30);
             _ffOn = UiTheme.MakeButton(ffRow, "Btn_FFOn", "ON",
                 new Vector2(440, 0), new Vector2(190, 60), () => SetFriendlyFire(true), 30);
 
             // ENEMY HP SCALING row -----------------------------------------------------
-            var hpRow = MakeSettingsRow(_seedPanel.transform, "ENEMY HP SCALING",
-                "+25% ENEMY HEALTH PER PLAYER", -84);
+            var hpRow = row("ENEMY HP SCALING", "+25% ENEMY HEALTH PER PLAYER");
             _hpOff = UiTheme.MakeButton(hpRow, "Btn_HPOff", "OFF",
                 new Vector2(235, 0), new Vector2(190, 60), () => SetHpScaling(false), 30);
             _hpOn = UiTheme.MakeButton(hpRow, "Btn_HPOn", "ON",
                 new Vector2(440, 0), new Vector2(190, 60), () => SetHpScaling(true), 30);
 
             _hostLobbyLabel = UiTheme.MakeButton(_seedPanel.transform, "Btn_HostLobby", "HOST LOBBY",
-                new Vector2(0, -238), new Vector2(500, 92), HostWithSeed, 38);
+                new Vector2(0, rowY - 20f), new Vector2(500, 92), HostWithSeed, 38);
 
             SetFriendlyFire(false, silent: true);
             SetHpScaling(true, silent: true);
