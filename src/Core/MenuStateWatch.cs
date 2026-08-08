@@ -143,25 +143,66 @@ namespace PunkMultiverse.Core
         {
             private const int DebounceFrames = 30;   // ~0.5s at 60fps
 
+            /// <summary>Far past the debounce on purpose: the contradiction has to hold for two
+            /// solid seconds before anything is touched. Faster than that and the backstop is
+            /// fighting animations and coroutines — and this mod has already paid for one bug
+            /// where two owners fought over the same action maps.</summary>
+            private const int RepairFrames = 120;
+
+            /// <summary>A repair that did not take must not turn into a two-second heartbeat.</summary>
+            private const float RepairCooldownSeconds = 10f;
+
             private string _pending = "";
             private int _pendingFrames;
+            private float _nextRepairAt;
 
             private void Update()
             {
                 var session = NetSession.Instance;
                 if (session == null || session.State != SessionState.InGame) { Clear(); return; }
 
-                string violation = "";
-                try { violation = Evaluate(Read()); }
+                Snapshot snap;
+                string violation;
+                try
+                {
+                    snap = Read();
+                    violation = Evaluate(snap);
+                }
                 catch { return; }   // a half-built scene is not a fault worth reporting
 
                 if (violation.Length == 0) { Clear(); return; }
                 if (violation != _pending) { _pending = violation; _pendingFrames = 0; return; }
 
                 _pendingFrames++;
-                if (_pendingFrames != DebounceFrames) return;   // report once per episode
-                LastViolation = violation;
-                Plugin.Log.LogWarning($"[MenuState] broken {violation}");
+                if (_pendingFrames == DebounceFrames)   // report once per episode
+                {
+                    LastViolation = violation;
+                    Plugin.Log.LogWarning($"[MenuState] broken {violation}");
+                }
+                if (_pendingFrames >= RepairFrames) TryRepair(snap, violation);
+            }
+
+            /// <summary>
+            /// The escape hatch, and it is deliberately the smallest one available: call the
+            /// game's own <c>Close()</c>. That path already restores ship control and the action
+            /// maps, which is exactly why it is used instead of poking maps directly — a repair
+            /// that invents its own idea of "correct" becomes the next bug.
+            ///
+            /// Only ever runs against an OPEN menu. I4 (stranded on the menu map with nothing
+            /// open) has no menu to close, so it stays diagnostic.
+            /// </summary>
+            private void TryRepair(Snapshot snap, string violation)
+            {
+                _pendingFrames = 0;
+                if (!snap.Open || !NetConfig.MenuStateRepair.Value) return;
+                if (UnityEngine.Time.unscaledTime < _nextRepairAt) return;
+                _nextRepairAt = UnityEngine.Time.unscaledTime + RepairCooldownSeconds;
+
+                var toggler = ServiceLocator.Get<ShipMenuToggler>();
+                if (toggler == null) return;
+                Plugin.Log.LogWarning($"[MenuState] repaired: closing the ship menu ({violation})");
+                try { toggler.Close(); }
+                catch (System.Exception e) { Plugin.Log.LogError($"[MenuState] repair close threw: {e}"); }
             }
 
             private void Clear()

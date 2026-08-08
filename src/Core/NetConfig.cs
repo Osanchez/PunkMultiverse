@@ -34,6 +34,7 @@ namespace PunkMultiverse
         public static ConfigEntry<float> AutoFly;
         public static ConfigEntry<bool> DebugMenuKey;
         public static ConfigEntry<int> ExitWatchdogSeconds;
+        public static ConfigEntry<bool> MenuStateRepair;
         public static ConfigEntry<string> CommandFile;
 
         public static ConfigEntry<bool> TrackerNames;
@@ -281,6 +282,13 @@ namespace PunkMultiverse
                 "process. Steam's client library intermittently deadlocks process exit, leaving a " +
                 "windowless Punk.exe running that you cannot see but Steam still counts as playing. " +
                 "0 disables the guarantee.");
+
+            MenuStateRepair = cfg.Bind("Debug", "MenuStateRepair", true,
+                "Safety net: if the ship menu is open but its state is self-contradictory for two " +
+                "solid seconds (nobody owns it, the input never left the ship map, the shop map " +
+                "never came up), close it through the game's own Close() so the player is not " +
+                "trapped in a screen they cannot leave. Every repair logs a [MenuState] line. " +
+                "Turn off to observe the fault instead of escaping it.");
 
             FpsLimit = cfg.Bind("Video", "FpsLimit", 0,
                 "Frame-rate cap. 0 = MAX (your monitor's refresh rate — the default); any other " +

@@ -548,6 +548,15 @@ Both instances live, world settled, CLIENT drives:
   `shopmap=False` confirms an `Open` that aborted before its input switch, two opens per press
   confirms the re-entrancy race. Record which one fired — the guards hide it afterwards.
 
+**Backstop half** (needs a scratch build that breaks the invariant on purpose — set
+`playerInputInControl = null` in a postfix on `Open`; do not commit it):
+
+- `C> shopopen`, wait ~3s, `C> menustate`.
+- PASS: `[MenuState] broken I1 owner-not-local` (after ~0.5s), then `[MenuState] repaired:
+  closing the ship menu` (after ~2s), then `menustate: open=False`.
+- And the negative: on a CLEAN build the whole scenario must run with no `[MenuState]` line at
+  all. A backstop that fires during a healthy run is a bug in the backstop.
+
 ---
 
 ### Cadence
