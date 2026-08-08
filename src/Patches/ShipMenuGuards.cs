@@ -217,5 +217,31 @@ namespace PunkMultiverse.Patches
                 }
             }
         }
+
+        /// <summary>
+        /// <c>Open()</c> calls <c>ShowTab</c> BEFORE it switches action maps and disables ship
+        /// control. A tab that throws therefore takes the input contract with it: <c>isOpen</c>
+        /// stays true, the canvas stays up, the ship map stays live and the shop map is never
+        /// registered — which is the field report, symptom for symptom.
+        ///
+        /// The tab has plenty to throw over in a net run: <c>ModuleGridScreen.OnOpened</c> touches
+        /// the Ship, the Station, the Shop and every ShipHud in the scene, and a puppet supplies
+        /// none of those the way a local ship does.
+        ///
+        /// Contain it, and let Open finish. A broken tab is a broken tab; a broken tab that also
+        /// strands the player in an unleavable screen is a lost run. LogError, not LogDebug: this
+        /// line is the only trace left of a swallowed exception.
+        /// </summary>
+        [HarmonyPatch(typeof(ShipMenuToggler), "ShowTab")]
+        internal static class ContainThrowingTab
+        {
+            private static Exception Finalizer(Exception __exception, int __0)
+            {
+                if (__exception == null) return null;
+                if (!NetSession.Active) return __exception;   // single-player keeps vanilla behaviour
+                Plugin.Log.LogError($"[ShipMenu] tab {__0} threw — contained so the screen stays closable: {__exception}");
+                return null;
+            }
+        }
     }
 }
