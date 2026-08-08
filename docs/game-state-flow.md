@@ -113,7 +113,7 @@ pick its price multiplier, for instance. It is set before the scene loads.
 | `AllShopItemsAreFree` | bypasses the whole purchase path |
 
 Score being a `ResourceTank` rather than an int is worth remembering: it inherits tank
-behaviour, including the infinite-tank rule.
+behavior, including the infinite-tank rule.
 
 ## `Level` — the world
 

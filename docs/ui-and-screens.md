@@ -15,7 +15,7 @@ clones vanilla uGUI assets at runtime (`UiTheme.cs`), so it lives on the uGUI si
 
 ## `UIScreen` — the unit of screen
 
-A `MonoBehaviour` whose serialized fields *are* its behaviour contract:
+A `MonoBehaviour` whose serialized fields *are* its behavior contract:
 
 | Field | Effect |
 |---|---|

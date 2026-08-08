@@ -116,7 +116,7 @@ docker exec punkmv sh -c 'echo "status" >> /home/container/BepInEx/plugins/PunkM
 |---|---|
 | `hostinfo <s>` | Is the HOST stealing time? Reads `/proc` via Wine's `Z:\`. **`VERDICT-DATA` jiffies ≈100% = healthy; ~68% = hypervisor suspending the VM.** |
 | `freezeprobe <s>` | 4 sentinel threads (spin/sleep/wsrv/sock). Gaps on the pure-**spin** thread = the OS stopped scheduling the process. All-zero = clean. |
-| `allocprof on\|off` | Allocation by phase, by MsgType, and by labelled sub-step. Found the 64KB/call `GetEntity` LINQ scan. |
+| `allocprof on\|off` | Allocation by phase, by MsgType, and by labeled sub-step. Found the 64KB/call `GetEntity` LINQ scan. |
 | `simprof <s>` | Times all ~170 vanilla per-frame methods **plus the mod's own** (`*`-prefixed). Read `total`, never `max` — a global pause lands on whatever ran. |
 | `livedemand on\|off\|report` | Who resolves entity data → live GameObject (measured 7036 lookups, 0 hits on a coordinator). |
 | `nostream on\|off` | Block segment-streaming instantiation (experiment; measured 0 blocks — that path is unused on a coordinator). |

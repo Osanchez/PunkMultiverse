@@ -353,7 +353,7 @@ fixes it). Requires ENEMY HP SCALING on (`enemy HP x1.50 (2 players)` in the log
 ## 23. explosive-detonate-dedup (no double explosions) — VERIFIED 2026-07-19
 
 An explosive's detonation is now authoritative: the owner broadcasts it and peers consume
-their visual copy at the true blast point instead of over-travelling a host-cleared block and
+their visual copy at the true blast point instead of over-traveling a host-cleared block and
 re-exploding.
 
 - Both live, **god ON**, `knockback off`, `SyncDiagnostics = true`.

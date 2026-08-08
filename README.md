@@ -281,14 +281,14 @@ the shape survives any zone count, including short test matches. Damage is a tim
 full health, scaled by max health (an upgraded hull buys proportionally more time) and
 multiplied per completed stage — the first zone is an escape route, the last is not.
 
-The zone also **drifts**, closing on a shop. A fixed centre makes the strongest play "fly to
+The zone also **drifts**, closing on a shop. A fixed center makes the strongest play "fly to
 the middle in minute one and never move again", which turns every later zone into information
 you acted on twenty minutes ago; a walking zone makes each closure a question. A shop is the
 anchor because they are open ground, unlocked and stocked at go-live, hazard-cleared, and
 named landmarks everyone can see the match heading toward. The invariant the path must never
 break is that each zone lies entirely inside its predecessor — otherwise ground a player is
 standing on turns lethal with no warning — and the construction gets that by algebra rather
-than tuning: the centre moves along *start → anchor* in proportion to the radius it gives up,
+than tuning: the center moves along *start → anchor* in proportion to the radius it gives up,
 so a step can never exceed the radius surrendered, and it lands on the anchor exactly when
 the radius hits zero. Because a drifting circle would *lurch* if drawn from a five-second
 snapshot, every machine interpolates the boundary toward the target the message carries, and
@@ -454,7 +454,7 @@ happen on someone else's machine.
   authoritative long after anything reads it. On startup the mod logs every setting that
   differs from its default, then names every setting on disk that is doing nothing: keys we
   deliberately removed (with the reason, and deleted from the file), keys filed under the
-  wrong `[Section]` so the real one quietly holds a different value, and unrecognised keys
+  wrong `[Section]` so the real one quietly holds a different value, and unrecognized keys
   with a nearest-match suggestion (kept, since a typo's value is worth more than a tidy
   file). The mechanism is BepInEx's own orphaned-entry table, so it cannot drift out of sync
   with what was actually bound. Its first run found six dead keys and four misfiled ones in a
