@@ -384,7 +384,7 @@ namespace PunkMultiverse
                 "Hand each level segment only the terrain changes inside it, instead of vanilla's " +
                 "every-segment-scans-every-change (which is O(segments x changes) per frame). " +
                 "Measured on a Battle Royale coordinator: LevelChangeBuffer.Update was 99.3% of " +
-                "all frame time at 979ms per call while the ring closed. Behaviour is identical - " +
+                "all frame time at 979ms per call while the ring closed. Behavior is identical - " +
                 "the discarded changes failed the segment's own rect test anyway. Turn off only to " +
                 "prove a terrain bug is or is not this patch.");
             BrChooseSpawn = cfg.Bind("Session", "BrChooseSpawn", true,
@@ -467,7 +467,7 @@ namespace PunkMultiverse
                 "enforces that every machine builds the same world.");
             BrCrateWeaponPercent = cfg.Bind("Session", "BrCrateWeaponPercent", 50,
                 "Battle Royale: chance (0-100) that a destroyed container also drops a WHITE " +
-                "weapon module. White weapons circulate through crates; coloured weapons never " +
+                "weapon module. White weapons circulate through crates; colored weapons never " +
                 "come from containers (Omar, 2026-07-29: 'more weapons in crates... white " +
                 "weapons at least. All other resource type weapons should remain from killing " +
                 "bosses').");
@@ -480,7 +480,7 @@ namespace PunkMultiverse
             BrMiniBossIds = cfg.Bind("Session", "BrMiniBossIds",
                 "Unit_FlyDad,Unit_FlyAlfa,Unit_Cross_Alpha,Unit_Cross_Jock,Enemy_Turret_Worm",
                 "Battle Royale: comma-separated entity-id PREFIXES treated as miniboss tier for " +
-                "loot (docs/bosses.md's observed elite roster). Minibosses can drop COLOURED " +
+                "loot (docs/bosses.md's observed elite roster). Minibosses can drop COLORED " +
                 "weapons; ordinary enemies and crates never do. Full bosses are detected by the " +
                 "game's own BossStateActivator and need no listing.");
             PvpHitboxScale = cfg.Bind("Session", "PvpHitboxScale", 1.5f,
@@ -499,10 +499,10 @@ namespace PunkMultiverse
                 "first and this never applies; it is here so a much larger ship cannot turn the " +
                 "assist into a barn door.");
             BrMiniBossWeaponPercent = cfg.Bind("Session", "BrMiniBossWeaponPercent", 40,
-                "Battle Royale: chance (0-100) that a miniboss-tier kill drops one COLOURED " +
+                "Battle Royale: chance (0-100) that a miniboss-tier kill drops one COLORED " +
                 "weapon module.");
             BrBossWeaponDrops = cfg.Bind("Session", "BrBossWeaponDrops", 2,
-                "Battle Royale: COLOURED weapon modules a full boss (healthbar boss) always " +
+                "Battle Royale: COLORED weapon modules a full boss (healthbar boss) always " +
                 "drops. Bosses are the only guaranteed source of non-white weapons.");
             BrEnemyHpScale = cfg.Bind("Session", "BrEnemyHpScale", 0.5f,
                 "Battle Royale: enemy max-health multiplier. 0.5 makes players effectively deal " +

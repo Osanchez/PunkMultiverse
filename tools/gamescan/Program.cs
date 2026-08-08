@@ -135,7 +135,7 @@ namespace GameScan
 
             var breaking = result.Breaking.Count();
             var behavioural = result.Behavioural.Count();
-            Console.WriteLine($"gamescan: {breaking} breaking, {behavioural} behavioural, {result.Unused.Count()} unused");
+            Console.WriteLine($"gamescan: {breaking} breaking, {behavioural} behavioral, {result.Unused.Count()} unused");
 
             // Exit code carries the verdict so CI can gate on it: 0 clean, 3 behavioural only,
             // 4 breaking.
