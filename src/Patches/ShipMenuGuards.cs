@@ -115,5 +115,51 @@ namespace PunkMultiverse.Patches
                 catch (Exception e) { Plugin.Log.LogWarning($"[ShipMenu] owner retarget failed: {e.Message}"); }
             }
         }
+
+        /// <summary>
+        /// <c>Open()</c> has no <c>isOpen</c> guard, so re-entering it while open re-pauses, re-points
+        /// the owner and re-runs the action-map switch. Vanilla gets away with it because the ship
+        /// map is OFF while the screen is up, which makes a second open impossible — a protection
+        /// this mod deliberately removes so a co-op player is not helpless in a live world.
+        ///
+        /// At a station that turns the exit press into a re-entry: Close() hands control back, the
+        /// same press reaches Interactor -> Station.OnUseActivated -> Shop.StartShopping, and the
+        /// shop is open again. This is the same defect already fixed one screen over, for the pause
+        /// overlay (GuardPatches.NetRunPauseButtons).
+        ///
+        /// Re-entry may still change the TAB — that is how the game moves between map and grid —
+        /// but it must not re-run the input contract.
+        /// </summary>
+        [HarmonyPatch(typeof(ShipMenuToggler), "Open")]
+        internal static class NoReentrantOpen
+        {
+            private static bool Prefix(ShipMenuToggler __instance, int __1, Station __2)
+            {
+                if (!NetSession.Active) return true;
+                try
+                {
+                    var view = Traverse.Create(__instance);
+                    if (!view.Field("isOpen").GetValue<bool>()) return true;
+
+                    int current = view.Field("currentTabIndex").GetValue<int>();
+                    if (current != __1)
+                    {
+                        view.Field("currentStation").SetValue(__2);
+                        __instance.ShowTab(__1);
+                        Plugin.Log.LogDebug($"[ShipMenu] re-entrant open -> tab switch only ({current} -> {__1})");
+                    }
+                    else
+                    {
+                        Plugin.Log.LogDebug("[ShipMenu] suppressed redundant open");
+                    }
+                    return false;
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning($"[ShipMenu] re-entrancy guard failed, letting vanilla run: {e.Message}");
+                    return true;
+                }
+            }
+        }
     }
 }
