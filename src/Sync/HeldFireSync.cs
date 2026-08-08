@@ -48,7 +48,37 @@ namespace PunkMultiverse.Sync
         private static readonly Dictionary<(byte slot, byte holder), Remote> RemoteHeld
             = new Dictionary<(byte, byte), Remote>();
 
-        internal static void Reset() { LocalHeld.Clear(); RemoteHeld.Clear(); }
+        /// <summary>
+        /// Our own AudioManager handles for the continuous fire loop, one per held weapon.
+        ///
+        /// Vanilla plays that loop from Shooter.Update, gated on `isTryingToShoot` — LOCAL input,
+        /// not the trigger state. A puppet has no input, so the beam drew in silence: the whole
+        /// point of WeaponForge's continousShootSfx (a looping Sfx registered into the game's own
+        /// AudioDatabase) was inaudible to everyone except the shooter.
+        ///
+        /// We play it ourselves rather than calling Shooter.PlayContinousSound(), and that choice
+        /// is what avoids a fight. Shooter.StopContinousSound() only stops `continousSoundHandle`,
+        /// its OWN field, and on a puppet that field is null forever because nothing ever calls
+        /// PlayContinousSound there — so its every-frame stop is a no-op that cannot touch this
+        /// handle. Driving Shooter's would have meant it stopping our loop each Update and us
+        /// restarting it each LateUpdate: a handle created and destroyed at frame rate, which is a
+        /// buzz, not a beam.
+        ///
+        /// PlaySfx(guid, Transform) follows the transform, so a puppet that is still interpolating
+        /// carries its sound with it and there is no position to push per frame.
+        /// </summary>
+        private static readonly Dictionary<(byte slot, byte holder), int> LoopHandles
+            = new Dictionary<(byte, byte), int>();
+
+        internal static void Reset()
+        {
+            LocalHeld.Clear();
+            RemoteHeld.Clear();
+            // Before the dictionary is dropped, or a loop outlives the session that started it.
+            // A beam sound with no beam and no way to stop it is the worst version of this bug.
+            foreach (var h in LoopHandles.Values) { try { AudioManager.Stop(h); } catch { } }
+            LoopHandles.Clear();
+        }
 
         // ---- owner side ----------------------------------------------------------------------
 
@@ -174,9 +204,14 @@ namespace PunkMultiverse.Sync
                 if (Time.unscaledTime - r.LastSeenAt > StaleSeconds) { stale.Add(kv.Key); continue; }
 
                 if (!ShipSync.ShipsBySlot.TryGetValue(slot, out var ship) || ship == null) { stale.Add(kv.Key); continue; }
-                if (ship.GetComponent<RemotePuppet>() == null) continue;   // never drive a local ship
+                // Never drive a local ship. Both of these skip WITHOUT going stale, because the
+                // entry is still valid and may become drivable again (an authority handoff can flip
+                // a puppet local and back). The loop has to stop anyway: while messages keep
+                // arriving the entry never ages out, so without this an ownership flip mid-hold
+                // would leave the sound playing with nothing left to stop it.
+                if (ship.GetComponent<RemotePuppet>() == null) { StopLoop(kv.Key); continue; }
                 var weapon = ProjectileSync.HolderWeaponOf(ship, holder);
-                if (!(weapon is HitscanWeapon)) continue;
+                if (!(weapon is HitscanWeapon)) { StopLoop(kv.Key); continue; }
 
                 // Re-base the muzzle: the offset the owner reported, applied to where the puppet
                 // is NOW. Using the raw position would hang the beam off the ship by exactly the
@@ -189,6 +224,7 @@ namespace PunkMultiverse.Sync
                 {
                     weapon.IsTriggerPulled = true;      // the state OnBarrelMoved gates on
                     weapon.OnBarrelMoved(muzzle, r.Dir);
+                    StartLoopIfNeeded(kv.Key, weapon, ship);
                 }
                 catch { stale.Add(kv.Key); }
             }
@@ -196,10 +232,43 @@ namespace PunkMultiverse.Sync
             foreach (var k in stale) { RemoteHeld.Remove(k); StopBeam(k.Item1, k.Item2); }
         }
 
+        /// <summary>Start the continuous-fire loop for a puppet that has just begun holding, if the
+        /// weapon declares one. Idempotent: called every frame the trigger is down, and does nothing
+        /// once a handle exists.</summary>
+        private static void StartLoopIfNeeded((byte slot, byte holder) key, WeaponBase weapon, Ship ship)
+        {
+            if (LoopHandles.ContainsKey(key)) return;
+            var sfx = weapon.ContinousShootSfx;
+            if (string.IsNullOrEmpty(sfx)) return;      // most weapons have no loop, including vanilla ones
+            int handle = AudioManager.PlaySfx(sfx, ship.transform);
+            // -1 is PlaySfx's "did not play" (no manager, unknown guid). Storing it would make this
+            // look started forever and never retry, so leave the slot empty and try again next frame.
+            if (handle == -1) return;
+            LoopHandles[key] = handle;
+            // Once per hold, not per frame. This is the only externally visible evidence that a
+            // remote beam is audible, so a harness can assert on it instead of needing ears.
+            Plugin.Log.LogInfo($"[HeldFire] P{key.slot + 1} holder {key.holder}: continuous sfx '{sfx}' started (handle {handle})");
+        }
+
+        /// <summary>Silence a held weapon's loop without touching its visual or its entry.</summary>
+        private static void StopLoop((byte slot, byte holder) key)
+        {
+            if (!LoopHandles.TryGetValue(key, out var handle)) return;
+            LoopHandles.Remove(key);
+            try { AudioManager.Stop(handle); } catch { }
+            Plugin.Log.LogInfo($"[HeldFire] P{key.slot + 1} holder {key.holder}: continuous sfx stopped (handle {handle})");
+        }
+
         /// <summary>Release the puppet's trigger and let OnBarrelMoved's else branch clear the
         /// visual — the same path the game itself uses, rather than reaching into the visual.</summary>
         private static void StopBeam(byte slot, byte holder)
         {
+            // Audio first, and outside the visual's try block: a weapon that has been destroyed or
+            // swapped still has a loop playing, and that must be stopped even when nothing below
+            // this can run. This is the path a dropped release message lands on (via StaleSeconds),
+            // so it is the one that decides whether a lost packet costs a stuck sound.
+            StopLoop((slot, holder));
+
             try
             {
                 if (!ShipSync.ShipsBySlot.TryGetValue(slot, out var ship) || ship == null) return;
@@ -208,6 +277,11 @@ namespace PunkMultiverse.Sync
                 if (!(weapon is HitscanWeapon)) return;
                 weapon.IsTriggerPulled = false;
                 weapon.OnBarrelMoved(ship.transform.position, Vector2.right);
+                // Vanilla's StopContinousSound plays ReleaseSfx as it stops the loop, so a peer
+                // hears the same tail-off the shooter does. Matching it here keeps the two machines
+                // sounding alike; skipping it would make every remote beam end abruptly.
+                if (!string.IsNullOrEmpty(weapon.ReleaseSfx))
+                    AudioManager.PlaySfx(weapon.ReleaseSfx, ship.transform.position);
             }
             catch { }
         }
