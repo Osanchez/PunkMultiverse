@@ -16,6 +16,7 @@
     "range": 18,
     "warmupTime": 0.25,
     "continousShootSfx": "mv_arc_loop",
+    "releaseSfx": "mv_arc_release",
     "projectileColor": "#aa88ff"
   },
   "module": {
