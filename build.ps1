@@ -32,6 +32,10 @@ $pluginDir = Join-Path $GameDir "BepInEx\plugins\PunkMultiverse"
 New-Item -ItemType Directory -Force $pluginDir | Out-Null
 
 Copy-Item (Join-Path $outDir "merged\PunkMultiverse.dll") $pluginDir -Force
+# mod.json is the distribution manifest PUNK Nexus reads out of the install to know what version
+# is on disk. It has to travel with the DLL, locally and in the zip alike.
+$modJson = Join-Path $root "mod.json"
+if (Test-Path $modJson) { Copy-Item $modJson $pluginDir -Force }
 # LiteNetLib is MERGED into PunkMultiverse.dll (ILRepack) - remove any stale standalone copy.
 Remove-Item (Join-Path $pluginDir "LiteNetLib.dll") -Force -ErrorAction SilentlyContinue
 if ($Debug) {
@@ -49,6 +53,18 @@ if ($Zip) {
     $staging = Join-Path $dist "staging\BepInEx\plugins\PunkMultiverse"
     New-Item -ItemType Directory -Force $staging | Out-Null
     Copy-Item (Join-Path $outDir "merged\PunkMultiverse.dll") $staging -Force  # LiteNetLib merged in
+
+    # The published manifest and the built version must agree, or the client offers an update that
+    # installs the same build (or worse, hides one that exists). The pre-commit hook keeps these in
+    # step; this catches the case where it did not run.
+    if (-not (Test-Path $modJson)) { throw "mod.json is missing - PUNK Nexus cannot list this mod without it." }
+    $mj = Get-Content $modJson -Raw | ConvertFrom-Json
+    if ($mj.version -ne $version) {
+        throw "mod.json version '$($mj.version)' does not match the csproj <Version> '$version'. Update mod.json (or run the pre-commit hook) before packaging."
+    }
+    if (-not $mj.gameVersion) { throw "mod.json has no 'gameVersion'; PUNK Nexus gates installs on it." }
+    Copy-Item $modJson $staging -Force
+
     $zipPath = Join-Path $dist "PunkMultiverse-v$version.zip"
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
     Compress-Archive -Path (Join-Path $dist "staging\BepInEx") -DestinationPath $zipPath
