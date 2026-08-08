@@ -253,6 +253,64 @@ Position fingerprinting has been removed once already. Do not bring it back.
 
 ---
 
+## Screens & input
+
+### `ShipMenuToggler` decides who may drive the screen, and gets it wrong with a second ship
+
+**verified — `ShipMenuToggler.cs`**
+
+```csharp
+private void OnGameStarted()                      // ONCE, over every ship in the game
+    foreach (ship in gameController.Ships)
+        { ship.GetComponent<PlayerInput>().onActionTriggered += OnActionTriggered; playerInputs.Add(...); }
+
+private void OnActionTriggered(InputAction.CallbackContext context)
+{
+    PlayerInput playerInput = playerInputs.FirstOrDefault(p => p.actions.Contains(context.action));
+    if (isOpen) { if (!(playerInput != playerInputInControl)) { /* close, back, tabs, tab input */ } }
+}
+```
+
+`gameController.Ships` is `ShipManager.ships` — which in a net run also holds this client's
+puppets of everyone else (`ShipSync.SpawnPuppets` appends them). Two consequences:
+
+- The owner lookup can resolve to a puppet, and then **every** menu action is dropped: close,
+  back, tab switching, and the active tab's own `OnInputActionPerformed`.
+- `Open`/`Close` switch action maps across the whole list, puppets included.
+
+The two open paths make it worse by disagreeing: `OpenShop` passes the interacting ship's
+`PlayerInput` while the Tab path passes whatever the lookup resolved. When they name different
+objects the screen is input-orphaned — visible, un-closable, and inert. **Symptom:** "the shop
+won't close and won't sell, and my ship still flies". Guarded in `Patches/ShipMenuGuards.cs`.
+
+### `Open()` has no `isOpen` guard — and neither did `PauseScreen`
+
+Same defect, two screens. Vanilla is protected by an accident: opening a screen switches the
+ship map off, so the key that could re-open it is dead while it is up. This mod deliberately
+keeps the ship controllable in a live co-op world, which re-arms exactly that key.
+
+At a station the result is a loop: `Close()` restores control, the same press reaches
+`Interactor` → `Station.OnUseActivated` → `Shop.StartShopping`, and the shop re-opens. Vanilla
+already carries the antidote in the same class — `Ship.LastTimeExitShipMenu` plus
+`ModuleActivator.minDelayAfterLeavingShipMenu` exist so leaving a menu cannot instantly fire an
+ability. The shop needed the same 350ms.
+
+### `ShowTab` runs BEFORE `Open` switches the action maps
+
+```csharp
+ShowTab(tabIndex);                                            // ModuleGridScreen.OnOpened runs here
+foreach (pi in playerInputs) pi.SwitchCurrentActionMap("MapControl");
+ServiceLocator.Get<ShipManager>().DisableShipControl();
+```
+
+So a tab that throws takes the input contract with it: `isOpen` stays true, the canvas stays up,
+the ship map stays live, the shop map is never registered. `ModuleGridScreen.OnOpened` touches
+the Ship, the Station, the Shop and every `ShipHud` in the scene — a puppet supplies none of
+those the way a local ship does. The tab is contained with a Harmony finalizer so `Open` always
+finishes; the swallowed exception is logged as `[ShipMenu] tab N threw`.
+
+---
+
 ## State, config & startup
 
 ### Unlock broadcasts before the state flip are dropped
