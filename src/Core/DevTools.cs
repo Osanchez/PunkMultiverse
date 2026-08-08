@@ -55,6 +55,7 @@ namespace PunkMultiverse.Core
             GodMode = false;
             Patches.MenuMutex.Reset(); // clear pause/item-wheel flags so they can't stick across runs
             MenuStateWatch.Reset();    // and the ship-menu violation, for the same reason
+            Patches.ShipMenuGuards.Reset(); // ...and the close stamp, so it can't block a fresh run
         }
 
         /// <summary>Runs at the poll cadence while god is armed: re-assert infinite weapon

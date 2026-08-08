@@ -161,5 +161,61 @@ namespace PunkMultiverse.Patches
                 }
             }
         }
+
+        // ---------------------------------------------------------------- leaving stays left
+
+        /// <summary>Unscaled time of the last ship-menu close; -99 = never.</summary>
+        private static float _lastCloseAt = -99f;
+
+        /// <summary>How long a station stays deaf to "open the shop" after the menu closed. Long
+        /// enough to outlive the press that closed it, short enough that a player who deliberately
+        /// re-opens never notices.</summary>
+        private const float ReopenBlockSeconds = 0.35f;
+
+        internal static void Reset() => _lastCloseAt = -99f;
+
+        [HarmonyPatch(typeof(ShipMenuToggler), "Close")]
+        internal static class StampClose
+        {
+            private static void Postfix()
+            {
+                if (NetSession.Active) _lastCloseAt = UnityEngine.Time.unscaledTime;
+            }
+        }
+
+        /// <summary>
+        /// The other half of the re-entry race, at its source. The interact action lives on the
+        /// ship map, which this mod keeps alive in a net run, so the press that closes the shop is
+        /// still a live "use the station" the moment control comes back.
+        ///
+        /// Only SHOP opens are refused. A locked station's use press buys the unlock — it opens no
+        /// menu, so it cannot be part of this race, and swallowing it would cost the player an
+        /// interaction for nothing.
+        ///
+        /// Vanilla has the same idea in the same place: <c>Ship.LastTimeExitShipMenu</c> plus
+        /// <c>ModuleActivator.minDelayAfterLeavingShipMenu</c> exist so leaving a menu does not
+        /// immediately fire an ability.
+        /// </summary>
+        [HarmonyPatch(typeof(Station), "OnUseActivated")]
+        internal static class NoInstantReopen
+        {
+            private static bool Prefix(Station __instance)
+            {
+                if (!NetSession.Active) return true;
+                try
+                {
+                    if (__instance == null || __instance.ComponentData == null) return true;
+                    if (!__instance.ComponentData.IsUnlocked) return true;   // unlock press, not a shop open
+                    if (UnityEngine.Time.unscaledTime - _lastCloseAt >= ReopenBlockSeconds) return true;
+                    Plugin.Log.LogDebug("[ShipMenu] station use suppressed — the ship menu just closed");
+                    return false;
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning($"[ShipMenu] re-open guard failed, letting vanilla run: {e.Message}");
+                    return true;
+                }
+            }
+        }
     }
 }
