@@ -524,6 +524,30 @@ is `host:port`; peer ids: host=1, clients=LiteNetLib id+2 (client learns its own
 - Harness: scratchpad `smoke-udp.ps1` pattern (arm both configs `Transport=Udp`, soak-style
   launch, gates above).
 
+## 33. shop-menu-exit (a client can leave a station shop, and buy in it)
+
+Field report 2026-08-08: a CLIENT gets stuck in a station shop — the screen stays up, purchases
+do nothing, and the ship is still flyable underneath (the ship map never went away). Vanilla
+`ShipMenuToggler` was written for exactly one Ship with one PlayerInput; a net run has a puppet
+per remote player. See `docs/SHIP_MENU_INPUT_OWNER_PLAN.md` for the three candidate mechanisms.
+
+Both instances live, world settled, CLIENT drives:
+
+- `C> unlockstation` — the nearest station becomes a real shop (checkpoint + broadcast).
+- `C> shopopen` — opens it through the REAL interact chain (`Interactor` →
+  `Station.OnUseActivated` → `Shop.StartShopping`), not through `OpenShop` directly.
+- `C> menustate` — expect `open=True owner=local map=MapControl shopmap=True station=True`.
+- `C> shopopen` again, then `C> menustate` — a redundant open must not re-arm the screen:
+  same line as above, plus `[ShipMenu] suppressed redundant open` in the log.
+- `C> nav cancel` (vanilla back path), then `C> menustate` twice ~1s apart — expect
+  `open=False shipcontrol=True` BOTH times (the second catches an instant re-open at the
+  station platform).
+- PASS: every `menustate` line matches; no `[MenuState] broken` in either log; no exception
+  from `ShipMenuToggler.Open` / `ModuleGridScreen.OnOpened` in the client's Player.log.
+- Diagnostic value: `owner=other` confirms the ownership mismatch, `map=ShipControl` with
+  `shopmap=False` confirms an `Open` that aborted before its input switch, two opens per press
+  confirms the re-entrancy race. Record which one fired — the guards hide it afterwards.
+
 ---
 
 ### Cadence

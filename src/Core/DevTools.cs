@@ -1977,6 +1977,37 @@ namespace PunkMultiverse.Core
                     Out($"shop: local player treated as {(on ? "IN SHOP (routed damage shielded)" : "not shopping")}");
                     return;
                 }
+                case "shopopen":
+                {
+                    // Open a station shop the way a KEYPRESS does — Interactor -> Station
+                    // .OnUseActivated -> Shop.StartShopping -> ShipMenuToggler.OpenShop. Calling
+                    // OpenShop directly would skip the very step under test (who the game decides
+                    // owns the screen afterwards), so this drives the real chain or nothing.
+                    var shopShip = ShipSync.LocalShip;
+                    if (shopShip == null) { Out("shopopen: no local ship"); return; }
+                    var interactor = shopShip.GetComponentInChildren<Interactor>(true);
+                    if (interactor == null) { Out("shopopen: ship has no Interactor"); return; }
+                    Station nearestStation = null;
+                    float nearestDist = float.MaxValue;
+                    foreach (var station in UnityEngine.Object.FindObjectsByType<Station>(FindObjectsSortMode.None))
+                    {
+                        if (station == null || station.ComponentData == null) continue;
+                        if (!station.ComponentData.IsUnlocked) continue; // locked = an unlock press, not a shop
+                        float d = Vector2.Distance(shopShip.transform.position, station.transform.position);
+                        if (d < nearestDist) { nearestDist = d; nearestStation = station; }
+                    }
+                    if (nearestStation == null) { Out("shopopen: no unlocked station in the scene"); return; }
+                    nearestStation.OnUseActivated(interactor);
+                    Out($"shopopen: activated station at dist={nearestDist:0.0}");
+                    return;
+                }
+                case "menustate":
+                {
+                    // The ship menu's four pieces of state in one grep-able line. See
+                    // Core/MenuStateWatch.cs for what each one is and why they can disagree.
+                    Out(MenuStateWatch.Describe(MenuStateWatch.Read()));
+                    return;
+                }
                 case "stall":
                 {
                     // Freeze the main thread to reproduce a load/GC stall — the reconnect-in-
