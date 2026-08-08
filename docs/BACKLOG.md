@@ -1,0 +1,100 @@
+# Бэклог (заведён 2026-08-09)
+
+Открытые хвосты, заведённые по итогам вечера 2026-08-08/09 — сессии с двумя
+реальными игроками, где за один вечер вылезли три независимых шторма исключений
+и один сломанный магазин. Всё, что здесь записано, подтверждено стеком или
+строкой лога; догадки помечены явно.
+
+Размеры: **S** — до половины сессии, **M** — сессия, **L** — своя спека.
+
+---
+
+## 1. Чёрный экран при заходе в сессию — **L**, приоритет высший
+
+Убивает ран целиком и обоим игрокам. Разбор есть, кода нет.
+
+**Симптом.** После входа в мир — чёрный экран при живом симе (игрока успевают
+убить враги). `Player.log` растёт до сотен мегабайт за минуты.
+
+**Стек, повторяющийся каждый кадр:**
+
+```
+NullReferenceException at UnityEngine.Component.get_transform ()
+  SavableEntity.OnEntityMoved (EntityData, Vector3, Vector3)
+  EntityData.MoveTo (Vector3)
+  SavableEntity.Update ()
+```
+
+**Механизм.** Подписка на `EntityData.Moved` ставится в `SavableEntity.Bind` и
+снимается ТОЛЬКО в `Unbind`; `OnDestroy` её не трогает. Вейнилла уничтожает такие
+объекты единственным путём — `EntityGameObjectManager.UnloadEntity`, который
+сначала зовёт `Unbind`. Мод уничтожает их напрямую (`Object.Destroy(se.gameObject)`
+в `EnemySync` ~6 мест, `ShipSync`), объект умирает, `EntityData` живёт в
+`EntityManager`, подписка остаётся — и каждое движение любой сущности бьёт NRE
+внутри `Update` живой сущности.
+
+**Усилители, оба вейнилловые и оба без защиты:**
+- `EntityGameObjectManager.InstantiateGameObjects` перечисляет список сегмента,
+  пока спавнит в него → `InvalidOperationException: Collection was modified`
+  (28–29 раз за сессию), и `activeSegments.Add` в конце не выполняется;
+- `SpawnObjectForEntity` пишет `entityGameObjects[instanceId] = new` поверх
+  живого — прежний `SavableEntity` остаётся связанным, но недостижимым.
+
+**Наблюдения из логов:** сопровождается 388 × `Trying to unload savableEntity not
+found in the dictionary`; ловится и на реджойне, и на **свежем ране** (сессия
+seed 1343146639: генерация мира строка 177, `Collection was modified` строка 243,
+шторм со строки 460 и до конца файла).
+
+**Форма починки (черновик):** общий хелпер «уничтожить сущность» через
+`UnloadEntity`/`Unbind` вместо голого `Destroy` во всех местах мода; снапшот
+списка сегмента перед перечислением; guard в `SpawnObjectForEntity` против
+пересоздания уже живой сущности.
+
+## 2. Второй инсталл игры для харнесса + пути в `mp-test` — **S**
+
+Двухэкземплярные тесты сейчас невозможны: копии `PUNK Playtest - OD Test2` не
+существует, а `.claude/skills/mp-server`/`mp-test` указывают на
+`C:\Program Files (x86)\Steam\...`, тогда как игра живёт на
+`F:\SteamLibrary\steamapps\common\PUNK Playtest`. Скопировать папку игры,
+поправить пути в скиллах.
+
+## 3. Прогнать сценарий 33 `shop-menu-exit` — **S**, блокируется пунктом 2
+
+Гарды ветки `fix/ship-menu-input-owner` проверены компиляцией и живым стеком, но
+ни одного прогона в игре у них нет.
+
+## 4. Откуда берётся дубль модуля в трюме — **S/M**
+
+`VaultDuplicateGuard` лечит симптом и логирует источник
+(`[Vault] refused a duplicate store of '…'`). Рабочая гипотеза: пока в магазине
+живы ДВЕ карты ввода одновременно, одно нажатие проводит «снять модуль в трюм»
+дважды — `currentGrid.Uninstall` второй раз no-op, а `Vault.Store` кладёт ту же
+ссылку повторно. Подтвердить по строке из следующей сессии и убрать источник.
+
+## 5. Лог мода не пишется на диск до выхода — **S**
+
+`[Error : BepInEx] Unable to start Unity log writer` первой строкой, и
+`LogOutput.log` остаётся 0 байт всё время работы: при зависании мы слепы, пока
+игру не закроют нормально. Разобраться (флаш по интервалу / своя запись).
+
+## 6. Красные цены: подтвердить причину — **S**
+
+`ShopWalletGuard` доприкручивает недостающие общие баки и логирует
+(`[Shop] ship was missing N shared tank(s)`). Если строка не появится, а цены
+снова красные — искать в `Unit`, для которого открыт магазин.
+
+## 7. Ветки на мердж
+
+- `fix/pause-overlay-input-bleed` (0.1.244) — PR висит.
+- `fix/ship-menu-input-owner` (0.1.247) — после пункта 3.
+
+## 8. Мелочи из логов вечера — **S** каждая
+
+- `[BR] station visual REPAIRED at (1000,1000)` в **STANDARD** ране: BR-код
+  активен вне BR-режима (после снятия master switch, `d01bc18`) — проверить, так
+  ли задумано.
+- `[Progress] scanner reveal failed (Object reference not set...) — marking used
+  only`.
+- `[Fire] unresolved entity weapon ProjectileWeapon (barrel <no scene barrel>)`.
+- `[RosterAudit] reverse divergence: #2565 Unit_Grunt is live here ... but absent
+  from owner P1's roster`.
