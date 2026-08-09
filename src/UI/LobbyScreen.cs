@@ -690,9 +690,11 @@ namespace PunkMultiverse.UI
             _seedPanel = MakeGroup(parent, "GameSettings");
             MakeHeader(_seedPanel.transform, "GAME SETTINGS — NEW ONLINE RUN");
 
+            // Five rows on one ladder, 105 apart. WORLD SEED and GAME MODE were both pinned at 168
+            // and drew on top of each other — a row was inserted without shifting the rest.
             // WORLD SEED row -----------------------------------------------------------
             var seedRow = MakeSettingsRow(_seedPanel.transform, "WORLD SEED",
-                "TYPE ONE, PASTE, OR LEAVE ON RANDOM", 168);
+                "TYPE ONE, PASTE, OR LEAVE ON RANDOM", 230);
             _seedInput = MakeSeedInput(seedRow, new Vector2(42, 0), new Vector2(320, 58));
             _pasteLabel = UiTheme.MakeButton(seedRow, "Btn_Paste", "PASTE",
                 new Vector2(291, 0), new Vector2(150, 54), PasteSeedIntoInput, 16);
@@ -701,15 +703,23 @@ namespace PunkMultiverse.UI
 
             // GAME MODE row ------------------------------------------------------------
             var modeRow = MakeSettingsRow(_seedPanel.transform, "GAME MODE",
-                "BATTLE ROYALE: LAST SHIP ALIVE WINS", 168);
+                "BATTLE ROYALE: LAST SHIP ALIVE WINS", 125);
             _modeStandard = UiTheme.MakeButton(modeRow, "Btn_ModeStd", "STANDARD",
                 new Vector2(235, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.Standard), 22);
             _modeBr = UiTheme.MakeButton(modeRow, "Btn_ModeBR", "ROYALE",
                 new Vector2(440, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.BattleRoyale), 22);
 
+            // SERVER VISIBILITY row ----------------------------------------------------
+            var visRow = MakeSettingsRow(_seedPanel.transform, "SERVER VISIBILITY",
+                "PUBLIC SESSIONS ARE LISTED IN PUNK NEXUS", 20);
+            _visPrivate = UiTheme.MakeButton(visRow, "Btn_VisPrivate", "PRIVATE",
+                new Vector2(235, 0), new Vector2(190, 60), () => SetVisibility(false), 22);
+            _visPublic = UiTheme.MakeButton(visRow, "Btn_VisPublic", "PUBLIC",
+                new Vector2(440, 0), new Vector2(190, 60), () => SetVisibility(true), 22);
+
             // FRIENDLY FIRE row --------------------------------------------------------
             var ffRow = MakeSettingsRow(_seedPanel.transform, "FRIENDLY FIRE",
-                "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS", 42);
+                "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS", -85);
             _ffOff = UiTheme.MakeButton(ffRow, "Btn_FFOff", "OFF",
                 new Vector2(235, 0), new Vector2(190, 60), () => SetFriendlyFire(false), 30);
             _ffOn = UiTheme.MakeButton(ffRow, "Btn_FFOn", "ON",
@@ -717,18 +727,19 @@ namespace PunkMultiverse.UI
 
             // ENEMY HP SCALING row -----------------------------------------------------
             var hpRow = MakeSettingsRow(_seedPanel.transform, "ENEMY HP SCALING",
-                "+25% ENEMY HEALTH PER PLAYER", -84);
+                "+25% ENEMY HEALTH PER PLAYER", -190);
             _hpOff = UiTheme.MakeButton(hpRow, "Btn_HPOff", "OFF",
                 new Vector2(235, 0), new Vector2(190, 60), () => SetHpScaling(false), 30);
             _hpOn = UiTheme.MakeButton(hpRow, "Btn_HPOn", "ON",
                 new Vector2(440, 0), new Vector2(190, 60), () => SetHpScaling(true), 30);
 
             _hostLobbyLabel = UiTheme.MakeButton(_seedPanel.transform, "Btn_HostLobby", "HOST LOBBY",
-                new Vector2(0, -238), new Vector2(500, 92), HostWithSeed, 38);
+                new Vector2(0, -300), new Vector2(500, 92), HostWithSeed, 38);
 
             SetFriendlyFire(false, silent: true);
             SetHpScaling(true, silent: true);
             SetMode(Protocol.GameMode.Standard, silent: true);
+            SetVisibility(NetSession.DefaultPublishServer, silent: true);
         }
 
         /// <summary>Options-screen style row: label + faint sub-note on the left, controls
@@ -780,6 +791,26 @@ namespace PunkMultiverse.UI
             if (br) SetFriendlyFire(true, silent: true);
         }
 
+        private TMP_Text _visPrivate, _visPublic;
+        private bool _publishPublic;
+
+        /// <summary>
+        /// GAME SETTINGS: whether this session is advertised in the PUNK Nexus server browser.
+        ///
+        /// PRIVATE is a friends-only Steam lobby — reachable by invite or by the pasted code, and by
+        /// nobody else. PUBLIC advertises it to strangers running the same mod version. The choice
+        /// belongs on this screen rather than in config.cfg because it is a per-session decision:
+        /// the same player wants a public game some nights and a private one with friends on others.
+        ///
+        /// Session.PublishServer in config.cfg is only what this row STARTS on.
+        /// </summary>
+        private void SetVisibility(bool publish, bool silent = false)
+        {
+            _publishPublic = publish;
+            UiTheme.SetToggled(_visPrivate, !publish);
+            UiTheme.SetToggled(_visPublic, publish);
+        }
+
         private void SetFriendlyFire(bool on, bool silent = false)
         {
             _friendlyFire = on;
@@ -802,6 +833,7 @@ namespace PunkMultiverse.UI
             if (_seedInput != null) _seedInput.text = "";
             SetFriendlyFire(false); // settings screen always opens at defaults
             SetHpScaling(true);
+            SetVisibility(NetSession.DefaultPublishServer);
             Refresh();
         }
 
@@ -820,7 +852,7 @@ namespace PunkMultiverse.UI
                 if (digits.Length > 0) int.TryParse(digits, out seed);
             }
             _seedSetupOpen = false;
-            NetSession.Instance.HostOnline(seed, _friendlyFire, _hpScaling, _mode);
+            NetSession.Instance.HostOnline(seed, _friendlyFire, _hpScaling, _mode, _publishPublic);
             Refresh();
         }
 

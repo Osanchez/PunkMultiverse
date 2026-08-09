@@ -315,9 +315,16 @@ namespace PunkMultiverse.Core
         /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
         /// directly. <paramref name="chosenSeed"/> (0 = random) becomes the lobby's world seed
         /// once the session is up.</summary>
+        /// <param name="publishPublic">Whether to advertise this session in the PUNK Nexus server
+        /// browser. Null means "use the configured default" — which is what a headless coordinator
+        /// and the dev AutoStart path get, since neither passes through the settings screen.</param>
         public void HostOnline(int chosenSeed = 0, bool friendlyFire = false, bool enemyHpScaling = true,
-            Protocol.GameMode mode = Protocol.GameMode.Standard)
+            Protocol.GameMode mode = Protocol.GameMode.Standard, bool? publishPublic = null)
         {
+            // The host's choice on GAME SETTINGS governs this session; config is only the default.
+            // Visibility is a per-session decision, not a per-install one.
+            _publishSession = publishPublic ?? DefaultPublishServer;
+
             // Server sidecar (local/LAN only): hosting spawns a dedicated coordinator process and
             // this game joins it as a regular player. Falls back to classic in-process hosting if
             // the sidecar can't start. Seed/settings forwarding to the coordinator is not built
@@ -409,6 +416,18 @@ namespace PunkMultiverse.Core
         private float _nextListingPublishAt;
 
         /// <summary>
+        /// Whether THIS session advertises itself publicly. Set from the host's choice on the GAME
+        /// SETTINGS screen, falling back to <see cref="DefaultPublishServer"/> for the paths with no
+        /// UI (a headless coordinator, the dev AutoStart). False is the safe answer and the default:
+        /// a session that has not deliberately opted in stays friends-only.
+        /// </summary>
+        private bool _publishSession;
+
+        /// <summary>What the visibility row starts on, and what a UI-less host uses.</summary>
+        public static bool DefaultPublishServer =>
+            NetConfig.PublishServer != null && NetConfig.PublishServer.Value;
+
+        /// <summary>
         /// The listing this session would advertise, or NULL when it should stay friends-only —
         /// which is the default and the answer for every host that has not deliberately opted in.
         /// Returning null is what keeps a private co-op session out of a public browser, so the
@@ -416,7 +435,7 @@ namespace PunkMultiverse.Core
         /// </summary>
         private Transport.LobbyListing BuildListing(Protocol.GameMode mode)
         {
-            if (NetConfig.PublishServer == null || !NetConfig.PublishServer.Value) return null;
+            if (!_publishSession) return null;
 
             string name = NetConfig.ServerName.Value;
             if (string.IsNullOrWhiteSpace(name)) name = DefaultServerName(mode);

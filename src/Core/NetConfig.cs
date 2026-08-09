@@ -236,13 +236,16 @@ namespace PunkMultiverse
                     new AcceptableValueList<string>("Reject", "Warn", "Ignore")));
 
             PublishServer = cfg.Bind("Session", "PublishServer", false,
-                "Off by default and deliberately so: hosting normally creates a FRIENDS-ONLY Steam " +
-                "lobby that only your invitees and anyone you hand the code to can reach. Turn this " +
-                "on and your session is instead advertised publicly — it appears in the PUNK Nexus " +
-                "server browser and any stranger running the same mod version can join. Steam hosts " +
-                "the listing, so there is nothing to port-forward and no address of yours published; " +
-                "the lobby disappears the moment the last player leaves. Only meaningful on the " +
-                "Steam and SteamServer transports.");
+                "Default answer for the SERVER VISIBILITY row on the GAME SETTINGS screen — you " +
+                "pick PRIVATE or PUBLIC there each time you host, and that choice wins. This value " +
+                "only decides which one the row starts on. PRIVATE is a friends-only Steam lobby " +
+                "that only your invitees and anyone you hand the code to can reach; PUBLIC " +
+                "advertises the session in the PUNK Nexus server browser, where any stranger " +
+                "running the same mod version can join. Steam hosts the listing, so there is " +
+                "nothing to port-forward and no address of yours is published, and the lobby " +
+                "disappears the moment the last player leaves. A dedicated server has no settings " +
+                "screen, so for one this value IS the switch. Only meaningful on the Steam and " +
+                "SteamServer transports.");
 
             ServerName = cfg.Bind("Session", "ServerName", "",
                 "Name shown in the server browser when PublishServer is on. Blank = your Steam " +

@@ -7,22 +7,33 @@ the lobby code. The browser that reads those listings is **PUNK Nexus**.
 > lives in [`PunkNexus/docs/SERVER_LIST.md`](https://github.com/Osanchez/PunkNexus/blob/main/docs/SERVER_LIST.md).
 > This page is only the mod's half.
 
-## It is off by default, on purpose
+## The host chooses, every time
 
-Hosting normally creates a **friends-only** Steam lobby: reachable by invite, by the Steam overlay,
-or by pasting the `PMV-…` code, and by nobody else. A co-op run with three friends must never appear
-in a public list because someone shipped a default the other way.
+**PLAY ONLINE → HOST → GAME SETTINGS** has a **SERVER VISIBILITY** row:
+
+| | |
+|---|---|
+| **PRIVATE** (default) | A friends-only Steam lobby. Reachable by invite, by the Steam overlay, or by pasting the `PMV-…` code, and by nobody else. |
+| **PUBLIC** | Advertised in the PUNK Nexus server browser. Any stranger on the same mod version can join. |
+
+Visibility belongs on that screen rather than in a config file because it is a **per-session**
+decision — the same player wants a public game some nights and a private one with friends on others.
+The row starts on PRIVATE, and a co-op run must never end up in a public list because somebody
+forgot a setting.
+
+With PUBLIC selected, the lobby is created **public** and stamped with browser metadata. Steam hosts
+the listing, so there is nothing to port-forward and no address of yours is published — a joiner
+reaches you over Steam's relay exactly as an invited friend would.
 
 ```ini
 [Session]
-PublishServer = true             # the opt-in. Default false.
+PublishServer = false            # only what the VISIBILITY row starts on
 ServerName    = Neon Wasteland   # blank -> "<your persona>'s Co-op"
 ServerRegion  = EU               # blank -> no region shown
 ```
 
-With it on, the lobby is created **public** and stamped with browser metadata. Steam hosts the
-listing, so there is nothing to port-forward and no address of yours is published — a joiner reaches
-you over Steam's relay exactly as an invited friend would.
+`PublishServer` is only the row's starting position for a player. A **dedicated server has no
+settings screen**, so for one that value *is* the switch — same for the dev `AutoStart` path.
 
 Only meaningful on the `Steam` and `SteamServer` transports. A `Udp` server has no Steam lobby at all
 and is not discoverable this way; see Part 2 of the Nexus document.
