@@ -466,6 +466,7 @@ namespace PunkMultiverse.Core
                 MaxPlayers = MaxPlayers,
                 Players = CountPlayers(),
                 Mods = ModManifest.BrowserList(),
+                PingLocation = Transport.SteamPing.LocalLocation(),
             };
         }
 

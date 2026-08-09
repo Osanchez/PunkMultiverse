@@ -17,12 +17,17 @@ namespace PunkMultiverse.Transport
         public int Players;
         public string Mods;
 
+        /// <summary>Opaque Steam network location, for client-side ping estimation. Null until
+        /// Steam finishes measuring, which is why it is part of the fingerprint — the listing is
+        /// republished once for free when it arrives.</summary>
+        public string PingLocation;
+
         /// <summary>Everything the browser shows, in one string — so a republish can be skipped
         /// when nothing a browsing player would notice has actually changed. Steam rate-limits
         /// SetLobbyData, and a per-frame restamp would spend that budget on no-ops.</summary>
         public string Fingerprint =>
             Name + "" + Mode + "" + Region + "" + MaxPlayers + ""
-            + Players + "" + Mods;
+            + Players + "" + Mods + "" + PingLocation;
     }
 
     /// <summary>
@@ -53,7 +58,8 @@ namespace PunkMultiverse.Transport
         public const string KeyRegion = "region";
         public const string KeyMaxPlayers = "maxp";
         public const string KeyPlayers = "np";         // published count; see PublishListing
-        public const string KeyMods = "mods";          // comma-separated plugin GUIDs
+        public const string KeyMods = "mods";          // comma-separated catalog ids
+        public const string KeyPingLocation = "ploc";  // opaque Steam network location; see SteamPing
 
         /// <summary>The only value of <see cref="KeyListed"/> that opts a lobby in.</summary>
         public const string ListedYes = "1";
@@ -208,6 +214,7 @@ namespace PunkMultiverse.Transport
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyMaxPlayers, listing.MaxPlayers.ToString());
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyPlayers, listing.Players.ToString());
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyMods, listing.Mods ?? "");
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyPingLocation, listing.PingLocation ?? "");
 
             // A full session stays visible but stops accepting joins, so browsers show it as full
             // instead of offering a join that Steam would refuse anyway.

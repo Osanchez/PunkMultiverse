@@ -59,6 +59,21 @@ Folders with no `mod.json` fall back to their plugin GUID so a hand-built mod is
 Versions are dropped: the browser filters on identity, the HELLO handshake is what actually
 enforces version agreement, and Steam caps how much metadata a lobby may carry.
 
+## Ping
+
+The host also publishes an opaque **Steam network location** (`ploc`, from `SteamNetworkingUtils`),
+which lets a browsing client estimate its latency to this session **entirely locally** — no packets
+to the host, and no host address exposed. Valve measures every client's distance to its own relay
+points of presence; two of those measurements can be compared offline to estimate the route between
+them.
+
+It is null for the first seconds after boot while Steam takes the measurement, so it is part of the
+listing fingerprint: the listing republishes itself once, for free, when the value arrives. A
+listing without it is still perfectly valid — the browser just shows `—`.
+
+This only covers Steam sessions. A `Udp` server has no Steam presence and therefore no location to
+publish; see the Nexus document for why that case is deliberately left unsolved.
+
 ## Staleness, and why there is none
 
 A Steam lobby is destroyed when its last member leaves. A host that quits, crashes, or drops its
