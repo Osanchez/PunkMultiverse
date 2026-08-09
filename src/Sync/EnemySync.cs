@@ -655,8 +655,14 @@ namespace PunkMultiverse.Sync
                 PendingRetirements.RemoveAt(i);
                 _retiredLifetimes++;
                 InstrumentationCounters.DuplicateLifetimeRetired();
-                if (old != null) UnityEngine.Object.Destroy(old.gameObject);
-                else UnityEngine.Object.Destroy(inert.gameObject);
+                if (old != null) EntityLifetime.Destroy(old);
+                else
+                {
+                    // The marker component, not the entity — unsubscribe whatever SavableEntity
+                    // rides the same object before the body goes.
+                    EntityLifetime.Unsubscribe(inert.GetComponent<SavableEntity>());
+                    UnityEngine.Object.Destroy(inert.gameObject);
+                }
             }
         }
 
@@ -2576,7 +2582,7 @@ namespace PunkMultiverse.Sync
             // A stale GameObject may survive the missing data (the classic starved-puppet shape).
             // Destroy it first or the heal leaves a visual double until duplicate retirement.
             if (LiveEntities.TryGetValue(entry.NetId, out var stale) && stale != null)
-                UnityEngine.Object.Destroy(stale.gameObject);
+                EntityLifetime.Destroy(stale);
             if (!MinionSync.TryRespawnFromBaseline(entry.NetId, entry.Lifetime, sourceSlot, entityType, entry.Pos))
                 return false;
             InstrumentationCounters.DivergenceHealed();
@@ -4312,7 +4318,7 @@ namespace PunkMultiverse.Sync
             {
                 var egm = TryGetEgm();
                 if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
-                    UnityEngine.Object.Destroy(se.gameObject);
+                    EntityLifetime.Destroy(se);
                 DestroyData(instanceId);
             }
         }
@@ -4330,7 +4336,7 @@ namespace PunkMultiverse.Sync
             if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return;
             var egm = TryGetEgm();
             if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
-                UnityEngine.Object.Destroy(se.gameObject);
+                EntityLifetime.Destroy(se);
             DestroyData(instanceId);
         }
 
@@ -4372,7 +4378,7 @@ namespace PunkMultiverse.Sync
                     // nothing but their own removal.
                     if (DeathEffectsDone.Contains(netId))
                     {
-                        UnityEngine.Object.Destroy(se.gameObject);
+                        EntityLifetime.Destroy(se);
                         DestroyData(instanceId);
                         return;
                     }
@@ -4393,7 +4399,7 @@ namespace PunkMultiverse.Sync
                                 UnityEngine.Object.Instantiate(prefab, se.transform.position, se.transform.rotation);
                         }
                         catch { }
-                        UnityEngine.Object.Destroy(se.gameObject);
+                        EntityLifetime.Destroy(se);
                         DestroyData(instanceId);
                         return;
                     }
@@ -4436,7 +4442,7 @@ namespace PunkMultiverse.Sync
                 {
                     var egm = TryGetEgm();
                     if (egm != null && egm.TryGetSavableEntity(instanceId, out var failed) && failed != null)
-                        UnityEngine.Object.Destroy(failed.gameObject);
+                        EntityLifetime.Destroy(failed);
                     DestroyData(instanceId);
                     Plugin.Log.LogWarning($"[Enemies] forced killed-entity cleanup for netId {netId}");
                 }

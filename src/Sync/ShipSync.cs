@@ -392,6 +392,10 @@ namespace PunkMultiverse.Sync
                 catch { }
 
                 var data = ship.SavableEntity != null ? ship.SavableEntity.EntityData : null;
+                // Drop the Moved subscription before the body goes: the data outlives this frame
+                // (it is destroyed just below, and only if the reflection call is available), and a
+                // dead subscriber on a live EntityData is a per-frame NRE storm — see EntityLifetime.
+                EntityLifetime.Unsubscribe(ship.SavableEntity);
                 UnityEngine.Object.Destroy(ship.gameObject);
                 if (data != null)
                 {
