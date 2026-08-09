@@ -13,13 +13,23 @@ default to `spawn-replication` if none given.
 
 ## Layout (this machine)
 
-- Repo + source: `C:\Program Files (x86)\Steam\steamapps\common\PUNK Playtest\PunkMultiverse`
-- HOST install: `C:\Program Files (x86)\Steam\steamapps\common\PUNK Playtest`
-- CLIENT install: `C:\Program Files (x86)\Steam\steamapps\common\PUNK Playtest - OD Test2`
+- Repo + source: `F:\Work Projects\LLM\PunkMultiverse` — **outside** the game folder, so
+  `build.ps1` without `-GameDir` resolves to the wrong place. Always pass it.
+- HOST test install: `F:\SteamLibrary\steamapps\common\PUNK Playtest - MP1`
+- CLIENT test install: `F:\SteamLibrary\steamapps\common\PUNK Playtest - MP2`
+- **The player's own install is `F:\SteamLibrary\steamapps\common\PUNK Playtest` and tests never
+  touch it.** Both test installs are copies of it (0.4 GB each, `robocopy /MIR`) precisely so that
+  arming `[Debug] AutoStart = Host` cannot follow him into a real evening of play.
 - Per-install paths (substitute install root):
   log `<install>\BepInEx\LogOutput.log`, config + command file
   `<install>\BepInEx\plugins\PunkMultiverse\config.cfg` / `devcmd.txt`
-- Deploy: `powershell -File <repo>\build.ps1` (host) and `... -GameDir "<client install>"`.
+- Deploy:
+  `powershell -File "F:\Work Projects\LLM\PunkMultiverse\build.ps1" -GameDir "<install>"`
+  for EACH of the two test installs. (`build.ps1` also builds against `-GameDir`, so it must point
+  at a real game folder.)
+- The two test installs are already armed for loopback: MP1 `AutoStart = Host` +
+  `AutoLaunchRun = true`, MP2 `AutoStart = Join`, both `Transport = Loopback`,
+  `AutoReady = true`, `CommandFile = devcmd.txt`, `DebugMenuKey = true`.
 
 ## Hard rules
 
