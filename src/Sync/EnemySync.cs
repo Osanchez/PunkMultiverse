@@ -250,6 +250,15 @@ namespace PunkMultiverse.Sync
         /// otherwise print one per entity per second.</summary>
         private static float _nextDeferralLogAt;
 
+        /// <summary>The mod's own "this puppet is being fed" threshold, reused as the line between
+        /// a live stream and a quiet one.</summary>
+        private const float FedPuppetSeconds = 2f;
+
+        /// <summary>Audits an entity with a QUIET stream must miss before the ghost heal removes
+        /// it. Ten at the audit cadence is long enough that a fed-then-stopped entity gets its
+        /// rescue attempts first, and short enough that a genuinely dead one still leaves.</summary>
+        private const int QuietGhostRemovalStreak = 10;
+
         /// <summary>True while this machine has told the player its world updates are being
         /// rate-reduced. Read by EntityForensics: an entity starving under a degraded link is the
         /// bandwidth policy doing its job, and reads very differently from one starving on a
@@ -1645,7 +1654,29 @@ namespace PunkMultiverse.Sync
                     Plugin.Log.LogWarning($"[RosterAudit] reverse divergence: {NetDiag.Describe(netId)} " +
                         $"is live here in segment {key} but absent from owner P{msg.Slot + 1}'s roster");
                 }
-                else if (streak.count >= 3 && NetConfig.SummaryHeal.Value && SegmentFullyInInterest(key))
+                // The membership argument above holds only while there IS a stream. A puppet the
+                // owner has stopped feeding keeps a FROZEN received-segment assignment, so its
+                // absence from that segment's roster says nothing about whether the owner still
+                // has it — we are reading a stale filing, not the owner's world.
+                //
+                // 2026-08-09 proved the cost: sixteen entities deleted across two sessions —
+                // grunts, flies, zippers, a Cross Tablet boss — while the other player went on
+                // fighting them. The same evening also showed how easily a stream goes quiet
+                // (the link-degraded presentation cut, and a rescue path that refused 36 times
+                // out of 36). So a quiet entity is exactly the one we must NOT delete on this
+                // evidence; give it a much longer rope instead, so a genuinely dead one still
+                // leaves eventually.
+                var streamPuppet = se.GetComponent<RemoteEntityPuppet>();
+                bool quiet = streamPuppet != null && streamPuppet.SnapshotAge > FedPuppetSeconds;
+                int removeAt = quiet ? QuietGhostRemovalStreak : 3;
+                if (streak.count == removeAt && quiet)
+                    Plugin.Log.LogWarning($"[Heal] {NetDiag.Describe(netId)} looks like a ghost but its stream " +
+                        $"is quiet (snapshotAge=" +
+                        (float.IsPositiveInfinity(streamPuppet.SnapshotAge) ? "never" : $"{streamPuppet.SnapshotAge:0.0}s") +
+                        $") — its segment filing is stale, so absence from the roster proves nothing. Removing anyway " +
+                        $"after {QuietGhostRemovalStreak} audits.");
+
+                if (streak.count >= removeAt && NetConfig.SummaryHeal.Value && SegmentFullyInInterest(key))
                 {
                     RemoveGhostEntity(netId, key, msg.Slot);
                     ReverseDivergenceStreaks.Remove(netId);
