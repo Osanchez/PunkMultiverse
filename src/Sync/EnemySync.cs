@@ -276,6 +276,61 @@ namespace PunkMultiverse.Sync
         /// (1 s per tick, four segments at a time) so a slow round-robin cannot look like death.</summary>
         private const float RosterListingKeepAlive = 10f;
 
+        private static float _nextZombieSweepAt;
+        private static readonly List<int> _zombieScratch = new List<int>(32);
+
+        /// <summary>
+        /// The mutual-puppet zombie, caught in the field 2026-08-09 by the cross-check: a machine
+        /// answered a delete request with "live here, owner P1, puppet, snapshotAge=31.2s" — while
+        /// BEING P1. It calls itself the owner and treats the object as somebody else's copy, so
+        /// nobody simulates it. Consequences, both of which the players had been reporting all
+        /// evening: it never moves (no simulator, no snapshots), and it appears in no segment
+        /// roster (rosters are built from what a machine SIMULATES), so the other side eventually
+        /// deletes it as a ghost. Freezing and vanishing were one illness.
+        ///
+        /// The repair already exists — one ApplyOwnership — but it lived inside the starved sweep,
+        /// which only scans a 5x5 segment window around the local ship, indexed by a filing that
+        /// goes stale for exactly these entities. So the ones that needed it most were the ones it
+        /// could not see.
+        ///
+        /// This condition needs no window and no heuristic: the authority table already says the
+        /// entity is ours. Repairing it cannot steal anything from anyone.
+        /// </summary>
+        private static void SweepMutualPuppetZombies(NetSession session)
+        {
+            if (Time.unscaledTime < _nextZombieSweepAt) return;
+            _nextZombieSweepAt = Time.unscaledTime + 1f;
+
+            _zombieScratch.Clear();
+            foreach (var kv in LiveEntities)
+            {
+                int netId = kv.Key;
+                var se = kv.Value;
+                if (se == null || KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
+                if (OwnerOf(netId) != session.LocalSlot) continue;      // not ours: not this bug
+                if (se.GetComponent<RemoteEntityPuppet>() == null) continue;  // ours and simulated: fine
+                _zombieScratch.Add(netId);
+            }
+            if (_zombieScratch.Count == 0) return;
+
+            int repaired = 0;
+            foreach (int netId in _zombieScratch)
+            {
+                if (!NetIds.TryGetInstanceId(netId, out int instanceId)) continue;
+                try
+                {
+                    ApplyOwnership(netId, instanceId);
+                    InstrumentationCounters.LocalAuthorityComponentRepaired();
+                    repaired++;
+                }
+                catch (Exception e)
+                { Plugin.Log.LogWarning($"[Availability] zombie repair failed for #{netId}: {e.Message}"); }
+            }
+            if (repaired > 0)
+                Plugin.Log.LogWarning($"[Availability] took over {repaired} entit{(repaired == 1 ? "y" : "ies")} " +
+                    "this machine already owned but was treating as someone else's copy — nobody was simulating them");
+        }
+
         /// <summary>The authoritative position for a starved entity, when the owner has told us one
         /// recently. Null when only the local (possibly stale) pose exists.</summary>
         private static Vector2? OwnerPositionOf(int netId)
@@ -1810,6 +1865,7 @@ namespace PunkMultiverse.Sync
             SweepFirstSnapshotDeadlines(session);
             SweepPendingLeaseAcceptance(session);
             TickRosterAudit(session);
+            SweepMutualPuppetZombies(session);
             TickLinkHealth(session);        // WS7.2: advertise our receive quality
             TickStateSummaries(session);    // WS9.1: publish identity summaries for owned segments
             if (session.IsHost) PruneInterestRoutes(session);
