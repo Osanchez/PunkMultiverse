@@ -1,6 +1,6 @@
 ---
 name: mp-gamescan
-description: Find out what a PUNK game update changed and fix what it broke in the mod. Runs tools/gamescan.ps1 (IL-level diff of Punk.Main.dll cross-referenced against the mod's real dependency surface), then triages each finding to its use sites in src/ and repairs them. Use when the base game has updated, when the mod stopped working or behaves oddly after a Steam update, when a Harmony patch throws at load, when a `[GameScan]` warning appears in the log, or when asked what changed in the game / whether an update broke us. Args: optional focus, e.g. "breaking", "behavioural", "accept", "docs".
+description: Find out what a PUNK game update changed and fix what it broke in the mod. Runs tools/gamescan.ps1 (IL-level diff of Punk.Main.dll cross-referenced against the mod's real dependency surface), then triages each finding to its use sites in src/ and repairs them. Use when the base game has updated, when the mod stopped working or behaves oddly after a Steam update, when a Harmony patch throws at load, when a `[GameScan]` warning appears in the log, or when asked what changed in the game / whether an update broke us. Args: optional focus, e.g. "breaking", "behavioral", "accept", "docs".
 ---
 
 # Game update: what changed, and what it broke
@@ -10,7 +10,7 @@ changed in the game"* — hundreds of things do — but ***"what changed that we
 which is usually fewer than a dozen.
 
 `tools/gamescan.ps1` answers that. This skill runs it and then does the part the tool cannot:
-read the actual code change, find every place in `src/` that assumed the old behaviour, and fix
+read the actual code change, find every place in `src/` that assumed the old behavior, and fix
 it.
 
 Reference: `docs/GAMESCAN.md`. Read `docs/VANILLA_GOTCHAS.md` before changing anything that
@@ -32,7 +32,7 @@ The exit code is the verdict:
 | Code | Meaning | What to do |
 |---|---|---|
 | `0` | Nothing the mod depends on changed | Say so and stop. The update is very unlikely to be the cause. |
-| `3` | **Behavioural** — bodies changed under stable signatures | Triage. Nothing warns you at runtime; this is the dangerous one. |
+| `3` | **Behavioral** — bodies changed under stable signatures | Triage. Nothing warns you at runtime; this is the dangerous one. |
 | `4` | **Breaking** — signatures changed or members removed | Triage first. Harmony will throw at load. |
 
 The report lands in `gamescan/reports/report-<build>.md`. **Read it** — it names every use site
@@ -60,10 +60,10 @@ Harmony throws at load, so these are visible. For each finding the report gives 
 every `src/` use site. Read the new shape from the decompiled cache and update the patch or call
 to match.
 
-### 🟠 Behavioural — same signature, different code
+### 🟠 Behavioral — same signature, different code
 
 **This is the tier that matters.** Nothing will report it: the mod loads, patches apply, and
-behaviour differs. The report tells you *that* a body changed and by how many IL instructions —
+behavior differs. The report tells you *that* a body changed and by how many IL instructions —
 you have to read *what* changed.
 
 Each finding comes with a ready-to-run command:
@@ -189,6 +189,6 @@ Lead with the verdict, not the process:
   assumption still holds, and what you did about it. Distinguish "changed but benign" from
   "changed and broke us" explicitly; a body-changed finding that needed no action is a useful
   result, not a non-answer.
-- **Numbers** — quote the tier counts (`N breaking, M behavioural, K unused`) so the scale is
+- **Numbers** — quote the tier counts (`N breaking, M behavioral, K unused`) so the scale is
   clear.
 - Flag anything you could not read (missing old cache) rather than guessing at it.

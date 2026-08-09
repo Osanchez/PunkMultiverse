@@ -5,6 +5,27 @@ using Steamworks;
 namespace PunkMultiverse.Transport
 {
     /// <summary>
+    /// What a lobby advertises to the public server browser. Building one is opting in: a lobby
+    /// created without a listing is friends-only and carries none of the browser keys.
+    /// </summary>
+    public sealed class LobbyListing
+    {
+        public string Name;
+        public string Mode;
+        public string Region;
+        public int MaxPlayers;
+        public int Players;
+        public string Mods;
+
+        /// <summary>Everything the browser shows, in one string — so a republish can be skipped
+        /// when nothing a browsing player would notice has actually changed. Steam rate-limits
+        /// SetLobbyData, and a per-frame restamp would spend that budget on no-ops.</summary>
+        public string Fingerprint =>
+            Name + "" + Mode + "" + Region + "" + MaxPlayers + ""
+            + Players + "" + Mods;
+    }
+
+    /// <summary>
     /// Steam lobby lifecycle: create (friends-only, 4 slots), join by id, overlay invites,
     /// "+connect_lobby" launch args, and the human-pasteable lobby code. The lobby is only the
     /// meet-up point — all gameplay traffic runs over SteamMessagesTransport P2P; the roster
@@ -22,6 +43,21 @@ namespace PunkMultiverse.Transport
         public const string KeyTransport = "xport";   // "SteamServer" marks a discovery lobby
         public const string KeyServerId = "srvid";     // the coordinator / listen-server SteamID64
 
+        // Public server-browser keys (docs/SERVER_LIST.md). Written only when the host opts in via
+        // Session.PublishServer — their ABSENCE is what keeps an ordinary friends-only co-op lobby
+        // out of the public list, so nothing here may ever be stamped unconditionally.
+        // Short on purpose: Steam caps lobby metadata, and PunkNexus mirrors these exact strings.
+        public const string KeyListed = "listed";      // "1" opts into public browsing
+        public const string KeyName = "name";
+        public const string KeyMode = "mode";
+        public const string KeyRegion = "region";
+        public const string KeyMaxPlayers = "maxp";
+        public const string KeyPlayers = "np";         // published count; see PublishListing
+        public const string KeyMods = "mods";          // comma-separated plugin GUIDs
+
+        /// <summary>The only value of <see cref="KeyListed"/> that opts a lobby in.</summary>
+        public const string ListedYes = "1";
+
         private CallResult<LobbyCreated_t> _lobbyCreated;
         private CallResult<LobbyEnter_t> _lobbyEntered;
         private Callback<GameLobbyJoinRequested_t> _joinRequested;
@@ -30,6 +66,11 @@ namespace PunkMultiverse.Transport
 
         public CSteamID CurrentLobby { get; private set; }
         public bool InLobby => CurrentLobby.IsValid() && CurrentLobby.IsLobby();
+
+        /// <summary>Only the lobby's owner may write its metadata — Steam silently drops the rest.
+        /// Asked of Steam rather than remembered, so host migration answers correctly.</summary>
+        public bool IsLobbyOwner =>
+            InLobby && SteamMatchmaking.GetLobbyOwner(CurrentLobby) == SteamUser.GetSteamID();
 
         /// <summary>Fired when the lobby is created and its metadata is set (host flow).</summary>
         public event Action<CSteamID> LobbyCreated;
@@ -108,25 +149,94 @@ namespace PunkMultiverse.Transport
         // ---------------------------------------------------------------- host
 
         private ulong _pendingServerId; // non-zero => the lobby being created is a SteamServer discovery lobby
+        private LobbyListing _pendingListing; // non-null => create it public and stamp browser keys
+        private string _publishedFingerprint;
 
-        public void CreateLobby()
+        /// <summary>Public lobbies are browsable by strangers; friends-only ones are reachable by
+        /// invite or code alone. The listing decides, and there is no third state.</summary>
+        private static ELobbyType TypeFor(LobbyListing listing) =>
+            listing != null ? ELobbyType.k_ELobbyTypePublic : ELobbyType.k_ELobbyTypeFriendsOnly;
+
+        /// <param name="listing">Non-null to publish the lobby to the server browser. Null (the
+        /// default, and what every co-op host gets) keeps it friends-only.</param>
+        public void CreateLobby(LobbyListing listing = null)
         {
             _pendingServerId = 0;
-            var call = SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, Core.NetSession.MaxPlayers);
+            _pendingListing = listing;
+            var call = SteamMatchmaking.CreateLobby(TypeFor(listing), Core.NetSession.MaxPlayers);
             _lobbyCreated.Set(call);
-            Plugin.Log.LogInfo("[Lobby] creating Steam lobby…");
+            Plugin.Log.LogInfo($"[Lobby] creating Steam lobby… ({(listing != null ? "public" : "friends-only")})");
         }
 
-        /// <summary>Create a discovery lobby for a SteamServer session: same friends-only lobby, but its
-        /// metadata carries the anonymous server's SteamID64 so members connect to the server, not to
-        /// us. Used by a listen-server host and by the player that launched a sidecar coordinator.</summary>
-        public void CreateServerLobby(ulong serverId)
+        /// <summary>Create a discovery lobby for a SteamServer session: its metadata carries the
+        /// anonymous server's SteamID64 so members connect to the server, not to us. Used by a
+        /// listen-server host and by the player that launched a sidecar coordinator.</summary>
+        public void CreateServerLobby(ulong serverId, LobbyListing listing = null)
         {
             _pendingServerId = serverId;
-            var call = SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, Core.NetSession.MaxPlayers);
+            _pendingListing = listing;
+            var call = SteamMatchmaking.CreateLobby(TypeFor(listing), Core.NetSession.MaxPlayers);
             _lobbyCreated.Set(call);
-            Plugin.Log.LogInfo($"[Lobby] creating SteamServer discovery lobby for server {serverId}…");
+            Plugin.Log.LogInfo($"[Lobby] creating SteamServer discovery lobby for server {serverId}… "
+                + $"({(listing != null ? "public" : "friends-only")})");
         }
+
+        // ---------------------------------------------------------------- server browser
+
+        /// <summary>
+        /// (Re)stamp the browser keys. Idempotent and safe to call every tick — it returns early
+        /// unless something a browsing player would actually see has changed.
+        ///
+        /// The player count is published explicitly rather than left to the browser's
+        /// GetNumLobbyMembers, which is not reliable for a lobby the caller is not a member of.
+        /// </summary>
+        public void PublishListing(LobbyListing listing)
+        {
+            if (!IsLobbyOwner || listing == null) return;
+            if (listing.Fingerprint == _publishedFingerprint) return;
+
+            // Going from unlisted to listed has to move the lobby type too, not just set the key —
+            // a friends-only lobby is filtered out of RequestLobbyList no matter what it advertises.
+            if (_publishedFingerprint == null)
+                SteamMatchmaking.SetLobbyType(CurrentLobby, ELobbyType.k_ELobbyTypePublic);
+
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyListed, ListedYes);
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyName, listing.Name ?? "");
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyMode, listing.Mode ?? "");
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyRegion, listing.Region ?? "");
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyMaxPlayers, listing.MaxPlayers.ToString());
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyPlayers, listing.Players.ToString());
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyMods, listing.Mods ?? "");
+
+            // A full session stays visible but stops accepting joins, so browsers show it as full
+            // instead of offering a join that Steam would refuse anyway.
+            SteamMatchmaking.SetLobbyJoinable(CurrentLobby,
+                listing.MaxPlayers <= 0 || listing.Players < listing.MaxPlayers);
+
+            bool first = _publishedFingerprint == null;
+            _publishedFingerprint = listing.Fingerprint;
+            if (first)
+                Plugin.Log.LogInfo($"[Lobby] listed publicly as \"{listing.Name}\" "
+                    + $"({listing.Mode}, {listing.Players}/{listing.MaxPlayers})");
+        }
+
+        /// <summary>
+        /// Take a listed lobby back out of the browser — the host turned publishing off mid-session.
+        /// Clearing the key is not enough on its own: the lobby type has to go back to friends-only
+        /// or strangers can still reach it by id.
+        /// </summary>
+        public void Unlist()
+        {
+            if (!IsLobbyOwner || _publishedFingerprint == null) return;
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyListed, "");
+            SteamMatchmaking.SetLobbyType(CurrentLobby, ELobbyType.k_ELobbyTypeFriendsOnly);
+            SteamMatchmaking.SetLobbyJoinable(CurrentLobby, true);
+            _publishedFingerprint = null;
+            Plugin.Log.LogInfo("[Lobby] unlisted — back to friends-only");
+        }
+
+        /// <summary>True when this lobby is currently advertised in the public server browser.</summary>
+        public bool IsListed => _publishedFingerprint != null;
 
         private void OnLobbyCreated(LobbyCreated_t result, bool ioFailure)
         {
@@ -146,6 +256,12 @@ namespace PunkMultiverse.Transport
             }
             Plugin.Log.LogInfo($"[Lobby] created {CurrentLobby.m_SteamID}, code {EncodeLobbyCode(CurrentLobby)}"
                 + (_pendingServerId != 0 ? $" (SteamServer -> {_pendingServerId})" : ""));
+
+            // Stamp the browser keys in the same breath as the identity keys: a lobby that appears
+            // in the list before it says what it is shows up as an unnamed row.
+            _publishedFingerprint = null;
+            if (_pendingListing != null) PublishListing(_pendingListing);
+
             LobbyCreated?.Invoke(CurrentLobby);
         }
 
@@ -214,6 +330,8 @@ namespace PunkMultiverse.Transport
             SteamMatchmaking.LeaveLobby(CurrentLobby);
             Plugin.Log.LogInfo($"[Lobby] left {CurrentLobby.m_SteamID}");
             CurrentLobby = default;
+            _publishedFingerprint = null;
+            _pendingListing = null;
         }
 
         public void OpenInviteOverlay()
@@ -229,6 +347,14 @@ namespace PunkMultiverse.Transport
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyModVersion, Plugin.Version);
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyGameVersion, UnityEngine.Application.version);
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyHostId, SteamUser.GetSteamID().m_SteamID.ToString());
+
+            // Lobby data outlives its author: the old host's listing is still stamped on this lobby,
+            // and if we do not publish it would sit in the browser advertising their name and their
+            // player count forever. Clear it and let our own publish tick decide whether to relist.
+            SteamMatchmaking.SetLobbyData(CurrentLobby, KeyListed, "");
+            SteamMatchmaking.SetLobbyType(CurrentLobby, ELobbyType.k_ELobbyTypeFriendsOnly);
+            _publishedFingerprint = null;
+
             Plugin.Log.LogInfo($"[Lobby] took over lobby {CurrentLobby.m_SteamID} as the new host");
         }
 
@@ -251,16 +377,9 @@ namespace PunkMultiverse.Transport
             MembershipChanged?.Invoke(); // discovery-lobby owner re-relays the allowlist to its coordinator
         }
 
-        /// <summary>Scan launch args for "+connect_lobby &lt;id&gt;" (Steam adds this on cold-start joins).</summary>
-        public static CSteamID? ParseLaunchArgs()
-        {
-            var args = Environment.GetCommandLineArgs();
-            for (int i = 0; i < args.Length - 1; i++)
-                if (args[i].Equals("+connect_lobby", StringComparison.OrdinalIgnoreCase)
-                    && ulong.TryParse(args[i + 1], out var id) && id > 0)
-                    return new CSteamID(id);
-            return null;
-        }
+        // Launch-argument parsing used to live here, reading only "+connect_lobby". It moved to
+        // Core/LaunchArgs so that form and the transport-agnostic "+punkmv_connect" are read in one
+        // place — two parsers would be two things to keep in agreement.
 
         // ---------------------------------------------------------------- lobby code codec
 

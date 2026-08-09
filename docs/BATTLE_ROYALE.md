@@ -158,21 +158,21 @@ host-side array scan); the most open candidate wins. The host is authoritative �
 + radius ride `RingStateMsg`, so clients never recompute.
 
 **The ring is sized to the PLAYABLE DISC, not the cell array.** `BorderGenerator` stamps
-every cell further than `Width/2` from the grid centre as the **void biome**, so the
+every cell further than `Width/2` from the grid center as the **void biome**, so the
 world is a disc inscribed in a square array. Sizing the start radius off the array's
 farthest CORNER (the original implementation) put ~29% of the ring's entire travel
 outside the world before it touched anything a player could stand on, and painted its
 lava wall into the void along the way — field-reported 2026-07-27 as *"the ring is
-starting from way out in the 3D world space"* (that match logged centre `(1282,955)`
+starting from way out in the 3D world space"* (that match logged center `(1282,955)`
 `r=1654` on a disc of radius ~1000). Now:
 
 - `MeasurePlayableArea` derives the disc empirically — the bounding box of every
   non-void cell in `Level.bioms` — rather than assuming the generator's radius.
-- Candidate centres are drawn from within `CenterDriftFraction` (0.15) of the MAP's
-  centre, and void cells no longer count as "open" (they are empty, so the old scoring
+- Candidate centers are drawn from within `CenterDriftFraction` (0.15) of the MAP's
+  center, and void cells no longer count as "open" (they are empty, so the old scoring
   rated the border as the most fightable ground on the map).
 - `startRadius = mapRadius + |center − mapCenter|` — the smallest circle around the
-  chosen centre that still contains the whole disc. Everyone starts inside (nobody
+  chosen center that still contains the whole disc. Everyone starts inside (nobody
   burns at t=0) and no part of the schedule is spent closing through nothing.
 - `PaintRing` skips void cells, so the wall exists only where the world does and those
   cells are not replicated as terrain diffs.
@@ -234,7 +234,7 @@ at each stage boundary and periodically (~5s) for late HUD refresh.
 **The wait and the closure are different at every stage.** A constant hold gives the
 twelfth zone the same rhythm as the first, which is the one thing a battle royale must not
 do, and it is what produced *"the closing ring is too slow… I want to feel like I'm
-rushing to the centre"* (Omar, 2026-08-05). The schedule follows the Fortnite blueprint:
+rushing to the center"* (Omar, 2026-08-05). The schedule follows the Fortnite blueprint:
 long safe windows early, collapsing to nothing late, so the back half of the match is
 almost continuous movement.
 
@@ -282,10 +282,10 @@ though it will now be *told* so on boot (§8b).
 
 ### The zone DRIFTS, and closes on a shop (2026-08-05)
 
-A fixed centre makes the strongest play "fly to the middle in minute one and never move
+A fixed center makes the strongest play "fly to the middle in minute one and never move
 again". Every later zone is then information you acted on twenty minutes ago and the ring
 stops being a decision. So the zone walks as it shrinks, on a path that ends **on a shop**
-(Omar: *"include the off-centre drift, this makes the game more exciting — just make sure
+(Omar: *"include the off-center drift, this makes the game more exciting — just make sure
 it's an area that's accessible, perhaps closing at one of the many shops"*).
 
 A shop is the right anchor for exactly the reasons the mode already invested in: they are
@@ -293,16 +293,16 @@ open ground by construction, all 49 are unlocked and stocked at go-live (`OpenAl
 each has had its surrounding hazards scrubbed (`ClearHazardsAroundStations`), and they are
 landmarks players can name — so everyone can see where the match is going to end. Candidates
 are filtered to those within `AnchorMaxOffsetFraction` (55%) of the map radius, then scored
-by the same open-ground probe the opening centre uses. A shop out on the rim is a legal
+by the same open-ground probe the opening center uses. A shop out on the rim is a legal
 anchor and a miserable arena: half its approach angles are void. If a world has no central
-shop, the ring closes on its opening centre as before.
+shop, the ring closes on its opening center as before.
 
 **The invariant: every zone is entirely inside the one before it.** Break it and ground a
 player is standing on — well inside the safe zone, no warning circle near them — turns
-lethal without notice. It holds iff `|C(k+1) − C(k)| ≤ R(k) − R(k+1)`: the centre may never
+lethal without notice. It holds iff `|C(k+1) − C(k)| ≤ R(k) − R(k+1)`: the center may never
 move further than the radius it gives up.
 
-`BuildRingPath` gets that for free rather than by tuning. Each centre sits as far along
+`BuildRingPath` gets that for free rather than by tuning. Each center sits as far along
 *start → anchor* as the radius is along *R₀ → 0*, so a step moves
 `|anchor − start| × (R(k) − R(k+1)) / R₀`, which is within budget whenever the anchor is
 inside the opening circle — true by construction — and lands exactly on the anchor at the
@@ -318,7 +318,7 @@ On a map of radius 1000 that is ~100 units of lateral travel per closure early, 
 
 **Everything reads the LIVE boundary, not the snapshot.** `RingStateMsg` arrives about every
 five seconds; drawing it raw made the wall step, and a drifting zone would *lurch*. So the
-message carries the closure's target centre as well as its target radius (protocol 20), and
+message carries the closure's target center as well as its target radius (protocol 20), and
 each machine interpolates from wherever the snapshot put it toward that target over the
 seconds the snapshot said remain — `BattleRoyale.RingCenter` / `.RingRadius` /
 `.RingTargetCenter`. It is self-correcting (every broadcast re-anchors on host truth, so
@@ -329,11 +329,11 @@ mesh, both map overlays, the burn check and the HUD all read those accessors; no
 
 Two consequences worth knowing:
 
-- The **amber next-zone circle is drawn on its own centre**, offset from the current one.
+- The **amber next-zone circle is drawn on its own center**, offset from the current one.
   That gap is the whole message — it is what tells a player which way to cross, and drawing
   both circles concentrically would erase it.
-- **Care packages scatter around the NEXT zone's centre**, not the current one. With a
-  drifting ring those are different places, and a crate on the old centre can be outside the
+- **Care packages scatter around the NEXT zone's center**, not the current one. With a
+  drifting ring those are different places, and a crate on the old center can be outside the
   very closure it was placed to survive.
 
 ### The zone is RENDERED, not built (2026-07-28, Omar's call)
@@ -353,7 +353,7 @@ distance check. This is now that.
   smooth gradient would read as foreign — then scrolled and pulsed. It rides
   `Sprites/Default`, because a mod cannot compile a shader (that is a build-time step).
   The zone visibly **darkens and thickens as it gets deadlier**: the same damage
-  multiplier drives the colour.
+  multiplier drives the color.
 - **It has NO COLLIDER and deals NO contact damage.** Being caught in it hurts only
   through the radius check in `BattleRoyale.LocalTick`. Omar, 2026-07-28: *"players can
   still go through the area... it's how players can prevent being trapped."* A closing
@@ -418,7 +418,7 @@ from `RingStateMsg` + `ClockSync`-aligned time.
 - **PvP always on**: the FriendlyFire gate (`ProjectileSync.FriendlyFireBlocked`,
   `src/Sync/ProjectileSync.cs:1302`, and `FriendlyExplosionBlocked`, `:1316`) is
   forced open when `CurrentMode == BattleRoyale`; the lobby FF toggle is ignored (UI
-  greys it out for BR).
+  grays it out for BR).
 - **PvP damage scale-down** — one chokepoint: ALL player→player damage is routed
   through `DamageSync.SendDamageRequest` (`src/Sync/DamageSync.cs:444`) because ships
   are always remote-simulated by their owner (there is no local-application path for
@@ -470,7 +470,7 @@ Implemented in `src/Modes/BattleRoyaleLoot.cs`:
   wins; `LootClaimedMsg` goes to everyone and the losers destroy their copy. The
   winner's own pickup then completes through the **untouched vanilla path** — which is
   the point of gating rather than granting: coins, ingredients, consumables and modules
-  each keep their own collection behaviour and none needs a bespoke grant routine.
+  each keep their own collection behavior and none needs a bespoke grant routine.
   Claims are idempotent, so a lost verdict heals on retry without ever awarding twice.
 - **No distant grant** (`LootDiag.GrantRemoteLoot` returns immediately in BR) and **no
   far-drop suppression** (the pile always spawns where the death happened, so a machine
@@ -533,7 +533,7 @@ the way `HealthbarWidget.GenerateResourceBars` stacks shield-over-health, at
 `BarScale` 0.6 — so a player ship advertises itself in exactly the language every
 hostile on the map already does: same segments, same shader, same pop animation. Fuel is
 re-tinted blue by overriding `_ResourceColor` / `_ResourceColorEmpty` on the instanced
-row material (the colour otherwise comes from the `Resource` asset, which is not ours to
+row material (the color otherwise comes from the `Resource` asset, which is not ours to
 edit), reapplied each frame because the vanilla bar re-instantiates its rows whenever
 capacity changes.
 
@@ -642,7 +642,7 @@ times through knobs a later redesign stopped reading, and nothing anywhere said 
 `Core/ConfigAudit.cs` runs immediately after `NetConfig.Init` and logs, under `[Config]`:
 
 - **the state** — every setting that differs from its default, one per line, so a run's
-  behaviour is explained in the log it already produces. Values of keys whose name looks
+  behavior is explained in the log it already produces. Values of keys whose name looks
   like a credential print as `(set)`; these logs get uploaded by `uploadlogs`.
 - **`RETIRED`** — a key we deliberately removed, named with the reason it went and what
   replaced it. These are **deleted from `config.cfg`**, because we know for certain they do
@@ -652,7 +652,7 @@ times through knobs a later redesign stopped reading, and nothing anywhere said 
   holding something else. The first run of this audit found `Diag.SummaryHeal = true`
   sitting above `Sync.SummaryHeal = false`.
 - **`UNKNOWN`** — anything else, with a nearest-key suggestion. These are **kept**: an
-  unrecognised key is usually a typo, and deleting it would throw away the value the
+  unrecognized key is usually a typo, and deleting it would throw away the value the
   operator wanted along with the evidence of the mistake. The warning repeats each boot,
   which is the point.
 
@@ -663,7 +663,7 @@ that mean nothing. No parsing of our own, and no chance of the two disagreeing. 
 audit is wrapped in a catch: a config report must never be why the mod fails to load.
 
 **When you remove a config key, add a line to `ConfigAudit.Retired`.** It costs one line
-and turns a silent behaviour change into a sentence the operator reads on the next boot.
+and turns a silent behavior change into a sentence the operator reads on the next boot.
 
 ## 9. Out of scope (candidate follow-ups)
 

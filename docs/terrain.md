@@ -16,7 +16,7 @@ CellType : SerializedScriptableObject (the "material")
   colliderType, isWalkable, blocksEnemyPlacement, hasBackground/hasForeground,
   map/minimap textures, impact/destroy particles, ShakeSettings
 
-Dynamic cell behaviours (per-type, applied to cells at runtime):
+Dynamic cell behaviors (per-type, applied to cells at runtime):
   DamageCellBehaviour(+Target)   — cells that hurt on contact
   BurnCellBehaviour(+Target)     — flammable cells; CellBurningManager spreads fire
   DragCellBehaviour(+Target)     — movement-slowing cells (liquids?)

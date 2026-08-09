@@ -20,6 +20,9 @@ namespace PunkMultiverse
         public static ConfigEntry<float> ReceiveBudgetMs;
 
         public static ConfigEntry<string> ModManifestPolicy;
+        public static ConfigEntry<bool> PublishServer;
+        public static ConfigEntry<string> ServerName;
+        public static ConfigEntry<string> ServerRegion;
         public static ConfigEntry<float> EnemyHealthScalePerPlayer;
         public static ConfigEntry<float> CoinDespawnSeconds;
         public static ConfigEntry<float> JitterFloorUnitsPerSec;
@@ -235,6 +238,27 @@ namespace PunkMultiverse
                     "Reject refuses the join (naming the difference); Warn lets them join with a [!] MODS " +
                     "marker on the roster; Ignore skips the check entirely.",
                     new AcceptableValueList<string>("Reject", "Warn", "Ignore")));
+
+            PublishServer = cfg.Bind("Session", "PublishServer", false,
+                "Default answer for the SERVER VISIBILITY row on the GAME SETTINGS screen — you " +
+                "pick PRIVATE or PUBLIC there each time you host, and that choice wins. This value " +
+                "only decides which one the row starts on. PRIVATE is a friends-only Steam lobby " +
+                "that only your invitees and anyone you hand the code to can reach; PUBLIC " +
+                "advertises the session in the PUNK Nexus server browser, where any stranger " +
+                "running the same mod version can join. Steam hosts the listing, so there is " +
+                "nothing to port-forward and no address of yours is published, and the lobby " +
+                "disappears the moment the last player leaves. A dedicated server has no settings " +
+                "screen, so for one this value IS the switch. Only meaningful on the Steam and " +
+                "SteamServer transports.");
+
+            ServerName = cfg.Bind("Session", "ServerName", "",
+                "Name shown in the server browser when PublishServer is on. Blank = your Steam " +
+                "persona name plus the game mode.");
+
+            ServerRegion = cfg.Bind("Session", "ServerRegion", "",
+                "Free-text region label shown in the server browser (for example EU, NA-East, " +
+                "OCE). Blank = no region shown. Purely informational — Steam routes the connection " +
+                "either way, and nothing filters on it being truthful.");
 
             AutoStart = cfg.Bind("Debug", "AutoStart", "None",
                 new ConfigDescription("DEV ONLY: start a session automatically a few seconds after boot.",

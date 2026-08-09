@@ -13,9 +13,9 @@ tools\gamescan.ps1
 ```
 ==> game build: steam-24507299
 ==> diffing steam-24501188 -> steam-24507299
-gamescan: 0 breaking, 1 behavioural, 412 unused
+gamescan: 0 breaking, 1 behavioral, 412 unused
 
-BEHAVIOUR CHANGED — same signatures, different code, in members the mod uses.
+BEHAVIOR CHANGED — same signatures, different code, in members the mod uses.
 Nothing will warn you at runtime. Read the report.
 report: gamescan/reports/report-steam-24507299.md
 ```
@@ -38,7 +38,7 @@ early in a method does not cascade into every branch after it.)
 | Hash | Catches | Would you find out otherwise? |
 |---|---|---|
 | signature | renamed / removed / re-typed members | Yes — Harmony throws at load |
-| **IL body** | **same signature, different behaviour** | **No. Nothing reports this.** |
+| **IL body** | **same signature, different behavior** | **No. Nothing reports this.** |
 
 The second row is the failure mode this project keeps paying for. A method whose body changed
 while its signature held still will load cleanly, patch cleanly, and behave differently.
@@ -86,7 +86,7 @@ Findings are tiered, most-actionable first:
 
 - 🔴 **Breaking** — signature changed or member removed, *and the mod uses it*. Harmony will
   throw at load. Fix before shipping.
-- 🟠 **Behavioural** — body changed, signature stable, *and the mod uses it*. Nothing warns
+- 🟠 **Behavioral** — body changed, signature stable, *and the mod uses it*. Nothing warns
   you. Read the diff and decide whether your assumptions still hold.
 - ⚪ **Unused** — changed, but nothing in the mod references it. Collapsed by default.
 
@@ -97,7 +97,7 @@ git diff --no-index gamescan/cache/steam-24501188/ResourceBar.cs \
                     gamescan/cache/steam-24507299/ResourceBar.cs
 ```
 
-Exit codes carry the verdict for CI: `0` clean, `3` behavioural only, `4` breaking.
+Exit codes carry the verdict for CI: `0` clean, `3` behavioral only, `4` breaking.
 
 ---
 

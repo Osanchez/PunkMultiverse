@@ -222,7 +222,14 @@ namespace PunkMultiverse.Core
             if (UsingSteam && SteamBootstrap.Available) EnsureLobbyController();
 
             // Steam overlay "join game" on a cold start.
-            var launchLobby = SteamLobbyController.ParseLaunchArgs();
+            var launchLobby = LaunchArgs.Lobby();
+
+            // A launcher aiming us at a specific session (PUNK Nexus' Play button, a shortcut).
+            // Unlike +connect_lobby this covers every transport, which is the whole point: a UDP
+            // server has no Steam lobby to hand out, so it had no way to be auto-joined at all.
+            var launchTarget = launchLobby.HasValue ? null : LaunchArgs.ConnectTarget();
+            if (LaunchArgs.Describe() is string asked)
+                Plugin.Log.LogInfo($"[Session] launch argument: {asked}");
 
             // DEV: config-driven autostart so two-instance loopback tests need no clicks.
             // A dedicated coordinator always hosts — that's its entire job.
@@ -231,6 +238,14 @@ namespace PunkMultiverse.Core
             {
                 yield return new WaitForSecondsRealtime(3f);
                 JoinLobbyId(launchLobby.Value);
+            }
+            else if (launchTarget != null)
+            {
+                // Same settle time as the lobby path: the menu has to exist before a join can
+                // surface its own errors. JoinByCode picks the transport from the target's shape,
+                // so a player configured for Steam still lands on a UDP server correctly.
+                yield return new WaitForSecondsRealtime(3f);
+                JoinByCode(launchTarget);
             }
             else if (mode.Equals("Host", StringComparison.OrdinalIgnoreCase))
             {
@@ -318,9 +333,16 @@ namespace PunkMultiverse.Core
         /// <summary>Host: Steam = create lobby then open transport; loopback = open transport
         /// directly. <paramref name="chosenSeed"/> (0 = random) becomes the lobby's world seed
         /// once the session is up.</summary>
+        /// <param name="publishPublic">Whether to advertise this session in the PUNK Nexus server
+        /// browser. Null means "use the configured default" — which is what a headless coordinator
+        /// and the dev AutoStart path get, since neither passes through the settings screen.</param>
         public void HostOnline(int chosenSeed = 0, bool friendlyFire = false, bool enemyHpScaling = true,
-            Protocol.GameMode mode = Protocol.GameMode.Standard)
+            Protocol.GameMode mode = Protocol.GameMode.Standard, bool? publishPublic = null)
         {
+            // The host's choice on GAME SETTINGS governs this session; config is only the default.
+            // Visibility is a per-session decision, not a per-install one.
+            _publishSession = publishPublic ?? DefaultPublishServer;
+
             // Server sidecar (local/LAN only): hosting spawns a dedicated coordinator process and
             // this game joins it as a regular player. Falls back to classic in-process hosting if
             // the sidecar can't start. Seed/settings forwarding to the coordinator is not built
@@ -353,7 +375,7 @@ namespace PunkMultiverse.Core
                 _pendingHpScaling = enemyHpScaling;
                 if (!UsingSteam) { HostSession(); return; }
                 EnsureLobbyController();
-                _lobby.CreateLobby(); // -> LobbyCreated -> HostSession()
+                _lobby.CreateLobby(BuildListing(mode)); // null unless PublishServer -> LobbyCreated -> HostSession()
             }
             catch (Exception e)
             {
@@ -407,6 +429,86 @@ namespace PunkMultiverse.Core
             }
         }
 
+        // ------------------------------------------------ public server browser
+
+        private float _nextListingPublishAt;
+
+        /// <summary>
+        /// Whether THIS session advertises itself publicly. Set from the host's choice on the GAME
+        /// SETTINGS screen, falling back to <see cref="DefaultPublishServer"/> for the paths with no
+        /// UI (a headless coordinator, the dev AutoStart). False is the safe answer and the default:
+        /// a session that has not deliberately opted in stays friends-only.
+        /// </summary>
+        private bool _publishSession;
+
+        /// <summary>What the visibility row starts on, and what a UI-less host uses.</summary>
+        public static bool DefaultPublishServer =>
+            NetConfig.PublishServer != null && NetConfig.PublishServer.Value;
+
+        /// <summary>
+        /// The listing this session would advertise, or NULL when it should stay friends-only —
+        /// which is the default and the answer for every host that has not deliberately opted in.
+        /// Returning null is what keeps a private co-op session out of a public browser, so the
+        /// opt-in check belongs here and nowhere else.
+        /// </summary>
+        private Transport.LobbyListing BuildListing(Protocol.GameMode mode)
+        {
+            if (!_publishSession) return null;
+
+            string name = NetConfig.ServerName.Value;
+            if (string.IsNullOrWhiteSpace(name)) name = DefaultServerName(mode);
+
+            return new Transport.LobbyListing
+            {
+                Name = Truncate(name.Trim(), 63),
+                Mode = mode == Protocol.GameMode.BattleRoyale ? "Battle Royale" : "Standard",
+                Region = Truncate((NetConfig.ServerRegion.Value ?? "").Trim(), 15),
+                MaxPlayers = MaxPlayers,
+                Players = CountPlayers(),
+                Mods = ModManifest.BrowserList(),
+            };
+        }
+
+        /// <summary>Persona name when Steam can tell us one — a browser row reading "Someone's game"
+        /// is more use to a stranger than a lobby id. Never fatal: a coordinator has no persona.</summary>
+        private static string DefaultServerName(Protocol.GameMode mode)
+        {
+            string persona = null;
+            try { if (Steamworks.SteamAPI.IsSteamRunning()) persona = Steamworks.SteamFriends.GetPersonaName(); }
+            catch { }
+            string suffix = mode == Protocol.GameMode.BattleRoyale ? "Battle Royale" : "Co-op";
+            return string.IsNullOrWhiteSpace(persona) ? $"PUNK {suffix}" : $"{persona}'s {suffix}";
+        }
+
+        private static string Truncate(string s, int max) =>
+            string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max);
+
+        /// <summary>Occupied player slots. The coordinator slot is excluded on purpose — a headless
+        /// server is not somebody a browsing player is deciding whether to play with.</summary>
+        private int CountPlayers()
+        {
+            int n = 0;
+            for (int i = 0; i < MaxPlayers; i++)
+                if (_players[i] != null) n++;
+            return n;
+        }
+
+        /// <summary>
+        /// Keep the public listing honest while the session runs: republish when the roster or the
+        /// ruleset changes, and pull the listing when the host turns publishing off mid-session.
+        /// Only the lobby owner writes — the controller enforces that, and joiners no-op here.
+        /// </summary>
+        private void MaintainListing()
+        {
+            if (_lobby == null || !_lobby.InLobby || !_lobby.IsLobbyOwner) return;
+            if (Time.unscaledTime < _nextListingPublishAt) return;
+            _nextListingPublishAt = Time.unscaledTime + 3f;
+
+            var listing = BuildListing(LobbyMode);
+            if (listing == null) { _lobby.Unlist(); return; }
+            _lobby.PublishListing(listing);
+        }
+
         /// <summary>Keep a SteamServer session's discovery lobby open and its allowlist fresh (#2/#3).
         /// The invite OWNER — a listen-server host, or the player that launched a sidecar coordinator —
         /// holds a Steam lobby stamped with the server id so friends join-by-invite; the same player
@@ -429,7 +531,7 @@ namespace PunkMultiverse.Core
                 if (Time.unscaledTime < _nextServerLobbyRetryAt) return; // backoff after a failure
                 _serverLobbyRequested = true;
                 EnsureLobbyController();
-                _lobby.CreateServerLobby(serverId);
+                _lobby.CreateServerLobby(serverId, BuildListing(LobbyMode));
                 return;
             }
 
@@ -2292,6 +2394,9 @@ namespace PunkMultiverse.Core
                 // Sidecar parity (#2/#3): the invite owner opens/refreshes the SteamServer discovery
                 // lobby, and (coordinator sessions) relays its membership so joins are lobby-gated.
                 MaintainServerLobby();
+
+                // Public browser (docs/SERVER_LIST.md): a no-op unless Session.PublishServer is on.
+                MaintainListing();
 
                 // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
                 // Coordinator: keep a session admin designated (the first real joiner gets host-like

@@ -690,13 +690,18 @@ namespace PunkMultiverse.UI
             _seedPanel = MakeGroup(parent, "GameSettings");
             MakeHeader(_seedPanel.transform, "GAME SETTINGS — NEW ONLINE RUN");
 
-            // Rows are laid out from a CURSOR, not from hand-written Y values. WORLD SEED and
-            // GAME MODE were both written as 168 and drew exactly on top of each other -- two
-            // labels superimposed into "GAMEMGBED" and two descriptions into an unreadable smear
-            // (Omar, screenshot 2026-08-08). Hand-placed coordinates in a vertical list will
-            // collide again the moment a row is inserted; a cursor cannot.
-            float rowY = 210f;            // first row's centre, just under the header
-            const float RowStep = 112f;   // rows are 100 tall, so this leaves a real gap
+            // Five rows on one ladder, 105 apart, laid out from a CURSOR rather than hand-written
+            // Y values. This bug has now been introduced twice: WORLD SEED and GAME MODE were both
+            // pinned at 168 and drew exactly on top of each other -- two labels superimposed into
+            // "GAMEMGBED" and two descriptions into an unreadable smear -- because a row was
+            // inserted without shifting the rest. Re-spacing by hand fixes today's collision and
+            // leaves the next inserted row free to cause the same one. A cursor cannot: inserting
+            // a row shifts everything below it automatically.
+            //
+            // The numbers are unchanged from the hand-placed version (230/125/20/-85/-190, button
+            // at -300), so this is a change of structure, not of layout.
+            float rowY = 230f;
+            const float RowStep = 105f;
             System.Func<string, string, Transform> row = (label, note) =>
             {
                 var t = MakeSettingsRow(_seedPanel.transform, label, note, rowY);
@@ -719,6 +724,13 @@ namespace PunkMultiverse.UI
             _modeBr = UiTheme.MakeButton(modeRow, "Btn_ModeBR", "ROYALE",
                 new Vector2(440, 0), new Vector2(190, 60), () => SetMode(Protocol.GameMode.BattleRoyale), 22);
 
+            // SERVER VISIBILITY row ----------------------------------------------------
+            var visRow = row("SERVER VISIBILITY", "PUBLIC SESSIONS ARE LISTED IN PUNK NEXUS");
+            _visPrivate = UiTheme.MakeButton(visRow, "Btn_VisPrivate", "PRIVATE",
+                new Vector2(235, 0), new Vector2(190, 60), () => SetVisibility(false), 22);
+            _visPublic = UiTheme.MakeButton(visRow, "Btn_VisPublic", "PUBLIC",
+                new Vector2(440, 0), new Vector2(190, 60), () => SetVisibility(true), 22);
+
             // FRIENDLY FIRE row --------------------------------------------------------
             var ffRow = row("FRIENDLY FIRE", "YOUR SHOTS DAMAGE YOUR FRIENDS' SHIPS");
             _ffOff = UiTheme.MakeButton(ffRow, "Btn_FFOff", "OFF",
@@ -734,11 +746,12 @@ namespace PunkMultiverse.UI
                 new Vector2(440, 0), new Vector2(190, 60), () => SetHpScaling(true), 30);
 
             _hostLobbyLabel = UiTheme.MakeButton(_seedPanel.transform, "Btn_HostLobby", "HOST LOBBY",
-                new Vector2(0, rowY - 20f), new Vector2(500, 92), HostWithSeed, 38);
+                new Vector2(0, rowY - 5f), new Vector2(500, 92), HostWithSeed, 38);
 
             SetFriendlyFire(false, silent: true);
             SetHpScaling(true, silent: true);
             SetMode(Protocol.GameMode.Standard, silent: true);
+            SetVisibility(NetSession.DefaultPublishServer, silent: true);
         }
 
         /// <summary>Options-screen style row: label + faint sub-note on the left, controls
@@ -790,6 +803,26 @@ namespace PunkMultiverse.UI
             if (br) SetFriendlyFire(true, silent: true);
         }
 
+        private TMP_Text _visPrivate, _visPublic;
+        private bool _publishPublic;
+
+        /// <summary>
+        /// GAME SETTINGS: whether this session is advertised in the PUNK Nexus server browser.
+        ///
+        /// PRIVATE is a friends-only Steam lobby — reachable by invite or by the pasted code, and by
+        /// nobody else. PUBLIC advertises it to strangers running the same mod version. The choice
+        /// belongs on this screen rather than in config.cfg because it is a per-session decision:
+        /// the same player wants a public game some nights and a private one with friends on others.
+        ///
+        /// Session.PublishServer in config.cfg is only what this row STARTS on.
+        /// </summary>
+        private void SetVisibility(bool publish, bool silent = false)
+        {
+            _publishPublic = publish;
+            UiTheme.SetToggled(_visPrivate, !publish);
+            UiTheme.SetToggled(_visPublic, publish);
+        }
+
         private void SetFriendlyFire(bool on, bool silent = false)
         {
             _friendlyFire = on;
@@ -812,6 +845,7 @@ namespace PunkMultiverse.UI
             if (_seedInput != null) _seedInput.text = "";
             SetFriendlyFire(false); // settings screen always opens at defaults
             SetHpScaling(true);
+            SetVisibility(NetSession.DefaultPublishServer);
             Refresh();
         }
 
@@ -830,7 +864,7 @@ namespace PunkMultiverse.UI
                 if (digits.Length > 0) int.TryParse(digits, out seed);
             }
             _seedSetupOpen = false;
-            NetSession.Instance.HostOnline(seed, _friendlyFire, _hpScaling, _mode);
+            NetSession.Instance.HostOnline(seed, _friendlyFire, _hpScaling, _mode, _publishPublic);
             Refresh();
         }
 
@@ -1140,13 +1174,8 @@ namespace PunkMultiverse.UI
                 ? session.ServerWorldStatus == 1 ? "SERVER IS PREPARING THE NEXT WORLD…"
                 : session.ServerWorldStatus == 2 ? "WORLD READY — START WHEN EVERYONE IS" : ""
                 : "";
-            // Who START is actually waiting on. This line is read by the one person who can press
-            // it, and "the button is grey" is not an explanation — especially when the reason is a
-            // download nobody but that player can see the progress of.
-            string syncing = SyncingSummary(session);
             _statusText.text = session.LastError
-                ?? (session.State == SessionState.Connecting ? "CONNECTING…"
-                    : syncing ?? worldStatus);
+                ?? (session.State == SessionState.Connecting ? "CONNECTING…" : worldStatus);
             _statusText.color = session.LastError != null ? UiTheme.Bad : UiTheme.Accent;
 
             if (inLobby) RefreshLobby(session);
@@ -1221,57 +1250,9 @@ namespace PunkMultiverse.UI
                 if (p.ModsMismatch) tags += "  <color=#ffb84d>[!] MODS</color>";
                 row.Name.text = p.Name + tags;
                 string rtt = p.IsLocal || p.RttMs < 0 ? "" : $"<color=#717171>{p.RttMs} MS</color>  ";
-                // A player fetching the host's custom content is NOT ready, but "NOT READY" is a
-                // lie by omission: it reads as someone idling in a slot everyone else is waiting
-                // on. Their seat is already reserved (it is taken at Hello, before any transfer),
-                // so the only thing missing was saying so.
-                string sync = ContentTag(p);
                 row.Status.text = !p.Connected
                     ? "<color=#ff7070>OFFLINE</color>"
-                    : sync != null ? rtt + sync
                     : rtt + (p.Ready ? "<color=#50d878>READY</color>" : "<color=#717171>NOT READY</color>");
-            }
-        }
-
-        /// <summary>"WAITING FOR ALEX — DOWNLOADING CUSTOM CONTENT (42%)", or null when nobody is.
-        /// Names one player rather than counting them: with a four-slot lobby the name is more
-        /// useful than a tally, and it is the thing the person holding START needs to know.</summary>
-        private static string SyncingSummary(Core.NetSession session)
-        {
-            if (session.State != SessionState.Lobby) return null;
-            Core.NetPlayer worst = null;
-            int others = 0;
-            foreach (var p in session.Players)
-            {
-                if (p == null || !p.Connected) continue;
-                var st = (Content.ContentState)p.ContentState;
-                if (st != Content.ContentState.Downloading && st != Content.ContentState.Installing) continue;
-                if (worst == null || p.ContentPercent < worst.ContentPercent) { if (worst != null) others++; worst = p; }
-                else others++;
-            }
-            if (worst == null) return null;
-            string who = worst.IsLocal ? "YOU ARE" : worst.Name.ToUpperInvariant() + " IS";
-            string more = others > 0 ? $" (+{others})" : "";
-            return $"{who} DOWNLOADING CUSTOM CONTENT — {worst.ContentPercent}%{more}";
-        }
-
-        /// <summary>The content-sync tag for a lobby row, or null when there is nothing to say.
-        /// Null for Idle and Satisfied — the overwhelmingly common case is a session with no
-        /// custom content at all, and it must look exactly like it always did.</summary>
-        private static string ContentTag(Core.NetPlayer p)
-        {
-            switch ((Content.ContentState)p.ContentState)
-            {
-                case Content.ContentState.Downloading:
-                    return $"<color=#f08c2e>SYNCING {p.ContentPercent}%</color>";
-                case Content.ContentState.Installing:
-                    return "<color=#f08c2e>INSTALLING</color>";
-                case Content.ContentState.Failed:
-                    // Distinct from OFFLINE and from NOT READY: this player is present, holding
-                    // their slot, and cannot become ready without doing something about it.
-                    return "<color=#ff7070>NO CONTENT</color>";
-                default:
-                    return null;
             }
         }
 

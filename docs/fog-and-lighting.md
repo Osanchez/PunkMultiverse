@@ -49,7 +49,7 @@ spreading.
 
 ### Visuals
 
-`FogVisual` binds a `CellType` to two background colours, two particle colours, and blink
+`FogVisual` binds a `CellType` to two background colors, two particle colors, and blink
 speed/smoothness. `FogType` is the GPU-side mirror with an explicit `Stride = 72` — if you add
 a field to one, that constant and the shader layout must move together.
 
@@ -72,7 +72,7 @@ Light is baked into `Level.luminocity` (a per-cell byte array) by
 `IDisposable` because it holds native collections.
 
 `LightSensor` and the AI's `IsInLightCondition` read that array — so **lighting is gameplay**,
-not decoration. Changing light propagation changes enemy behaviour.
+not decoration. Changing light propagation changes enemy behavior.
 
 ## Rendering path
 

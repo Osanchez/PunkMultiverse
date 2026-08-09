@@ -49,7 +49,7 @@ public bool Purchase(ShopItem shopItem)
 ```
 
 **The marked line goes through the resource-tank setter**, which means it inherits that setter's
-behaviour: an `isInfinite` tank silently refuses to decrease. With vanilla's unlimited-resources
+behavior: an `isInfinite` tank silently refuses to decrease. With vanilla's unlimited-resources
 option on, every resource-priced item is affordable *and* costs nothing. This is the same
 mechanism that makes ships unkillable — see
 [`VANILLA_GOTCHAS.md`](VANILLA_GOTCHAS.md#an-infinite-tank-silently-refuses-to-decrease).

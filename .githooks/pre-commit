@@ -34,5 +34,14 @@ next="$major.$minor.$((patch + 1))"
 
 sed -i "s|<Version>$current</Version>|<Version>$next</Version>|" "$csproj"
 git add "$csproj"
+
+# mod.json is what PUNK Nexus fetches to decide "is there a newer version". If it kept the old
+# number while the csproj moved on, the client would sit on a stale version forever and no one
+# would see the update. Bump it in the same commit so the published manifest can never lag.
+if [ -f "mod.json" ]; then
+    sed -i "s|\"version\"[[:space:]]*:[[:space:]]*\"$current\"|\"version\": \"$next\"|" "mod.json"
+    git add "mod.json"
+fi
+
 echo "pre-commit: mod version $current -> $next"
 exit 0

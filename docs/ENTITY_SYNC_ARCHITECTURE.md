@@ -491,7 +491,7 @@ transition to an honest state, never a fabricated one.
 | ResidencyReport | lost/duplicated | monotonic report revision per peer | full-set resync request (reports carry set-hash; mismatch → full retransmit) |
 | Activation | target fails to materialize | NACK ×3 | remains Dormant; interaction claims stay queued with TTL (drop + counter after e.g. 30s) |
 | Dormant damage claim | no resident peer can own | queue TTL (15s) | drop with `DormantClaimDropped` counter. Decision (2026-07-13): a claim can only originate from an attacker who had a local collider at fire time, so an unownable claim is a sub-second unload/disconnect race — not worth an in-absentia HP ledger. The normal case (attacker still resident) resolves via forced lease + replay |
-| Owner disconnect mid-handoff | pending epoch to/from lost peer | existing OnPeerLost cancel | epoch cancelled; resolve by §5.5 |
+| Owner disconnect mid-handoff | pending epoch to/from lost peer | existing OnPeerLost cancel | epoch canceled; resolve by §5.5 |
 | Host disconnect mid-anything | migration | election (existing) | all leases void; world Dormant; re-activation storm from residency reports (§5.5) |
 | Starved puppet (legacy path) | live entity, owner streams nothing | existing detector | now only possible transiently; recovery = host audit (owner resident?) instead of per-entity promotion loop; per-entity promotion (FixedOwner grab) kept only for entities with valid canonical state (always true now) |
 | Conflicting live copies | two peers both simulate | epoch mismatch drops the loser's durable events (existing) + new `DualSimulatorDetected` counter via snapshot sender audit | loser demotes on next lease apply; log fingerprint |
@@ -762,7 +762,7 @@ Automated pass/fail = instrumentation dump assertions at run end (logs are alrea
 | T3 | Owner unload | client owns segment w/ enemies, flies away | `SegmentDormancyCommit` precedes object destruction; host store rev++; observers freeze at final pose (≤0.5u of owner's last sim pose) | `AuthorityHeldDuringUnload`>0 |
 | T4 | Dormant damage claim | host shoots frozen crate/enemy owned by nobody | activation ≤1.5s; damage applied exactly once (dedup counters); entity killable | claim TTL drop; HP mismatch between peers >1% |
 | T5 | Owner disconnect | kill client process mid-combat in its owned segment | host re-activates ≤2s from CoordinatorCache; no full-HP resets (HP within last-snapshot ±ε); no dual simulators | fabrication counter; `DualSimulatorDetected` |
-| T6 | Disconnect mid-handoff | kill client between PREPARE and ACK | epoch cancelled; segment Live(host) or Dormant; no stuck `Pending` after 5s | pending lease alive >5s |
+| T6 | Disconnect mid-handoff | kill client between PREPARE and ACK | epoch canceled; segment Live(host) or Dormant; no stuck `Pending` after 5s | pending lease alive >5s |
 | T7 | Container fall | crate ledge segment; client activates; both watch | one simulator; observer interpolates; rest pose equal ≤0.1u on both; late-join sees rest pose not generation pose | `ContainerPoseDivergence` |
 | T8 | Late join | 2p run 10 min (kills, terrain, containers), third instance joins | digests match; joiner's kill/mutation/dormancy replay complete; no zombie entities; joins never blocked on world state | roster digest mismatch |
 | T9 | Host migration | host killed mid-run | election; world re-activates; ledger/dormancy equivalence digest across survivors | store divergence |

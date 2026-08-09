@@ -60,7 +60,7 @@ top of ProCamera2D rather than through it.
 
 ## `EnemyTrackingCamera` — not a camera
 
-Despite the name, this is a **station/turret behaviour**: a rotating part that watches units
+Despite the name, this is a **station/turret behavior**: a rotating part that watches units
 within a vision angle.
 
 ```csharp

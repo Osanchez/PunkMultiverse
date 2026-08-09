@@ -34,7 +34,7 @@ positions are wherever modules were placed, around six hard-coded anchors:
 | Active 1 / 2 / 3 | `(46, 46)` · `(50, 46)` · `(54, 46)` |
 
 Exposed as `ModuleGrid.MainSlotPositions`. The 50/50 origin is arbitrary headroom, not a
-meaningful centre — do not compute offsets from an assumed grid size.
+meaningful center — do not compute offsets from an assumed grid size.
 
 ## Modules
 
@@ -47,7 +47,7 @@ so Odin-serialized — see [`save-and-serialization.md`](save-and-serialization.
 | `Level` / `BaseLevel` | effective level vs. authored level; the grid's `levelDeltas` move it |
 | `PowerLevel` | on a **main** module, how many power cores the cluster may use (see below) |
 | `North/East/South/West` | connection flags — this is the entire adjacency model |
-| `Effects` | `List<ModuleEffect>` — where all behaviour lives |
+| `Effects` | `List<ModuleEffect>` — where all behavior lives |
 | `PowerCore` | a `ModuleEffectField` shape, or null |
 | `LevelModificationField` | a `ModuleEffectField` shape, or null |
 
@@ -118,7 +118,7 @@ Four consequences:
 `Module.OnContainingClusterRefreshed` on **every connected module** (not only the powered ones),
 followed by the `ModulesRefreshed` event.
 
-## Where behaviour lives
+## Where behavior lives
 
 `ModuleEffect` is the extension point. All of it is virtual, all of it is optional:
 

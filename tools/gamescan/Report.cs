@@ -36,7 +36,7 @@ namespace GameScan
             sb.AppendLine("| Tier | Count | Meaning |");
             sb.AppendLine("|---|---:|---|");
             sb.AppendLine($"| 🔴 Breaking | {breaking.Count} | Signature changed or member removed, **and the mod uses it**. Harmony will throw at load. |");
-            sb.AppendLine($"| 🟠 Behavioural | {behavioural.Count} | Body changed, signature stable, **and the mod uses it**. Nothing will warn you. |");
+            sb.AppendLine($"| 🟠 Behavioral | {behavioural.Count} | Body changed, signature stable, **and the mod uses it**. Nothing will warn you. |");
             sb.AppendLine($"| ⚪ Unused | {unused.Count} | Changed, but the mod does not reference it. |");
             sb.AppendLine();
             sb.AppendLine($"New types: {d.NewTypes.Count} · Removed types: {d.RemovedTypes.Count} · Total changed members: {d.TotalChangedMembers}");
@@ -49,7 +49,7 @@ namespace GameScan
             }
 
             Section(sb, "🔴 Breaking — the mod depends on these and they changed shape", breaking, beforeCacheDir, afterCacheDir, true);
-            Section(sb, "🟠 Behavioural — same signature, different code", behavioural, beforeCacheDir, afterCacheDir, true);
+            Section(sb, "🟠 Behavioral — same signature, different code", behavioural, beforeCacheDir, afterCacheDir, true);
 
             if (unused.Count > 0)
             {

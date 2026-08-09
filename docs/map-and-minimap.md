@@ -61,7 +61,7 @@ Icons are keyed on `EntityData`, and which prefab to use is looked up by the ent
 
 It is an `IMementoOriginator`, so discovered-icon state is part of the save.
 
-`MapIcon` holds a `Target` `EntityData` and raises `TargetChanged`. Specialised subclasses:
+`MapIcon` holds a `Target` `EntityData` and raises `TargetChanged`. Specialized subclasses:
 `StationMapIcon`, `InstrumentMapIcon`, `EntityMapItem`.
 
 ## The information-leak surface

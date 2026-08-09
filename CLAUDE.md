@@ -13,7 +13,7 @@ for.
 
 **Never reimplement game logic.** Damage, physics, AI, loot and world generation must run
 through the vanilla code paths. Reimplementing any of them makes single-player and multiplayer
-diverge in behaviour, which is the expensive kind of bug.
+diverge in behavior, which is the expensive kind of bug.
 
 The consequence: you are always working *around* the game's quirks, never replacing them. So
 when vanilla does something surprising, the fix is to accommodate it and write it down — not to
@@ -113,6 +113,7 @@ Start with the area doc, then the API index for exact signatures.
 
 **Operations**
 - [`SERVER_DEPLOY.md`](docs/SERVER_DEPLOY.md) — dedicated server (plain `docker run`, not Pelican)
+- [`SERVER_LIST.md`](docs/SERVER_LIST.md) — opting a session into the public browser (PUNK Nexus)
 - [`TESTING.md`](docs/TESTING.md) · [`harness.md`](docs/harness.md) · [`test-scenarios.md`](docs/test-scenarios.md)
 
 ---
@@ -146,7 +147,7 @@ tools\gamescan.ps1
 ```
 
 It reports only what changed *that the mod depends on*, split into breaking (Harmony will
-throw), behavioural (nothing will warn you), and irrelevant. See
+throw), behavioral (nothing will warn you), and irrelevant. See
 [`GAMESCAN.md`](docs/GAMESCAN.md). The mod also logs a `[GameScan]` line at boot when the game
 no longer matches its baseline.
 
