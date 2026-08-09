@@ -61,16 +61,29 @@ namespace PunkMultiverse.Patches
                         if (enemyCollider != null) enemyCollider.SetActive(false);
                     }
                     catch { }
-                    Plugin.Log.LogWarning($"[BR] station visual REPAIRED at " +
+                    // ROOT CAUSE, found 2026-08-09 from the flag this line was printing.
+                    // StationGenerator.InitializeStations marks the STARTING station
+                    // `skipOpenAnim = true` (and installs its FuelDispenser, so it is born
+                    // unlocked). Vanilla clears the flag in Station.PlayStartSequence — the
+                    // animated open every player watches at the beginning of a run. A machine that
+                    // never plays that sequence for that station keeps the flag, and Station.Bind
+                    // then takes its `IsUnlocked && !skipOpenAnim` branch to nowhere: unlocked data,
+                    // closed hatch, every stream-in.
+                    //
+                    // So clear it as part of the repair. Otherwise this sweep re-heals the same
+                    // station every time it streams in, forever, and the log line reads like a
+                    // recurring fault instead of a one-off.
+                    bool wasSkipAnim = data.skipOpenAnim;
+                    data.skipOpenAnim = false;
+                    Plugin.Log.LogInfo($"[Station] hatch opened at " +
                         $"({station.transform.position.x:0},{station.transform.position.y:0}) — data was " +
-                        $"unlocked but the hatch was closed (skipOpenAnim={data.skipOpenAnim}, " +
-                        $"isFastTravelDestination={data.isFastTravelDestination}). These flags are the " +
-                        "root-cause evidence; if one is always true here, that path is the bug.");
+                        $"unlocked but the hatch was closed (skipOpenAnim={wasSkipAnim}, " +
+                        $"isFastTravelDestination={data.isFastTravelDestination}); flag cleared so it stays open.");
                 }
             }
             catch (System.Exception e)
             {
-                Plugin.Log.LogWarning($"[BR] station visual sweep failed: {e.Message}");
+                Plugin.Log.LogWarning($"[Station] visual sweep failed: {e.Message}");
             }
         }
     }

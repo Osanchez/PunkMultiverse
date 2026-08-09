@@ -251,9 +251,75 @@ Wire `MoveTo` only for **non-live** entities. Live entities keep their data curr
 
 Position fingerprinting has been removed once already. Do not bring it back.
 
+### Destroying a `SavableEntity` without `Unbind` leaves a live subscriber
+
+**verified — `SavableEntity.cs`, cost: a black screen for both players**
+
+`Bind` does `EntityData.Moved += OnEntityMoved`; only `Unbind` removes it — `OnDestroy` does not.
+Vanilla is safe because it destroys these objects through exactly one door,
+`EntityGameObjectManager.UnloadEntity`, which unbinds first. Destroy one directly and the data
+outlives the body with a dead subscriber attached; the next `MoveTo` on that data throws
+`get_transform` **inside the live entity's `Update`**, every frame, forever.
+
+Use `Sync/EntityLifetime.Destroy` (unsubscribe, then destroy). Never call `Unbind` yourself on a
+duplicate: it also runs `EntityData.Destroy()` for anything flagged `destroyWhenUnloaded`, which
+would take the canonical entity's data with it.
+
+### `InstantiateGameObjects` enumerates a segment while spawning into it
+
+```csharp
+foreach (EntityData item in level.entityManager.GetEntitiesInSegment(segmentPosition))
+    if (item.isUnloadable) SpawnObjectForEntity(item);
+activeSegments.Add(segmentPosition);      // never runs if the loop threw
+```
+
+Anything that adds or moves an entity into that segment mid-loop throws `Collection was modified`
+(28–29 times per session in the field), and the segment is then never marked active — later
+unloads miss the dictionary (`Trying to unload savableEntity not found in the dictionary`, 388
+times in one session). Guarded by iterating a snapshot.
+
+### `SpawnObjectForEntity` overwrites its dictionary entry
+
+`entityGameObjects[entity.instanceId] = savableEntity` — spawning an entity that already has a
+live object orphans the first one: still bound, no longer reachable, so nothing will ever unbind
+it. Guarded by returning the existing object.
+
+### `skipOpenAnim` is cleared only by the start/teleport sequence
+
+`StationGenerator.InitializeStations` marks the STARTING station `skipOpenAnim = true` and installs
+its FuelDispenser, so it is born unlocked; `Station.PlayStartSequence` clears the flag as it
+animates the hatch open. A machine that never plays that sequence for that station keeps the flag,
+and `Station.Bind`'s `IsUnlocked && !skipOpenAnim` branch then leaves an unlocked station with a
+closed hatch on every stream-in. `StationVisualHeal` opens it and clears the flag.
+
 ---
 
 ## Screens & input
+
+### `ShipLogOutput` guards one event and not the other
+
+```csharp
+public void Log(...)      { entries.Add(e); this.LogAdded?.Invoke(e); }   // guarded
+public void Clear(int id) { ... this.LogRemoved(entries[num]); ... }      // NOT guarded
+public void Update()      { ... this.LogRemoved(entries[num]); ... }      // NOT guarded
+```
+
+In single-player every ship owns a visible HUD, so `LogRemoved` always has a subscriber. In a net
+run each remote player's puppet is a full `Ship` whose HUD this mod switches off — no subscriber,
+and every `Clear` on that ship throws. Then it repeats forever, because of where the throw lands:
+
+```csharp
+else if (!HasNoFuel && selfDestructHintShown)
+{
+    logOutput.Clear(4);              // throws
+    selfDestructHintShown = false;   // never runs, so the branch is taken again next frame
+}
+```
+
+**12 174 exceptions in a 90-second harness run**, all from one refuelled teammate's puppet. Nobody
+had seen it because Unity's log was not being captured into the mod's — set
+`[Logging.Disk] WriteUnityLog = true` when hunting anything like this. Guarded in
+`Patches/ShipLogGuard.cs`.
 
 ### `ShipMenuToggler` decides who may drive the screen, and gets it wrong with a second ship
 

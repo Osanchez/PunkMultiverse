@@ -524,7 +524,32 @@ is `host:port`; peer ids: host=1, clients=LiteNetLib id+2 (client learns its own
 - Harness: scratchpad `smoke-udp.ps1` pattern (arm both configs `Transport=Udp`, soak-style
   launch, gates above).
 
-## 33. shop-menu-exit (a client can leave a station shop, and buy in it)
+## 34. entity-lifetime (no exception storms while the world streams) — VERIFIED 2026-08-09
+
+The black-screen night produced four independent per-frame exception storms. This is the standing
+guard against all of them, and it is cheap: two instances, one flight, four counters.
+
+**Arm it first:** both test installs need `[Logging.Disk] WriteUnityLog = true` in
+`BepInEx\BepInEx.cfg`. Without it Unity's exceptions never reach the per-instance log and this
+scenario measures nothing — that is exactly how a 12 000-exception storm hid for weeks.
+
+- Both live, `vsync 0` to both, then `autofly 30` to both (forces segment streaming).
+- Count in EACH instance's `LogOutput.log`:
+
+| marker | PASS | field value before the fixes |
+|---|---|---|
+| `Collection was modified` | 0 | 28–29 per session |
+| `OnEntityMoved` | 0 | thousands, unbounded |
+| `ShipLogOutput.Clear` | 0 | 12 174 in 90 seconds |
+| `NullReferenceException` | ≤ 3 | 9 699 |
+
+- The ≤3 survivors are vanilla one-shots at boot (`MusicTrackActivator.Awake`, an `AudioManager
+  .PlaySfx`); they appear in single-player too. Anything repeating is a regression.
+- Guards announce themselves — expect at most one line each of `[ShipLog] clearing log entries…`,
+  `[Station] hatch opened…`, `[ShipMenu] input list pinned…`. Their absence is fine; their
+  repetition every few seconds is not.
+
+## 33. shop-menu-exit (a client can leave a station shop, and buy in it) — VERIFIED 2026-08-09
 
 Field report 2026-08-08: a CLIENT gets stuck in a station shop — the screen stays up, purchases
 do nothing, and the ship is still flyable underneath (the ship map never went away). Vanilla
@@ -544,6 +569,16 @@ Both instances live, world settled, CLIENT drives:
   station platform).
 - PASS: every `menustate` line matches; no `[MenuState] broken` in either log; no exception
   from `ShipMenuToggler.Open` / `ModuleGridScreen.OnOpened` in the client's Player.log.
+- **Result 2026-08-09** (client, twice, on a healthy run):
+  `menustate: open=True owner=local map=MapControl shopmap=True shipcontrol=False station=True
+  tab=1 violation=none`, and `[ShipMenu] input list pinned to the local ship (dropped 1, local was
+  present)` — vanilla's list really did contain a puppet PlayerInput. A second `shopopen` while
+  open changed nothing (no re-arm).
+- **Not covered by the harness:** the close KEYPRESS. `nav cancel` reports "nothing selected"
+  because the shop drives its own action map rather than EventSystem selection, and there is no
+  devcmd that fires an InputAction. The machine-checkable proxy is `owner=local` — that IS the
+  condition vanilla's close path tests before it accepts the press. Closing by hand stays a manual
+  check until an input-injection devcmd exists.
 - Diagnostic value: `owner=other` confirms the ownership mismatch, `map=ShipControl` with
   `shopmap=False` confirms an `Open` that aborted before its input switch, two opens per press
   confirms the re-entrancy race. Record which one fired — the guards hide it afterwards.
