@@ -72,6 +72,39 @@ writes nothing when nothing a browsing player would notice has changed. Steam ra
 Only the lobby **owner** may write lobby metadata — Steam silently drops writes from anyone else.
 Ownership is asked of Steam rather than remembered, so migration answers correctly.
 
+## Launch arguments (auto-connect)
+
+The game can be started straight into a session, which is how PUNK Nexus' **Play** button works and
+what a "click to join" shortcut would use.
+
+| Argument | Target | Read from |
+|---|---|---|
+| `+connect_lobby <SteamID64>` | A Steam lobby | Steam's own convention — the overlay and friends list pass this on a cold start. Not ours; read exactly as Steam writes it. |
+| `+punkmv_connect <target>` | Anything the JOIN button accepts: `host:port`, a dedicated server's SteamID64, or a `PMV-…` code | Ours |
+| `+connect <target>` | Same as above | Alias, because `+connect host:port` is the near-universal convention |
+
+```
+Punk.exe +connect_lobby 109775241234567890      # a friend's Steam session
+Punk.exe +punkmv_connect 203.0.113.10:7777      # a dedicated UDP server
+Punk.exe +punkmv_connect PMV-ABCDE-FGHJK-MNPQ   # a pasted lobby code
+```
+
+`+punkmv_connect` is deliberately **transport-agnostic**, and that is the whole point of it
+existing: a UDP server has no Steam lobby to hand out, so before this it could not be auto-joined
+at all. The value is not parsed by the launch code — it is handed to `JoinByCode`, which already
+knows how to tell an address from a server id from a lobby code and overrides the transport to
+match. A second parser would be a second thing to keep in agreement with the first.
+
+That override is what makes this work for ordinary players: someone whose config says `Steam` still
+lands on a UDP server correctly, with no config edit and no persisted change to their default.
+
+`+connect_lobby` wins if both are passed. Both are read in `Core/LaunchArgs`; a flag with no value,
+or a malformed id, is ignored rather than treated as an error. Unity ignores unknown arguments, so
+passing these to a build without the mod installed is inert.
+
+Steam must be running for the Steam forms — but not for `host:port`, which is the case that needs
+no Steam at all.
+
 ## Not built yet
 
 PunkMultiverse publishes; it does not browse. There is no in-game server list — joining a listed

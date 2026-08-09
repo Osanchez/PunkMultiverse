@@ -377,16 +377,9 @@ namespace PunkMultiverse.Transport
             MembershipChanged?.Invoke(); // discovery-lobby owner re-relays the allowlist to its coordinator
         }
 
-        /// <summary>Scan launch args for "+connect_lobby &lt;id&gt;" (Steam adds this on cold-start joins).</summary>
-        public static CSteamID? ParseLaunchArgs()
-        {
-            var args = Environment.GetCommandLineArgs();
-            for (int i = 0; i < args.Length - 1; i++)
-                if (args[i].Equals("+connect_lobby", StringComparison.OrdinalIgnoreCase)
-                    && ulong.TryParse(args[i + 1], out var id) && id > 0)
-                    return new CSteamID(id);
-            return null;
-        }
+        // Launch-argument parsing used to live here, reading only "+connect_lobby". It moved to
+        // Core/LaunchArgs so that form and the transport-agnostic "+punkmv_connect" are read in one
+        // place — two parsers would be two things to keep in agreement.
 
         // ---------------------------------------------------------------- lobby code codec
 

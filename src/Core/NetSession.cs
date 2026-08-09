@@ -204,7 +204,14 @@ namespace PunkMultiverse.Core
             if (UsingSteam && SteamBootstrap.Available) EnsureLobbyController();
 
             // Steam overlay "join game" on a cold start.
-            var launchLobby = SteamLobbyController.ParseLaunchArgs();
+            var launchLobby = LaunchArgs.Lobby();
+
+            // A launcher aiming us at a specific session (PUNK Nexus' Play button, a shortcut).
+            // Unlike +connect_lobby this covers every transport, which is the whole point: a UDP
+            // server has no Steam lobby to hand out, so it had no way to be auto-joined at all.
+            var launchTarget = launchLobby.HasValue ? null : LaunchArgs.ConnectTarget();
+            if (LaunchArgs.Describe() is string asked)
+                Plugin.Log.LogInfo($"[Session] launch argument: {asked}");
 
             // DEV: config-driven autostart so two-instance loopback tests need no clicks.
             // A dedicated coordinator always hosts — that's its entire job.
@@ -213,6 +220,14 @@ namespace PunkMultiverse.Core
             {
                 yield return new WaitForSecondsRealtime(3f);
                 JoinLobbyId(launchLobby.Value);
+            }
+            else if (launchTarget != null)
+            {
+                // Same settle time as the lobby path: the menu has to exist before a join can
+                // surface its own errors. JoinByCode picks the transport from the target's shape,
+                // so a player configured for Steam still lands on a UDP server correctly.
+                yield return new WaitForSecondsRealtime(3f);
+                JoinByCode(launchTarget);
             }
             else if (mode.Equals("Host", StringComparison.OrdinalIgnoreCase))
             {
