@@ -466,7 +466,9 @@ namespace PunkMultiverse.Core
                 MaxPlayers = MaxPlayers,
                 Players = CountPlayers(),
                 Mods = ModManifest.BrowserList(),
-                PingLocation = Transport.SteamPing.LocalLocation(),
+                // Fully qualified: this class has a `Transport` PROPERTY of type ITransport,
+                // which shadows the namespace of the same name in an expression.
+                PingLocation = PunkMultiverse.Transport.SteamPing.LocalLocation(),
             };
         }
 
