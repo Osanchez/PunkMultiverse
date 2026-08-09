@@ -462,7 +462,7 @@ namespace PunkMultiverse.Core
             {
                 Name = Truncate(name.Trim(), 63),
                 Mode = mode == Protocol.GameMode.BattleRoyale ? "Battle Royale" : "Standard",
-                Region = Truncate((NetConfig.ServerRegion.Value ?? "").Trim(), 15),
+                Region = Truncate(ResolveRegion(), 15),
                 MaxPlayers = MaxPlayers,
                 Players = CountPlayers(),
                 Mods = ModManifest.BrowserList(),
@@ -470,6 +470,40 @@ namespace PunkMultiverse.Core
                 // which shadows the namespace of the same name in an expression.
                 PingLocation = PunkMultiverse.Transport.SteamPing.LocalLocation(),
             };
+        }
+
+        /// <summary>
+        /// The region label for a listing: what the host configured, or their Steam country code.
+        ///
+        /// It used to be the configured value alone, defaulting to blank — and a free-text field
+        /// nobody types is a column that is empty for every host forever. The browser dutifully
+        /// showed a dash on every row and its region filter had nothing to filter, which read as
+        /// the feature being broken rather than unset.
+        ///
+        /// GetIPCountry is Steam's own view of where this machine is, from its IP, already known
+        /// to the client — no lookup, no packets, no third party. Two letters ("US", "DE") rather
+        /// than the friendlier "NA-East", which is exactly why the config key still wins when set.
+        /// </summary>
+        private static string ResolveRegion()
+        {
+            string configured = (NetConfig.ServerRegion.Value ?? "").Trim();
+            if (configured.Length > 0) return configured;
+
+            try
+            {
+                if (Steamworks.SteamAPI.IsSteamRunning())
+                {
+                    string country = (Steamworks.SteamUtils.GetIPCountry() ?? "").Trim();
+                    if (country.Length > 0) return country.ToUpperInvariant();
+                }
+            }
+            catch
+            {
+                // No Steam (a dedicated coordinator), or an API that would not answer. A listing
+                // with no region is still a perfectly good listing.
+            }
+
+            return "";
         }
 
         /// <summary>Persona name when Steam can tell us one — a browser row reading "Someone's game"

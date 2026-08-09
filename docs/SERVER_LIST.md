@@ -29,7 +29,7 @@ reaches you over Steam's relay exactly as an invited friend would.
 [Session]
 PublishServer = false            # only what the VISIBILITY row starts on
 ServerName    = Neon Wasteland   # blank -> "<your persona>'s Co-op"
-ServerRegion  = EU               # blank -> no region shown
+ServerRegion  = EU               # blank -> your Steam country code (e.g. "US")
 ```
 
 `PublishServer` is only the row's starting position for a player. A **dedicated server has no

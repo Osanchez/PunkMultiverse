@@ -257,8 +257,9 @@ namespace PunkMultiverse
 
             ServerRegion = cfg.Bind("Session", "ServerRegion", "",
                 "Free-text region label shown in the server browser (for example EU, NA-East, " +
-                "OCE). Blank = no region shown. Purely informational — Steam routes the connection " +
-                "either way, and nothing filters on it being truthful.");
+                "OCE). Blank = your Steam country code, which is what nearly every host wants. " +
+                "Purely informational — Steam routes the connection either way, and nothing " +
+                "filters on it being truthful.");
 
             AutoStart = cfg.Bind("Debug", "AutoStart", "None",
                 new ConfigDescription("DEV ONLY: start a session automatically a few seconds after boot.",

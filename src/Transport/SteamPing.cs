@@ -19,6 +19,8 @@ namespace PunkMultiverse.Transport
         private const float MaxAgeSeconds = 600f;
 
         private static string _cached;
+        private static bool _relayStarted;
+        private static int _waits;
 
         /// <summary>
         /// The local ping location, or null while Steam is still measuring.
@@ -33,9 +35,31 @@ namespace PunkMultiverse.Transport
 
             try
             {
-                // Kicks off the measurement if it has not run or has gone stale. Returns false while
-                // it is still in flight, which is not an error.
-                if (!SteamNetworkingUtils.CheckPingDataUpToDate(MaxAgeSeconds)) return null;
+                // Ask for the relay network explicitly, once. Polling CheckPingDataUpToDate is not
+                // reliable enough to make the measurement START -- PUNK Nexus proved that on the
+                // browsing side, where the ping column stayed empty indefinitely until this call
+                // was added. A host that opens SteamNetworkingSockets brings the relay up as a side
+                // effect and never notices, but that is a side effect of the transport, not
+                // something this class should depend on: a LiteNetLib or dedicated host publishes
+                // the same listing and gets no such favour.
+                if (!_relayStarted)
+                {
+                    SteamNetworkingUtils.InitRelayNetworkAccess();
+                    _relayStarted = true;
+                }
+
+                // Returns false while the measurement is still in flight, which is not an error.
+                if (!SteamNetworkingUtils.CheckPingDataUpToDate(MaxAgeSeconds))
+                {
+                    // Say so once at 10 and once at 100 tries rather than every 3 seconds. Silence
+                    // here is what made an empty ping column impossible to explain: nothing in the
+                    // log distinguished "still measuring" from "never asked".
+                    _waits++;
+                    if (_waits == 10 || _waits == 100)
+                        Plugin.Log.LogInfo($"[Lobby] still waiting on Steam ping data ({_waits} tries); " +
+                                           "browser rows will show no ping until it resolves.");
+                    return null;
+                }
 
                 SteamNetworkPingLocation_t location;
                 if (SteamNetworkingUtils.GetLocalPingLocation(out location) < 0f) return null;
@@ -58,6 +82,6 @@ namespace PunkMultiverse.Transport
         }
 
         /// <summary>Drops the cached location so the next publish re-reads it (session teardown).</summary>
-        public static void Reset() => _cached = null;
+        public static void Reset() { _cached = null; _waits = 0; }
     }
 }
