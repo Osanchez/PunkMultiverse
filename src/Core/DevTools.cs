@@ -54,14 +54,12 @@ namespace PunkMultiverse.Core
         {
             GodMode = false;
             Patches.MenuMutex.Reset(); // clear pause/item-wheel flags so they can't stick across runs
-            MenuStateWatch.Reset();    // and the ship-menu violation, for the same reason
             Patches.ShipMenuGuards.Reset(); // ...and the close stamp, so it can't block a fresh run
             Patches.ShopWalletGuard.Reset();
             Patches.WeaponVisualGuard.Reset();
             Patches.VaultDuplicateGuard.Reset();
             Sync.EntityLifetime.Reset();
             Patches.ShipLogGuard.Reset();
-            Sync.EntityForensics.Reset();
         }
 
         /// <summary>Runs at the poll cadence while god is armed: re-assert infinite weapon
@@ -2007,23 +2005,6 @@ namespace PunkMultiverse.Core
                     if (nearestStation == null) { Out("shopopen: no unlocked station in the scene"); return; }
                     nearestStation.OnUseActivated(interactor);
                     Out($"shopopen: activated station at dist={nearestDist:0.0}");
-                    return;
-                }
-                case "forensics":
-                {
-                    // Force the report the detectors would have produced, for a netId you already
-                    // suspect (from `entities` / `sync`). Never rate-limited: you asked.
-                    if (parts.Length < 2 || !int.TryParse(parts[1], out int fNetId))
-                    { Out("forensics <netId>"); return; }
-                    Sync.EntityForensics.DumpOnDemand(session, fNetId);
-                    Out($"forensics: reported #{fNetId} and asked the other players");
-                    return;
-                }
-                case "menustate":
-                {
-                    // The ship menu's four pieces of state in one grep-able line. See
-                    // Core/MenuStateWatch.cs for what each one is and why they can disagree.
-                    Out(MenuStateWatch.Describe(MenuStateWatch.Read()));
                     return;
                 }
                 case "stall":

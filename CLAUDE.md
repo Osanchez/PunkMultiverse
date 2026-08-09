@@ -32,12 +32,7 @@ Before answering "what is the signature of X" from memory — don't. Look it up:
 | How a system actually works, and why | the curated docs below |
 | **How a GAME system works, in depth** | **`../Mods/docs/00-overview.md` … `15-*.md`** — the decompile analysis, sibling checkout, see below |
 | What a method *does* | `gamescan/cache/<build>/Type.cs` — full decompiled source, local only |
-| A type not in the cache | `ilspycmd -t <TypeName> "<game>/Punk_Data/Managed/Punk.Main.dll"` |
-
-**This repo lives OUTSIDE the game folder** (`F:\Work Projects\LLM\PunkMultiverse`; the game is
-`F:\SteamLibrary\steamapps\common\PUNK Playtest`). So every game path must be given explicitly:
-`build.ps1 -GameDir "<game>"`, `tools\gamescan.ps1 -GameDir "<game>"`, and the ilspycmd line above.
-A bare `build.ps1` resolves `GameDir` to the repo's parent and fails to find the assemblies.
+| A type not in the cache | `ilspycmd -t <TypeName> "../Punk_Data/Managed/Punk.Main.dll"` |
 
 ### Read the real game logic before changing behaviour that touches it
 

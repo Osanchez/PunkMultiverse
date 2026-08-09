@@ -124,9 +124,10 @@ If you need a UI element that already exists in some form, look for its widget f
   re-run the input contract, a station is deaf to "open the shop" for 350ms after a close, and a
   throwing tab is contained so `Open` still finishes. Why each one exists:
   [`VANILLA_GOTCHAS.md`](VANILLA_GOTCHAS.md#screens--input).
-- **The state is checked, not assumed** (`Core/MenuStateWatch.cs`): four invariants every frame,
-  `[MenuState] broken …` when one holds for half a second, and — after two seconds — an escape
-  through the game's own `Close()`. `menustate` (devcmd) prints the same reading on demand.
+- The screen's state lives in four places that must agree — `isOpen`, the `PlayerInput` it believes
+  owns it, that input's action map, and whether the `"Shop"` map is live. Vanilla keeps them in step
+  by construction (one ship, one input); a net run does not, so treat a disagreement between any two
+  of them as the first thing to check when the menu misbehaves.
 - The drop screen had to be made fully controller/keyboard navigable; that is `selectOnOpen`
   plus explicit navigation, not automatic.
 

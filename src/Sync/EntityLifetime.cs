@@ -84,7 +84,6 @@ namespace PunkMultiverse.Sync
             try
             {
                 var data = se.EntityData;
-                if (data != null) EntityForensics.NoteInstance(data.instanceId, EntityForensics.Kind.Destroy, "mod destroy");
             }
             catch { }
             Unsubscribe(se);

@@ -103,7 +103,7 @@ namespace PunkMultiverse.Sync
         private static readonly Dictionary<int, SavableEntity> LiveEntities = new Dictionary<int, SavableEntity>();
 
         /// <summary>Read-only window onto the canonical lifetimes, for diagnostics that must not
-        /// touch them (EntityForensics diffs this once a second to notice disappearances).</summary>
+        /// touch them (diffing it once a second is how a disappearance gets noticed).</summary>
         internal static IReadOnlyDictionary<int, SavableEntity> LiveView => LiveEntities;
         /// <summary>Streamed-in replica count — bounded by the resident world; unbounded growth is a
         /// registration leak (dead entities never removed).</summary>
@@ -346,9 +346,8 @@ namespace PunkMultiverse.Sync
         private const int QuietGhostRemovalStreak = 10;
 
         /// <summary>True while this machine has told the player its world updates are being
-        /// rate-reduced. Read by EntityForensics: an entity starving under a degraded link is the
-        /// bandwidth policy doing its job, and reads very differently from one starving on a
-        /// healthy link.</summary>
+        /// rate-reduced. An entity starving under a degraded link is the bandwidth policy doing its
+        /// job, and reads very differently from one starving on a healthy link.</summary>
         internal static bool LinkDegraded => _linkDistressAnnounced;
         private const float StarvedRequestRetry = 2f;
         // How long a DORMANT starving puppet waits for the residency->lease->wake chain before the
@@ -4519,11 +4518,8 @@ namespace PunkMultiverse.Sync
         {
             InstrumentationCounters.DivergenceDetected();
             Plugin.Log.LogWarning($"[Heal] removing GHOST {NetDiag.Describe(netId)} in segment {key} — " +
-                $"live here, absent from owner P{ownerSlot + 1}'s roster for 3 consecutive audits");
-            // Ask the other machines what they see BEFORE the object dies. Their answer is the only
-            // way to tell "the roster was right, this was a leftover" from "the roster was wrong and
-            // we just deleted an enemy the other player is still fighting" (see EntityForensics).
-            EntityForensics.ReportGhostRemoval(netId, NetDiag.Describe(netId));
+                $"live here, absent from owner P{ownerSlot + 1}'s roster, its stream is quiet, and its " +
+                "owner has not mentioned it in any roster");
             KilledNetIds.Add(netId);
             ReceivedSegments.Remove(netId);
             if (NetIds.TryGetInstanceId(netId, out int instanceId))

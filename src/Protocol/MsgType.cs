@@ -143,11 +143,6 @@
                              // and a deploy is one machine's moment — so unlike the go-live clear
                              // the SET must travel, or the removals become ghosts everywhere else
 
-        // ---- Channel 0 (control): forensics ----
-        DiagMark = 30,       // any peer -> all: "I just lost sight of this netId; print what YOU
-                             // see for it, right now." One machine's view of a vanished enemy is
-                             // an absence; the pair of views is a diagnosis (Sync/EntityForensics)
-
         // ---- Channel 0 (control): entity identity reconciliation ----
         IdResolveRequest = 57, // client -> host: netIds my manifest couldn't match
         IdResolveReply = 58,   // host -> client: their entity type + position, for
