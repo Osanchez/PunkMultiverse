@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 
@@ -66,18 +67,64 @@ namespace PunkMultiverse.Core
         }
 
         /// <summary>
-        /// Plugin GUIDs only, comma-separated — the `mods` column in the public server browser.
-        /// Versions are dropped deliberately: the browser filters on mod IDENTITY ("who runs
-        /// Multiverse plus a loot mod"), the HELLO handshake is what actually enforces versions,
-        /// and Steam caps how much lobby metadata a lobby may carry.
+        /// Comma-separated mod ids for the `mods` column in the public server browser.
+        ///
+        /// These are CATALOG ids read from each plugin folder's mod.json, not BepInPlugin GUIDs,
+        /// because the consumer is PUNK Nexus and a catalog id is what it can actually act on —
+        /// look the mod up, show its name, install it for someone joining. A GUID would leave the
+        /// client guessing which listing it belongs to. Folders with no mod.json fall back to their
+        /// plugin GUID so a hand-built mod still shows up as something.
+        ///
+        /// Versions are dropped deliberately: the browser filters on identity, the HELLO handshake
+        /// is what actually enforces version agreement, and Steam caps lobby metadata size.
         /// </summary>
         public static string BrowserList(int max = 12)
         {
-            var ids = (Local ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(e => e.Split('@')[0])
-                .Where(id => !string.IsNullOrEmpty(id))
-                .Take(max);
-            return string.Join(",", ids);
+            var ids = new List<string>();
+
+            try
+            {
+                var pluginRoot = BepInEx.Paths.PluginPath;
+                if (Directory.Exists(pluginRoot))
+                    foreach (var dir in Directory.GetDirectories(pluginRoot).OrderBy(d => d, StringComparer.Ordinal))
+                    {
+                        var id = ReadCatalogId(Path.Combine(dir, "mod.json"));
+                        if (!string.IsNullOrEmpty(id) && !ids.Contains(id)) ids.Add(id);
+                    }
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"[Mods] could not read catalog ids: {e.Message}");
+            }
+
+            // Anything without a catalog id still deserves to be visible, so top up from the GUIDs.
+            foreach (var guid in (Local ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                         .Select(e => e.Split('@')[0])
+                         .Where(g => !string.IsNullOrEmpty(g)))
+                if (ids.Count < max && !ids.Contains(guid)) ids.Add(guid);
+
+            return string.Join(",", ids.Take(max));
+        }
+
+        /// <summary>
+        /// Pulls the "id" out of a mod.json without a JSON parser — this assembly has no reference
+        /// to one, and adding a dependency to read a single string would have to be carried by the
+        /// CI reference bundle for no benefit.
+        /// </summary>
+        private static string ReadCatalogId(string manifestPath)
+        {
+            try
+            {
+                if (!File.Exists(manifestPath)) return null;
+                var text = File.ReadAllText(manifestPath);
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    text, "\"id\"\\s*:\\s*\"([^\"]+)\"");
+                return match.Success ? match.Groups[1].Value : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static bool Matches(string theirs) =>

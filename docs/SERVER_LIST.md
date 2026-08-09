@@ -39,9 +39,14 @@ be stamped unconditionally.
 browser's `GetNumLobbyMembers`, which is only dependable for a lobby the caller has joined — and a
 browser is not a member of anything it is listing.
 
-`mods` is the local BepInEx plugin GUIDs, without versions, capped at 12
-(`ModManifest.BrowserList`). The browser filters on mod *identity*; the HELLO handshake is what
-actually enforces version agreement, and Steam caps how much metadata a lobby may carry.
+`mods` is the **catalog id** of each installed mod, read from its `mod.json`, capped at 12
+(`ModManifest.BrowserList`). Catalog ids rather than BepInPlugin GUIDs because the consumer is PUNK
+Nexus, and a catalog id is what it can act on — look the mod up, show its name, install it for
+someone joining a server. A GUID would leave the client guessing which listing it belongs to.
+Folders with no `mod.json` fall back to their plugin GUID so a hand-built mod is still visible.
+
+Versions are dropped: the browser filters on identity, the HELLO handshake is what actually
+enforces version agreement, and Steam caps how much metadata a lobby may carry.
 
 ## Staleness, and why there is none
 
