@@ -245,6 +245,10 @@ namespace PunkMultiverse.Sync
         private const float StarvedNeverAfter = 3f;
         private const float StarvedCandidateResidence = 2f;
         private const float StarvedCandidateRecheck = 1f;
+
+        /// <summary>Rate limit for the "why was this not rescued" line: a starved crowd would
+        /// otherwise print one per entity per second.</summary>
+        private static float _nextDeferralLogAt;
         private const float StarvedRequestRetry = 2f;
         // How long a DORMANT starving puppet waits for the residency->lease->wake chain before the
         // starved-rescue treats it like any other starved entity. Generous: the chain normally
@@ -3114,12 +3118,25 @@ namespace PunkMultiverse.Sync
                     continue;
                 }
 
-                if (!IsStableAvailabilityCandidate(entity, puppet, out float distance, out _))
+                if (!IsStableAvailabilityCandidate(entity, puppet, out float distance, out string deferReason))
                 {
                     // Rechecking every state tick is needless work when a starved object is merely
                     // in the loader's retention fringe. Count at most one deferral/entity/second.
                     NextStarvedRequestAt[netId] = now + StarvedCandidateRecheck;
                     InstrumentationCounters.AvailabilityCandidateDeferred();
+                    // The gate computes exactly why it refused and the counter threw it away. One
+                    // run on 2026-08-09 ended with starvedPuppetFrames=34612, starvedRequests=4,
+                    // availabilityPromotions=0 — a rescue path that never fires, and no way to ask
+                    // it why: the player just took damage from a boss add they could not see.
+                    // Say the reason out loud, rate-limited so a starved crowd cannot flood.
+                    if (now >= _nextDeferralLogAt)
+                    {
+                        _nextDeferralLogAt = now + 5f;
+                        Plugin.Log.LogWarning($"[Availability] NOT rescuing {NetDiag.Describe(netId)} — " +
+                            $"{deferReason} (owner=P{OwnerOf(netId) + 1}, snapshotAge=" +
+                            (float.IsPositiveInfinity(puppet.SnapshotAge) ? "never" : $"{puppet.SnapshotAge:0.00}s") +
+                            $", residence={puppet.PuppetAge:0.00}s)");
+                    }
                     continue;
                 }
 

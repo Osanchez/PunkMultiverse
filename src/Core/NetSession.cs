@@ -22,7 +22,12 @@ namespace PunkMultiverse.Core
     /// </summary>
     public sealed class NetSession : MonoBehaviour
     {
-        public const int ProtocolVersion = 24; // 24 = HeldFire (106): the trigger state of a held
+        public const int ProtocolVersion = 25; // 25 = DiagMark (30): a peer that lost sight of an
+                                               //      entity asks the others to print their view of
+                                               //      it under one mark number. One machine's
+                                               //      account of a disappearance is an absence; the
+                                               //      pair is a diagnosis (Sync/EntityForensics).
+                                               // 24 = HeldFire (106): the trigger state of a held
                                                //      weapon, so a beam is drawn on other players'
                                                //      screens. Shot events replicate a projectile
                                                //      fine but a hitscan beam only exists while

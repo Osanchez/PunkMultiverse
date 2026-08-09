@@ -178,7 +178,7 @@ namespace PunkMultiverse.Sync
                 if (puppet == null || puppet.SnapshotAge <= StarvedSeconds) continue;
                 _reportedStarving.Add(netId);
                 Report(session, netId, 1,
-                    $"STARVED — owner P{owner + 1} sent nothing for {puppet.SnapshotAge:0.0}s, but it is still live here");
+                    $"STARVED — owner P{owner + 1} has sent " + (float.IsPositiveInfinity(puppet.SnapshotAge) ? "NOTHING AT ALL" : $"nothing for {puppet.SnapshotAge:0.0}s") + ", but it is still live here");
             }
         }
 
