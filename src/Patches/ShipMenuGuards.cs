@@ -219,6 +219,46 @@ namespace PunkMultiverse.Patches
         }
 
         /// <summary>
+        /// The item wheel picks the wrong ship, and the player watches their fuel generator land
+        /// under their teammate (field report 2026-08-09).
+        ///
+        /// <code>
+        /// for (int j = 0; j &lt; shipManager.Ships.Count; j++)
+        ///     shipManager.Ships[j].shipInput.ShipControlActionMap.OpenItemWheel += OpenWheel;
+        ///
+        /// private void OpenWheel(ShipInput shipInput) { activeShipInput = shipInput; ... }
+        /// consumable.Use(shipManager.Ships.FirstOrDefault(s =&gt; s.shipInput == activeShipInput));
+        /// // SpawnPrefabConsumable.Use: Instantiate(prefab, ship.transform.position, ...)
+        /// </code>
+        ///
+        /// Every ship in the game is subscribed — puppets included — and the wheel keeps whichever
+        /// ShipInput fired LAST. Puppets sit after the local ship in <c>ShipManager.Ships</c>, so
+        /// the teammate wins every time, deterministically: the consumable spawns at their feet.
+        ///
+        /// Same family as the ship menu above, same fix: name the local player. Rewriting the
+        /// argument here also corrects everything derived from it — which ship's item-wheel map is
+        /// enabled, whose stick the selection is read from, and where the thing is placed.
+        /// </summary>
+        [HarmonyPatch(typeof(ConsumableWheel), "OpenWheel")]
+        internal static class WheelBelongsToTheLocalPlayer
+        {
+            private static void Prefix(ref ShipInput __0)
+            {
+                if (!NetSession.Active) return;
+                try
+                {
+                    var ship = ShipSync.LocalShip;
+                    var local = ship != null ? ship.shipInput : null;
+                    if (local == null || __0 == local) return;
+                    Plugin.Log.LogInfo("[Wheel] opened by a non-local ShipInput (a puppet's subscription " +
+                                       "fired) — retargeted to the local ship, so consumables land under YOU");
+                    __0 = local;
+                }
+                catch (Exception e) { Plugin.Log.LogWarning($"[Wheel] retarget failed: {e.Message}"); }
+            }
+        }
+
+        /// <summary>
         /// <c>Open()</c> calls <c>ShowTab</c> BEFORE it switches action maps and disables ship
         /// control. A tab that throws therefore takes the input contract with it: <c>isOpen</c>
         /// stays true, the canvas stays up, the ship map stays live and the shop map is never
