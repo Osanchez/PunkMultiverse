@@ -113,5 +113,22 @@ jobs:
             Write-Host 'mod.json already pinned to this release; nothing to commit.'
             exit 0
           }
-          git commit -m 'ci: pin download to ${{ steps.ver.outputs.tag }} [skip ci]'
+          # --no-verify is REQUIRED, not tidiness. build.ps1 ran above, and its line 21 sets
+          # core.hooksPath to .githooks in whatever clone it finds -- including this runner's. So
+          # without it the pre-commit hook fires here and bumps the version a second time, leaving
+          # mod.json advertising a release that was never built: the client then downloads the real
+          # artifact, reads the older number out of the packaged mod.json, and flags every install
+          # as an unverified version mismatch. Cost one wasted version (0.1.254) to find out.
+          git commit --no-verify -m 'ci: pin download to ${{ steps.ver.outputs.tag }} [skip ci]'
+
+          # Fail loudly if the commit carried anything beyond the two pinned fields. The bug above
+          # was silent precisely because the push succeeded -- the damage only appeared later, in a
+          # client dialog, on a machine nobody was watching.
+          $committed = (git show --pretty=format: --name-only HEAD | Where-Object { $_ }) -join ','
+          if ($committed -ne 'mod.json') { throw "pin commit touched '$committed', expected mod.json alone." }
+          $pinned = (Get-Content mod.json -Raw | ConvertFrom-Json).version
+          if ("v$pinned" -ne '${{ steps.ver.outputs.tag }}') {
+            throw "mod.json version '$pinned' no longer matches the released tag ${{ steps.ver.outputs.tag }}."
+          }
+
           git push origin HEAD:main
