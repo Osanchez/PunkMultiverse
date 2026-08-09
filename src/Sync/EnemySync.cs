@@ -327,8 +327,18 @@ namespace PunkMultiverse.Sync
                 { Plugin.Log.LogWarning($"[Availability] zombie repair failed for #{netId}: {e.Message}"); }
             }
             if (repaired > 0)
+            {
+                // Name them. A count alone cannot distinguish "repaired four different zombies"
+                // from "repaired the same one four times because the repair does not stick", and
+                // those want opposite responses.
+                var named = new System.Text.StringBuilder();
+                for (int i = 0; i < _zombieScratch.Count && i < 8; i++)
+                    named.Append(i == 0 ? " " : ", ").Append(NetDiag.Describe(_zombieScratch[i]));
+                if (_zombieScratch.Count > 8) named.Append(", …");
                 Plugin.Log.LogWarning($"[Availability] took over {repaired} entit{(repaired == 1 ? "y" : "ies")} " +
-                    "this machine already owned but was treating as someone else's copy — nobody was simulating them");
+                    "this machine already owned but was treating as someone else's copy — nobody was " +
+                    $"simulating them:{named}");
+            }
         }
 
         /// <summary>The authoritative position for a starved entity, when the owner has told us one
