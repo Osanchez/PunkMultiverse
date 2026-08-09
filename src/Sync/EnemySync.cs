@@ -254,6 +254,32 @@ namespace PunkMultiverse.Sync
         /// a live stream and a quiet one.</summary>
         private const float FedPuppetSeconds = 2f;
 
+        /// <summary>
+        /// Where the OWNER last said each entity was, from its segment roster audits. The audit
+        /// carries a position for every entry and this machine was throwing it away.
+        ///
+        /// It matters because the availability gate measures "is this close enough to rescue?"
+        /// against the local object's transform — and for a starved entity that transform is the
+        /// very thing that is stale. On 2026-08-09 that produced 22 refusals of "far&gt;45" in one
+        /// session for entities the player was standing next to: the distance was measured to
+        /// where the copy is stuck, not to where the enemy actually is.
+        /// </summary>
+        private static readonly Dictionary<int, (Vector2 pos, float at)> RosterPositions
+            = new Dictionary<int, (Vector2, float)>();
+
+        /// <summary>A roster position older than this is no better a guess than the stale local
+        /// pose, so it stops being used.</summary>
+        private const float RosterPositionFreshness = 15f;
+
+        /// <summary>The authoritative position for a starved entity, when the owner has told us one
+        /// recently. Null when only the local (possibly stale) pose exists.</summary>
+        private static Vector2? OwnerPositionOf(int netId)
+        {
+            if (!RosterPositions.TryGetValue(netId, out var known)) return null;
+            if (Time.unscaledTime - known.at > RosterPositionFreshness) return null;
+            return known.pos;
+        }
+
         /// <summary>Audits an entity with a QUIET stream must miss before the ghost heal removes
         /// it. Ten at the audit cadence is long enough that a fed-then-stopped entity gets its
         /// rescue attempts first, and short enough that a genuinely dead one still leaves.</summary>
@@ -1618,6 +1644,9 @@ namespace PunkMultiverse.Sync
             foreach (var (netId, lifetime, entityType, pos) in msg.Entries)
             {
                 listed.Add(netId);
+                // Keep the owner's word on where this is. For anything whose stream has gone
+                // quiet, this is the only non-stale position on this machine — see RosterPositions.
+                RosterPositions[netId] = (pos, Time.unscaledTime);
                 if (KilledNetIds.Contains(netId)) continue;
                 bool hasData = false;
                 if (NetIds.TryGetInstanceId(netId, out int instanceId))
@@ -1668,6 +1697,24 @@ namespace PunkMultiverse.Sync
                 // leaves eventually.
                 var streamPuppet = se.GetComponent<RemoteEntityPuppet>();
                 bool quiet = streamPuppet != null && streamPuppet.SnapshotAge > FedPuppetSeconds;
+
+                // A LIVE stream settles it outright: if the owner is sending us snapshots for this
+                // entity, the owner has this entity, and a roster that omits it is simply wrong.
+                // Proven 2026-08-09 by the cross-check this heal now sends before deleting — the
+                // other machine answered "live here, owner P1, puppet, snapshotAge=0.0s" about an
+                // entity P1 was about to delete as a ghost. Minutes later this machine deleted a
+                // Cross Tablet mini-boss standing next to the player, on a live stream, for the
+                // same reason. Never delete something the owner is still feeding us.
+                if (streamPuppet != null && !quiet)
+                {
+                    if (streak.count == 3)
+                        Plugin.Log.LogWarning($"[Heal] KEEPING {NetDiag.Describe(netId)} — the owner's roster " +
+                            $"omits it but the owner is still streaming it here (snapshotAge=" +
+                            $"{streamPuppet.SnapshotAge:0.00}s). The roster is wrong, not the world.");
+                    ReverseDivergenceStreaks[netId] = streak;
+                    continue;
+                }
+
                 int removeAt = quiet ? QuietGhostRemovalStreak : 3;
                 if (streak.count == removeAt && quiet)
                     Plugin.Log.LogWarning($"[Heal] {NetDiag.Describe(netId)} looks like a ghost but its stream " +
@@ -3362,7 +3409,18 @@ namespace PunkMultiverse.Sync
                     return false;
                 }
             }
-            distance = Vector2.Distance(entity.transform.position, ShipSync.LocalShip.transform.position);
+            // Measure to the best position that exists, not to the one that happens to be local.
+            // A puppet whose stream stopped is standing where it was last told to stand; asking
+            // "how far is that?" answers a question about the bug, not about the enemy. When the
+            // owner has said where it is recently (roster audit), that is the honest number.
+            var localPos = (Vector2)entity.transform.position;
+            var shipPos = (Vector2)ShipSync.LocalShip.transform.position;
+            bool poseStale = !puppet.HasSnapshot || puppet.SnapshotAge > FedPuppetSeconds;
+            Vector2? ownerPos = null;
+            if (poseStale && entity.EntityData != null
+                && NetIds.TryGetNetId(entity.EntityData.instanceId, out int poseNetId))
+                ownerPos = OwnerPositionOf(poseNetId);
+            distance = Vector2.Distance(ownerPos ?? localPos, shipPos);
             if (float.IsNaN(distance) || float.IsInfinity(distance))
             {
                 reason = "invalid-position";
