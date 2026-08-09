@@ -1291,6 +1291,15 @@ namespace PunkMultiverse.UI
             else if (_seedPanel != null && _seedPanel.activeSelf)
             {
                 grid.Add(new Selectable[] { _seedInput, UiTheme.ButtonOf(_pasteLabel), UiTheme.ButtonOf(_randomLabel) });
+                // GAME MODE and SERVER VISIBILITY were missing from this grid, so their four
+                // buttons reported nav=None and no controller or keyboard could reach them. A pad
+                // player could not pick Battle Royale at all, and could not opt a session into the
+                // public browser -- they were stuck on whatever the config defaulted to, with the
+                // buttons visible and inert. Down from the seed row also skipped two visible rows.
+                //
+                // Order here has to match the on-screen ladder or up/down jumps around the screen.
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_modeStandard), UiTheme.ButtonOf(_modeBr) });
+                grid.Add(new Selectable[] { UiTheme.ButtonOf(_visPrivate), UiTheme.ButtonOf(_visPublic) });
                 grid.Add(new Selectable[] { UiTheme.ButtonOf(_ffOff), UiTheme.ButtonOf(_ffOn) });
                 grid.Add(new Selectable[] { UiTheme.ButtonOf(_hpOff), UiTheme.ButtonOf(_hpOn) });
                 grid.Add(new Selectable[] { UiTheme.ButtonOf(_hostLobbyLabel) });

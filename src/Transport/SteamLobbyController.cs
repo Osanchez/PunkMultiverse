@@ -276,7 +276,7 @@ namespace PunkMultiverse.Transport
         {
             if (!InLobby) return "not in a lobby";
             var keys = new[] { KeyListed, KeyName, KeyMode, KeyRegion, KeyMaxPlayers, KeyPlayers,
-                               KeyMods, KeyModVersion, KeyGameVersion, KeyHostId };
+                               KeyMods, KeyPingLocation, KeyModVersion, KeyGameVersion, KeyHostId };
             var sb = new System.Text.StringBuilder();
             sb.Append("lobby ").Append(CurrentLobby.m_SteamID)
               .Append(" owner=").Append(IsLobbyOwner)
@@ -284,6 +284,11 @@ namespace PunkMultiverse.Transport
             foreach (var k in keys)
             {
                 var v = SteamMatchmaking.GetLobbyData(CurrentLobby, k);
+                // ploc is a ~100-char opaque blob. Printing it whole buries everything else and
+                // tells you nothing extra: what matters is whether it is present and non-trivial,
+                // because a browsing client either has something to compare or it does not.
+                if (k == KeyPingLocation && !string.IsNullOrEmpty(v))
+                    v = $"({v.Length} chars) {v.Substring(0, System.Math.Min(24, v.Length))}…";
                 sb.Append("\n  ").Append(k).Append(" = ")
                   .Append(string.IsNullOrEmpty(v) ? "(unset)" : v);
             }
