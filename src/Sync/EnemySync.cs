@@ -249,6 +249,12 @@ namespace PunkMultiverse.Sync
         /// <summary>Rate limit for the "why was this not rescued" line: a starved crowd would
         /// otherwise print one per entity per second.</summary>
         private static float _nextDeferralLogAt;
+
+        /// <summary>True while this machine has told the player its world updates are being
+        /// rate-reduced. Read by EntityForensics: an entity starving under a degraded link is the
+        /// bandwidth policy doing its job, and reads very differently from one starving on a
+        /// healthy link.</summary>
+        internal static bool LinkDegraded => _linkDistressAnnounced;
         private const float StarvedRequestRetry = 2f;
         // How long a DORMANT starving puppet waits for the residency->lease->wake chain before the
         // starved-rescue treats it like any other starved entity. Generous: the chain normally
@@ -2006,6 +2012,12 @@ namespace PunkMultiverse.Sync
             // WS7.3: a persistently starved link becomes an explicit, VISIBLE state instead of
             // mystery desync. 30s of continuous distress -> tell the player their world is being
             // rate-reduced (correctness traffic is unaffected; the world is choppy, not wrong).
+            //
+            // 2026-08-09: "choppy, not wrong" understates it at the extreme. In a live run the
+            // presentation plane fell 10.3 -> 1.3 KB/s while correctness held at 0.3, and the
+            // player was killed by a boss and fifteen adds that were all present in their world,
+            // standing at stale positions, invisible where it mattered. Forensics now prints this
+            // flag beside a starving entity so the reader can tell a sync fault from this policy.
             if (score >= 48)
             {
                 if (_linkDistressSince == 0f) _linkDistressSince = Time.unscaledTime;

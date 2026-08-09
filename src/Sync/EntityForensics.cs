@@ -70,6 +70,12 @@ namespace PunkMultiverse.Sync
         private const int MaxDumpsPerMinute = 6;
         private static byte _mark;
 
+        /// <summary>Never-streamed entities are reported without the distance gate, so they get
+        /// their own small ceiling: when a whole boss arena is starving, three reports tell the
+        /// story and the fourth only costs log.</summary>
+        private const int MaxNeverReports = 3;
+        private static int _neverReports;
+
         internal static void Reset()
         {
             Array.Clear(Ring, 0, Ring.Length);
@@ -81,6 +87,7 @@ namespace PunkMultiverse.Sync
             _owners.Clear();
             _lastPos.Clear();
             _reportedStarving.Clear();
+            _neverReports = 0;
         }
 
         private static bool BudgetAllows(int netId)
@@ -173,12 +180,32 @@ namespace PunkMultiverse.Sync
                 if (_reportedStarving.Contains(netId)) continue;
                 if (!IsRemotelyOwned(session, netId, out byte owner)) continue;
                 if (!view.TryGetValue(netId, out var se) || se == null) continue;
-                if (!NearLocalPlayer(netId)) continue;   // far away and quiet is dormancy, not a fault
                 var puppet = se.GetComponent<RemoteEntityPuppet>();
                 if (puppet == null || puppet.SnapshotAge <= StarvedSeconds) continue;
+
+                // The distance gate is right for a vanished entity and WRONG here, which cost a
+                // player their run on 2026-08-09: a replica that has never been told where it is
+                // stands at its stale spawn pose, so measuring the distance to THAT is measuring
+                // the bug's own displacement. The boss killing them was fifteen units away; its
+                // copy — the thing this loop can see — was not, so nothing was reported.
+                //
+                // An entity that has received NOTHING AT ALL is therefore reported wherever it
+                // stands, on its own small budget. A merely stale one still needs to be close,
+                // because distant and quiet is dormancy working as intended.
+                bool never = float.IsPositiveInfinity(puppet.SnapshotAge);
+                if (never)
+                {
+                    if (puppet.PuppetAge < 15f) continue;              // just born: give it a chance
+                    if (_neverReports >= MaxNeverReports) continue;    // a starving crowd is one story
+                    _neverReports++;
+                }
+                else if (!NearLocalPlayer(netId)) continue;
+
                 _reportedStarving.Add(netId);
                 Report(session, netId, 1,
-                    $"STARVED — owner P{owner + 1} has sent " + (float.IsPositiveInfinity(puppet.SnapshotAge) ? "NOTHING AT ALL" : $"nothing for {puppet.SnapshotAge:0.0}s") + ", but it is still live here");
+                    $"STARVED — owner P{owner + 1} has sent " +
+                    (never ? "NOTHING AT ALL" : $"nothing for {puppet.SnapshotAge:0.0}s") +
+                    $", but it is still live here (link={(EnemySync.LinkDegraded ? "DEGRADED — presentation is being rate-reduced" : "ok")})");
             }
         }
 
