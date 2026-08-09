@@ -65,6 +65,21 @@ namespace PunkMultiverse.Core
             return manifest;
         }
 
+        /// <summary>
+        /// Plugin GUIDs only, comma-separated — the `mods` column in the public server browser.
+        /// Versions are dropped deliberately: the browser filters on mod IDENTITY ("who runs
+        /// Multiverse plus a loot mod"), the HELLO handshake is what actually enforces versions,
+        /// and Steam caps how much lobby metadata a lobby may carry.
+        /// </summary>
+        public static string BrowserList(int max = 12)
+        {
+            var ids = (Local ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(e => e.Split('@')[0])
+                .Where(id => !string.IsNullOrEmpty(id))
+                .Take(max);
+            return string.Join(",", ids);
+        }
+
         public static bool Matches(string theirs) =>
             string.Equals(Local, theirs ?? "", StringComparison.Ordinal);
 

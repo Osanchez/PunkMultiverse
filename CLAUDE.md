@@ -84,6 +84,7 @@ Start with the area doc, then the API index for exact signatures.
 
 **Operations**
 - [`SERVER_DEPLOY.md`](docs/SERVER_DEPLOY.md) — dedicated server (plain `docker run`, not Pelican)
+- [`SERVER_LIST.md`](docs/SERVER_LIST.md) — opting a session into the public browser (PUNK Nexus)
 - [`TESTING.md`](docs/TESTING.md) · [`harness.md`](docs/harness.md) · [`test-scenarios.md`](docs/test-scenarios.md)
 
 ---

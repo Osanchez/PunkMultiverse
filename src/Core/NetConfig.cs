@@ -20,6 +20,9 @@ namespace PunkMultiverse
         public static ConfigEntry<float> ReceiveBudgetMs;
 
         public static ConfigEntry<string> ModManifestPolicy;
+        public static ConfigEntry<bool> PublishServer;
+        public static ConfigEntry<string> ServerName;
+        public static ConfigEntry<string> ServerRegion;
         public static ConfigEntry<float> EnemyHealthScalePerPlayer;
         public static ConfigEntry<float> CoinDespawnSeconds;
         public static ConfigEntry<float> JitterFloorUnitsPerSec;
@@ -231,6 +234,24 @@ namespace PunkMultiverse
                     "Reject refuses the join (naming the difference); Warn lets them join with a [!] MODS " +
                     "marker on the roster; Ignore skips the check entirely.",
                     new AcceptableValueList<string>("Reject", "Warn", "Ignore")));
+
+            PublishServer = cfg.Bind("Session", "PublishServer", false,
+                "Off by default and deliberately so: hosting normally creates a FRIENDS-ONLY Steam " +
+                "lobby that only your invitees and anyone you hand the code to can reach. Turn this " +
+                "on and your session is instead advertised publicly — it appears in the PUNK Nexus " +
+                "server browser and any stranger running the same mod version can join. Steam hosts " +
+                "the listing, so there is nothing to port-forward and no address of yours published; " +
+                "the lobby disappears the moment the last player leaves. Only meaningful on the " +
+                "Steam and SteamServer transports.");
+
+            ServerName = cfg.Bind("Session", "ServerName", "",
+                "Name shown in the server browser when PublishServer is on. Blank = your Steam " +
+                "persona name plus the game mode.");
+
+            ServerRegion = cfg.Bind("Session", "ServerRegion", "",
+                "Free-text region label shown in the server browser (for example EU, NA-East, " +
+                "OCE). Blank = no region shown. Purely informational — Steam routes the connection " +
+                "either way, and nothing filters on it being truthful.");
 
             AutoStart = cfg.Bind("Debug", "AutoStart", "None",
                 new ConfigDescription("DEV ONLY: start a session automatically a few seconds after boot.",

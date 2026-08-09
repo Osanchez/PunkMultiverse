@@ -335,7 +335,7 @@ namespace PunkMultiverse.Core
                 _pendingHpScaling = enemyHpScaling;
                 if (!UsingSteam) { HostSession(); return; }
                 EnsureLobbyController();
-                _lobby.CreateLobby(); // -> LobbyCreated -> HostSession()
+                _lobby.CreateLobby(BuildListing(mode)); // null unless PublishServer -> LobbyCreated -> HostSession()
             }
             catch (Exception e)
             {
@@ -389,6 +389,74 @@ namespace PunkMultiverse.Core
             }
         }
 
+        // ------------------------------------------------ public server browser
+
+        private float _nextListingPublishAt;
+
+        /// <summary>
+        /// The listing this session would advertise, or NULL when it should stay friends-only —
+        /// which is the default and the answer for every host that has not deliberately opted in.
+        /// Returning null is what keeps a private co-op session out of a public browser, so the
+        /// opt-in check belongs here and nowhere else.
+        /// </summary>
+        private Transport.LobbyListing BuildListing(Protocol.GameMode mode)
+        {
+            if (NetConfig.PublishServer == null || !NetConfig.PublishServer.Value) return null;
+
+            string name = NetConfig.ServerName.Value;
+            if (string.IsNullOrWhiteSpace(name)) name = DefaultServerName(mode);
+
+            return new Transport.LobbyListing
+            {
+                Name = Truncate(name.Trim(), 63),
+                Mode = mode == Protocol.GameMode.BattleRoyale ? "Battle Royale" : "Standard",
+                Region = Truncate((NetConfig.ServerRegion.Value ?? "").Trim(), 15),
+                MaxPlayers = MaxPlayers,
+                Players = CountPlayers(),
+                Mods = ModManifest.BrowserList(),
+            };
+        }
+
+        /// <summary>Persona name when Steam can tell us one — a browser row reading "Someone's game"
+        /// is more use to a stranger than a lobby id. Never fatal: a coordinator has no persona.</summary>
+        private static string DefaultServerName(Protocol.GameMode mode)
+        {
+            string persona = null;
+            try { if (Steamworks.SteamAPI.IsSteamRunning()) persona = Steamworks.SteamFriends.GetPersonaName(); }
+            catch { }
+            string suffix = mode == Protocol.GameMode.BattleRoyale ? "Battle Royale" : "Co-op";
+            return string.IsNullOrWhiteSpace(persona) ? $"PUNK {suffix}" : $"{persona}'s {suffix}";
+        }
+
+        private static string Truncate(string s, int max) =>
+            string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max);
+
+        /// <summary>Occupied player slots. The coordinator slot is excluded on purpose — a headless
+        /// server is not somebody a browsing player is deciding whether to play with.</summary>
+        private int CountPlayers()
+        {
+            int n = 0;
+            for (int i = 0; i < MaxPlayers; i++)
+                if (_players[i] != null) n++;
+            return n;
+        }
+
+        /// <summary>
+        /// Keep the public listing honest while the session runs: republish when the roster or the
+        /// ruleset changes, and pull the listing when the host turns publishing off mid-session.
+        /// Only the lobby owner writes — the controller enforces that, and joiners no-op here.
+        /// </summary>
+        private void MaintainListing()
+        {
+            if (_lobby == null || !_lobby.InLobby || !_lobby.IsLobbyOwner) return;
+            if (Time.unscaledTime < _nextListingPublishAt) return;
+            _nextListingPublishAt = Time.unscaledTime + 3f;
+
+            var listing = BuildListing(LobbyMode);
+            if (listing == null) { _lobby.Unlist(); return; }
+            _lobby.PublishListing(listing);
+        }
+
         /// <summary>Keep a SteamServer session's discovery lobby open and its allowlist fresh (#2/#3).
         /// The invite OWNER — a listen-server host, or the player that launched a sidecar coordinator —
         /// holds a Steam lobby stamped with the server id so friends join-by-invite; the same player
@@ -411,7 +479,7 @@ namespace PunkMultiverse.Core
                 if (Time.unscaledTime < _nextServerLobbyRetryAt) return; // backoff after a failure
                 _serverLobbyRequested = true;
                 EnsureLobbyController();
-                _lobby.CreateServerLobby(serverId);
+                _lobby.CreateServerLobby(serverId, BuildListing(LobbyMode));
                 return;
             }
 
@@ -2132,6 +2200,9 @@ namespace PunkMultiverse.Core
                 // Sidecar parity (#2/#3): the invite owner opens/refreshes the SteamServer discovery
                 // lobby, and (coordinator sessions) relays its membership so joins are lobby-gated.
                 MaintainServerLobby();
+
+                // Public browser (docs/SERVER_LIST.md): a no-op unless Session.PublishServer is on.
+                MaintainListing();
 
                 // DEV autostart: auto-ready in lobby, host auto-launches when everyone is ready.
                 // Coordinator: keep a session admin designated (the first real joiner gets host-like
