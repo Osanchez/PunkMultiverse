@@ -36,6 +36,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        # The pin step below commits back to main, which needs the credentials kept.
+        with:
+          persist-credentials: true
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
@@ -74,3 +77,41 @@ jobs:
           name: PunkMultiverse ${{ steps.ver.outputs.tag }}
           files: dist/*.zip
           generate_release_notes: true
+
+      - name: Setup Python
+        if: "${{ !contains(github.event.head_commit.message, 'ci: pin download') }}"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Checksums must be a POST-BUILD step: the thing hashed is the artifact this run just
+      # published. PUNK Nexus refuses an install whose bytes do not match, so this is what makes a
+      # zip swapped at the download url afterwards get rejected instead of installed.
+      #
+      # TWO GUARDS AGAINST AN ENDLESS RELEASE LOOP, because this commit lands on main and main is
+      # what triggers this workflow:
+      #
+      #   1. [skip ci] in the commit message, which stops the push creating a run at all.
+      #   2. The `if:` above and below, which skips this step when the run WAS triggered by that
+      #      commit. Idempotence alone cannot be guard 2 here: a rebuild produces different bytes
+      #      (Compress-Archive stamps timestamps) under the same version tag, so "nothing changed"
+      #      is never true and a loop would run forever writing new hashes.
+      #
+      # Guard 1 is the one that normally fires; guard 2 is there because it does not depend on
+      # GitHub honoring a magic string in a commit message.
+      - name: Pin download and checksum to this release
+        if: "${{ !contains(github.event.head_commit.message, 'ci: pin download') }}"
+        shell: pwsh
+        run: |
+          python tools/pin-download.py --dist dist --tag '${{ steps.ver.outputs.tag }}'
+          if ($LASTEXITCODE -ne 0) { throw "pin-download failed." }
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add mod.json
+          if (git diff --cached --quiet) {
+            Write-Host 'mod.json already pinned to this release; nothing to commit.'
+            exit 0
+          }
+          git commit -m 'ci: pin download to ${{ steps.ver.outputs.tag }} [skip ci]'
+          git push origin HEAD:main

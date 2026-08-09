@@ -3,9 +3,9 @@
   "id": "PunkMultiverse",
   "name": "Punk Multiverse",
   "author": "Trihardest",
-  "version": "0.1.252",
+  "version": "0.1.253",
   "gameVersion": "0.12.11",
-  "description": "Online co-op and battle royale for PUNK — entity replication, dedicated servers, lobby and direct connect, ring schedule and contested loot.",
+  "description": "Online co-op and battle royale for PUNK \u2014 entity replication, dedicated servers, lobby and direct connect, ring schedule and contested loot.",
   "category": "Multiplayer",
   "iconUrl": null,
   "homepage": "https://github.com/Osanchez/PunkMultiverse",
@@ -17,8 +17,7 @@
   "pluginFolder": "PunkMultiverse",
   "dependencies": [],
   "download": {
-    "repo": "Osanchez/PunkMultiverse",
-    "assetPattern": "PunkMultiverse-v*.zip"
+    "url": "https://github.com/Osanchez/PunkMultiverse/releases/download/v0.1.252/PunkMultiverse-v0.1.252.zip"
   },
-  "sha256": null
+  "sha256": "a25390b10c18c43a7a1e55e118493d94a80aaa83f8569680bad68bca7a20497c"
 }
