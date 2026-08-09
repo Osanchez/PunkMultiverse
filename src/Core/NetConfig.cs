@@ -35,6 +35,7 @@ namespace PunkMultiverse
         public static ConfigEntry<bool> DebugMenuKey;
         public static ConfigEntry<int> ExitWatchdogSeconds;
         public static ConfigEntry<bool> MenuStateRepair;
+        public static ConfigEntry<bool> EntityForensics;
         public static ConfigEntry<string> CommandFile;
 
         public static ConfigEntry<bool> TrackerNames;
@@ -282,6 +283,12 @@ namespace PunkMultiverse
                 "process. Steam's client library intermittently deadlocks process exit, leaving a " +
                 "windowless Punk.exe running that you cannot see but Steam still counts as playing. " +
                 "0 disables the guarantee.");
+
+            EntityForensics = cfg.Bind("Debug", "EntityForensics", true,
+                "When an enemy disappears for one player only, print what happened to it here over " +
+                "the last 30 seconds and ask the other players to print what they see for the same " +
+                "entity. Quiet in a healthy run — every report is capped (one per entity, six per " +
+                "minute). Turn off only if the reports themselves become a problem.");
 
             MenuStateRepair = cfg.Bind("Debug", "MenuStateRepair", true,
                 "Safety net: if the ship menu is open but its state is self-contradictory for two " +

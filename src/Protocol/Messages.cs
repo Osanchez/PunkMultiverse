@@ -2179,6 +2179,33 @@ namespace PunkMultiverse.Protocol
         };
     }
 
+    /// <summary>"I lost sight of this entity — say what you see." Carries the asking slot and a
+    /// mark number so both machines' logs can be lined up on the same event.</summary>
+    public struct DiagMarkMsg
+    {
+        public int NetId;
+        public byte Slot;      // who is asking
+        public byte Mark;      // their mark counter, wraps; only needs to be unique in a session
+        public byte Reason;    // 0 = vanished locally, 1 = snapshots starved, 2 = asked by hand
+
+        public void Write(NetWriter w)
+        {
+            w.WriteMsgType(MsgType.DiagMark);
+            w.WriteVarUInt((uint)NetId);
+            w.WriteByte(Slot);
+            w.WriteByte(Mark);
+            w.WriteByte(Reason);
+        }
+
+        public static DiagMarkMsg Read(NetReader r) => new DiagMarkMsg
+        {
+            NetId = (int)r.ReadVarUInt(),
+            Slot = r.ReadByte(),
+            Mark = r.ReadByte(),
+            Reason = r.ReadByte(),
+        };
+    }
+
     public struct ScannerUsedMsg
     {
         public int NetId;

@@ -79,6 +79,14 @@ namespace PunkMultiverse.Sync
         internal static void Destroy(SavableEntity se)
         {
             if (se == null) return;
+            // Note before unsubscribing — the data (and with it the netId) is still reachable, and
+            // "the mod destroyed this one" is the single most useful line in a forensics dump.
+            try
+            {
+                var data = se.EntityData;
+                if (data != null) EntityForensics.NoteInstance(data.instanceId, EntityForensics.Kind.Destroy, "mod destroy");
+            }
+            catch { }
             Unsubscribe(se);
             UnityEngine.Object.Destroy(se.gameObject);
         }

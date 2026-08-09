@@ -61,6 +61,7 @@ namespace PunkMultiverse.Core
             Patches.VaultDuplicateGuard.Reset();
             Sync.EntityLifetime.Reset();
             Patches.ShipLogGuard.Reset();
+            Sync.EntityForensics.Reset();
         }
 
         /// <summary>Runs at the poll cadence while god is armed: re-assert infinite weapon
@@ -2006,6 +2007,16 @@ namespace PunkMultiverse.Core
                     if (nearestStation == null) { Out("shopopen: no unlocked station in the scene"); return; }
                     nearestStation.OnUseActivated(interactor);
                     Out($"shopopen: activated station at dist={nearestDist:0.0}");
+                    return;
+                }
+                case "forensics":
+                {
+                    // Force the report the detectors would have produced, for a netId you already
+                    // suspect (from `entities` / `sync`). Never rate-limited: you asked.
+                    if (parts.Length < 2 || !int.TryParse(parts[1], out int fNetId))
+                    { Out("forensics <netId>"); return; }
+                    Sync.EntityForensics.DumpOnDemand(session, fNetId);
+                    Out($"forensics: reported #{fNetId} and asked the other players");
                     return;
                 }
                 case "menustate":

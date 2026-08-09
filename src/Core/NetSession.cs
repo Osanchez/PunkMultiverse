@@ -3667,6 +3667,13 @@ namespace PunkMultiverse.Core
                     Sync.MinionSync.ApplyMinionSpawned(minion);
                     break;
                 }
+                case MsgType.DiagMark:
+                {
+                    var mark = DiagMarkMsg.Read(_reader);
+                    RelayToOthers(peer, channel, reliable: true);
+                    Sync.EntityForensics.ApplyMark(mark);
+                    break;
+                }
                 case MsgType.StationUpgrade:
                 {
                     var upgrade = StationUpgradeMsg.Read(_reader);

@@ -99,6 +99,38 @@ Grab from EVERY machine involved:
 Log markers worth searching: `GO LIVE`, `checksum`, `manifest applied` (matched/missing counts),
 `[Auth]`, `REJOINED`, `[Stash]`, `Error`.
 
+### "An enemy vanished for one of us" — read `[Forensics]` first
+
+The mod watches for this by itself; you do not press anything. Once a second it diffs the live
+entity set, and when something that is **someone else's to simulate** disappears **within 45 units
+of you** without a kill on record — or sits there live but starved of snapshots for six seconds —
+it reports, and asks every peer to print their view of the same entity under one mark number:
+
+```
+[Forensics] mark #3: #6051 VANISHED here while in view — owner P2, no kill recorded
+[Forensics]   #6051 history:
+           -12.4s Spawn SpawnObjectForEntity
+           -3.1s OwnerChange P1 -> P2
+           -0.4s Unload UnloadEntity
+[Forensics] mark #3: asked the other players what they see for #6051
+```
+
+and on the other machine, same run, same mark:
+
+```
+[Forensics] mark #3 from P1 (#6051 vanished there) — live here, owner P2, simulated by me, pos=(1041,1024)
+```
+
+**The pair is the diagnosis.** "Gone here / alive and streaming there" is a delivery or residency
+fault; "gone on both, nobody killed it" is a lifetime fault. One machine's log alone can only say
+that something is missing.
+
+Notes: 45 units is deliberate — entities are *supposed* to vanish when you fly away, so only a
+disappearance you could have been looking at counts. Reports are capped at one per entity per run
+and six per minute, so a mass desync cannot flood the log. `forensics <netId>` (devcmd) forces the
+same report by hand for an entity you already suspect, and is never rate-limited. Switch the whole
+thing off with `[Debug] EntityForensics = false`.
+
 ## 4. Known behavior (not bugs)
 
 - Loot/gold/vault/shop are per-player by design; shop stock differs per player.
