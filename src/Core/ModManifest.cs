@@ -81,6 +81,7 @@ namespace PunkMultiverse.Core
         public static string BrowserList(int max = 12)
         {
             var ids = new List<string>();
+            var withCatalogId = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             try
             {
@@ -89,7 +90,9 @@ namespace PunkMultiverse.Core
                     foreach (var dir in Directory.GetDirectories(pluginRoot).OrderBy(d => d, StringComparer.Ordinal))
                     {
                         var id = ReadCatalogId(Path.Combine(dir, "mod.json"));
-                        if (!string.IsNullOrEmpty(id) && !ids.Contains(id)) ids.Add(id);
+                        if (string.IsNullOrEmpty(id)) continue;
+                        if (!ids.Contains(id)) ids.Add(id);
+                        withCatalogId.Add(Path.GetFullPath(dir));
                     }
             }
             catch (Exception e)
@@ -98,12 +101,67 @@ namespace PunkMultiverse.Core
             }
 
             // Anything without a catalog id still deserves to be visible, so top up from the GUIDs.
+            //
+            // But skip the GUID of a plugin whose folder ALREADY supplied a catalog id, or the same
+            // mod is advertised twice. Deduping by string cannot catch that: the two spellings of
+            // this mod are "PunkMultiverse" and "com.osanchez.punkmultiverse", which share no
+            // characters to compare. The live listing read back from Steam was
+            //
+            //     mods = PunkMultiverse,com.andy.weaponforge,com.osanchez.punkmultiverse
+            //
+            // -- this mod under both names. A browser resolving that list sees a mod it must
+            // install twice, and the whole point of advertising catalog ids was that the list is
+            // resolvable. Identity here is the plugin FOLDER, which is what mod.json describes and
+            // what the GUID's assembly sits in.
+            var claimed = ClaimedGuids(withCatalogId);
             foreach (var guid in (Local ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
                          .Select(e => e.Split('@')[0])
                          .Where(g => !string.IsNullOrEmpty(g)))
-                if (ids.Count < max && !ids.Contains(guid)) ids.Add(guid);
+                if (ids.Count < max && !ids.Contains(guid) && !claimed.Contains(guid)) ids.Add(guid);
 
             return string.Join(",", ids.Take(max));
+        }
+
+        /// <summary>
+        /// GUIDs of plugins living in a folder that already advertised a catalog id, so the GUID
+        /// top-up can leave them out. Best effort: an assembly with no readable Location simply is
+        /// not claimed, which lands on the old behaviour (listed twice) rather than on dropping a
+        /// mod from the listing entirely. Over-listing is a cosmetic bug; under-listing would make
+        /// a joinable server look incompatible.
+        /// </summary>
+        private static HashSet<string> ClaimedGuids(HashSet<string> folders)
+        {
+            var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (folders == null || folders.Count == 0) return claimed;
+
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string dir;
+                try
+                {
+                    if (asm.IsDynamic) continue;
+                    var loc = asm.Location;
+                    if (string.IsNullOrEmpty(loc)) continue;
+                    dir = Path.GetFullPath(Path.GetDirectoryName(loc));
+                }
+                catch { continue; }
+                if (!folders.Contains(dir)) continue;
+
+                Type[] types;
+                try { types = asm.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { types = e.Types; }
+                catch { continue; }
+                foreach (var type in types)
+                {
+                    if (type == null) continue;
+                    object[] attrs;
+                    try { attrs = type.GetCustomAttributes(typeof(BepInEx.BepInPlugin), false); }
+                    catch { continue; }
+                    foreach (BepInEx.BepInPlugin bp in attrs)
+                        if (!string.IsNullOrEmpty(bp.GUID)) claimed.Add(bp.GUID);
+                }
+            }
+            return claimed;
         }
 
         /// <summary>

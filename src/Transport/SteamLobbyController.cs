@@ -151,6 +151,7 @@ namespace PunkMultiverse.Transport
         private ulong _pendingServerId; // non-zero => the lobby being created is a SteamServer discovery lobby
         private LobbyListing _pendingListing; // non-null => create it public and stamp browser keys
         private string _publishedFingerprint;
+        private int _loggedPlayers = -1;   // -1 = nothing logged yet; see PublishListing
 
         /// <summary>Public lobbies are browsable by strangers; friends-only ones are reachable by
         /// invite or code alone. The listing decides, and there is no third state.</summary>
@@ -215,9 +216,24 @@ namespace PunkMultiverse.Transport
 
             bool first = _publishedFingerprint == null;
             _publishedFingerprint = listing.Fingerprint;
-            if (first)
+
+            // Log the first publish, and any later change to the numbers a browser shows.
+            //
+            // Logging only the first publish made this line lie about the thing it exists to
+            // report. The first publish happens BEFORE the host is seated in the roster, so it
+            // always read "0/N"; MaintainListing corrected the data three seconds later and said
+            // nothing, leaving a permanent "0/4" in the log for a session that was correctly
+            // listed as 1/4. Anyone checking the listing from the log -- which is what the test
+            // plan asks for -- would read it as broken and go hunting.
+            //
+            // Gated on the count actually changing, so a held session does not spam: the listing
+            // republishes every few seconds but only moves when someone joins or leaves.
+            if (first || listing.Players != _loggedPlayers)
+            {
+                _loggedPlayers = listing.Players;
                 Plugin.Log.LogInfo($"[Lobby] listed publicly as \"{listing.Name}\" "
                     + $"({listing.Mode}, {listing.Players}/{listing.MaxPlayers})");
+            }
         }
 
         /// <summary>
@@ -232,11 +248,42 @@ namespace PunkMultiverse.Transport
             SteamMatchmaking.SetLobbyType(CurrentLobby, ELobbyType.k_ELobbyTypeFriendsOnly);
             SteamMatchmaking.SetLobbyJoinable(CurrentLobby, true);
             _publishedFingerprint = null;
+            _loggedPlayers = -1;
             Plugin.Log.LogInfo("[Lobby] unlisted — back to friends-only");
         }
 
         /// <summary>True when this lobby is currently advertised in the public server browser.</summary>
         public bool IsListed => _publishedFingerprint != null;
+
+        /// <summary>
+        /// Read our own listing back out of Steam, for the `lobbydata` devcmd.
+        ///
+        /// The "[Lobby] listed publicly as …" line prints only on the FIRST publish, and the first
+        /// publish happens before the host is seated in the roster — so it reports 0 players and is
+        /// already stale by the time anyone reads it. MaintainListing corrects the data three
+        /// seconds later without saying so. That leaves the log actively misleading about the one
+        /// number a server browser cares about, and no way to tell a stale log line from a genuinely
+        /// wrong listing. This reads what Steam actually holds, which is what a browser will see.
+        /// </summary>
+        public string DescribeListing()
+        {
+            if (!InLobby) return "not in a lobby";
+            var keys = new[] { KeyListed, KeyName, KeyMode, KeyRegion, KeyMaxPlayers, KeyPlayers,
+                               KeyMods, KeyModVersion, KeyGameVersion, KeyHostId };
+            var sb = new System.Text.StringBuilder();
+            sb.Append("lobby ").Append(CurrentLobby.m_SteamID)
+              .Append(" owner=").Append(IsLobbyOwner)
+              .Append(" listed=").Append(IsListed);
+            foreach (var k in keys)
+            {
+                var v = SteamMatchmaking.GetLobbyData(CurrentLobby, k);
+                sb.Append("\n  ").Append(k).Append(" = ")
+                  .Append(string.IsNullOrEmpty(v) ? "(unset)" : v);
+            }
+            sb.Append("\n  members(GetNumLobbyMembers) = ")
+              .Append(SteamMatchmaking.GetNumLobbyMembers(CurrentLobby));
+            return sb.ToString();
+        }
 
         private void OnLobbyCreated(LobbyCreated_t result, bool ioFailure)
         {
@@ -260,6 +307,7 @@ namespace PunkMultiverse.Transport
             // Stamp the browser keys in the same breath as the identity keys: a lobby that appears
             // in the list before it says what it is shows up as an unnamed row.
             _publishedFingerprint = null;
+            _loggedPlayers = -1;
             if (_pendingListing != null) PublishListing(_pendingListing);
 
             LobbyCreated?.Invoke(CurrentLobby);
@@ -331,6 +379,7 @@ namespace PunkMultiverse.Transport
             Plugin.Log.LogInfo($"[Lobby] left {CurrentLobby.m_SteamID}");
             CurrentLobby = default;
             _publishedFingerprint = null;
+            _loggedPlayers = -1;
             _pendingListing = null;
         }
 
@@ -354,6 +403,7 @@ namespace PunkMultiverse.Transport
             SteamMatchmaking.SetLobbyData(CurrentLobby, KeyListed, "");
             SteamMatchmaking.SetLobbyType(CurrentLobby, ELobbyType.k_ELobbyTypeFriendsOnly);
             _publishedFingerprint = null;
+            _loggedPlayers = -1;
 
             Plugin.Log.LogInfo($"[Lobby] took over lobby {CurrentLobby.m_SteamID} as the new host");
         }

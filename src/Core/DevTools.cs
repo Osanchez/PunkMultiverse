@@ -1851,6 +1851,17 @@ namespace PunkMultiverse.Core
                     }
                     return;
                 }
+                case "lobbydata":
+                {
+                    // What a server browser would actually see. The "[Lobby] listed publicly" line
+                    // fires once, before the host is seated, so it reports 0 players and never
+                    // corrects itself in the log even though the data does.
+                    var lobby = session.Lobby;
+                    if (lobby == null) { Out("lobbydata: no Steam lobby controller (not a Steam session)"); return; }
+                    Out("lobbydata: " + lobby.DescribeListing());
+                    return;
+                }
+
                 case "servercode":
                 {
                     // Print + copy the SteamServer join code to share with a remote friend.
