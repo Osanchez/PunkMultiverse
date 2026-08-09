@@ -103,6 +103,7 @@ namespace PunkMultiverse
             _runtime.AddComponent<Scoreboard>();
             _runtime.AddComponent<ShipStatusBars>();
             _runtime.AddComponent<MenuStateWatch.Ticker>();  // ship-menu invariants -> [MenuState]
+            _runtime.AddComponent<LogFlush>();               // our log reaches disk before the crash does
             _runtime.AddComponent<SpectatorCam>();
             _runtime.AddComponent<Toast>();
             _runtime.AddComponent<KillFeed>();   // deaths get their own top-right channel
