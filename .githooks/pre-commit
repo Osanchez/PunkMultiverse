@@ -38,9 +38,21 @@ git add "$csproj"
 # mod.json is what PUNK Nexus fetches to decide "is there a newer version". If it kept the old
 # number while the csproj moved on, the client would sit on a stale version forever and no one
 # would see the update. Bump it in the same commit so the published manifest can never lag.
+#
+# Replace WHATEVER version is in there, rather than matching the one the csproj is leaving behind.
+# Anchoring on "$current" meant the fix only worked while the two files already agreed: bump the
+# csproj by hand (as a release merge does) and mod.json is left at the older number, so the next
+# commit's sed finds no match, changes nothing, and `git add` stages an unchanged file — silently.
+# build.ps1 -Zip does catch the mismatch, so the cost is a failed CI release rather than a bad
+# one, but it fails after the push, which is the expensive place to find out.
 if [ -f "mod.json" ]; then
-    sed -i "s|\"version\"[[:space:]]*:[[:space:]]*\"$current\"|\"version\": \"$next\"|" "mod.json"
+    sed -i "s|\"version\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"version\": \"$next\"|" "mod.json"
     git add "mod.json"
+    got=$(sed -n 's|.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*|\1|p' "mod.json" | head -1)
+    if [ "$got" != "$next" ]; then
+        echo "pre-commit: FAILED to set mod.json version to $next (it reads '$got') — fix by hand" >&2
+        exit 1
+    fi
 fi
 
 echo "pre-commit: mod version $current -> $next"
