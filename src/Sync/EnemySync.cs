@@ -271,6 +271,11 @@ namespace PunkMultiverse.Sync
         /// pose, so it stops being used.</summary>
         private const float RosterPositionFreshness = 15f;
 
+        /// <summary>Listed by its owner in ANY segment roster this recently = alive, whatever the
+        /// roster of the segment we filed it under says. Comfortably longer than the audit cycle
+        /// (1 s per tick, four segments at a time) so a slow round-robin cannot look like death.</summary>
+        private const float RosterListingKeepAlive = 10f;
+
         /// <summary>The authoritative position for a starved entity, when the owner has told us one
         /// recently. Null when only the local (possibly stale) pose exists.</summary>
         private static Vector2? OwnerPositionOf(int netId)
@@ -1695,6 +1700,31 @@ namespace PunkMultiverse.Sync
                 // out of 36). So a quiet entity is exactly the one we must NOT delete on this
                 // evidence; give it a much longer rope instead, so a genuinely dead one still
                 // leaves eventually.
+                // ROOT CAUSE of the false ghosts, found 2026-08-09 by reading both sides:
+                //
+                //   owner  — files each entity under SimulationSegments[netId] and lists a segment's
+                //            roster from that map;
+                //   viewer — looks for its copy in the roster of the segment it last RECEIVED the
+                //            entity under (ReceivedSegments).
+                //
+                // An enemy that chases a player crosses a boundary; the owner refiles it and its old
+                // segment's roster correctly stops listing it. If the update did not reach us — and
+                // this evening showed a dozen ways that happens — we are comparing against the wrong
+                // roster and calling a living enemy a ghost.
+                //
+                // But the owner does mention it, in ANOTHER segment's roster, and every audit is
+                // already recorded per netId. So: recently listed anywhere by its owner means alive.
+                if (RosterPositions.TryGetValue(netId, out var seen)
+                    && Time.unscaledTime - seen.at <= RosterListingKeepAlive)
+                {
+                    if (streak.count == 3)
+                        Plugin.Log.LogWarning($"[Heal] KEEPING {NetDiag.Describe(netId)} — missing from segment " +
+                            $"{key}'s roster, but its owner listed it elsewhere {Time.unscaledTime - seen.at:0.0}s " +
+                            "ago. It moved; our segment filing is what is stale.");
+                    ReverseDivergenceStreaks[netId] = streak;
+                    continue;
+                }
+
                 var streamPuppet = se.GetComponent<RemoteEntityPuppet>();
                 bool quiet = streamPuppet != null && streamPuppet.SnapshotAge > FedPuppetSeconds;
 
