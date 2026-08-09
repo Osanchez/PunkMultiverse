@@ -4345,6 +4345,10 @@ namespace PunkMultiverse.Sync
             InstrumentationCounters.DivergenceDetected();
             Plugin.Log.LogWarning($"[Heal] removing GHOST {NetDiag.Describe(netId)} in segment {key} — " +
                 $"live here, absent from owner P{ownerSlot + 1}'s roster for 3 consecutive audits");
+            // Ask the other machines what they see BEFORE the object dies. Their answer is the only
+            // way to tell "the roster was right, this was a leftover" from "the roster was wrong and
+            // we just deleted an enemy the other player is still fighting" (see EntityForensics).
+            EntityForensics.ReportGhostRemoval(netId, NetDiag.Describe(netId));
             KilledNetIds.Add(netId);
             ReceivedSegments.Remove(netId);
             if (NetIds.TryGetInstanceId(netId, out int instanceId))

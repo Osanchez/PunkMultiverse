@@ -257,7 +257,10 @@ namespace PunkMultiverse.Sync
         {
             try
             {
-                string reason = msg.Reason == 0 ? "vanished there" : msg.Reason == 1 ? "starved there" : "asked by hand";
+                string reason = msg.Reason == 0 ? "vanished there"
+                    : msg.Reason == 1 ? "starved there"
+                    : msg.Reason == 3 ? "ABOUT TO BE DELETED there as a ghost"
+                    : "asked by hand";
                 var view = EnemySync.LiveView;
                 bool live = view != null && view.TryGetValue(msg.NetId, out var se) && se != null;
                 string detail = "not live here";
@@ -277,6 +280,38 @@ namespace PunkMultiverse.Sync
                 DumpRing(msg.NetId);
             }
             catch (Exception e) { Plugin.Log.LogWarning($"[Forensics] mark apply failed: {e.Message}"); }
+        }
+
+        /// <summary>
+        /// The ghost heal is about to DELETE an entity this machine holds live, because the owner's
+        /// roster has not listed it for three audits. That is the most consequential thing this mod
+        /// does to a world unasked, and until now it happened with a single line and no second
+        /// opinion — 2026-08-09, eight of them in one session, while the other player still had the
+        /// enemies standing in front of him.
+        ///
+        /// So ask him. The mark goes out before the object dies, and his answer ("live here, owner
+        /// P2, snapshotAge=0.2s") is the proof that the roster was wrong rather than the world.
+        /// Never rate-limited away and not counted against the starved budget: a wrong deletion is
+        /// not the same story as a starved puppet, and we want every one of them.
+        /// </summary>
+        internal static void ReportGhostRemoval(int netId, string describe)
+        {
+            var session = NetSession.Instance;
+            if (session == null || !NetConfig.EntityForensics.Value) return;
+            try
+            {
+                byte mark = ++_mark;
+                Plugin.Log.LogWarning($"[Forensics] mark #{mark}: DELETING {describe} as a ghost — " +
+                                      "it is live here and the owner's roster has not listed it for 3 audits. " +
+                                      "If the other player still sees it, the roster is wrong, not the world.");
+                Note(netId, Kind.Kill, "ghost heal removal");
+                DumpRing(netId);
+                var writer = new NetWriter(16);
+                new DiagMarkMsg { NetId = netId, Slot = (byte)session.LocalSlot, Mark = mark, Reason = 3 }
+                    .Write(writer);
+                session.SendToAll(NetChannel.Control, writer.ToSegment(), reliable: true);
+            }
+            catch (Exception e) { Plugin.Log.LogWarning($"[Forensics] ghost report failed: {e.Message}"); }
         }
 
         /// <summary>The `forensics [netId]` devcmd, and anything else that wants a dump on demand.</summary>
