@@ -78,6 +78,23 @@ Delete stale `devcmd.txt` files before launching.
 
 ## Known quirks (context that saves you an hour)
 
+- **THE INSTALL-DRIFT TRAP (check before the first launch)**: `soak.ps1` arms only the HOST
+  config — the client install's persisted `config.cfg` keeps whatever the last test left
+  (2026-08-09: `Transport = Udp` port 7793 from an old UDP run = client dials a dead port
+  while the host hosts loopback, soak dies at go-live). Verify the client's `Transport =
+  Loopback`, `AutoStart = Join`, `AutoFlySeconds = 0` first. And the two installs' WeaponForge
+  content must be IDENTICAL — a divergent `plugins\WeaponForge\weapons\` set is a
+  `modules=N/hash` determinism mismatch ("World generation diverged", terrain/entity hashes
+  all EQUAL, only the modules count differs). `robocopy /MIR` host→client fixes it.
+- **A killed soak leaves the HOST config armed** (AutoStart=Host, AutoLaunchRun=true —
+  restore runs only on clean exit), and the next soak then backs up the ARMED state, so the
+  chain never self-heals. After any aborted soak, hand-restore the host keys to their
+  documented defaults (`AutoStart=None`, `AutoReady/AutoLaunchRun/SyncDiagnostics=false`,
+  `AutoFlySeconds=0`, `CommandFile=`, `Transport=Steam`) or the player's next real launch
+  auto-hosts a loopback run.
+- `[Heal] KEEPING ...` lines are keep-DECISIONS (entities spared from a wrong ghost
+  deletion), not repairs — soak's heal gate excludes them by pattern; do the same when
+  grading by hand.
 - **THE CLOCK-DILATION TRAP (do this first)**: an unfocused instance with vsync on advances
   its entire game clock a fixed 1/refresh per frame — under load its sim runs at ~0.4x real
   time, every viewer's interpolation starves (~1500 underruns/s, delay pinned at 250ms), and
