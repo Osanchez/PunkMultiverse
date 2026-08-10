@@ -131,4 +131,20 @@ jobs:
             throw "mod.json version '$pinned' no longer matches the released tag ${{ steps.ver.outputs.tag }}."
           }
 
-          git push origin HEAD:main
+          # Rebase-and-retry rather than a bare push. This step runs minutes after the checkout, so
+          # main can easily have moved on -- and when it has, a plain `git push HEAD:main` is
+          # rejected and the checksum for a release that IS ALREADY PUBLISHED never lands. That is
+          # not a harmless CI failure: the manifest keeps pointing at the previous release, and if
+          # that release's asset was rebuilt the declared hash no longer matches it, so the client
+          # refuses to install the mod at all until someone notices.
+          $pushed = $false
+          foreach ($attempt in 1..3) {
+            git push origin HEAD:main 2>&1 | Write-Host
+            if ($LASTEXITCODE -eq 0) { $pushed = $true; break }
+
+            Write-Host "push rejected (attempt $attempt); rebasing onto the current main"
+            git fetch origin main
+            git rebase origin/main
+            if ($LASTEXITCODE -ne 0) { git rebase --abort; throw "could not rebase the pin commit onto main." }
+          }
+          if (-not $pushed) { throw "could not push the pin commit after 3 attempts." }
