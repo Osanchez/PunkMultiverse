@@ -101,6 +101,10 @@ namespace PunkMultiverse.Sync
         // only the current canonical lifetime; Lifetimes retains every concrete object until its
         // OnDestroy so superseded objects can be quarantined instead of accidentally simulating.
         private static readonly Dictionary<int, SavableEntity> LiveEntities = new Dictionary<int, SavableEntity>();
+
+        /// <summary>Read-only window onto the canonical lifetimes, for diagnostics that must not
+        /// touch them (diffing it once a second is how a disappearance gets noticed).</summary>
+        internal static IReadOnlyDictionary<int, SavableEntity> LiveView => LiveEntities;
         /// <summary>Streamed-in replica count — bounded by the resident world; unbounded growth is a
         /// registration leak (dead entities never removed).</summary>
         internal static int LiveEntityCount => LiveEntities.Count;
@@ -241,6 +245,120 @@ namespace PunkMultiverse.Sync
         private const float StarvedNeverAfter = 3f;
         private const float StarvedCandidateResidence = 2f;
         private const float StarvedCandidateRecheck = 1f;
+
+        /// <summary>Rate limit for the "why was this not rescued" line: a starved crowd would
+        /// otherwise print one per entity per second.</summary>
+        private static float _nextDeferralLogAt;
+
+        /// <summary>The mod's own "this puppet is being fed" threshold, reused as the line between
+        /// a live stream and a quiet one.</summary>
+        private const float FedPuppetSeconds = 2f;
+
+        /// <summary>
+        /// Where the OWNER last said each entity was, from its segment roster audits. The audit
+        /// carries a position for every entry and this machine was throwing it away.
+        ///
+        /// It matters because the availability gate measures "is this close enough to rescue?"
+        /// against the local object's transform — and for a starved entity that transform is the
+        /// very thing that is stale. On 2026-08-09 that produced 22 refusals of "far&gt;45" in one
+        /// session for entities the player was standing next to: the distance was measured to
+        /// where the copy is stuck, not to where the enemy actually is.
+        /// </summary>
+        private static readonly Dictionary<int, (Vector2 pos, float at)> RosterPositions
+            = new Dictionary<int, (Vector2, float)>();
+
+        /// <summary>A roster position older than this is no better a guess than the stale local
+        /// pose, so it stops being used.</summary>
+        private const float RosterPositionFreshness = 15f;
+
+        /// <summary>Listed by its owner in ANY segment roster this recently = alive, whatever the
+        /// roster of the segment we filed it under says. Comfortably longer than the audit cycle
+        /// (1 s per tick, four segments at a time) so a slow round-robin cannot look like death.</summary>
+        private const float RosterListingKeepAlive = 10f;
+
+        private static float _nextZombieSweepAt;
+        private static readonly List<int> _zombieScratch = new List<int>(32);
+
+        /// <summary>
+        /// The mutual-puppet zombie, caught in the field 2026-08-09 by the cross-check: a machine
+        /// answered a delete request with "live here, owner P1, puppet, snapshotAge=31.2s" — while
+        /// BEING P1. It calls itself the owner and treats the object as somebody else's copy, so
+        /// nobody simulates it. Consequences, both of which the players had been reporting all
+        /// evening: it never moves (no simulator, no snapshots), and it appears in no segment
+        /// roster (rosters are built from what a machine SIMULATES), so the other side eventually
+        /// deletes it as a ghost. Freezing and vanishing were one illness.
+        ///
+        /// The repair already exists — one ApplyOwnership — but it lived inside the starved sweep,
+        /// which only scans a 5x5 segment window around the local ship, indexed by a filing that
+        /// goes stale for exactly these entities. So the ones that needed it most were the ones it
+        /// could not see.
+        ///
+        /// This condition needs no window and no heuristic: the authority table already says the
+        /// entity is ours. Repairing it cannot steal anything from anyone.
+        /// </summary>
+        private static void SweepMutualPuppetZombies(NetSession session)
+        {
+            if (Time.unscaledTime < _nextZombieSweepAt) return;
+            _nextZombieSweepAt = Time.unscaledTime + 1f;
+
+            _zombieScratch.Clear();
+            foreach (var kv in LiveEntities)
+            {
+                int netId = kv.Key;
+                var se = kv.Value;
+                if (se == null || KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
+                if (OwnerOf(netId) != session.LocalSlot) continue;      // not ours: not this bug
+                if (se.GetComponent<RemoteEntityPuppet>() == null) continue;  // ours and simulated: fine
+                _zombieScratch.Add(netId);
+            }
+            if (_zombieScratch.Count == 0) return;
+
+            int repaired = 0;
+            foreach (int netId in _zombieScratch)
+            {
+                if (!NetIds.TryGetInstanceId(netId, out int instanceId)) continue;
+                try
+                {
+                    ApplyOwnership(netId, instanceId);
+                    InstrumentationCounters.LocalAuthorityComponentRepaired();
+                    repaired++;
+                }
+                catch (Exception e)
+                { Plugin.Log.LogWarning($"[Availability] zombie repair failed for #{netId}: {e.Message}"); }
+            }
+            if (repaired > 0)
+            {
+                // Name them. A count alone cannot distinguish "repaired four different zombies"
+                // from "repaired the same one four times because the repair does not stick", and
+                // those want opposite responses.
+                var named = new System.Text.StringBuilder();
+                for (int i = 0; i < _zombieScratch.Count && i < 8; i++)
+                    named.Append(i == 0 ? " " : ", ").Append(NetDiag.Describe(_zombieScratch[i]));
+                if (_zombieScratch.Count > 8) named.Append(", …");
+                Plugin.Log.LogWarning($"[Availability] took over {repaired} entit{(repaired == 1 ? "y" : "ies")} " +
+                    "this machine already owned but was treating as someone else's copy — nobody was " +
+                    $"simulating them:{named}");
+            }
+        }
+
+        /// <summary>The authoritative position for a starved entity, when the owner has told us one
+        /// recently. Null when only the local (possibly stale) pose exists.</summary>
+        private static Vector2? OwnerPositionOf(int netId)
+        {
+            if (!RosterPositions.TryGetValue(netId, out var known)) return null;
+            if (Time.unscaledTime - known.at > RosterPositionFreshness) return null;
+            return known.pos;
+        }
+
+        /// <summary>Audits an entity with a QUIET stream must miss before the ghost heal removes
+        /// it. Ten at the audit cadence is long enough that a fed-then-stopped entity gets its
+        /// rescue attempts first, and short enough that a genuinely dead one still leaves.</summary>
+        private const int QuietGhostRemovalStreak = 10;
+
+        /// <summary>True while this machine has told the player its world updates are being
+        /// rate-reduced. An entity starving under a degraded link is the bandwidth policy doing its
+        /// job, and reads very differently from one starving on a healthy link.</summary>
+        internal static bool LinkDegraded => _linkDistressAnnounced;
         private const float StarvedRequestRetry = 2f;
         // How long a DORMANT starving puppet waits for the residency->lease->wake chain before the
         // starved-rescue treats it like any other starved entity. Generous: the chain normally
@@ -655,8 +773,14 @@ namespace PunkMultiverse.Sync
                 PendingRetirements.RemoveAt(i);
                 _retiredLifetimes++;
                 InstrumentationCounters.DuplicateLifetimeRetired();
-                if (old != null) UnityEngine.Object.Destroy(old.gameObject);
-                else UnityEngine.Object.Destroy(inert.gameObject);
+                if (old != null) EntityLifetime.Destroy(old);
+                else
+                {
+                    // The marker component, not the entity — unsubscribe whatever SavableEntity
+                    // rides the same object before the body goes.
+                    EntityLifetime.Unsubscribe(inert.GetComponent<SavableEntity>());
+                    UnityEngine.Object.Destroy(inert.gameObject);
+                }
             }
         }
 
@@ -1589,6 +1713,9 @@ namespace PunkMultiverse.Sync
             foreach (var (netId, lifetime, entityType, pos) in msg.Entries)
             {
                 listed.Add(netId);
+                // Keep the owner's word on where this is. For anything whose stream has gone
+                // quiet, this is the only non-stale position on this machine — see RosterPositions.
+                RosterPositions[netId] = (pos, Time.unscaledTime);
                 if (KilledNetIds.Contains(netId)) continue;
                 bool hasData = false;
                 if (NetIds.TryGetInstanceId(netId, out int instanceId))
@@ -1625,7 +1752,72 @@ namespace PunkMultiverse.Sync
                     Plugin.Log.LogWarning($"[RosterAudit] reverse divergence: {NetDiag.Describe(netId)} " +
                         $"is live here in segment {key} but absent from owner P{msg.Slot + 1}'s roster");
                 }
-                else if (streak.count >= 3 && NetConfig.SummaryHeal.Value && SegmentFullyInInterest(key))
+                // The membership argument above holds only while there IS a stream. A puppet the
+                // owner has stopped feeding keeps a FROZEN received-segment assignment, so its
+                // absence from that segment's roster says nothing about whether the owner still
+                // has it — we are reading a stale filing, not the owner's world.
+                //
+                // 2026-08-09 proved the cost: sixteen entities deleted across two sessions —
+                // grunts, flies, zippers, a Cross Tablet boss — while the other player went on
+                // fighting them. The same evening also showed how easily a stream goes quiet
+                // (the link-degraded presentation cut, and a rescue path that refused 36 times
+                // out of 36). So a quiet entity is exactly the one we must NOT delete on this
+                // evidence; give it a much longer rope instead, so a genuinely dead one still
+                // leaves eventually.
+                // ROOT CAUSE of the false ghosts, found 2026-08-09 by reading both sides:
+                //
+                //   owner  — files each entity under SimulationSegments[netId] and lists a segment's
+                //            roster from that map;
+                //   viewer — looks for its copy in the roster of the segment it last RECEIVED the
+                //            entity under (ReceivedSegments).
+                //
+                // An enemy that chases a player crosses a boundary; the owner refiles it and its old
+                // segment's roster correctly stops listing it. If the update did not reach us — and
+                // this evening showed a dozen ways that happens — we are comparing against the wrong
+                // roster and calling a living enemy a ghost.
+                //
+                // But the owner does mention it, in ANOTHER segment's roster, and every audit is
+                // already recorded per netId. So: recently listed anywhere by its owner means alive.
+                if (RosterPositions.TryGetValue(netId, out var seen)
+                    && Time.unscaledTime - seen.at <= RosterListingKeepAlive)
+                {
+                    if (streak.count == 3)
+                        Plugin.Log.LogWarning($"[Heal] KEEPING {NetDiag.Describe(netId)} — missing from segment " +
+                            $"{key}'s roster, but its owner listed it elsewhere {Time.unscaledTime - seen.at:0.0}s " +
+                            "ago. It moved; our segment filing is what is stale.");
+                    ReverseDivergenceStreaks[netId] = streak;
+                    continue;
+                }
+
+                var streamPuppet = se.GetComponent<RemoteEntityPuppet>();
+                bool quiet = streamPuppet != null && streamPuppet.SnapshotAge > FedPuppetSeconds;
+
+                // A LIVE stream settles it outright: if the owner is sending us snapshots for this
+                // entity, the owner has this entity, and a roster that omits it is simply wrong.
+                // Proven 2026-08-09 by the cross-check this heal now sends before deleting — the
+                // other machine answered "live here, owner P1, puppet, snapshotAge=0.0s" about an
+                // entity P1 was about to delete as a ghost. Minutes later this machine deleted a
+                // Cross Tablet mini-boss standing next to the player, on a live stream, for the
+                // same reason. Never delete something the owner is still feeding us.
+                if (streamPuppet != null && !quiet)
+                {
+                    if (streak.count == 3)
+                        Plugin.Log.LogWarning($"[Heal] KEEPING {NetDiag.Describe(netId)} — the owner's roster " +
+                            $"omits it but the owner is still streaming it here (snapshotAge=" +
+                            $"{streamPuppet.SnapshotAge:0.00}s). The roster is wrong, not the world.");
+                    ReverseDivergenceStreaks[netId] = streak;
+                    continue;
+                }
+
+                int removeAt = quiet ? QuietGhostRemovalStreak : 3;
+                if (streak.count == removeAt && quiet)
+                    Plugin.Log.LogWarning($"[Heal] {NetDiag.Describe(netId)} looks like a ghost but its stream " +
+                        $"is quiet (snapshotAge=" +
+                        (float.IsPositiveInfinity(streamPuppet.SnapshotAge) ? "never" : $"{streamPuppet.SnapshotAge:0.0}s") +
+                        $") — its segment filing is stale, so absence from the roster proves nothing. Removing anyway " +
+                        $"after {QuietGhostRemovalStreak} audits.");
+
+                if (streak.count >= removeAt && NetConfig.SummaryHeal.Value && SegmentFullyInInterest(key))
                 {
                     RemoveGhostEntity(netId, key, msg.Slot);
                     ReverseDivergenceStreaks.Remove(netId);
@@ -1682,6 +1874,7 @@ namespace PunkMultiverse.Sync
             SweepFirstSnapshotDeadlines(session);
             SweepPendingLeaseAcceptance(session);
             TickRosterAudit(session);
+            SweepMutualPuppetZombies(session);
             TickLinkHealth(session);        // WS7.2: advertise our receive quality
             TickStateSummaries(session);    // WS9.1: publish identity summaries for owned segments
             if (session.IsHost) PruneInterestRoutes(session);
@@ -1992,6 +2185,12 @@ namespace PunkMultiverse.Sync
             // WS7.3: a persistently starved link becomes an explicit, VISIBLE state instead of
             // mystery desync. 30s of continuous distress -> tell the player their world is being
             // rate-reduced (correctness traffic is unaffected; the world is choppy, not wrong).
+            //
+            // 2026-08-09: "choppy, not wrong" understates it at the extreme. In a live run the
+            // presentation plane fell 10.3 -> 1.3 KB/s while correctness held at 0.3, and the
+            // player was killed by a boss and fifteen adds that were all present in their world,
+            // standing at stale positions, invisible where it mattered. Forensics now prints this
+            // flag beside a starving entity so the reader can tell a sync fault from this policy.
             if (score >= 48)
             {
                 if (_linkDistressSince == 0f) _linkDistressSince = Time.unscaledTime;
@@ -2576,7 +2775,7 @@ namespace PunkMultiverse.Sync
             // A stale GameObject may survive the missing data (the classic starved-puppet shape).
             // Destroy it first or the heal leaves a visual double until duplicate retirement.
             if (LiveEntities.TryGetValue(entry.NetId, out var stale) && stale != null)
-                UnityEngine.Object.Destroy(stale.gameObject);
+                EntityLifetime.Destroy(stale);
             if (!MinionSync.TryRespawnFromBaseline(entry.NetId, entry.Lifetime, sourceSlot, entityType, entry.Pos))
                 return false;
             InstrumentationCounters.DivergenceHealed();
@@ -3104,12 +3303,25 @@ namespace PunkMultiverse.Sync
                     continue;
                 }
 
-                if (!IsStableAvailabilityCandidate(entity, puppet, out float distance, out _))
+                if (!IsStableAvailabilityCandidate(entity, puppet, out float distance, out string deferReason))
                 {
                     // Rechecking every state tick is needless work when a starved object is merely
                     // in the loader's retention fringe. Count at most one deferral/entity/second.
                     NextStarvedRequestAt[netId] = now + StarvedCandidateRecheck;
                     InstrumentationCounters.AvailabilityCandidateDeferred();
+                    // The gate computes exactly why it refused and the counter threw it away. One
+                    // run on 2026-08-09 ended with starvedPuppetFrames=34612, starvedRequests=4,
+                    // availabilityPromotions=0 — a rescue path that never fires, and no way to ask
+                    // it why: the player just took damage from a boss add they could not see.
+                    // Say the reason out loud, rate-limited so a starved crowd cannot flood.
+                    if (now >= _nextDeferralLogAt)
+                    {
+                        _nextDeferralLogAt = now + 5f;
+                        Plugin.Log.LogWarning($"[Availability] NOT rescuing {NetDiag.Describe(netId)} — " +
+                            $"{deferReason} (owner=P{OwnerOf(netId) + 1}, snapshotAge=" +
+                            (float.IsPositiveInfinity(puppet.SnapshotAge) ? "never" : $"{puppet.SnapshotAge:0.00}s") +
+                            $", residence={puppet.PuppetAge:0.00}s)");
+                    }
                     continue;
                 }
 
@@ -3292,7 +3504,18 @@ namespace PunkMultiverse.Sync
                     return false;
                 }
             }
-            distance = Vector2.Distance(entity.transform.position, ShipSync.LocalShip.transform.position);
+            // Measure to the best position that exists, not to the one that happens to be local.
+            // A puppet whose stream stopped is standing where it was last told to stand; asking
+            // "how far is that?" answers a question about the bug, not about the enemy. When the
+            // owner has said where it is recently (roster audit), that is the honest number.
+            var localPos = (Vector2)entity.transform.position;
+            var shipPos = (Vector2)ShipSync.LocalShip.transform.position;
+            bool poseStale = !puppet.HasSnapshot || puppet.SnapshotAge > FedPuppetSeconds;
+            Vector2? ownerPos = null;
+            if (poseStale && entity.EntityData != null
+                && NetIds.TryGetNetId(entity.EntityData.instanceId, out int poseNetId))
+                ownerPos = OwnerPositionOf(poseNetId);
+            distance = Vector2.Distance(ownerPos ?? localPos, shipPos);
             if (float.IsNaN(distance) || float.IsInfinity(distance))
             {
                 reason = "invalid-position";
@@ -4305,14 +4528,15 @@ namespace PunkMultiverse.Sync
         {
             InstrumentationCounters.DivergenceDetected();
             Plugin.Log.LogWarning($"[Heal] removing GHOST {NetDiag.Describe(netId)} in segment {key} — " +
-                $"live here, absent from owner P{ownerSlot + 1}'s roster for 3 consecutive audits");
+                $"live here, absent from owner P{ownerSlot + 1}'s roster, its stream is quiet, and its " +
+                "owner has not mentioned it in any roster");
             KilledNetIds.Add(netId);
             ReceivedSegments.Remove(netId);
             if (NetIds.TryGetInstanceId(netId, out int instanceId))
             {
                 var egm = TryGetEgm();
                 if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
-                    UnityEngine.Object.Destroy(se.gameObject);
+                    EntityLifetime.Destroy(se);
                 DestroyData(instanceId);
             }
         }
@@ -4330,7 +4554,7 @@ namespace PunkMultiverse.Sync
             if (!NetIds.TryGetInstanceId(netId, out int instanceId)) return;
             var egm = TryGetEgm();
             if (egm != null && egm.TryGetSavableEntity(instanceId, out var se) && se != null)
-                UnityEngine.Object.Destroy(se.gameObject);
+                EntityLifetime.Destroy(se);
             DestroyData(instanceId);
         }
 
@@ -4372,7 +4596,7 @@ namespace PunkMultiverse.Sync
                     // nothing but their own removal.
                     if (DeathEffectsDone.Contains(netId))
                     {
-                        UnityEngine.Object.Destroy(se.gameObject);
+                        EntityLifetime.Destroy(se);
                         DestroyData(instanceId);
                         return;
                     }
@@ -4393,7 +4617,7 @@ namespace PunkMultiverse.Sync
                                 UnityEngine.Object.Instantiate(prefab, se.transform.position, se.transform.rotation);
                         }
                         catch { }
-                        UnityEngine.Object.Destroy(se.gameObject);
+                        EntityLifetime.Destroy(se);
                         DestroyData(instanceId);
                         return;
                     }
@@ -4436,7 +4660,7 @@ namespace PunkMultiverse.Sync
                 {
                     var egm = TryGetEgm();
                     if (egm != null && egm.TryGetSavableEntity(instanceId, out var failed) && failed != null)
-                        UnityEngine.Object.Destroy(failed.gameObject);
+                        EntityLifetime.Destroy(failed);
                     DestroyData(instanceId);
                     Plugin.Log.LogWarning($"[Enemies] forced killed-entity cleanup for netId {netId}");
                 }

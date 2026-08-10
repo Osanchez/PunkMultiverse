@@ -251,6 +251,130 @@ Wire `MoveTo` only for **non-live** entities. Live entities keep their data curr
 
 Position fingerprinting has been removed once already. Do not bring it back.
 
+### Destroying a `SavableEntity` without `Unbind` leaves a live subscriber
+
+**verified — `SavableEntity.cs`, cost: a black screen for both players**
+
+`Bind` does `EntityData.Moved += OnEntityMoved`; only `Unbind` removes it — `OnDestroy` does not.
+Vanilla is safe because it destroys these objects through exactly one door,
+`EntityGameObjectManager.UnloadEntity`, which unbinds first. Destroy one directly and the data
+outlives the body with a dead subscriber attached; the next `MoveTo` on that data throws
+`get_transform` **inside the live entity's `Update`**, every frame, forever.
+
+Use `Sync/EntityLifetime.Destroy` (unsubscribe, then destroy). Never call `Unbind` yourself on a
+duplicate: it also runs `EntityData.Destroy()` for anything flagged `destroyWhenUnloaded`, which
+would take the canonical entity's data with it.
+
+### `InstantiateGameObjects` enumerates a segment while spawning into it
+
+```csharp
+foreach (EntityData item in level.entityManager.GetEntitiesInSegment(segmentPosition))
+    if (item.isUnloadable) SpawnObjectForEntity(item);
+activeSegments.Add(segmentPosition);      // never runs if the loop threw
+```
+
+Anything that adds or moves an entity into that segment mid-loop throws `Collection was modified`
+(28–29 times per session in the field), and the segment is then never marked active — later
+unloads miss the dictionary (`Trying to unload savableEntity not found in the dictionary`, 388
+times in one session). Guarded by iterating a snapshot.
+
+### `SpawnObjectForEntity` overwrites its dictionary entry
+
+`entityGameObjects[entity.instanceId] = savableEntity` — spawning an entity that already has a
+live object orphans the first one: still bound, no longer reachable, so nothing will ever unbind
+it. Guarded by returning the existing object.
+
+### `skipOpenAnim` is cleared only by the start/teleport sequence
+
+`StationGenerator.InitializeStations` marks the STARTING station `skipOpenAnim = true` and installs
+its FuelDispenser, so it is born unlocked; `Station.PlayStartSequence` clears the flag as it
+animates the hatch open. A machine that never plays that sequence for that station keeps the flag,
+and `Station.Bind`'s `IsUnlocked && !skipOpenAnim` branch then leaves an unlocked station with a
+closed hatch on every stream-in. `StationVisualHeal` opens it and clears the flag.
+
+---
+
+## Screens & input
+
+### `ShipLogOutput` guards one event and not the other
+
+```csharp
+public void Log(...)      { entries.Add(e); this.LogAdded?.Invoke(e); }   // guarded
+public void Clear(int id) { ... this.LogRemoved(entries[num]); ... }      // NOT guarded
+public void Update()      { ... this.LogRemoved(entries[num]); ... }      // NOT guarded
+```
+
+In single-player every ship owns a visible HUD, so `LogRemoved` always has a subscriber. In a net
+run each remote player's puppet is a full `Ship` whose HUD this mod switches off — no subscriber,
+and every `Clear` on that ship throws. Then it repeats forever, because of where the throw lands:
+
+```csharp
+else if (!HasNoFuel && selfDestructHintShown)
+{
+    logOutput.Clear(4);              // throws
+    selfDestructHintShown = false;   // never runs, so the branch is taken again next frame
+}
+```
+
+**12 174 exceptions in a 90-second harness run**, all from one refuelled teammate's puppet. Nobody
+had seen it because Unity's log was not being captured into the mod's — set
+`[Logging.Disk] WriteUnityLog = true` when hunting anything like this. Guarded in
+`Patches/ShipLogGuard.cs`.
+
+### `ShipMenuToggler` decides who may drive the screen, and gets it wrong with a second ship
+
+**verified — `ShipMenuToggler.cs`**
+
+```csharp
+private void OnGameStarted()                      // ONCE, over every ship in the game
+    foreach (ship in gameController.Ships)
+        { ship.GetComponent<PlayerInput>().onActionTriggered += OnActionTriggered; playerInputs.Add(...); }
+
+private void OnActionTriggered(InputAction.CallbackContext context)
+{
+    PlayerInput playerInput = playerInputs.FirstOrDefault(p => p.actions.Contains(context.action));
+    if (isOpen) { if (!(playerInput != playerInputInControl)) { /* close, back, tabs, tab input */ } }
+}
+```
+
+`gameController.Ships` is `ShipManager.ships` — which in a net run also holds this client's
+puppets of everyone else (`ShipSync.SpawnPuppets` appends them). Two consequences:
+
+- The owner lookup can resolve to a puppet, and then **every** menu action is dropped: close,
+  back, tab switching, and the active tab's own `OnInputActionPerformed`.
+- `Open`/`Close` switch action maps across the whole list, puppets included.
+
+The two open paths make it worse by disagreeing: `OpenShop` passes the interacting ship's
+`PlayerInput` while the Tab path passes whatever the lookup resolved. When they name different
+objects the screen is input-orphaned — visible, un-closable, and inert. **Symptom:** "the shop
+won't close and won't sell, and my ship still flies". Guarded in `Patches/ShipMenuGuards.cs`.
+
+### `Open()` has no `isOpen` guard — and neither did `PauseScreen`
+
+Same defect, two screens. Vanilla is protected by an accident: opening a screen switches the
+ship map off, so the key that could re-open it is dead while it is up. This mod deliberately
+keeps the ship controllable in a live co-op world, which re-arms exactly that key.
+
+At a station the result is a loop: `Close()` restores control, the same press reaches
+`Interactor` → `Station.OnUseActivated` → `Shop.StartShopping`, and the shop re-opens. Vanilla
+already carries the antidote in the same class — `Ship.LastTimeExitShipMenu` plus
+`ModuleActivator.minDelayAfterLeavingShipMenu` exist so leaving a menu cannot instantly fire an
+ability. The shop needed the same 350ms.
+
+### `ShowTab` runs BEFORE `Open` switches the action maps
+
+```csharp
+ShowTab(tabIndex);                                            // ModuleGridScreen.OnOpened runs here
+foreach (pi in playerInputs) pi.SwitchCurrentActionMap("MapControl");
+ServiceLocator.Get<ShipManager>().DisableShipControl();
+```
+
+So a tab that throws takes the input contract with it: `isOpen` stays true, the canvas stays up,
+the ship map stays live, the shop map is never registered. `ModuleGridScreen.OnOpened` touches
+the Ship, the Station, the Shop and every `ShipHud` in the scene — a puppet supplies none of
+those the way a local ship does. The tab is contained with a Harmony finalizer so `Open` always
+finishes; the swallowed exception is logged as `[ShipMenu] tab N threw`.
+
 ---
 
 ## State, config & startup

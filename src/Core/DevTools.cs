@@ -54,6 +54,12 @@ namespace PunkMultiverse.Core
         {
             GodMode = false;
             Patches.MenuMutex.Reset(); // clear pause/item-wheel flags so they can't stick across runs
+            Patches.ShipMenuGuards.Reset(); // ...and the close stamp, so it can't block a fresh run
+            Patches.ShopWalletGuard.Reset();
+            Patches.WeaponVisualGuard.Reset();
+            Patches.VaultDuplicateGuard.Reset();
+            Sync.EntityLifetime.Reset();
+            Patches.ShipLogGuard.Reset();
         }
 
         /// <summary>Runs at the poll cadence while god is armed: re-assert infinite weapon
@@ -1975,6 +1981,30 @@ namespace PunkMultiverse.Core
                         && (parts[1].Equals("on", StringComparison.OrdinalIgnoreCase) || parts[1] == "1");
                     Sync.DamageSync.ShopMenuTestOverride = on;
                     Out($"shop: local player treated as {(on ? "IN SHOP (routed damage shielded)" : "not shopping")}");
+                    return;
+                }
+                case "shopopen":
+                {
+                    // Open a station shop the way a KEYPRESS does — Interactor -> Station
+                    // .OnUseActivated -> Shop.StartShopping -> ShipMenuToggler.OpenShop. Calling
+                    // OpenShop directly would skip the very step under test (who the game decides
+                    // owns the screen afterwards), so this drives the real chain or nothing.
+                    var shopShip = ShipSync.LocalShip;
+                    if (shopShip == null) { Out("shopopen: no local ship"); return; }
+                    var interactor = shopShip.GetComponentInChildren<Interactor>(true);
+                    if (interactor == null) { Out("shopopen: ship has no Interactor"); return; }
+                    Station nearestStation = null;
+                    float nearestDist = float.MaxValue;
+                    foreach (var station in UnityEngine.Object.FindObjectsByType<Station>(FindObjectsSortMode.None))
+                    {
+                        if (station == null || station.ComponentData == null) continue;
+                        if (!station.ComponentData.IsUnlocked) continue; // locked = an unlock press, not a shop
+                        float d = Vector2.Distance(shopShip.transform.position, station.transform.position);
+                        if (d < nearestDist) { nearestDist = d; nearestStation = station; }
+                    }
+                    if (nearestStation == null) { Out("shopopen: no unlocked station in the scene"); return; }
+                    nearestStation.OnUseActivated(interactor);
+                    Out($"shopopen: activated station at dist={nearestDist:0.0}");
                     return;
                 }
                 case "stall":

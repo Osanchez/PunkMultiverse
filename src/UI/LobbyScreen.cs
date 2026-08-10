@@ -493,8 +493,16 @@ namespace PunkMultiverse.UI
             PlaceTopLeft(_title.rectTransform, 68, -46, 900, 70);
             _title.alignment = _titleShadow.alignment = TextAlignmentOptions.TopLeft;
 
+            // GameGuard already knows at boot whether Steam has moved the base game underneath this
+            // build — it just had nowhere to say so, and a warning that only exists in a log file is
+            // a warning nobody reads until after the evening is lost. This is the last screen both
+            // players look at before starting, so it belongs here.
+            bool gameMoved = !Core.GameGuard.BaselineMatches;
             var version = UiTheme.MakeText(_canvasGo.transform, "Version",
-                $"PUNK MULTIVERSE · MOD V{Plugin.Version}", 15, UiTheme.TextFaint);
+                gameMoved
+                    ? $"PUNK MULTIVERSE · MOD V{Plugin.Version} · ⚠ THE GAME UPDATED SINCE THIS BUILD"
+                    : $"PUNK MULTIVERSE · MOD V{Plugin.Version}",
+                15, gameMoved ? new Color(0.95f, 0.75f, 0.25f, 1f) : UiTheme.TextFaint);
             PlaceTopLeft(version.rectTransform, 72, -122, 900, 22);
             version.alignment = TextAlignmentOptions.TopLeft;
 

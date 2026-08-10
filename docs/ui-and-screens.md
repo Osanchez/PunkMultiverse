@@ -119,6 +119,15 @@ If you need a UI element that already exists in some form, look for its widget f
   `GameOverScreen` is reused for winning.
 - Puppets must not hold shop or interaction state: `RemotePuppet.ScrubInteractions` runs on
   death.
+- **The ship menu is guarded** (`Patches/ShipMenuGuards.cs`): its input list is pinned to the
+  local ship, both open paths name the local player, a re-entrant `Open` may switch tabs but not
+  re-run the input contract, a station is deaf to "open the shop" for 350ms after a close, and a
+  throwing tab is contained so `Open` still finishes. Why each one exists:
+  [`VANILLA_GOTCHAS.md`](VANILLA_GOTCHAS.md#screens--input).
+- The screen's state lives in four places that must agree — `isOpen`, the `PlayerInput` it believes
+  owns it, that input's action map, and whether the `"Shop"` map is live. Vanilla keeps them in step
+  by construction (one ship, one input); a net run does not, so treat a disagreement between any two
+  of them as the first thing to check when the menu misbehaves.
 - The drop screen had to be made fully controller/keyboard navigable; that is `selectOnOpen`
   plus explicit navigation, not automatic.
 
