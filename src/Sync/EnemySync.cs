@@ -279,6 +279,11 @@ namespace PunkMultiverse.Sync
         private static float _nextZombieSweepAt;
         private static readonly List<int> _zombieScratch = new List<int>(32);
 
+        /// <summary>Takeovers per netId, so an entity the peers' tables disagree about cannot be
+        /// re-fought every second forever. At the cap the sweep stands down for that entity.</summary>
+        private static readonly Dictionary<int, int> _zombieTakeovers = new Dictionary<int, int>();
+        private const int ZombieTakeoverCap = 3;
+
         /// <summary>
         /// The mutual-puppet zombie, caught in the field 2026-08-09 by the cross-check: a machine
         /// answered a delete request with "live here, owner P1, puppet, snapshotAge=31.2s" — while
@@ -301,6 +306,32 @@ namespace PunkMultiverse.Sync
             if (Time.unscaledTime < _nextZombieSweepAt) return;
             _nextZombieSweepAt = Time.unscaledTime + 1f;
 
+            // Piggy-back RosterPositions hygiene on the same 1 Hz cadence: an entry is only ever
+            // read within RosterPositionFreshness, so anything twice that age is pure growth —
+            // one stale int per entity the owner ever audited, for the length of the session.
+            _zombieScratch.Clear();
+            foreach (var kv in RosterPositions)
+                if (Time.unscaledTime - kv.Value.at > RosterPositionFreshness * 2f)
+                    _zombieScratch.Add(kv.Key);
+            foreach (int stale in _zombieScratch) RosterPositions.Remove(stale);
+
+            // Bounded three ways, each learned from soaking the unbounded version (2026-08-09,
+            // where one grunt was taken over ELEVEN times in seven minutes):
+            //   - DISTANCE, measured on the transform — not the stale segment filing the original
+            //     window was rightly rejected over. Far from the ship a quiet stream is NORMAL
+            //     (presentation throttling and dormancy make distant puppets quiet by design), so
+            //     "quiet + table says ours" only evidences a zombie where quiet is abnormal: near
+            //     the player. The field zombies players reported were all in their face.
+            //   - a FED puppet is being simulated by whoever is sending, which contradicts the
+            //     sweep's premise (nobody simulates it) outright; and
+            //   - a CAP per entity: a takeover that keeps reverting means the peers' authority
+            //     tables disagree about this entity, and re-fighting that duel every second is
+            //     dual simulation on a timer. Three strikes, one loud line, and it is lease
+            //     reconciliation's problem.
+            var localShip = ShipSync.LocalShip;
+            if (localShip == null) return;   // no local ship, nobody staring at a frozen enemy
+            Vector2 shipPos = localShip.transform.position;
+
             _zombieScratch.Clear();
             foreach (var kv in LiveEntities)
             {
@@ -308,7 +339,13 @@ namespace PunkMultiverse.Sync
                 var se = kv.Value;
                 if (se == null || KilledNetIds.Contains(netId) || FixedOwners.Contains(netId)) continue;
                 if (OwnerOf(netId) != session.LocalSlot) continue;      // not ours: not this bug
-                if (se.GetComponent<RemoteEntityPuppet>() == null) continue;  // ours and simulated: fine
+                var puppet = se.GetComponent<RemoteEntityPuppet>();
+                if (puppet == null) continue;                           // ours and simulated: fine
+                if (puppet.SnapshotAge <= FedPuppetSeconds) continue;   // fed = simulated elsewhere
+                if (Vector2.Distance(se.transform.position, shipPos) > NetConfig.TransferRadius.Value)
+                    continue;
+                if (_zombieTakeovers.TryGetValue(netId, out int strikes) && strikes >= ZombieTakeoverCap)
+                    continue;
                 _zombieScratch.Add(netId);
             }
             if (_zombieScratch.Count == 0) return;
@@ -317,6 +354,12 @@ namespace PunkMultiverse.Sync
             foreach (int netId in _zombieScratch)
             {
                 if (!NetIds.TryGetInstanceId(netId, out int instanceId)) continue;
+                _zombieTakeovers.TryGetValue(netId, out int strikes);
+                _zombieTakeovers[netId] = ++strikes;
+                if (strikes == ZombieTakeoverCap)
+                    Plugin.Log.LogWarning($"[Availability] {NetDiag.Describe(netId)} keeps reverting to a " +
+                        $"puppet after takeover ({strikes} times) — the peers' authority tables likely " +
+                        "disagree about it. Standing down; leaving it to lease reconciliation.");
                 try
                 {
                     ApplyOwnership(netId, instanceId);
@@ -355,10 +398,6 @@ namespace PunkMultiverse.Sync
         /// rescue attempts first, and short enough that a genuinely dead one still leaves.</summary>
         private const int QuietGhostRemovalStreak = 10;
 
-        /// <summary>True while this machine has told the player its world updates are being
-        /// rate-reduced. An entity starving under a degraded link is the bandwidth policy doing its
-        /// job, and reads very differently from one starving on a healthy link.</summary>
-        internal static bool LinkDegraded => _linkDistressAnnounced;
         private const float StarvedRequestRetry = 2f;
         // How long a DORMANT starving puppet waits for the residency->lease->wake chain before the
         // starved-rescue treats it like any other starved entity. Generous: the chain normally
@@ -426,6 +465,8 @@ namespace PunkMultiverse.Sync
             LastKeyframeAt.Clear();
             SimulationSegments.Clear();
             ReceivedSegments.Clear();
+            RosterPositions.Clear();
+            _zombieTakeovers.Clear();
             MutationRevisions.Clear();
             AppliedMutationRevisions.Clear();
             LastEntityStateMs.Clear();

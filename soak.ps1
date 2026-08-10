@@ -210,7 +210,9 @@ try {
     $benign = "LimitExceeded|Could not find (method|field|property)|send buffer|inactive replica bind failed"
     $c1Exceptions = @(Select-String -Path $ClientLog -Pattern "Exception|NullReference|replica failed" -ErrorAction SilentlyContinue | Where-Object { $_.Line -notmatch $benign }).Count
     $c1Seq = CountIn $ClientLog "\[Seq\]"
-    $c1Heal = CountIn $ClientLog "\[Heal\]"
+    # "[Heal] KEEPING" is a keep-DECISION (an entity spared from a wrong deletion), not a repair —
+    # counting it here would fail the gate precisely when the ghost heal is working correctly.
+    $c1Heal = CountIn $ClientLog "\[Heal\] (?!KEEPING)"
     Copy-Item $ClientLog (Join-Path $ArtDir "client-phase1.log") -ErrorAction SilentlyContinue
 
     Log "phase R: client kill + rejoin (FULL rejoin via station checkpoint)"
@@ -284,7 +286,8 @@ try {
     # (a transient real divergence detected + repaired). The failure mode is a STORM — the same
     # segment re-healing forever (false-positive predicate or an un-healable divergence). A
     # healthy 10-minute soak measured 0; anything past a handful means the predicate regressed.
-    $heal = (CountIn $HostLog "\[Heal\]") + (CountIn $ClientLog "\[Heal\]") + $c1Heal
+    # KEEPING lines are keep-decisions, not repairs — see the phase-1 counter above.
+    $heal = (CountIn $HostLog "\[Heal\] (?!KEEPING)") + (CountIn $ClientLog "\[Heal\] (?!KEEPING)") + $c1Heal
     Gate "no [Heal] repair storms (occasional heals OK, SummaryHeal on)" ($heal -le 4) "total=$heal (threshold 4)"
 
     $tmH = LastMatch $HostLog "terrainMismatch=\d+"
