@@ -14,6 +14,7 @@
     "multiplayer",
     "battle-royale"
   ],
+  "side": "both",
   "pluginFolder": "PunkMultiverse",
   "dependencies": [],
   "download": {
